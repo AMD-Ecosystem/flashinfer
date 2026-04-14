@@ -803,3 +803,53 @@ def gen_customize_batch_prefill_module(
         raise ValueError("FA3 backend not currently supported for ROCm")
     else:
         raise ValueError(f"Invalid backend: {backend}")
+
+
+# ---------------------------------------------------------------------------
+# FA3-CDNA3: self-contained JIT module for the 8-wave ping-pong kernel
+# targeting AMD MI300X (gfx942), head_dim=256, FP16, seqlen <= 8192.
+# ---------------------------------------------------------------------------
+
+_FA3_CDNA3_URI = "fa3_cdna3_single_prefill"
+
+_FA3_CDNA3_EXTRA_CUDA_CFLAGS = [
+    "-DCK_TILE_FMHA_FWD_FAST_EXP2=1",
+    "-fgpu-flush-denormals-to-zero",
+    "-mllvm",
+    "-enable-post-misched=0",
+    "-mllvm",
+    "--lsr-drop-solution=1",
+    "-fno-offload-uniform-block",
+    "-mllvm",
+    "-amdgpu-early-inline-all=true",
+    "-mllvm",
+    "-amdgpu-function-calls=false",
+    "-fbracket-depth=1024",
+]
+
+
+def gen_fa3_cdna3_single_prefill_module() -> JitSpec:
+    """Build JIT module for the FA3-CDNA3 prefill kernel.
+
+    No Jinja codegen needed -- the kernel is header-only with a thin .cu wrapper.
+    """
+    gen_directory = FLASHINFER_GEN_SRC_DIR / _FA3_CDNA3_URI
+    os.makedirs(gen_directory, exist_ok=True)
+
+    source_paths = []
+    for filename in [
+        "fa3_cdna3_prefill.cu",
+        "fa3_cdna3_prefill_jit_pybind.cu",
+    ]:
+        src_path = FLASHINFER_CSRC_DIR / filename
+        dest_path = gen_directory / filename
+        source_paths.append(dest_path)
+        with open(src_path, "r") as f:
+            source = f.read()
+        write_if_different(dest_path, source)
+
+    return gen_jit_spec(
+        _FA3_CDNA3_URI,
+        source_paths,
+        extra_cuda_cflags=_FA3_CDNA3_EXTRA_CUDA_CFLAGS,
+    )

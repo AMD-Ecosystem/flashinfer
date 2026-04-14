@@ -31,6 +31,7 @@ from .jit import (
     get_batch_prefill_uri,
     get_single_prefill_uri,
 )
+from .jit.attention.modules_hip import gen_fa3_cdna3_single_prefill_module
 from .page import get_seq_lens
 from .quantization import packbits, segment_packbits
 from .utils import (
@@ -236,9 +237,44 @@ def _get_aiter_single_prefill_module():
 
 
 @functools.cache
+def _get_fa3_cdna3_single_prefill_module():
+    module = gen_fa3_cdna3_single_prefill_module().build_and_load()
+    run_func = module.run.default
+
+    uri = "fa3_cdna3_single_prefill"
+
+    @register_custom_op(f"flashinfer::{uri}_run", mutates_args=("o", "maybe_lse"))
+    def run_fa3_cdna3(
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        o: torch.Tensor,
+        maybe_lse: Optional[torch.Tensor],
+        is_causal: bool,
+    ) -> None:
+        run_func(q, k, v, o, maybe_lse, is_causal)
+
+    @register_fake_op(f"flashinfer::{uri}_run")
+    def _fake_run_fa3_cdna3(
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        o: torch.Tensor,
+        maybe_lse: Optional[torch.Tensor],
+        is_causal: bool,
+    ) -> None:
+        pass
+
+    return SimpleNamespace(run=run_fa3_cdna3)
+
+
+@functools.cache
 def get_single_prefill_module(backend, *args):
     if backend == "aiter":
         return _get_aiter_single_prefill_module()
+
+    if backend == "fa3_cdna3":
+        return _get_fa3_cdna3_single_prefill_module()
 
     uri = get_single_prefill_uri(backend, *args)
     module = gen_single_prefill_module(backend, *args).build_and_load()
@@ -1196,6 +1232,11 @@ def single_prefill_with_kv_cache(
     if o_dtype is None:
         o_dtype = q.dtype
     out = torch.empty(q.shape[:-1] + v.shape[-1:], dtype=o_dtype, device=q.device)
+
+    if backend == "fa3_cdna3":
+        module = get_single_prefill_module("fa3_cdna3")
+        module.run(q, k, v, out, lse, causal)
+        return (out, lse) if return_lse else out
 
     module = get_single_prefill_module(
         backend,

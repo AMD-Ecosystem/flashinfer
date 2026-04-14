@@ -1,0 +1,109 @@
+# FA3-CDNA3 Build Instructions
+# ============================================================
+# Include this fragment in the ROCm build system to compile the
+# FA3-CDNA3 prefill kernel with the required performance flags.
+#
+# Usage: include(fa3_cdna3_prefill_cmake.txt) in the appropriate
+# CMakeLists.txt, or copy the relevant sections.
+# ============================================================
+
+# ---- Required compiler flags for FA3-CDNA3 kernel ----
+#
+# These flags are CRITICAL. Without them, the LLVM backend can silently
+# destroy the hand-tuned 8-wave ping-pong instruction schedule.
+
+set(FA3_CDNA3_COMPILE_FLAGS
+    # C++ standard (required for CK templates and structured bindings)
+    -std=c++20
+
+    # Fast exp2 approximation: replaces 1/4-rate v_exp_f32 with a full-rate
+    # polynomial approximation in the softmax hot path (~4x faster).
+    -DCK_TILE_FMHA_FWD_FAST_EXP2=1
+
+    # Flush denormals to zero in FP32 accumulator to avoid 4+ cycle penalties
+    # when S_acc or O_acc produces denormal values during rescaling.
+    -fgpu-flush-denormals-to-zero
+
+    # CRITICAL: Disable the post-MI scheduler.
+    # The post-MI scheduler runs AFTER instruction selection and can reorder
+    # instructions across our sched_barrier() fences, collapsing the
+    # compute/memory cluster structure we hand-crafted.
+    -mllvm -enable-post-misched=0
+
+    # Loop strength reduction: prevent LSR from introducing extra address
+    # computation instructions that compete with MFMA for VALU slots.
+    -mllvm --lsr-drop-solution=1
+
+    # Prevent hoisting of scalar (uniform) computations that could create
+    # instruction dependencies bridging cluster boundaries.
+    -fno-offload-uniform-block
+
+    # Aggressive inlining: ensures asm_primitives.hpp wrappers are truly
+    # inlined and not emitted as device function calls inside the inner loop.
+    -mllvm -amdgpu-early-inline-all=true
+
+    # Eliminate device-side function call overhead (no call/return instructions
+    # in the kernel inner loop for any of the asm wrapper functions).
+    -mllvm -amdgpu-function-calls=false
+
+    # Deep template nesting required for CK tile type templates.
+    -fbracket-depth=1024
+
+    # Target MI300X specifically.
+    --offload-arch=gfx942
+)
+
+# ---- Source file ----
+set(FA3_CDNA3_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/fa3_cdna3_prefill.cu
+)
+
+# ---- Object library ----
+add_library(fa3_cdna3_kernel OBJECT ${FA3_CDNA3_SOURCES})
+
+target_include_directories(fa3_cdna3_kernel PRIVATE
+    ${CMAKE_SOURCE_DIR}/include            # flashinfer/attention/cdna3/
+    ${CMAKE_SOURCE_DIR}/include/gpu_iface  # existing HIP backend headers
+)
+
+target_compile_options(fa3_cdna3_kernel PRIVATE
+    ${FA3_CDNA3_COMPILE_FLAGS}
+)
+
+# ---- CK codegen for fallback kernels (when CK submodule is added) ----
+#
+# When composable_kernel is added as a submodule at 3rdparty/composable_kernel,
+# uncomment the following to generate and compile CK V2/V3 fallback instances:
+#
+# set(CK_DIR ${CMAKE_SOURCE_DIR}/3rdparty/composable_kernel)
+#
+# # Generate CK FMHA forward instances for d=256, fp16, gfx942
+# execute_process(
+#     COMMAND python3 ${CK_DIR}/example/ck_tile/01_fmha/generate.py
+#         -d fwd
+#         --output_dir ${CMAKE_BINARY_DIR}/ck_generated
+#         --receipt 2
+#         --optdim 256
+#         --targets gfx942
+#     RESULT_VARIABLE CK_CODEGEN_RESULT
+# )
+# if(NOT CK_CODEGEN_RESULT EQUAL 0)
+#     message(WARNING "CK codegen failed; falling back to FA2 HIP path")
+# else()
+#     file(GLOB CK_FWD_INSTANCES "${CMAKE_BINARY_DIR}/ck_generated/fmha_fwd*.cpp")
+#     add_library(ck_fmha_instances OBJECT ${CK_FWD_INSTANCES})
+#     target_include_directories(ck_fmha_instances PRIVATE
+#         ${CK_DIR}/include
+#         ${CK_DIR}/example/ck_tile/01_fmha
+#     )
+#     target_compile_options(ck_fmha_instances PRIVATE ${FA3_CDNA3_COMPILE_FLAGS})
+#     target_compile_definitions(fa3_cdna3_kernel PRIVATE FLASHINFER_CK_AVAILABLE=1)
+# endif()
+
+# ---- Link into the main FlashInfer ROCm target ----
+# (Adjust target name to match the actual FlashInfer build system)
+#
+# target_sources(flashinfer_rocm_ops PRIVATE $<TARGET_OBJECTS:fa3_cdna3_kernel>)
+# if(TARGET ck_fmha_instances)
+#     target_sources(flashinfer_rocm_ops PRIVATE $<TARGET_OBJECTS:ck_fmha_instances>)
+# endif()
