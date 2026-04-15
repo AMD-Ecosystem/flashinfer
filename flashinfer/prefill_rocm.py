@@ -241,17 +241,6 @@ def _get_fa3_cdna3_single_prefill_module():
     module = gen_fa3_cdna3_single_prefill_module().build_and_load()
     run_func = module.run.default
 
-    _aiter_module = None
-    if HAS_AITER:
-        try:
-            from aiter import flash_attn_varlen_func as _aiter_fa_varlen
-
-            _aiter_module = _aiter_fa_varlen
-        except ImportError:
-            pass
-
-    _cu_cache: dict = {}
-
     uri = "fa3_cdna3_single_prefill"
 
     @register_custom_op(f"flashinfer::{uri}_run", mutates_args=("o", "maybe_lse"))
@@ -262,39 +251,9 @@ def _get_fa3_cdna3_single_prefill_module():
         o: torch.Tensor,
         maybe_lse: Optional[torch.Tensor],
         is_causal: bool,
+        tmp: torch.Tensor,
     ) -> None:
-        if _aiter_module is not None and q.dtype == torch.float16:
-            qo_len = q.shape[0]
-            kv_len = k.shape[0]
-            device = q.device
-            cache_key = (qo_len, kv_len, device)
-            if cache_key not in _cu_cache:
-                _cu_cache[cache_key] = (
-                    torch.tensor([0, qo_len], dtype=torch.int32, device=device),
-                    torch.tensor([0, kv_len], dtype=torch.int32, device=device),
-                )
-            cu_q, cu_k = _cu_cache[cache_key]
-            sm_scale = 1.0 / (q.shape[-1] ** 0.5)
-            need_lse = maybe_lse is not None
-            result = _aiter_module(
-                q,
-                k,
-                v,
-                cu_q,
-                cu_k,
-                max_seqlen_q=qo_len,
-                max_seqlen_k=kv_len,
-                causal=is_causal,
-                softmax_scale=sm_scale,
-                return_lse=True,
-                out=o,
-            )
-            if result[0].data_ptr() != o.data_ptr():
-                o.copy_(result[0])
-            if need_lse:
-                torch.div(result[1].t(), math.log(2), out=maybe_lse)
-            return
-        run_func(q, k, v, o, maybe_lse, is_causal)
+        run_func(q, k, v, o, maybe_lse, is_causal, tmp)
 
     @register_fake_op(f"flashinfer::{uri}_run")
     def _fake_run_fa3_cdna3(
@@ -304,6 +263,7 @@ def _get_fa3_cdna3_single_prefill_module():
         o: torch.Tensor,
         maybe_lse: Optional[torch.Tensor],
         is_causal: bool,
+        tmp: torch.Tensor,
     ) -> None:
         pass
 
@@ -1277,7 +1237,7 @@ def single_prefill_with_kv_cache(
 
     if backend == "fa3_cdna3":
         module = get_single_prefill_module("fa3_cdna3")
-        module.run(q, k, v, out, lse, causal)
+        module.run(q, k, v, out, lse, causal, tmp)
         return (out, lse) if return_lse else out
 
     module = get_single_prefill_module(

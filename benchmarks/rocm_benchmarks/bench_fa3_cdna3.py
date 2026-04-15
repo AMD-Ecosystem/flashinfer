@@ -13,14 +13,14 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-FA3-CDNA3 vs FA2 comparison benchmark for AMD MI300X.
+FA3-CDNA3 V10 chunked-prefill benchmark for AMD MI300X.
 
-Benchmarks the FA3-CDNA3 8-wave ping-pong prefill kernel (head_dim=256)
+Benchmarks the FA3-CDNA3 kernel (head_dim=256, chunked prefill q_len != kv_len)
 against:
   - FlashInfer FA2 HIP path (existing baseline)
   - AITER flash_attn_varlen_func (if available)
 
-Configurations: N=1K/2K/4K/8K, d=256, nhead=32 (GQA 32/8), causal+non-causal.
+Alibaba use case: q_len=256, kv_len=512..8192, GQA 16/4, d=256, non-causal.
 
 Run:
     # Full roofline pipeline:
@@ -40,13 +40,6 @@ Output files (all gitignored):
     benchmarks/rocm_benchmarks/fa3_cdna3_counters.yml
     benchmarks/rocm_benchmarks/fa3_cdna3_counter_collection.csv
     benchmarks/rocm_benchmarks/fa3_cdna3_roofline.png
-
-Performance targets (single prefill, d=256, 32 Q-heads, 8 KV-heads, MI300X):
-    N=1024  causal:  ~50-80  us   (FA2 baseline ~150 us)
-    N=2048  causal:  ~100-160 us  (FA2 baseline ~350 us)
-    N=4096  causal:  ~200-350 us  (FA2 baseline ~800 us)
-    N=8192  causal:  ~400-700 us  (FA2 baseline ~1800 us)
-    Hopper FA3 reference (H100, same configs): ~200-3000 us
 """
 
 import argparse
@@ -118,67 +111,60 @@ if _include_aiter:
 
 # ---------------------------------------------------------------------------
 # Benchmark configurations:
-#   (seq_len, num_qo_heads, num_kv_heads, head_dim, causal)
+#   (qo_len, kv_len, num_qo_heads, num_kv_heads, head_dim, causal)
 #
-# Focus: d=256 (the FA3-CDNA3 optimized path), GQA 32/8, seqlen 1K..8K.
+# Alibaba chunked-prefill: q_len=256, kv_len varies, GQA 16/4, d=256, nc.
 # ---------------------------------------------------------------------------
 _CONFIGS = [
-    # d=256 sweep (FA3-CDNA3 target), causal
-    (1024, 32, 8, 256, True),
-    (2048, 32, 8, 256, True),
-    (4096, 32, 8, 256, True),
-    (8192, 32, 8, 256, True),
-    # d=256 sweep, non-causal (2x FLOPs -> more compute-bound)
-    (1024, 32, 8, 256, False),
-    (2048, 32, 8, 256, False),
-    (4096, 32, 8, 256, False),
-    (8192, 32, 8, 256, False),
-    # MHA (no GQA) at d=256
-    (4096, 32, 32, 256, True),
-    (8192, 32, 32, 256, True),
-    # Use-case configs: GQA 16/4, non-causal (from single_prefill_example.py)
-    (512, 16, 4, 256, False),
-    (1024, 16, 4, 256, False),
-    (2048, 16, 4, 256, False),
-    (4096, 16, 4, 256, False),
-    (8192, 16, 4, 256, False),
+    # Alibaba chunked-prefill configs
+    (256, 512, 16, 4, 256, False),
+    (256, 1024, 16, 4, 256, False),
+    (256, 2048, 16, 4, 256, False),
+    (256, 4096, 16, 4, 256, False),
+    (256, 8192, 16, 4, 256, False),
 ]
 
 _OUTPUT_DIR = str(Path(__file__).parent)
 
 
-def _flops(seq_len: int, nhead_q: int, head_dim: int, causal: bool) -> int:
-    """Theoretical FLOPs for QK^T + softmax(S)V (ignoring softmax overhead)."""
-    # Q*K^T: 2 * N * N * H * d (causal: N*(N+1)/2 * H * d * 2 ~ N^2 * H * d)
-    # S*V:   same
-    factor = 2 if causal else 4
-    return seq_len * seq_len * nhead_q * head_dim * factor
+def _flops(qo_len: int, kv_len: int, nhead_q: int, head_dim: int, causal: bool) -> int:
+    """Theoretical FLOPs for QK^T + PV (ignoring softmax overhead)."""
+    # QK^T: 2 * qo_len * kv_len * nhead_q * head_dim
+    # PV:   2 * qo_len * kv_len * nhead_q * head_dim
+    # Total non-causal: 4 * qo_len * kv_len * nhead_q * head_dim
+    if causal:
+        effective_kv = min(kv_len, qo_len)
+        return 2 * qo_len * effective_kv * nhead_q * head_dim * 2
+    return 4 * qo_len * kv_len * nhead_q * head_dim
 
 
-def _bytes(seq_len: int, nhead_q: int, nhead_k: int, head_dim: int) -> int:
+def _bytes(qo_len: int, kv_len: int, nhead_q: int, nhead_k: int, head_dim: int) -> int:
     """Theoretical bytes (cold-cache lower bound): Q, K, V, O in FP16."""
-    return 2 * seq_len * head_dim * (nhead_q * 2 + nhead_k * 2)  # fp16
+    q_bytes = 2 * qo_len * nhead_q * head_dim
+    kv_bytes = 2 * kv_len * nhead_k * head_dim * 2  # K + V
+    o_bytes = 2 * qo_len * nhead_q * head_dim
+    return q_bytes + kv_bytes + o_bytes
 
 
 @torch.inference_mode()
 def _make_configs() -> list[KernelConfig]:
     configs = []
 
-    for seq_len, nhead_q, nhead_k, head_dim, causal in _CONFIGS:
-        q = torch.randn(seq_len, nhead_q, head_dim, dtype=torch.half, device="cuda")
-        k = torch.randn(seq_len, nhead_k, head_dim, dtype=torch.half, device="cuda")
-        v = torch.randn(seq_len, nhead_k, head_dim, dtype=torch.half, device="cuda")
+    for qo_len, kv_len, nhead_q, nhead_k, head_dim, causal in _CONFIGS:
+        q = torch.randn(qo_len, nhead_q, head_dim, dtype=torch.half, device="cuda")
+        k = torch.randn(kv_len, nhead_k, head_dim, dtype=torch.half, device="cuda")
+        v = torch.randn(kv_len, nhead_k, head_dim, dtype=torch.half, device="cuda")
 
-        flops = _flops(seq_len, nhead_q, head_dim, causal)
-        theo_bytes = _bytes(seq_len, nhead_q, nhead_k, head_dim)
+        flops = _flops(qo_len, kv_len, nhead_q, head_dim, causal)
+        theo_bytes = _bytes(qo_len, kv_len, nhead_q, nhead_k, head_dim)
         causal_str = "causal" if causal else "nc"
         label_str = (
-            f"FA3-CDNA3  seq={seq_len:>5d}  h={nhead_q}/{nhead_k}  d={head_dim}  "
-            f"{causal_str}"
+            f"FA3-CDNA3  q={qo_len:>4d}  kv={kv_len:>5d}  h={nhead_q}/{nhead_k}  "
+            f"d={head_dim}  {causal_str}"
         )
         label_fa2 = (
-            f"FA2        seq={seq_len:>5d}  h={nhead_q}/{nhead_k}  d={head_dim}  "
-            f"{causal_str}"
+            f"FA2        q={qo_len:>4d}  kv={kv_len:>5d}  h={nhead_q}/{nhead_k}  "
+            f"d={head_dim}  {causal_str}"
         )
 
         # ---- FA3-CDNA3 (our kernel) ----
@@ -189,7 +175,7 @@ def _make_configs() -> list[KernelConfig]:
 
         configs.append(
             KernelConfig(
-                name=f"fa3_cdna3_s{seq_len}_{causal_str}_d{head_dim}",
+                name=f"fa3_cdna3_q{qo_len}_kv{kv_len}_{causal_str}_d{head_dim}",
                 run_fn=torch.inference_mode()(fa3_fn),
                 theoretical_flops=flops,
                 theoretical_bytes=theo_bytes,
@@ -203,7 +189,7 @@ def _make_configs() -> list[KernelConfig]:
 
         configs.append(
             KernelConfig(
-                name=f"fa2_s{seq_len}_{causal_str}_d{head_dim}",
+                name=f"fa2_q{qo_len}_kv{kv_len}_{causal_str}_d{head_dim}",
                 run_fn=torch.inference_mode()(fa2_fn),
                 theoretical_flops=flops,
                 theoretical_bytes=theo_bytes,
@@ -213,10 +199,19 @@ def _make_configs() -> list[KernelConfig]:
 
         # ---- AITER comparison ----
         if _AITER_AVAILABLE:
-            # Build cu_seqlens for AITER varlen API.
-            cu_seqlens = torch.tensor([0, seq_len], dtype=torch.int32, device="cuda")
+            cu_seqlens_q = torch.tensor([0, qo_len], dtype=torch.int32, device="cuda")
+            cu_seqlens_k = torch.tensor([0, kv_len], dtype=torch.int32, device="cuda")
 
-            def aiter_fn(q=q, k=k, v=v, cs=cu_seqlens, N=seq_len, c=causal):
+            def aiter_fn(
+                q=q,
+                k=k,
+                v=v,
+                csq=cu_seqlens_q,
+                csk=cu_seqlens_k,
+                Nq=qo_len,
+                Nk=kv_len,
+                c=causal,
+            ):
                 q_flat = q.view(-1, q.shape[-2], q.shape[-1])
                 k_flat = k.view(-1, k.shape[-2], k.shape[-1])
                 v_flat = v.view(-1, v.shape[-2], v.shape[-1])
@@ -224,20 +219,20 @@ def _make_configs() -> list[KernelConfig]:
                     q_flat,
                     k_flat,
                     v_flat,
-                    cs,
-                    cs,
-                    max_seqlen_q=N,
-                    max_seqlen_k=N,
+                    csq,
+                    csk,
+                    max_seqlen_q=Nq,
+                    max_seqlen_k=Nk,
                     causal=c,
                 )
 
             label_aiter = (
-                f"AITER      seq={seq_len:>5d}  h={nhead_q}/{nhead_k}  d={head_dim}  "
-                f"{causal_str}"
+                f"AITER      q={qo_len:>4d}  kv={kv_len:>5d}  h={nhead_q}/{nhead_k}  "
+                f"d={head_dim}  {causal_str}"
             )
             configs.append(
                 KernelConfig(
-                    name=f"aiter_s{seq_len}_{causal_str}_d{head_dim}",
+                    name=f"aiter_q{qo_len}_kv{kv_len}_{causal_str}_d{head_dim}",
                     run_fn=torch.inference_mode()(aiter_fn),
                     theoretical_flops=flops,
                     theoretical_bytes=theo_bytes,
@@ -257,45 +252,44 @@ def _run_correctness_tests():
     print("  CORRECTNESS TEST: FA3-CDNA3 vs PyTorch SDPA ground truth")
     print("=" * 72)
 
+    # (qo_len, kv_len, nhead_q, nhead_k, head_dim, causal)
     test_configs = [
-        (64, 1, 1, 256, False),
-        (64, 1, 1, 256, True),
-        (128, 32, 8, 256, False),
-        (128, 32, 8, 256, True),
-        (512, 32, 8, 256, True),
-        (1024, 32, 8, 256, True),
-        (2048, 32, 8, 256, True),
-        (4096, 32, 8, 256, True),
-        (256, 32, 32, 256, True),
-        (256, 32, 32, 256, False),
-        # Use-case configs: GQA 16/4
-        (512, 16, 4, 256, False),
-        (1024, 16, 4, 256, False),
-        (2048, 16, 4, 256, False),
-        (4096, 16, 4, 256, False),
-        (8192, 16, 4, 256, False),
+        # Square configs (regression tests)
+        (64, 64, 1, 1, 256, False),
+        (64, 64, 1, 1, 256, True),
+        (128, 128, 32, 8, 256, False),
+        (128, 128, 32, 8, 256, True),
+        # Chunked prefill: q_len < kv_len
+        (256, 512, 16, 4, 256, False),
+        (256, 1024, 16, 4, 256, False),
+        (256, 2048, 16, 4, 256, False),
+        (256, 4096, 16, 4, 256, False),
+        (256, 8192, 16, 4, 256, False),
+        # Edge cases
+        (32, 256, 16, 4, 256, False),
+        (128, 512, 16, 4, 256, False),
     ]
 
     all_pass = True
-    for seq_len, nhead_q, nhead_k, head_dim, causal in test_configs:
+    for qo_len, kv_len, nhead_q, nhead_k, head_dim, causal in test_configs:
         torch.manual_seed(42)
-        q = torch.randn(seq_len, nhead_q, head_dim, dtype=torch.half, device="cuda")
-        k = torch.randn(seq_len, nhead_k, head_dim, dtype=torch.half, device="cuda")
-        v = torch.randn(seq_len, nhead_k, head_dim, dtype=torch.half, device="cuda")
+        q = torch.randn(qo_len, nhead_q, head_dim, dtype=torch.half, device="cuda")
+        k = torch.randn(kv_len, nhead_k, head_dim, dtype=torch.half, device="cuda")
+        v = torch.randn(kv_len, nhead_k, head_dim, dtype=torch.half, device="cuda")
 
         sm_scale = 1.0 / (head_dim**0.5)
         gqa_ratio = nhead_q // nhead_k
 
         # Ground truth via PyTorch SDPA (FP32 for accuracy)
-        q_sdpa = q.float().permute(1, 0, 2).unsqueeze(0)  # [1, nhead_q, N, D]
-        k_sdpa = k.float().permute(1, 0, 2)  # [nhead_k, N, D]
+        q_sdpa = q.float().permute(1, 0, 2).unsqueeze(0)  # [1, nhead_q, qo_len, D]
+        k_sdpa = k.float().permute(1, 0, 2)  # [nhead_k, kv_len, D]
         k_sdpa = k_sdpa.repeat_interleave(gqa_ratio, dim=0).unsqueeze(0)
         v_sdpa = v.float().permute(1, 0, 2)
         v_sdpa = v_sdpa.repeat_interleave(gqa_ratio, dim=0).unsqueeze(0)
         ref = F.scaled_dot_product_attention(
             q_sdpa, k_sdpa, v_sdpa, is_causal=causal, scale=sm_scale
         )
-        ref = ref.squeeze(0).permute(1, 0, 2).half()  # [N, nhead_q, D]
+        ref = ref.squeeze(0).permute(1, 0, 2).half()  # [qo_len, nhead_q, D]
 
         out = flashinfer.single_prefill_with_kv_cache(
             q, k, v, causal=causal, backend="fa3_cdna3"
@@ -311,8 +305,8 @@ def _run_correctness_tests():
             all_pass = False
 
         print(
-            f"  [{status}]  seq={seq_len:>5d}  h={nhead_q}/{nhead_k}  d={head_dim}  "
-            f"{causal_str:>6s}  max_err={max_err:.6f}  mean_err={mean_err:.6f}"
+            f"  [{status}]  q={qo_len:>4d}  kv={kv_len:>5d}  h={nhead_q}/{nhead_k}  "
+            f"d={head_dim}  {causal_str:>6s}  max_err={max_err:.6f}  mean_err={mean_err:.6f}"
         )
 
     print("=" * 72)

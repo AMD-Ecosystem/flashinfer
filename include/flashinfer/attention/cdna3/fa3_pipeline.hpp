@@ -1,20 +1,22 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// FA3-CDNA3 V8: TransposedC pipeline with double-buffered K+V for MI300X.
+// FA3-CDNA3 V11: Split-KV parallelism with chunked prefill for MI300X.
 //
-// V8 architecture:
+// V9 architecture:
 //   - Double-buffered K in LDS (from V6, proven).
-//   - Double-buffered row-major V in LDS (from V6, proven).
-//   - sched_group_barrier scheduling for both QK and PV GEMMs.
+//   - Double-buffered K-packed (column-major) V in LDS: V_LDS[head][seq].
+//     Each MFMA V-operand is a contiguous ds_read_b64 (1 instruction)
+//     instead of V8's 4x ds_read_u16 + 2 ALU packs (6 instructions).
+//   - sched_group_barrier scheduling for QK GEMM.
 //   - TransposedC for both QK and PV GEMMs (from V5).
 //   - Scalar online softmax + in-register P repack (no LDS round-trip).
 //
-// LDS layout (55552 bytes, fits in 65536 per CU):
-//   [0..10751]      K_LDS[0]    128 rows x 84 B/row  (double-buffered K)
+// LDS layout (56320 bytes, fits in 65536 per CU):
+//   [0..10751]      K_LDS[0]    128 rows x 84 B/row   (double-buffered K)
 //   [10752..21503]  K_LDS[1]    128 rows x 84 B/row
-//   [21504..38527]  V_LDS[0]    32 rows x 532 B/row   (double-buffered V, row-major)
-//   [38528..55551]  V_LDS[1]    32 rows x 532 B/row
+//   [21504..38911]  V_LDS[0]    256 cols x 68 B/col   (double-buffered V, K-packed)
+//   [38912..56319]  V_LDS[1]    256 cols x 68 B/col
 //
 // Architecture:
 //   4 waves x 64 threads = 256 threads per workgroup
@@ -39,7 +41,7 @@
 namespace flashinfer {
 namespace cdna3 {
 
-// ===== V8 tile / LDS constants ==============================================
+// ===== V9 tile / LDS constants ==============================================
 
 static constexpr int kBr = 128;
 static constexpr int kBc = 128;
@@ -54,20 +56,23 @@ static constexpr int kK_RowStride = (kK0 + kK_Pad) * 2;  // 84 bytes (21 dwords,
 static constexpr int kK_LDS_Size = kBc * kK_RowStride;   // 10752 bytes per buffer
 static constexpr int k0_loops = kHeadDim / kK0;          // 8
 
-// PV micro-tile: kK1=32 along sequence dim, V row-major in LDS
+// PV micro-tile: kK1=32 along sequence dim, V K-packed (column-major) in LDS
+// V_LDS layout: V_LDS[head_dim_pos][seq_pos] -- seq positions are contiguous.
+// MFMA A-operand needs 4 consecutive seq values at same head_dim -> ds_read_b64.
+// Bank conflict analysis: thread t reads (dt*32+t%32)*68 + C.
+// Bank = (t*17 + const) % 32. gcd(17,32)=1 -> zero bank conflicts.
 static constexpr int kK1 = 32;
-static constexpr int k1_loops = kBc / kK1;  // 4
-static constexpr int kV_Pad = 10;
-static constexpr int kV_RowStride =
-    (kHeadDim + kV_Pad) * 2;                            // 532 bytes (133 dwords, gcd(133,32)=7)
-static constexpr int kV_LDS_Size = kK1 * kV_RowStride;  // 17024 bytes per buffer
+static constexpr int k1_loops = kBc / kK1;                   // 4
+static constexpr int kV_SeqPad = 2;                          // 2 fp16 padding per head column
+static constexpr int kV_ColStride = (kK1 + kV_SeqPad) * 2;   // 68 bytes (17 dwords, gcd(17,32)=1)
+static constexpr int kV_LDS_Size = kHeadDim * kV_ColStride;  // 17408 bytes per buffer
 
 // LDS layout: K[0], K[1] (double-buffered), V[0], V[1] (double-buffered)
 static constexpr int kK_LDS_Base0 = 0;
 static constexpr int kK_LDS_Base1 = kK_LDS_Size;                          // 10752
 static constexpr int kV_LDS_Base0 = 2 * kK_LDS_Size;                      // 21504
-static constexpr int kV_LDS_Base1 = 2 * kK_LDS_Size + kV_LDS_Size;        // 38528
-static constexpr uint32_t kLDSBytes = 2 * kK_LDS_Size + 2 * kV_LDS_Size;  // 55552
+static constexpr int kV_LDS_Base1 = 2 * kK_LDS_Size + kV_LDS_Size;        // 38912
+static constexpr uint32_t kLDSBytes = 2 * kK_LDS_Size + 2 * kV_LDS_Size;  // 56320
 
 // GEMM iteration counts per micro-tile
 static constexpr int kQK_KSteps = kK0 / kMfmaK;  // 4 per k0-strip
@@ -146,7 +151,11 @@ __device__ __forceinline__ v_reg_buf_t cooperative_load_v_to_regs(
   return buf;
 }
 
-// ===== V8: Store V row-major to LDS (same pattern as K store) ================
+// ===== V9: Store V to K-packed (column-major) LDS ============================
+// GMEM load is coalesced row-major (8 consecutive head_dim fp16 per uint4).
+// LDS write transposes to V_LDS[head][seq] so MFMA reads are contiguous.
+// Each uint4 (8 fp16) at V[seq][head..head+7] becomes 8 writes to
+// V_LDS[head+i][seq] for i=0..7, using 32-bit writes of paired fp16.
 
 __device__ __forceinline__ void cooperative_store_v_to_lds(const v_reg_buf_t& buf,
                                                            char* __restrict__ smem, int thread_id,
@@ -154,12 +163,18 @@ __device__ __forceinline__ void cooperative_store_v_to_lds(const v_reg_buf_t& bu
 #pragma unroll
   for (int p = 0; p < kV_LoadsPerThread; ++p) {
     int linear = (thread_id + p * 256) * 8;
-    int row = linear / kHeadDim;
-    int col = linear % kHeadDim;
+    int seq = linear / kHeadDim;
+    int head = linear % kHeadDim;
 
-    uint32_t lds_off = static_cast<uint32_t>(v_lds_base) +
-                       static_cast<uint32_t>(row) * kV_RowStride + static_cast<uint32_t>(col) * 2;
-    *reinterpret_cast<uint4*>(smem + lds_off) = buf.data[p];
+    uint32_t seq_bytes = static_cast<uint32_t>(seq) * 2;
+    const uint16_t* vals = reinterpret_cast<const uint16_t*>(&buf.data[p]);
+
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+      uint32_t lds_off = static_cast<uint32_t>(v_lds_base) +
+                         static_cast<uint32_t>(head + i) * kV_ColStride + seq_bytes;
+      *reinterpret_cast<uint16_t*>(smem + lds_off) = vals[i];
+    }
   }
 }
 
@@ -177,23 +192,17 @@ __device__ __forceinline__ void load_k_operand(const char* smem, int k_lds_base,
   out[1] = src[1];
 }
 
-// V operand from row-major V LDS: gather 4 fp16 from 4 different rows.
-// V[row_base+0..3][col] -> 4x ds_read_u16 + 2 ALU packs.
+// V operand from K-packed V LDS: contiguous ds_read_b64 (1 instruction).
+// V_LDS[head][seq] layout: 4 consecutive seq positions at same head_dim are
+// adjacent in memory -> single 8-byte read instead of 4 scattered 2-byte reads.
 __device__ __forceinline__ void load_v_operand(const char* smem, int v_lds_base, int ks, int dt,
                                                int lane_id, uint32_t* out) {
-  uint32_t row_base = static_cast<uint32_t>(ks) * kMfmaK + (lane_id >> 5) * 4;
-  uint32_t col_bytes = (static_cast<uint32_t>(dt) * kMfmaN + (lane_id & 31)) * 2;
-
-  uint32_t v0 = *reinterpret_cast<const uint16_t*>(smem + v_lds_base +
-                                                   (row_base + 0) * kV_RowStride + col_bytes);
-  uint32_t v1 = *reinterpret_cast<const uint16_t*>(smem + v_lds_base +
-                                                   (row_base + 1) * kV_RowStride + col_bytes);
-  uint32_t v2 = *reinterpret_cast<const uint16_t*>(smem + v_lds_base +
-                                                   (row_base + 2) * kV_RowStride + col_bytes);
-  uint32_t v3 = *reinterpret_cast<const uint16_t*>(smem + v_lds_base +
-                                                   (row_base + 3) * kV_RowStride + col_bytes);
-  out[0] = v0 | (v1 << 16);
-  out[1] = v2 | (v3 << 16);
+  uint32_t head = static_cast<uint32_t>(dt) * kMfmaN + (lane_id & 31);
+  uint32_t seq = static_cast<uint32_t>(ks) * kMfmaK + (lane_id >> 5) * 4;
+  uint32_t addr = static_cast<uint32_t>(v_lds_base) + head * kV_ColStride + seq * 2;
+  const uint32_t* src = reinterpret_cast<const uint32_t*>(smem + addr);
+  out[0] = src[0];
+  out[1] = src[1];
 }
 
 // ===== TransposedC QK GEMM for one kK0=32 strip ==============================
@@ -248,7 +257,7 @@ __device__ __forceinline__ void schedule_gemm0() {
 }
 
 // ===== TransposedC PV GEMM for one kK1=32 strip ==============================
-// V is src0 (A-operand from LDS, row-major), P is src1 (B-operand from registers).
+// V is src0 (A-operand from LDS, K-packed column-major), P is src1 (B-operand).
 // Software-pipelined: preload first V operand, then overlap load_v(next)
 // with mfma(current) to hide DS read latency.
 
@@ -413,7 +422,8 @@ struct FA3CDNA3PipelineArgs {
   const __half* Q;
   const __half* K;
   const __half* V;
-  int N;
+  int N_q;
+  int N_kv;
   int nhead;
   int nhead_k;
   float scale_log2;
@@ -421,9 +431,11 @@ struct FA3CDNA3PipelineArgs {
   int q_block;
   int head_idx;
   int head_idx_k;
+  int kv_chunk_start;
+  int kv_chunk_end;
 };
 
-// ===== V8 main pipeline: double-buffered K + double-buffered V (row-major) ==
+// ===== V9 main pipeline: double-buffered K + double-buffered V (K-packed) ===
 
 template <int D>
 __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
@@ -453,7 +465,7 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
       int row = lane_id & 31;
       int col = ks * kMfmaK + (lane_id >> 5) * 4;
 
-      if (wave_q_start + row < args.N) {
+      if (wave_q_start + row < args.N_q) {
         const uint32_t* src =
             reinterpret_cast<const uint32_t*>(q_base + row * args.nhead * D + col);
         Q_reg.data[ks][0] = src[0];
@@ -472,13 +484,15 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
   float row_max = -3.402823466e+38f;
   float row_sum = 0.0f;
 
-  const __half* k_head = args.K + args.head_idx_k * D;
-  const __half* v_head = args.V + args.head_idx_k * D;
+  const int chunk_kv_len = args.kv_chunk_end - args.kv_chunk_start;
+  const __half* k_head = args.K + args.head_idx_k * D + args.kv_chunk_start * kv_row_stride;
+  const __half* v_head = args.V + args.head_idx_k * D + args.kv_chunk_start * kv_row_stride;
 
-  const int T = (args.N + kBc - 1) / kBc;
+  const int T = (chunk_kv_len + kBc - 1) / kBc;
   int max_j = T;
   if (args.is_causal) {
-    max_j = min(T, (args.q_block * kBr + kBr + kBc - 1) / kBc);
+    max_j = min(T, (args.q_block * kBr + kBr + kBc - 1 - args.kv_chunk_start) / kBc);
+    max_j = max(max_j, 0);
   }
 
   // =========================================================================
@@ -487,7 +501,7 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
   for (int j = 0; j < max_j; ++j) {
     bool skip_tile = args.is_causal && causal_tile_skip(wave_q_start, j);
 
-    const int kv_valid_rows = min(kBc, args.N - j * kBc);
+    const int kv_valid_rows = min(kBc, chunk_kv_len - j * kBc);
     const __half* k_tile_base = k_head + j * kBc * kv_row_stride;
 
     // =====================================================================
@@ -526,7 +540,7 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
     }
 
     // -- Prefetch V[0] during K tail --
-    const int v0_valid = min(kK1, args.N - j * kBc);
+    const int v0_valid = min(kK1, chunk_kv_len - j * kBc);
     v_reg_buf_t v_regs = cooperative_load_v_to_regs(v_head + j * kBc * kv_row_stride, kv_row_stride,
                                                     thread_id, max(v0_valid, 0));
 
@@ -560,7 +574,7 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
 
     if (!skip_tile) {
       if (args.is_causal) {
-        apply_causal_mask(S_acc, wave_q_start, j * kBc, lane_id);
+        apply_causal_mask(S_acc, wave_q_start, args.kv_chunk_start + j * kBc, lane_id);
       }
 
       // Mask out-of-bounds KV positions (TransposedC layout)
@@ -572,7 +586,7 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
 #pragma unroll
           for (int i = 0; i < kMfmaOutRegs; ++i) {
             int kv_col = kv_start + mt * kMfmaM + asm_primitives::mfma_32x32_row(lane_id >> 5, i);
-            if (kv_col >= args.N) {
+            if (kv_col >= chunk_kv_len) {
               S_acc.vec(mt)[i] = -3.402823466e+38f;
             }
           }
@@ -585,7 +599,7 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
     }
 
     // =====================================================================
-    // Stage 3: PV GEMM -- double-buffered row-major V in LDS
+    // Stage 3: PV GEMM -- double-buffered K-packed V in LDS
     // V[0] was prefetched during K tail. Store to V_LDS[0], barrier, GEMM.
     // Consecutive strips alternate V_LDS buffers to avoid data races.
     // =====================================================================
@@ -597,7 +611,7 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
 
     if (k1_loops > 1) {
       const int v1_off = j * kBc + kK1;
-      const int v1_valid = min(kK1, args.N - v1_off);
+      const int v1_valid = min(kK1, chunk_kv_len - v1_off);
       v_regs = cooperative_load_v_to_regs(v_head + v1_off * kv_row_stride, kv_row_stride, thread_id,
                                           max(v1_valid, 0));
     }
@@ -617,7 +631,7 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
 
       if (iv + 1 < k1_loops) {
         const int next_v_off = j * kBc + (iv + 1) * kK1;
-        const int next_v_valid = min(kK1, args.N - next_v_off);
+        const int next_v_valid = min(kK1, chunk_kv_len - next_v_off);
         v_regs = cooperative_load_v_to_regs(v_head + next_v_off * kv_row_stride, kv_row_stride,
                                             thread_id, max(next_v_valid, 0));
       }
@@ -628,7 +642,7 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
       }
     }
 
-    // No barrier needed here: K_LDS [0..21503] and V_LDS [21504..55551]
+    // No barrier needed here: K_LDS [0..21503] and V_LDS [21504..56319]
     // occupy disjoint LDS regions. The next KV-block's K[0] store targets
     // K_LDS, which doesn't conflict with V_LDS reads completing here.
     // The s_barrier() at the start of the next K-strip loop provides sync.

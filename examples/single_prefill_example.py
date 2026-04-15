@@ -277,17 +277,17 @@ if __name__ == "__main__":
     # Example arguments: qo_len=10, kv_len=20, num_qo_heads=2, num_kv_heads=2,
     # head_dim=256, causal=True, qkv_layout="NHD", mask_mode="NONE", logits_soft_cap=0.0, lse=False
     single_prefill_with_kv_cache_example(
-        8192, 8192, 16, 4, 256, False, "NHD", "NONE", 0.0, False
+        256, 8192, 16, 4, 256, False, "NHD", "NONE", 0.0, False
     )
     single_prefill_with_kv_cache_example(
-        4096, 4096, 16, 4, 256, False, "NHD", "NONE", 0.0, False
+        256, 4096, 16, 4, 256, False, "NHD", "NONE", 0.0, False
     )
     single_prefill_with_kv_cache_example(
-        2048, 2048, 16, 4, 256, False, "NHD", "NONE", 0.0, False
+        256, 2048, 16, 4, 256, False, "NHD", "NONE", 0.0, False
     )
     single_prefill_with_kv_cache_example(
-        1024, 1024, 16, 4, 256, False, "NHD", "NONE", 0.0, False
+        256, 1024, 16, 4, 256, False, "NHD", "NONE", 0.0, False
     )
     single_prefill_with_kv_cache_example(
-        512, 512, 16, 4, 256, False, "NHD", "NONE", 0.0, False
+        256, 512, 16, 4, 256, False, "NHD", "NONE", 0.0, False
     )
