@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// FA3-CDNA3 V5: Tile types for AMD MI300X (gfx942 / CDNA3).
+// FA3-CDNA3: Tile types for AMD MI300X (gfx942 / CDNA3).
 //
-// V5 TransposedC design: 4 waves x 64 threads = 256 threads per workgroup.
-//   kBr = 128 (32 rows/wave), kBc = 128, kHeadDim = 256
-//   v_mfma_f32_32x32x8f16 as the primary compute instruction
+// 4 waves x 64 threads = 256 threads per workgroup.
+// kBr = 128 (32 rows/wave), kBc = 128, kHeadDim = 256
+// v_mfma_f32_32x32x8f16 as the primary compute instruction
 //
 // 32x32x8 MFMA register layout (gfx942):
 //   A-operand: thread t -> row = t%32, k_base = (t/32)*4, owns A[row][k_base+0..3]
@@ -146,29 +146,6 @@ struct fp16_p_tile {
 
   __device__ __forceinline__ uint32_t* frag(int k_frag) { return &data[k_frag * 2]; }
   __device__ __forceinline__ const uint32_t* frag(int k_frag) const { return &data[k_frag * 2]; }
-};
-
-// ---------------------------------------------------------------------------
-// fp32_vec: per-row softmax state (kept for backward compatibility)
-// V5 TransposedC uses scalar float for row_max/row_sum (one Q-row per thread),
-// but fp32_vec is retained for potential future use.
-// ---------------------------------------------------------------------------
-
-template <int BrLocal>
-struct fp32_vec {
-  static constexpr int kSize = kMfmaOutRegs;  // 16
-  float v[kSize];
-
-  __device__ __forceinline__ fp32_vec() {
-    for (int i = 0; i < kSize; ++i) v[i] = 0.f;
-  }
-
-  __device__ __forceinline__ explicit fp32_vec(float fill) {
-    for (int i = 0; i < kSize; ++i) v[i] = fill;
-  }
-
-  __device__ __forceinline__ float& operator[](int i) { return v[i]; }
-  __device__ __forceinline__ float operator[](int i) const { return v[i]; }
 };
 
 }  // namespace cdna3

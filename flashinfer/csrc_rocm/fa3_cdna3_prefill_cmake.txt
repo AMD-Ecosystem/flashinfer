@@ -10,7 +10,7 @@
 # ---- Required compiler flags for FA3-CDNA3 kernel ----
 #
 # These flags are CRITICAL. Without them, the LLVM backend can silently
-# destroy the hand-tuned 8-wave ping-pong instruction schedule.
+# destroy the hand-tuned instruction schedule.
 
 set(FA3_CDNA3_COMPILE_FLAGS
     # C++ standard (required for CK templates and structured bindings)

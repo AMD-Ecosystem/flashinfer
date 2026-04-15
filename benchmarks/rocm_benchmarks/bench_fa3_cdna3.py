@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-FA3-CDNA3 V10 chunked-prefill benchmark for AMD MI300X.
+FA3-CDNA3 chunked-prefill benchmark for AMD MI300X.
 
 Benchmarks the FA3-CDNA3 kernel (head_dim=256, chunked prefill q_len != kv_len)
 against:

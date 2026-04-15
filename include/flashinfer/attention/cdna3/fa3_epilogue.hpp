@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// FA3-CDNA3 V11: Epilogue -- normalize O accumulator and write to global memory.
+// FA3-CDNA3: Epilogue -- normalize O accumulator and write to global memory.
 // Supports both direct output and split-KV partial output with strided layout.
 //
 // TransposedC O_acc register layout (gfx942):

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// FA3-CDNA3 V11: HIP kernel wrapper and launch interface with split-KV parallelism.
+// FA3-CDNA3: HIP kernel wrapper and launch interface with split-KV parallelism.
 //
 // 4 waves x 64 threads = 256 threads, kBr=128, kBc=128, d=256.
 // v_mfma_f32_32x32x8f16, TransposedC for both QK and PV GEMMs.
@@ -117,8 +117,8 @@ __global__ __launch_bounds__(256, 1)
 
 // ---------------------------------------------------------------------------
 // Non-causal kernel with split-KV support
-// When num_kv_chunks == 1: O_out/LSE_out point to final output (D_stride = nhead*D, LSE_stride =
-// N_q) When num_kv_chunks > 1: O_out points to tmp_o with interleaved layout, LSE_out to tmp_lse
+// When num_kv_chunks == 1: O_out/LSE_out point to final output
+// When num_kv_chunks > 1: O_out points to tmp_o, LSE_out to tmp_lse
 // ---------------------------------------------------------------------------
 
 __global__ __launch_bounds__(256, 1)
@@ -170,7 +170,6 @@ __global__ __launch_bounds__(256, 1)
   const int lane_id = threadIdx.x % kWaveSize;
 
   // For split-KV: O layout [N_q, num_chunks, nhead, D], LSE layout [N_q, num_chunks, nhead]
-  // Offset base pointers by kv_chunk_idx, stride by num_chunks for row access
   __half* o_chunk = O_out + kv_chunk_idx * nhead * kHeadDim;
   float* lse_chunk = LSE_out + kv_chunk_idx * nhead;
 

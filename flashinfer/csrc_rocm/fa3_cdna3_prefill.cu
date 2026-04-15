@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// FA3-CDNA3 V11: JIT-compiled host-side entry point with split-KV parallelism
+// FA3-CDNA3: JIT-compiled host-side entry point with split-KV parallelism
 // targeting AMD MI300X (gfx942). 4 waves, 256 threads,
 // kBr=128, kBc=128, d=256, K-packed V LDS for vectorized PV GEMM reads.
 // Split-KV: when CU utilization is low, splits KV dimension across multiple
