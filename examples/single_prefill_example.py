@@ -162,6 +162,7 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            backend="fa3_cdna3",
         )
         print(f"  FlashInfer output shape: {o.shape}, LSE shape: {lse.shape}")
         # Compute reference in FP32 for better accuracy
@@ -197,6 +198,7 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            backend="fa3_cdna3",
         )
         print(f"  FlashInfer output shape: {o.shape}")
 
@@ -228,43 +230,64 @@ if __name__ == "__main__":
     print("FlashInfer Single Prefill Example")
     print("=" * 60)
 
-    # Self-attention with logits soft cap
-    single_prefill_with_kv_cache_example(
-        128, 128, 1, 1, 64, False, "NHD", "NONE", 8.0, False
-    )
-    # Self-attention without logits soft cap
-    single_prefill_with_kv_cache_example(
-        128, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, False
-    )
-    # Multi-head attention (MHA)
-    single_prefill_with_kv_cache_example(
-        128, 128, 4, 4, 64, False, "NHD", "NONE", 8.0, False
-    )
-    # Grouped query attention (GQA)
-    single_prefill_with_kv_cache_example(
-        128, 128, 8, 4, 64, False, "NHD", "NONE", 8.0, False
-    )
-    # GQA with qo_len < kv_len (typical prefill)
-    single_prefill_with_kv_cache_example(
-        15, 127, 32, 4, 64, False, "NHD", "NONE", 8.0, False
-    )
-    # GQA with LSE enabled
-    single_prefill_with_kv_cache_example(
-        15, 127, 8, 4, 64, False, "NHD", "NONE", 0.0, True
-    )
-    # GQA with soft cap and LSE enabled
-    single_prefill_with_kv_cache_example(
-        15, 127, 8, 4, 64, False, "NHD", "NONE", 8.0, True
-    )
+    # # Self-attention with logits soft cap
+    # single_prefill_with_kv_cache_example(
+    #     128, 128, 1, 1, 64, False, "NHD", "NONE", 8.0, False
+    # )
+    # # Self-attention without logits soft cap
+    # single_prefill_with_kv_cache_example(
+    #     128, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, False
+    # )
+    # # Multi-head attention (MHA)
+    # single_prefill_with_kv_cache_example(
+    #     128, 128, 4, 4, 64, False, "NHD", "NONE", 8.0, False
+    # )
+    # # Grouped query attention (GQA)
+    # single_prefill_with_kv_cache_example(
+    #     128, 128, 8, 4, 64, False, "NHD", "NONE", 8.0, False
+    # )
+    # # GQA with qo_len < kv_len (typical prefill)
+    # single_prefill_with_kv_cache_example(
+    #     15, 127, 32, 4, 64, False, "NHD", "NONE", 8.0, False
+    # )
+    # # GQA with LSE enabled
+    # single_prefill_with_kv_cache_example(
+    #     15, 127, 8, 4, 64, False, "NHD", "NONE", 0.0, True
+    # )
+    # # GQA with soft cap and LSE enabled
+    # single_prefill_with_kv_cache_example(
+    #     15, 127, 8, 4, 64, False, "NHD", "NONE", 8.0, True
+    # )
 
-    # Test case specifically for threadblock_sync_mdo_states validation
-    # This config triggers CTA_TILE_Q=16, NUM_WARPS_KV=4, calling threadblock_sync_mdo_states
+    # # Test case specifically for threadblock_sync_mdo_states validation
+    # # This config triggers CTA_TILE_Q=16, NUM_WARPS_KV=4, calling threadblock_sync_mdo_states
+    # print("\n" + "=" * 60)
+    # print("Testing threadblock_sync_mdo_states (CTA_TILE_Q=16, NUM_WARPS_KV=4)")
+    # print("=" * 60)
+    # single_prefill_with_kv_cache_example(
+    #     16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, False
+    # )
+    # single_prefill_with_kv_cache_example(
+    #     16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, True
+    # )
+
     print("\n" + "=" * 60)
-    print("Testing threadblock_sync_mdo_states (CTA_TILE_Q=16, NUM_WARPS_KV=4)")
+    print("FlashInfer Single Prefill Example - head_dim=256")
     print("=" * 60)
+    # Example arguments: qo_len=10, kv_len=20, num_qo_heads=2, num_kv_heads=2,
+    # head_dim=256, causal=True, qkv_layout="NHD", mask_mode="NONE", logits_soft_cap=0.0, lse=False
     single_prefill_with_kv_cache_example(
-        16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, False
+        8192, 8192, 16, 4, 256, False, "NHD", "NONE", 0.0, False
     )
     single_prefill_with_kv_cache_example(
-        16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, True
+        4096, 4096, 16, 4, 256, False, "NHD", "NONE", 0.0, False
+    )
+    single_prefill_with_kv_cache_example(
+        2048, 2048, 16, 4, 256, False, "NHD", "NONE", 0.0, False
+    )
+    single_prefill_with_kv_cache_example(
+        1024, 1024, 16, 4, 256, False, "NHD", "NONE", 0.0, False
+    )
+    single_prefill_with_kv_cache_example(
+        512, 512, 16, 4, 256, False, "NHD", "NONE", 0.0, False
     )

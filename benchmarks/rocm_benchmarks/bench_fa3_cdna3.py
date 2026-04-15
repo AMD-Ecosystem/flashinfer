@@ -136,6 +136,12 @@ _CONFIGS = [
     # MHA (no GQA) at d=256
     (4096, 32, 32, 256, True),
     (8192, 32, 32, 256, True),
+    # Use-case configs: GQA 16/4, non-causal (from single_prefill_example.py)
+    (512, 16, 4, 256, False),
+    (1024, 16, 4, 256, False),
+    (2048, 16, 4, 256, False),
+    (4096, 16, 4, 256, False),
+    (8192, 16, 4, 256, False),
 ]
 
 _OUTPUT_DIR = str(Path(__file__).parent)
@@ -262,6 +268,12 @@ def _run_correctness_tests():
         (4096, 32, 8, 256, True),
         (256, 32, 32, 256, True),
         (256, 32, 32, 256, False),
+        # Use-case configs: GQA 16/4
+        (512, 16, 4, 256, False),
+        (1024, 16, 4, 256, False),
+        (2048, 16, 4, 256, False),
+        (4096, 16, 4, 256, False),
+        (8192, 16, 4, 256, False),
     ]
 
     all_pass = True
