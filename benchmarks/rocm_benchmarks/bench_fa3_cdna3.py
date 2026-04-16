@@ -20,7 +20,7 @@ against:
   - FlashInfer FA2 HIP path (existing baseline)
   - AITER flash_attn_varlen_func (if available)
 
-Alibaba use case: q_len=256, kv_len=512..8192, GQA 16/4, d=256, non-causal.
+Alibaba use case: q_len=256, kv_len=512..8192, GQA 16/4, d=256.
 
 Run:
     # Full roofline pipeline:
@@ -113,28 +113,35 @@ if _include_aiter:
 # Benchmark configurations:
 #   (qo_len, kv_len, num_qo_heads, num_kv_heads, head_dim, causal)
 #
-# Alibaba chunked-prefill: q_len=256, kv_len varies, GQA 16/4, d=256, nc.
+# Alibaba chunked-prefill: q_len=256, kv_len varies, GQA 16/4, d=256.
 # ---------------------------------------------------------------------------
 _CONFIGS = [
-    # Alibaba chunked-prefill configs
+    # Alibaba chunked-prefill configs (non-causal)
     (256, 512, 16, 4, 256, False),
     (256, 1024, 16, 4, 256, False),
     (256, 2048, 16, 4, 256, False),
     (256, 4096, 16, 4, 256, False),
     (256, 8192, 16, 4, 256, False),
+    # Alibaba chunked-prefill configs (causal)
+    (256, 512, 16, 4, 256, True),
+    (256, 1024, 16, 4, 256, True),
+    (256, 2048, 16, 4, 256, True),
+    (256, 4096, 16, 4, 256, True),
+    (256, 8192, 16, 4, 256, True),
 ]
 
 _OUTPUT_DIR = str(Path(__file__).parent)
 
 
 def _flops(qo_len: int, kv_len: int, nhead_q: int, head_dim: int, causal: bool) -> int:
-    """Theoretical FLOPs for QK^T + PV (ignoring softmax overhead)."""
-    # QK^T: 2 * qo_len * kv_len * nhead_q * head_dim
-    # PV:   2 * qo_len * kv_len * nhead_q * head_dim
-    # Total non-causal: 4 * qo_len * kv_len * nhead_q * head_dim
+    """Theoretical FLOPs for QK^T + PV (ignoring softmax overhead).
+
+    Right-aligned causal: query i sees keys 0..(i + kv_len - qo_len).
+    The masked triangle has qo_len*(qo_len-1)/2 entries.
+    """
     if causal:
-        effective_kv = min(kv_len, qo_len)
-        return 2 * qo_len * effective_kv * nhead_q * head_dim * 2
+        effective_pairs = qo_len * kv_len - qo_len * (qo_len - 1) // 2
+        return 4 * effective_pairs * nhead_q * head_dim
     return 4 * qo_len * kv_len * nhead_q * head_dim
 
 
@@ -259,15 +266,23 @@ def _run_correctness_tests():
         (64, 64, 1, 1, 256, True),
         (128, 128, 32, 8, 256, False),
         (128, 128, 32, 8, 256, True),
-        # Chunked prefill: q_len < kv_len
+        # Chunked prefill: q_len < kv_len (non-causal)
         (256, 512, 16, 4, 256, False),
         (256, 1024, 16, 4, 256, False),
         (256, 2048, 16, 4, 256, False),
         (256, 4096, 16, 4, 256, False),
         (256, 8192, 16, 4, 256, False),
+        # Chunked prefill: q_len < kv_len (causal)
+        (256, 512, 16, 4, 256, True),
+        (256, 1024, 16, 4, 256, True),
+        (256, 2048, 16, 4, 256, True),
+        (256, 4096, 16, 4, 256, True),
+        (256, 8192, 16, 4, 256, True),
         # Edge cases
         (32, 256, 16, 4, 256, False),
+        (32, 256, 16, 4, 256, True),
         (128, 512, 16, 4, 256, False),
+        (128, 512, 16, 4, 256, True),
     ]
 
     all_pass = True
@@ -286,9 +301,26 @@ def _run_correctness_tests():
         k_sdpa = k_sdpa.repeat_interleave(gqa_ratio, dim=0).unsqueeze(0)
         v_sdpa = v.float().permute(1, 0, 2)
         v_sdpa = v_sdpa.repeat_interleave(gqa_ratio, dim=0).unsqueeze(0)
-        ref = F.scaled_dot_product_attention(
-            q_sdpa, k_sdpa, v_sdpa, is_causal=causal, scale=sm_scale
-        )
+        if causal and qo_len != kv_len:
+            # FlashInfer uses right-aligned causal: row i sees cols 0..(i + kv_len - qo_len).
+            # PyTorch SDPA is_causal uses left-aligned for the math backend, so build
+            # the correct mask explicitly.
+            causal_offset = kv_len - qo_len
+            mask = torch.ones(qo_len, kv_len, dtype=torch.bool, device="cuda")
+            mask = mask.tril(diagonal=causal_offset)
+            attn_mask = torch.zeros(qo_len, kv_len, dtype=torch.float32, device="cuda")
+            attn_mask.masked_fill_(~mask, float("-inf"))
+            ref = F.scaled_dot_product_attention(
+                q_sdpa,
+                k_sdpa,
+                v_sdpa,
+                attn_mask=attn_mask.unsqueeze(0).unsqueeze(0),
+                scale=sm_scale,
+            )
+        else:
+            ref = F.scaled_dot_product_attention(
+                q_sdpa, k_sdpa, v_sdpa, is_causal=causal, scale=sm_scale
+            )
         ref = ref.squeeze(0).permute(1, 0, 2).half()  # [qo_len, nhead_q, D]
 
         out = flashinfer.single_prefill_with_kv_cache(
@@ -330,7 +362,7 @@ if __name__ == "__main__":
         dry_run_ms=200,
         repeat_ms=2000,
         counters=_counters,
-        kernel_name_regex="fa3_cdna3_prefill_kernel|SinglePrefillWithKVCacheKernel",
+        kernel_name_regex="fa3_cdna3_prefill_kernel_impl|SinglePrefillWithKVCacheKernel",
         output_dir=_OUTPUT_DIR,
         label=_label,
         roofline=(_counters == "roofline"),

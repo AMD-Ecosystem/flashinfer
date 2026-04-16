@@ -32,8 +32,6 @@
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
 #endif
-#include <cstring>
-
 #include "asm_primitives.hpp"
 #include "fa3_tiles.hpp"
 
@@ -77,8 +75,7 @@ static constexpr int kQK_KSteps = kK0 / kMfmaK;  // 4 per k0-strip
 static constexpr int kQK_MTiles = kBc / kMfmaM;  // 4 (M-tiles in TransposedC = KV-col groups)
 static constexpr int kPV_KSteps = kK1 / kMfmaK;  // 4 per k1-strip
 static constexpr int kPV_MTiles =
-    kHeadDim / kMfmaM;                          // 8 (M-tiles in TransposedC = head-dim groups)
-static constexpr int kP_KFrags = kBc / kMfmaK;  // 16 total P fragments
+    kHeadDim / kMfmaM;  // 8 (M-tiles in TransposedC = head-dim groups)
 
 // Register-staged load sizes
 static constexpr int kK_LoadsPerThread = (kBc * kK0) / (256 * 8);       // 2
@@ -312,17 +309,20 @@ __device__ __forceinline__ void online_softmax(fp32_s_tile<kBrLocal, kBc>& S,
   s_max = fmaxf(s_max, __shfl_xor(s_max, 32, 64));
 
   float new_max = fmaxf(row_max, s_max);
-  float scale = fast_exp2((row_max - new_max) * scale_log2);
 
+  // First tile: O_acc and row_sum are still zero; skip rescaling.
   static constexpr int kDBlks = fp32_acc_tile<kBrLocal, D>::kNumDBlks;
+  if (row_max > -3.0e+38f) {
+    float scale = fast_exp2((row_max - new_max) * scale_log2);
 #pragma unroll
-  for (int d = 0; d < kDBlks; ++d) {
+    for (int d = 0; d < kDBlks; ++d) {
 #pragma unroll
-    for (int i = 0; i < kMfmaOutRegs; ++i) {
-      O_acc.vec(d)[i] *= scale;
+      for (int i = 0; i < kMfmaOutRegs; ++i) {
+        O_acc.vec(d)[i] *= scale;
+      }
     }
+    row_sum *= scale;
   }
-  row_sum *= scale;
 
 #pragma unroll
   for (int mt = 0; mt < kMT; ++mt) {
@@ -380,23 +380,28 @@ __device__ __forceinline__ void p_register_repack(const fp32_s_tile<kBrLocal, kB
 }
 
 // ===== Causal masking (TransposedC layout) ====================================
+// Right-aligned causal: mask when kv_col > q_row + causal_offset,
+// where causal_offset = N_kv - N_q. This aligns the last query with the last
+// key, which is the standard chunked-prefill semantic.
 
-__device__ __forceinline__ bool causal_tile_skip(int wave_q_start, int j) {
-  return j * kBc >= wave_q_start + kBrLocal;
+__device__ __forceinline__ bool causal_tile_skip(int wave_q_start, int kv_tile_start,
+                                                 int causal_offset) {
+  return kv_tile_start >= wave_q_start + kBrLocal + causal_offset;
 }
 
 __device__ __forceinline__ void apply_causal_mask(fp32_s_tile<kBrLocal, kBc>& S, int q_start,
-                                                  int kv_start, int lane_id) {
+                                                  int kv_start, int causal_offset, int lane_id) {
   using namespace asm_primitives;
   static constexpr int kMT = kBc / kMfmaM;
   int q_row = q_start + (lane_id & 31);
+  int causal_limit = q_row + causal_offset;
 
 #pragma unroll
   for (int mt = 0; mt < kMT; ++mt) {
 #pragma unroll
     for (int i = 0; i < kMfmaOutRegs; ++i) {
       int kv_col = kv_start + mt * kMfmaM + mfma_32x32_row(lane_id >> 5, i);
-      if (kv_col > q_row) {
+      if (kv_col > causal_limit) {
         S.vec(mt)[i] = -3.402823466e+38f;
       }
     }
@@ -414,7 +419,7 @@ struct FA3CDNA3PipelineArgs {
   int nhead;
   int nhead_k;
   float scale_log2;
-  bool is_causal;
+  int causal_offset;  // N_kv - N_q for right-aligned causal; 0 for non-causal
   int q_block;
   int head_idx;
   int head_idx_k;
@@ -422,9 +427,151 @@ struct FA3CDNA3PipelineArgs {
   int kv_chunk_end;
 };
 
-// ===== Main pipeline: double-buffered K + double-buffered V (K-packed) =======
+// One KV tile: QK GEMM, softmax, PV GEMM. MaskPhase selects causal skip/mask path.
 
-template <int D>
+template <int D, bool MaskPhase>
+__device__ __forceinline__ void process_kv_tile(const fp16_reg_tile<kBrLocal, D>& Q_reg,
+                                                fp32_acc_tile<kBrLocal, D>& O_acc, float& row_max,
+                                                float& row_sum, const FA3CDNA3PipelineArgs& args,
+                                                char* smem, int j, const __half* k_head,
+                                                const __half* v_head, int kv_row_stride,
+                                                int chunk_kv_len, int wave_q_start, int lane_id,
+                                                int thread_id) {
+  using namespace asm_primitives;
+  constexpr int k_bases[2] = {kK_LDS_Base0, kK_LDS_Base1};
+
+  bool skip_tile = false;
+  if constexpr (MaskPhase) {
+    const int kv_tile_start = args.kv_chunk_start + j * kBc;
+    skip_tile = causal_tile_skip(wave_q_start, kv_tile_start, args.causal_offset);
+  }
+
+  const int kv_valid_rows = min(kBc, chunk_kv_len - j * kBc);
+  const __half* k_tile_base = k_head + j * kBc * kv_row_stride;
+
+  // --- Stage 1: QK GEMM -- double-buffered K in LDS ---
+  fp32_s_tile<kBrLocal, kBc> S_acc;
+  if (!skip_tile) S_acc.zero();
+
+  k_reg_buf_t k_regs =
+      cooperative_load_k_to_regs(k_tile_base, kv_row_stride, thread_id, kv_valid_rows);
+  s_waitcnt_vmcnt(0);
+  cooperative_store_k_to_lds(k_regs, smem, thread_id, k_bases[0]);
+
+  if (k0_loops > 1) {
+    k_regs = cooperative_load_k_to_regs(k_tile_base + kK0, kv_row_stride, thread_id, kv_valid_rows);
+  }
+
+#pragma unroll
+  for (int ik = 0; ik < k0_loops - 2; ++ik) {
+    int rd = ik & 1;
+    int wr = 1 - rd;
+    s_barrier();
+    if (!skip_tile) {
+      qk_gemm_k0(Q_reg, smem, k_bases[rd], S_acc, ik, lane_id);
+      schedule_gemm0();
+    }
+    s_waitcnt_vmcnt(0);
+    cooperative_store_k_to_lds(k_regs, smem, thread_id, k_bases[wr]);
+    k_regs = cooperative_load_k_to_regs(k_tile_base + (ik + 2) * kK0, kv_row_stride, thread_id,
+                                        kv_valid_rows);
+  }
+
+  const int v0_valid = min(kK1, chunk_kv_len - j * kBc);
+  v_reg_buf_t v_regs = cooperative_load_v_to_regs(v_head + j * kBc * kv_row_stride, kv_row_stride,
+                                                  thread_id, max(v0_valid, 0));
+
+  {
+    const int rd6 = (k0_loops - 2) & 1;
+    const int wr7 = 1 - rd6;
+
+    s_barrier();
+    if (!skip_tile) {
+      qk_gemm_k0(Q_reg, smem, k_bases[rd6], S_acc, k0_loops - 2, lane_id);
+      schedule_gemm0();
+    }
+
+    s_waitcnt_vmcnt(0);
+    cooperative_store_k_to_lds(k_regs, smem, thread_id, k_bases[wr7]);
+
+    s_barrier();
+    if (!skip_tile) {
+      qk_gemm_k0(Q_reg, smem, k_bases[wr7], S_acc, k0_loops - 1, lane_id);
+      schedule_gemm0();
+    }
+  }
+
+  // --- Stage 2: Softmax + in-register P repack ---
+  fp16_p_tile<kBrLocal, kBc> P_f16;
+
+  if (!skip_tile) {
+    if constexpr (MaskPhase) {
+      const int kv_tile_start = args.kv_chunk_start + j * kBc;
+      apply_causal_mask(S_acc, wave_q_start, kv_tile_start, args.causal_offset, lane_id);
+    }
+
+    {
+      static constexpr int kMT = kBc / kMfmaM;
+      const int kv_start = j * kBc;
+#pragma unroll
+      for (int mt = 0; mt < kMT; ++mt) {
+#pragma unroll
+        for (int i = 0; i < kMfmaOutRegs; ++i) {
+          int kv_col = kv_start + mt * kMfmaM + mfma_32x32_row(lane_id >> 5, i);
+          if (kv_col >= chunk_kv_len) {
+            S_acc.vec(mt)[i] = -3.402823466e+38f;
+          }
+        }
+      }
+    }
+
+    online_softmax<D>(S_acc, O_acc, row_max, row_sum, args.scale_log2);
+
+    p_register_repack(S_acc, P_f16);
+  }
+
+  // --- Stage 3: PV GEMM -- double-buffered K-packed V in LDS ---
+  constexpr int v_bases[2] = {kV_LDS_Base0, kV_LDS_Base1};
+
+  s_waitcnt_vmcnt(0);
+  cooperative_store_v_to_lds(v_regs, smem, thread_id, v_bases[0]);
+
+  if (k1_loops > 1) {
+    const int v1_off = j * kBc + kK1;
+    const int v1_valid = min(kK1, chunk_kv_len - v1_off);
+    v_regs = cooperative_load_v_to_regs(v_head + v1_off * kv_row_stride, kv_row_stride, thread_id,
+                                        max(v1_valid, 0));
+  }
+
+  s_barrier();
+  if (!skip_tile) {
+    pv_gemm_k1(P_f16, smem, v_bases[0], O_acc, 0, lane_id);
+  }
+
+#pragma unroll
+  for (int iv = 1; iv < k1_loops; ++iv) {
+    const int buf = iv & 1;
+
+    s_waitcnt_vmcnt(0);
+    cooperative_store_v_to_lds(v_regs, smem, thread_id, v_bases[buf]);
+
+    if (iv + 1 < k1_loops) {
+      const int next_v_off = j * kBc + (iv + 1) * kK1;
+      const int next_v_valid = min(kK1, chunk_kv_len - next_v_off);
+      v_regs = cooperative_load_v_to_regs(v_head + next_v_off * kv_row_stride, kv_row_stride,
+                                          thread_id, max(next_v_valid, 0));
+    }
+
+    s_barrier();
+    if (!skip_tile) {
+      pv_gemm_k1(P_f16, smem, v_bases[buf], O_acc, iv, lane_id);
+    }
+  }
+}
+
+// Causal: full tiles first (no mask), then edge tiles. Non-causal: single phase.
+
+template <int D, bool IsCausal>
 __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
                                        fp32_acc_tile<kBrLocal, D>& O_acc, float& row_max_out,
                                        float& row_sum_out) {
@@ -436,8 +583,6 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
 
   const int wave_q_start = args.q_block * kBr + wave_id * kBrLocal;
   const int kv_row_stride = args.nhead_k * D;
-
-  constexpr int k_bases[2] = {kK_LDS_Base0, kK_LDS_Base1};
 
   // Load Q into registers (persistent across all KV-block iterations)
   fp16_reg_tile<kBrLocal, D> Q_reg;
@@ -471,144 +616,30 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
 
   const int T = (chunk_kv_len + kBc - 1) / kBc;
   int max_j = T;
-  if (args.is_causal) {
-    max_j = min(T, (args.q_block * kBr + kBr + kBc - 1 - args.kv_chunk_start) / kBc);
+  if constexpr (IsCausal) {
+    int causal_end = args.q_block * kBr + kBr + args.causal_offset + kBc - 1 - args.kv_chunk_start;
+    max_j = min(T, max(causal_end, 0) / kBc);
     max_j = max(max_j, 0);
   }
 
-  // Main loop over KV-blocks
-  for (int j = 0; j < max_j; ++j) {
-    bool skip_tile = args.is_causal && causal_tile_skip(wave_q_start, j);
+  int phase1_end;
+  if constexpr (IsCausal) {
+    int full_end = wave_q_start + args.causal_offset - args.kv_chunk_start + 1;
+    phase1_end = max(0, min(max_j, full_end / static_cast<int>(kBc)));
+  } else {
+    phase1_end = max_j;
+  }
 
-    const int kv_valid_rows = min(kBc, chunk_kv_len - j * kBc);
-    const __half* k_tile_base = k_head + j * kBc * kv_row_stride;
+  for (int j = 0; j < phase1_end; ++j) {
+    process_kv_tile<D, false>(Q_reg, O_acc, row_max, row_sum, args, smem, j, k_head, v_head,
+                              kv_row_stride, chunk_kv_len, wave_q_start, lane_id, thread_id);
+  }
 
-    // --- Stage 1: QK GEMM -- double-buffered K in LDS ---
-    fp32_s_tile<kBrLocal, kBc> S_acc;
-    if (!skip_tile) S_acc.zero();
-
-    // Prologue: load K[0] to K_LDS[0], prefetch K[1] to VGPRs
-    k_reg_buf_t k_regs =
-        cooperative_load_k_to_regs(k_tile_base, kv_row_stride, thread_id, kv_valid_rows);
-    s_waitcnt_vmcnt(0);
-    cooperative_store_k_to_lds(k_regs, smem, thread_id, k_bases[0]);
-
-    if (k0_loops > 1) {
-      k_regs =
-          cooperative_load_k_to_regs(k_tile_base + kK0, kv_row_stride, thread_id, kv_valid_rows);
+  if constexpr (IsCausal) {
+    for (int j = phase1_end; j < max_j; ++j) {
+      process_kv_tile<D, true>(Q_reg, O_acc, row_max, row_sum, args, smem, j, k_head, v_head,
+                               kv_row_stride, chunk_kv_len, wave_q_start, lane_id, thread_id);
     }
-
-    // Steady state: double-buffer GEMM reads K_LDS[ik&1], store to K_LDS[1-(ik&1)]
-#pragma unroll
-    for (int ik = 0; ik < k0_loops - 2; ++ik) {
-      int rd = ik & 1;
-      int wr = 1 - rd;
-      s_barrier();
-      if (!skip_tile) {
-        qk_gemm_k0(Q_reg, smem, k_bases[rd], S_acc, ik, lane_id);
-        schedule_gemm0();
-      }
-      s_waitcnt_vmcnt(0);
-      cooperative_store_k_to_lds(k_regs, smem, thread_id, k_bases[wr]);
-      k_regs = cooperative_load_k_to_regs(k_tile_base + (ik + 2) * kK0, kv_row_stride, thread_id,
-                                          kv_valid_rows);
-    }
-
-    // Prefetch V[0] during K tail
-    const int v0_valid = min(kK1, chunk_kv_len - j * kBc);
-    v_reg_buf_t v_regs = cooperative_load_v_to_regs(v_head + j * kBc * kv_row_stride, kv_row_stride,
-                                                    thread_id, max(v0_valid, 0));
-
-    // K tail: last 2 GEMM calls
-    {
-      const int rd6 = (k0_loops - 2) & 1;
-      const int wr7 = 1 - rd6;
-
-      s_barrier();
-      if (!skip_tile) {
-        qk_gemm_k0(Q_reg, smem, k_bases[rd6], S_acc, k0_loops - 2, lane_id);
-        schedule_gemm0();
-      }
-
-      s_waitcnt_vmcnt(0);
-      cooperative_store_k_to_lds(k_regs, smem, thread_id, k_bases[wr7]);
-
-      s_barrier();
-      if (!skip_tile) {
-        qk_gemm_k0(Q_reg, smem, k_bases[wr7], S_acc, k0_loops - 1, lane_id);
-        schedule_gemm0();
-      }
-    }
-
-    // --- Stage 2: Softmax + in-register P repack ---
-    fp16_p_tile<kBrLocal, kBc> P_f16;
-
-    if (!skip_tile) {
-      if (args.is_causal) {
-        apply_causal_mask(S_acc, wave_q_start, args.kv_chunk_start + j * kBc, lane_id);
-      }
-
-      // Mask out-of-bounds KV positions
-      {
-        static constexpr int kMT = kBc / kMfmaM;
-        const int kv_start = j * kBc;
-#pragma unroll
-        for (int mt = 0; mt < kMT; ++mt) {
-#pragma unroll
-          for (int i = 0; i < kMfmaOutRegs; ++i) {
-            int kv_col = kv_start + mt * kMfmaM + asm_primitives::mfma_32x32_row(lane_id >> 5, i);
-            if (kv_col >= chunk_kv_len) {
-              S_acc.vec(mt)[i] = -3.402823466e+38f;
-            }
-          }
-        }
-      }
-
-      online_softmax<D>(S_acc, O_acc, row_max, row_sum, args.scale_log2);
-
-      p_register_repack(S_acc, P_f16);
-    }
-
-    // --- Stage 3: PV GEMM -- double-buffered K-packed V in LDS ---
-    constexpr int v_bases[2] = {kV_LDS_Base0, kV_LDS_Base1};
-
-    s_waitcnt_vmcnt(0);
-    cooperative_store_v_to_lds(v_regs, smem, thread_id, v_bases[0]);
-
-    if (k1_loops > 1) {
-      const int v1_off = j * kBc + kK1;
-      const int v1_valid = min(kK1, chunk_kv_len - v1_off);
-      v_regs = cooperative_load_v_to_regs(v_head + v1_off * kv_row_stride, kv_row_stride, thread_id,
-                                          max(v1_valid, 0));
-    }
-
-    s_barrier();
-    if (!skip_tile) {
-      pv_gemm_k1(P_f16, smem, v_bases[0], O_acc, 0, lane_id);
-    }
-
-#pragma unroll
-    for (int iv = 1; iv < k1_loops; ++iv) {
-      const int buf = iv & 1;
-
-      s_waitcnt_vmcnt(0);
-      cooperative_store_v_to_lds(v_regs, smem, thread_id, v_bases[buf]);
-
-      if (iv + 1 < k1_loops) {
-        const int next_v_off = j * kBc + (iv + 1) * kK1;
-        const int next_v_valid = min(kK1, chunk_kv_len - next_v_off);
-        v_regs = cooperative_load_v_to_regs(v_head + next_v_off * kv_row_stride, kv_row_stride,
-                                            thread_id, max(next_v_valid, 0));
-      }
-
-      s_barrier();
-      if (!skip_tile) {
-        pv_gemm_k1(P_f16, smem, v_bases[buf], O_acc, iv, lane_id);
-      }
-    }
-
-    // No barrier needed: K_LDS [0..21503] and V_LDS [21504..56319] are disjoint.
-    // The s_barrier() at the start of the next K-strip provides sync.
   }
 
   row_max_out = row_max;

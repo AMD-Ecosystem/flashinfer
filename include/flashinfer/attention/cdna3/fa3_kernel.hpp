@@ -14,8 +14,6 @@
 #if defined(__HIPCC__) || defined(PLATFORM_HIP_DEVICE)
 #include <hip/hip_runtime.h>
 #endif
-#include <cmath>
-#include <cstdint>
 
 #include "asm_primitives.hpp"
 #include "fa3_epilogue.hpp"
@@ -64,72 +62,18 @@ __device__ __forceinline__ XCDAwareMapping xcd_aware_remap(int flat_block_id, in
 }
 
 // ---------------------------------------------------------------------------
-// Causal kernel (no split-KV, single KV chunk covering all of N_kv)
-// ---------------------------------------------------------------------------
-
-__global__ __launch_bounds__(256, 1)
-    // NOLINTNEXTLINE(misc-definitions-in-headers)
-    void fa3_cdna3_prefill_kernel(const __half* __restrict__ Q, const __half* __restrict__ K,
-                                  const __half* __restrict__ V, __half* __restrict__ O,
-                                  float* __restrict__ LSE, int N_q, int N_kv, int nhead,
-                                  int nhead_k, float scale_log2, bool is_causal, int num_q_blocks,
-                                  int total_blocks) {
-  int flat_id = blockIdx.x;
-  XCDAwareMapping map = xcd_aware_remap(flat_id, num_q_blocks, nhead, nhead_k, total_blocks);
-
-  const int q_block = map.q_block;
-  const int head_idx = map.head_idx;
-  const int head_idx_k = map.head_idx_k;
-
-  extern __shared__ char smem[];
-
-  FA3CDNA3PipelineArgs args;
-  args.Q = Q;
-  args.K = K;
-  args.V = V;
-  args.N_q = N_q;
-  args.N_kv = N_kv;
-  args.nhead = nhead;
-  args.nhead_k = nhead_k;
-  args.scale_log2 = scale_log2;
-  args.is_causal = is_causal;
-  args.q_block = q_block;
-  args.head_idx = head_idx;
-  args.head_idx_k = head_idx_k;
-  args.kv_chunk_start = 0;
-  args.kv_chunk_end = N_kv;
-
-  fp32_acc_tile<kBrLocal, kHeadDim> O_acc;
-  float row_max, row_sum;
-
-  run_fa3_cdna3_pipeline<kHeadDim>(args, smem, O_acc, row_max, row_sum);
-
-  const int wave_q_start = q_block * kBr + (threadIdx.x / kWaveSize) * kBrLocal;
-  const int lane_id = threadIdx.x % kWaveSize;
-
-  if (wave_q_start < N_q) {
-    fa3_cdna3_epilogue<kBrLocal, kHeadDim>(O_acc, row_max, row_sum, args.scale_log2, O, LSE,
-                                           wave_q_start, nhead, head_idx, N_q, nhead * kHeadDim,
-                                           /*lse_row_stride=*/1, /*lse_head_stride=*/N_q,
-                                           /*base2_lse=*/false, lane_id);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Non-causal kernel with split-KV support
+// Templated kernel with split-KV support (IsCausal compile-time specialization)
 // When num_kv_chunks == 1: O_out/LSE_out point to final output
 // When num_kv_chunks > 1: O_out points to tmp_o, LSE_out to tmp_lse
 // ---------------------------------------------------------------------------
 
-__global__ __launch_bounds__(256, 1)
-    // NOLINTNEXTLINE(misc-definitions-in-headers)
-    void fa3_cdna3_prefill_kernel_nc(__half* __restrict__ O_out, float* __restrict__ LSE_out,
-                                     const __half* __restrict__ Q, const __half* __restrict__ K,
-                                     const __half* __restrict__ V, int N_q, int N_kv, int nhead,
-                                     int nhead_k, float scale_log2, int num_q_blocks,
-                                     int total_blocks, int kv_chunk_size, int num_kv_chunks,
-                                     int o_row_stride, int lse_row_stride, int lse_head_stride,
-                                     bool base2_lse) {
+template <bool IsCausal>
+__global__ __launch_bounds__(256, 1) void fa3_cdna3_prefill_kernel_impl(
+    __half* __restrict__ O_out, float* __restrict__ LSE_out, const __half* __restrict__ Q,
+    const __half* __restrict__ K, const __half* __restrict__ V, int N_q, int N_kv, int nhead,
+    int nhead_k, float scale_log2, int causal_offset, int num_q_blocks, int total_blocks,
+    int kv_chunk_size, int num_kv_chunks, int o_row_stride, int lse_row_stride, int lse_head_stride,
+    bool base2_lse) {
   int flat_id = blockIdx.x;
   int kv_chunk_idx = blockIdx.y;
 
@@ -143,6 +87,25 @@ __global__ __launch_bounds__(256, 1)
   int kv_chunk_end = kv_chunk_start + kv_chunk_size;
   if (kv_chunk_end > N_kv) kv_chunk_end = N_kv;
 
+  // Chunk fully past causal frontier: identity partial (MergeStates neutral).
+  if constexpr (IsCausal) {
+    int causal_last_kv = q_block * kBr + kBr + causal_offset;
+    if (kv_chunk_start >= causal_last_kv) {
+      const int wave_q_start = q_block * kBr + (threadIdx.x / kWaveSize) * kBrLocal;
+      const int lane_id = threadIdx.x % kWaveSize;
+      __half* o_chunk = O_out + kv_chunk_idx * nhead * kHeadDim;
+      float* lse_chunk = LSE_out + kv_chunk_idx * nhead;
+      fp32_acc_tile<kBrLocal, kHeadDim> O_zero;
+      O_zero.zero();
+      if (wave_q_start < N_q) {
+        fa3_cdna3_epilogue<kBrLocal, kHeadDim>(
+            O_zero, -3.402823466e+38f, 0.0f, scale_log2, o_chunk, lse_chunk, wave_q_start, nhead,
+            head_idx, N_q, o_row_stride, lse_row_stride, lse_head_stride, base2_lse, lane_id);
+      }
+      return;
+    }
+  }
+
   extern __shared__ char smem[];
 
   FA3CDNA3PipelineArgs args;
@@ -154,7 +117,7 @@ __global__ __launch_bounds__(256, 1)
   args.nhead = nhead;
   args.nhead_k = nhead_k;
   args.scale_log2 = scale_log2;
-  args.is_causal = false;
+  args.causal_offset = causal_offset;
   args.q_block = q_block;
   args.head_idx = head_idx;
   args.head_idx_k = head_idx_k;
@@ -164,12 +127,11 @@ __global__ __launch_bounds__(256, 1)
   fp32_acc_tile<kBrLocal, kHeadDim> O_acc;
   float row_max, row_sum;
 
-  run_fa3_cdna3_pipeline<kHeadDim>(args, smem, O_acc, row_max, row_sum);
+  run_fa3_cdna3_pipeline<kHeadDim, IsCausal>(args, smem, O_acc, row_max, row_sum);
 
   const int wave_q_start = q_block * kBr + (threadIdx.x / kWaveSize) * kBrLocal;
   const int lane_id = threadIdx.x % kWaveSize;
 
-  // For split-KV: O layout [N_q, num_chunks, nhead, D], LSE layout [N_q, num_chunks, nhead]
   __half* o_chunk = O_out + kv_chunk_idx * nhead * kHeadDim;
   float* lse_chunk = LSE_out + kv_chunk_idx * nhead;
 

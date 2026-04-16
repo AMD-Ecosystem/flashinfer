@@ -20,6 +20,24 @@
 
 using namespace flashinfer::cdna3;
 
+namespace {
+
+template <bool IsCausal>
+void launch_fa3_prefill_kernel(dim3 grid, hipStream_t stream, size_t smem_bytes, dim3 block,
+                               __half* O, float* LSE, const __half* q_ptr, const __half* k_ptr,
+                               const __half* v_ptr, int N_q, int N_kv, int nhead, int nhead_k,
+                               float scale_log2, int causal_offset, int num_q_blocks,
+                               int total_q_head_blocks, int kv_chunk_size, int num_kv_chunks,
+                               int o_row_stride, int lse_row_stride, int lse_head_stride,
+                               bool base2_lse) {
+  fa3_cdna3_prefill_kernel_impl<IsCausal><<<grid, block, smem_bytes, stream>>>(
+      O, LSE, q_ptr, k_ptr, v_ptr, N_q, N_kv, nhead, nhead_k, scale_log2, causal_offset,
+      num_q_blocks, total_q_head_blocks, kv_chunk_size, num_kv_chunks, o_row_stride, lse_row_stride,
+      lse_head_stride, base2_lse);
+}
+
+}  // namespace
+
 void fa3_cdna3_single_prefill(at::Tensor q, at::Tensor k, at::Tensor v, at::Tensor o,
                               std::optional<at::Tensor> maybe_lse, bool is_causal, at::Tensor tmp) {
   TORCH_CHECK(q.dtype() == at::kHalf, "FA3-CDNA3: q must be fp16");
@@ -59,41 +77,36 @@ void fa3_cdna3_single_prefill(at::Tensor q, at::Tensor k, at::Tensor v, at::Tens
   const auto* v_ptr = reinterpret_cast<const __half*>(v.data_ptr());
   auto* o_ptr = reinterpret_cast<__half*>(o.data_ptr());
 
-  if (is_causal) {
-    const dim3 grid(total_q_head_blocks);
-    fa3_cdna3_prefill_kernel<<<grid, block, smem_bytes, stream>>>(
-        q_ptr, k_ptr, v_ptr, o_ptr, lse_ptr, N_q, N_kv, nhead, nhead_k, scale_log2, is_causal,
-        num_q_blocks, total_q_head_blocks);
-    return;
-  }
+  const int causal_offset = is_causal ? (N_kv - N_q) : 0;
 
-  // Non-causal: determine split-KV factor based on CU utilization
+  // Determine split-KV factor based on CU utilization (both causal and non-causal)
   static constexpr int kNumCUs = 304;  // MI300X
   int num_kv_chunks = 1;
   if (total_q_head_blocks < kNumCUs && N_kv > static_cast<int>(kBc)) {
     int max_chunks = kNumCUs / total_q_head_blocks;
     int chunk_size = std::max((N_kv + max_chunks - 1) / max_chunks, static_cast<int>(kBc));
-    // Round up to kBc for LDS tile alignment
     chunk_size = ((chunk_size + kBc - 1) / kBc) * kBc;
     num_kv_chunks = (N_kv + chunk_size - 1) / chunk_size;
   }
 
   if (num_kv_chunks <= 1) {
-    // No split -- direct write to output, FlashInfer LSE layout [nhead, N_q]
     const dim3 grid(total_q_head_blocks, 1);
-    fa3_cdna3_prefill_kernel_nc<<<grid, block, smem_bytes, stream>>>(
-        o_ptr, lse_ptr, q_ptr, k_ptr, v_ptr, N_q, N_kv, nhead, nhead_k, scale_log2, num_q_blocks,
-        total_q_head_blocks,
-        /*kv_chunk_size=*/N_kv, /*num_kv_chunks=*/1,
-        /*o_row_stride=*/nhead * D,
-        /*lse_row_stride=*/1, /*lse_head_stride=*/N_q,
-        /*base2_lse=*/false);
+    if (is_causal) {
+      launch_fa3_prefill_kernel<true>(grid, stream, smem_bytes, block, o_ptr, lse_ptr, q_ptr, k_ptr,
+                                      v_ptr, N_q, N_kv, nhead, nhead_k, scale_log2, causal_offset,
+                                      num_q_blocks, total_q_head_blocks, N_kv, 1, nhead * D, 1, N_q,
+                                      false);
+    } else {
+      launch_fa3_prefill_kernel<false>(grid, stream, smem_bytes, block, o_ptr, lse_ptr, q_ptr,
+                                       k_ptr, v_ptr, N_q, N_kv, nhead, nhead_k, scale_log2,
+                                       causal_offset, num_q_blocks, total_q_head_blocks, N_kv, 1,
+                                       nhead * D, 1, N_q, false);
+    }
   } else {
     int kv_chunk_size = ((N_kv + num_kv_chunks - 1) / num_kv_chunks);
     kv_chunk_size = ((kv_chunk_size + kBc - 1) / kBc) * kBc;
     num_kv_chunks = (N_kv + kv_chunk_size - 1) / kv_chunk_size;
 
-    // tmp layout: [N_q, num_kv_chunks, nhead, D] fp16 + [N_q, num_kv_chunks, nhead] fp32
     const int64_t tmp_o_elems = static_cast<int64_t>(N_q) * num_kv_chunks * nhead * D;
     const int64_t tmp_lse_elems = static_cast<int64_t>(N_q) * num_kv_chunks * nhead;
     const int64_t tmp_bytes_needed = tmp_o_elems * 2 + tmp_lse_elems * 4;
@@ -104,16 +117,20 @@ void fa3_cdna3_single_prefill(at::Tensor q, at::Tensor k, at::Tensor v, at::Tens
     auto* tmp_lse_ptr = reinterpret_cast<float*>(tmp_o_ptr + tmp_o_elems);
 
     const dim3 grid(total_q_head_blocks, num_kv_chunks);
-    fa3_cdna3_prefill_kernel_nc<<<grid, block, smem_bytes, stream>>>(
-        tmp_o_ptr, tmp_lse_ptr, q_ptr, k_ptr, v_ptr, N_q, N_kv, nhead, nhead_k, scale_log2,
-        num_q_blocks, total_q_head_blocks, kv_chunk_size, num_kv_chunks,
-        /*o_row_stride=*/num_kv_chunks * nhead * D,
-        /*lse_row_stride=*/num_kv_chunks * nhead,
-        /*lse_head_stride=*/1,
-        /*base2_lse=*/true);
+    const int o_stride = num_kv_chunks * nhead * D;
+    const int lse_stride = num_kv_chunks * nhead;
+    if (is_causal) {
+      launch_fa3_prefill_kernel<true>(grid, stream, smem_bytes, block, tmp_o_ptr, tmp_lse_ptr,
+                                      q_ptr, k_ptr, v_ptr, N_q, N_kv, nhead, nhead_k, scale_log2,
+                                      causal_offset, num_q_blocks, total_q_head_blocks,
+                                      kv_chunk_size, num_kv_chunks, o_stride, lse_stride, 1, true);
+    } else {
+      launch_fa3_prefill_kernel<false>(grid, stream, smem_bytes, block, tmp_o_ptr, tmp_lse_ptr,
+                                       q_ptr, k_ptr, v_ptr, N_q, N_kv, nhead, nhead_k, scale_log2,
+                                       causal_offset, num_q_blocks, total_q_head_blocks,
+                                       kv_chunk_size, num_kv_chunks, o_stride, lse_stride, 1, true);
+    }
 
-    // Merge partial results: MergeStates expects v=[N_q, num_chunks, nhead, D], s=[N_q, num_chunks,
-    // nhead]
     flashinfer::MergeStates(tmp_o_ptr, tmp_lse_ptr, o_ptr, lse_ptr,
                             static_cast<uint32_t>(num_kv_chunks), static_cast<uint32_t>(N_q),
                             static_cast<uint32_t>(nhead), static_cast<uint32_t>(D), stream);

@@ -18,7 +18,6 @@
 #include <hip/hip_runtime.h>
 #endif
 
-#include "asm_primitives.hpp"
 #include "fa3_tiles.hpp"
 
 namespace flashinfer {
@@ -47,17 +46,27 @@ __device__ void fa3_cdna3_epilogue(fp32_acc_tile<BrLocal, D>& O_acc, float row_m
   if (global_row < N_q) {
     __half* row_ptr = O_global + global_row * o_row_stride + head_idx * D;
 
+    // Four consecutive regs per d-block map to four contiguous head_dim columns (uint2 store).
+    static constexpr int kGroups = kMfmaOutRegs / 4;
+#pragma unroll
     for (int dt = 0; dt < fp32_acc_tile<BrLocal, D>::kNumDBlks; ++dt) {
-      for (int i = 0; i < kMfmaOutRegs; ++i) {
-        int head_dim_col = dt * kMfmaN + asm_primitives::mfma_32x32_row(block, i);
-        __half val;
+#pragma unroll
+      for (int g = 0; g < kGroups; ++g) {
+        int base_col = dt * kMfmaN + (g << 3) + (block << 2);
+
 #if defined(__HIP_DEVICE_COMPILE__) || defined(__HIPCC__)
-        auto packed = __builtin_amdgcn_cvt_pkrtz(O_acc.vec(dt)[i], 0.0f);
-        __builtin_memcpy(&val, &packed, sizeof(__half));
+        auto pk01 = __builtin_amdgcn_cvt_pkrtz(O_acc.vec(dt)[g * 4 + 0], O_acc.vec(dt)[g * 4 + 1]);
+        auto pk23 = __builtin_amdgcn_cvt_pkrtz(O_acc.vec(dt)[g * 4 + 2], O_acc.vec(dt)[g * 4 + 3]);
+        uint32_t w0, w1;
+        __builtin_memcpy(&w0, &pk01, sizeof(uint32_t));
+        __builtin_memcpy(&w1, &pk23, sizeof(uint32_t));
+        *reinterpret_cast<uint2*>(row_ptr + base_col) = make_uint2(w0, w1);
 #else
-        val = static_cast<__half>(O_acc.vec(dt)[i]);
+        row_ptr[base_col + 0] = static_cast<__half>(O_acc.vec(dt)[g * 4 + 0]);
+        row_ptr[base_col + 1] = static_cast<__half>(O_acc.vec(dt)[g * 4 + 1]);
+        row_ptr[base_col + 2] = static_cast<__half>(O_acc.vec(dt)[g * 4 + 2]);
+        row_ptr[base_col + 3] = static_cast<__half>(O_acc.vec(dt)[g * 4 + 3]);
 #endif
-        row_ptr[head_dim_col] = val;
       }
     }
   }
