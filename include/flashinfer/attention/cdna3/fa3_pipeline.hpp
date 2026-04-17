@@ -379,29 +379,33 @@ __device__ __forceinline__ void p_register_repack(const fp32_s_tile<kBrLocal, kB
   }
 }
 
-// ===== Causal masking (TransposedC layout) ====================================
-// Right-aligned causal: mask when kv_col > q_row + causal_offset,
-// where causal_offset = N_kv - N_q. This aligns the last query with the last
-// key, which is the standard chunked-prefill semantic.
+// ===== Causal + OOB masking (TransposedC layout) =============================
+// Right-aligned causal: mask when kv_col > q_row + causal_offset, where
+// causal_offset = N_kv - N_q. Fused with OOB mask (kv_col >= chunk_kv_len) in
+// a single loop with a precomputed per-lane threshold to reduce live-range
+// span and avoid the heavy `if (!skip_tile)` guard on compute stages.
+// `causal_lane_base` = wave_q_start + (lane_id & 31) + causal_offset - kv_chunk_start
+// is loop-invariant (hoisted to the pipeline caller for the causal template).
 
-__device__ __forceinline__ bool causal_tile_skip(int wave_q_start, int kv_tile_start,
-                                                 int causal_offset) {
-  return kv_tile_start >= wave_q_start + kBrLocal + causal_offset;
-}
-
-__device__ __forceinline__ void apply_causal_mask(fp32_s_tile<kBrLocal, kBc>& S, int q_start,
-                                                  int kv_start, int causal_offset, int lane_id) {
+template <bool IsCausal>
+__device__ __forceinline__ void apply_masks(fp32_s_tile<kBrLocal, kBc>& S, int kv_start_local,
+                                            int chunk_kv_len, int causal_lane_base, int lane_id) {
   using namespace asm_primitives;
   static constexpr int kMT = kBc / kMfmaM;
-  int q_row = q_start + (lane_id & 31);
-  int causal_limit = q_row + causal_offset;
+  const int oob_limit = chunk_kv_len - 1 - kv_start_local;
+  int limit;
+  if constexpr (IsCausal) {
+    limit = min(causal_lane_base - kv_start_local, oob_limit);
+  } else {
+    limit = oob_limit;
+  }
 
 #pragma unroll
   for (int mt = 0; mt < kMT; ++mt) {
 #pragma unroll
     for (int i = 0; i < kMfmaOutRegs; ++i) {
-      int kv_col = kv_start + mt * kMfmaM + mfma_32x32_row(lane_id >> 5, i);
-      if (kv_col > causal_limit) {
+      int kv_col = mt * kMfmaM + mfma_32x32_row(lane_id >> 5, i);
+      if (kv_col > limit) {
         S.vec(mt)[i] = -3.402823466e+38f;
       }
     }
@@ -427,31 +431,31 @@ struct FA3CDNA3PipelineArgs {
   int kv_chunk_end;
 };
 
-// One KV tile: QK GEMM, softmax, PV GEMM. MaskPhase selects causal skip/mask path.
+// One KV tile: QK GEMM, softmax, PV GEMM. IsCausal selects mask path.
+// NOTE: we do NOT branch on a runtime `skip_tile` flag. If every element in
+// the tile is masked to -inf, softmax produces P=0 and PV adds 0 to O_acc, so
+// the tile is mathematically a no-op. Always executing the MFMAs keeps the
+// codegen straight-line, which is critical for the causal template's VGPR
+// pressure (eliminating the skip_tile branch removed ~20 spills).
 
-template <int D, bool MaskPhase>
+template <int D, bool IsCausal>
 __device__ __forceinline__ void process_kv_tile(const fp16_reg_tile<kBrLocal, D>& Q_reg,
                                                 fp32_acc_tile<kBrLocal, D>& O_acc, float& row_max,
                                                 float& row_sum, const FA3CDNA3PipelineArgs& args,
                                                 char* smem, int j, const __half* k_head,
                                                 const __half* v_head, int kv_row_stride,
-                                                int chunk_kv_len, int wave_q_start, int lane_id,
+                                                int chunk_kv_len, int causal_lane_base, int lane_id,
                                                 int thread_id) {
   using namespace asm_primitives;
   constexpr int k_bases[2] = {kK_LDS_Base0, kK_LDS_Base1};
 
-  bool skip_tile = false;
-  if constexpr (MaskPhase) {
-    const int kv_tile_start = args.kv_chunk_start + j * kBc;
-    skip_tile = causal_tile_skip(wave_q_start, kv_tile_start, args.causal_offset);
-  }
-
-  const int kv_valid_rows = min(kBc, chunk_kv_len - j * kBc);
-  const __half* k_tile_base = k_head + j * kBc * kv_row_stride;
+  const int kv_start_local = j * kBc;
+  const int kv_valid_rows = min(kBc, chunk_kv_len - kv_start_local);
+  const __half* k_tile_base = k_head + kv_start_local * kv_row_stride;
 
   // --- Stage 1: QK GEMM -- double-buffered K in LDS ---
   fp32_s_tile<kBrLocal, kBc> S_acc;
-  if (!skip_tile) S_acc.zero();
+  S_acc.zero();
 
   k_reg_buf_t k_regs =
       cooperative_load_k_to_regs(k_tile_base, kv_row_stride, thread_id, kv_valid_rows);
@@ -467,68 +471,41 @@ __device__ __forceinline__ void process_kv_tile(const fp16_reg_tile<kBrLocal, D>
     int rd = ik & 1;
     int wr = 1 - rd;
     s_barrier();
-    if (!skip_tile) {
-      qk_gemm_k0(Q_reg, smem, k_bases[rd], S_acc, ik, lane_id);
-      schedule_gemm0();
-    }
+    qk_gemm_k0(Q_reg, smem, k_bases[rd], S_acc, ik, lane_id);
+    schedule_gemm0();
     s_waitcnt_vmcnt(0);
     cooperative_store_k_to_lds(k_regs, smem, thread_id, k_bases[wr]);
     k_regs = cooperative_load_k_to_regs(k_tile_base + (ik + 2) * kK0, kv_row_stride, thread_id,
                                         kv_valid_rows);
   }
 
-  const int v0_valid = min(kK1, chunk_kv_len - j * kBc);
-  v_reg_buf_t v_regs = cooperative_load_v_to_regs(v_head + j * kBc * kv_row_stride, kv_row_stride,
-                                                  thread_id, max(v0_valid, 0));
+  const int v0_valid = min(kK1, chunk_kv_len - kv_start_local);
+  v_reg_buf_t v_regs = cooperative_load_v_to_regs(v_head + kv_start_local * kv_row_stride,
+                                                  kv_row_stride, thread_id, max(v0_valid, 0));
 
   {
     const int rd6 = (k0_loops - 2) & 1;
     const int wr7 = 1 - rd6;
 
     s_barrier();
-    if (!skip_tile) {
-      qk_gemm_k0(Q_reg, smem, k_bases[rd6], S_acc, k0_loops - 2, lane_id);
-      schedule_gemm0();
-    }
+    qk_gemm_k0(Q_reg, smem, k_bases[rd6], S_acc, k0_loops - 2, lane_id);
+    schedule_gemm0();
 
     s_waitcnt_vmcnt(0);
     cooperative_store_k_to_lds(k_regs, smem, thread_id, k_bases[wr7]);
 
     s_barrier();
-    if (!skip_tile) {
-      qk_gemm_k0(Q_reg, smem, k_bases[wr7], S_acc, k0_loops - 1, lane_id);
-      schedule_gemm0();
-    }
+    qk_gemm_k0(Q_reg, smem, k_bases[wr7], S_acc, k0_loops - 1, lane_id);
+    schedule_gemm0();
   }
 
-  // --- Stage 2: Softmax + in-register P repack ---
+  // --- Stage 2: Fused mask + softmax + P repack ---
+  apply_masks<IsCausal>(S_acc, kv_start_local, chunk_kv_len, causal_lane_base, lane_id);
+
+  online_softmax<D>(S_acc, O_acc, row_max, row_sum, args.scale_log2);
+
   fp16_p_tile<kBrLocal, kBc> P_f16;
-
-  if (!skip_tile) {
-    if constexpr (MaskPhase) {
-      const int kv_tile_start = args.kv_chunk_start + j * kBc;
-      apply_causal_mask(S_acc, wave_q_start, kv_tile_start, args.causal_offset, lane_id);
-    }
-
-    {
-      static constexpr int kMT = kBc / kMfmaM;
-      const int kv_start = j * kBc;
-#pragma unroll
-      for (int mt = 0; mt < kMT; ++mt) {
-#pragma unroll
-        for (int i = 0; i < kMfmaOutRegs; ++i) {
-          int kv_col = kv_start + mt * kMfmaM + mfma_32x32_row(lane_id >> 5, i);
-          if (kv_col >= chunk_kv_len) {
-            S_acc.vec(mt)[i] = -3.402823466e+38f;
-          }
-        }
-      }
-    }
-
-    online_softmax<D>(S_acc, O_acc, row_max, row_sum, args.scale_log2);
-
-    p_register_repack(S_acc, P_f16);
-  }
+  p_register_repack(S_acc, P_f16);
 
   // --- Stage 3: PV GEMM -- double-buffered K-packed V in LDS ---
   constexpr int v_bases[2] = {kV_LDS_Base0, kV_LDS_Base1};
@@ -537,16 +514,14 @@ __device__ __forceinline__ void process_kv_tile(const fp16_reg_tile<kBrLocal, D>
   cooperative_store_v_to_lds(v_regs, smem, thread_id, v_bases[0]);
 
   if (k1_loops > 1) {
-    const int v1_off = j * kBc + kK1;
+    const int v1_off = kv_start_local + kK1;
     const int v1_valid = min(kK1, chunk_kv_len - v1_off);
     v_regs = cooperative_load_v_to_regs(v_head + v1_off * kv_row_stride, kv_row_stride, thread_id,
                                         max(v1_valid, 0));
   }
 
   s_barrier();
-  if (!skip_tile) {
-    pv_gemm_k1(P_f16, smem, v_bases[0], O_acc, 0, lane_id);
-  }
+  pv_gemm_k1(P_f16, smem, v_bases[0], O_acc, 0, lane_id);
 
 #pragma unroll
   for (int iv = 1; iv < k1_loops; ++iv) {
@@ -556,16 +531,14 @@ __device__ __forceinline__ void process_kv_tile(const fp16_reg_tile<kBrLocal, D>
     cooperative_store_v_to_lds(v_regs, smem, thread_id, v_bases[buf]);
 
     if (iv + 1 < k1_loops) {
-      const int next_v_off = j * kBc + (iv + 1) * kK1;
+      const int next_v_off = kv_start_local + (iv + 1) * kK1;
       const int next_v_valid = min(kK1, chunk_kv_len - next_v_off);
       v_regs = cooperative_load_v_to_regs(v_head + next_v_off * kv_row_stride, kv_row_stride,
                                           thread_id, max(next_v_valid, 0));
     }
 
     s_barrier();
-    if (!skip_tile) {
-      pv_gemm_k1(P_f16, smem, v_bases[buf], O_acc, iv, lane_id);
-    }
+    pv_gemm_k1(P_f16, smem, v_bases[buf], O_acc, iv, lane_id);
   }
 }
 
@@ -614,6 +587,11 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
   const __half* k_head = args.K + args.head_idx_k * D + args.kv_chunk_start * kv_row_stride;
   const __half* v_head = args.V + args.head_idx_k * D + args.kv_chunk_start * kv_row_stride;
 
+  // Hoisted loop-invariant: per-lane causal threshold relative to chunk start.
+  // Only used inside process_kv_tile<D, true>; non-causal path ignores it.
+  const int causal_lane_base =
+      IsCausal ? (wave_q_start + (lane_id & 31) + args.causal_offset - args.kv_chunk_start) : 0;
+
   const int T = (chunk_kv_len + kBc - 1) / kBc;
   int max_j = T;
   if constexpr (IsCausal) {
@@ -632,13 +610,13 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
 
   for (int j = 0; j < phase1_end; ++j) {
     process_kv_tile<D, false>(Q_reg, O_acc, row_max, row_sum, args, smem, j, k_head, v_head,
-                              kv_row_stride, chunk_kv_len, wave_q_start, lane_id, thread_id);
+                              kv_row_stride, chunk_kv_len, causal_lane_base, lane_id, thread_id);
   }
 
   if constexpr (IsCausal) {
     for (int j = phase1_end; j < max_j; ++j) {
       process_kv_tile<D, true>(Q_reg, O_acc, row_max, row_sum, args, smem, j, k_head, v_head,
-                               kv_row_stride, chunk_kv_len, wave_q_start, lane_id, thread_id);
+                               kv_row_stride, chunk_kv_len, causal_lane_base, lane_id, thread_id);
     }
   }
 
