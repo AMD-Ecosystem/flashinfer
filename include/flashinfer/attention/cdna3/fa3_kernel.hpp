@@ -3,7 +3,7 @@
 
 // FA3-CDNA3: HIP kernel wrapper and launch interface with split-KV parallelism.
 //
-// 4 waves x 64 threads = 256 threads, kBr=128, kBc=128, d=256.
+// Templated on TileConfig (Tile128x128 or Tile64x128) and IsCausal.
 // v_mfma_f32_32x32x8f16, TransposedC for both QK and PV GEMMs.
 // Double-buffered K + double-buffered K-packed V. sched_group_barrier scheduling.
 // XCD-aware block reordering for GQA LLC reuse.
@@ -62,13 +62,13 @@ __device__ __forceinline__ XCDAwareMapping xcd_aware_remap(int flat_block_id, in
 }
 
 // ---------------------------------------------------------------------------
-// Templated kernel with split-KV support (IsCausal compile-time specialization)
+// Templated kernel: Tile selects (kBr, kNumWaves), IsCausal selects mask path.
 // When num_kv_chunks == 1: O_out/LSE_out point to final output
 // When num_kv_chunks > 1: O_out points to tmp_o, LSE_out to tmp_lse
 // ---------------------------------------------------------------------------
 
-template <bool IsCausal>
-__global__ __launch_bounds__(256, 1) void fa3_cdna3_prefill_kernel_impl(
+template <class Tile, bool IsCausal>
+__global__ __launch_bounds__(Tile::kNumThreads, 1) void fa3_cdna3_prefill_kernel_impl(
     __half* __restrict__ O_out, float* __restrict__ LSE_out, const __half* __restrict__ Q,
     const __half* __restrict__ K, const __half* __restrict__ V, int N_q, int N_kv, int nhead,
     int nhead_k, float scale_log2, int causal_offset, int num_q_blocks, int total_blocks,
@@ -87,18 +87,17 @@ __global__ __launch_bounds__(256, 1) void fa3_cdna3_prefill_kernel_impl(
   int kv_chunk_end = kv_chunk_start + kv_chunk_size;
   if (kv_chunk_end > N_kv) kv_chunk_end = N_kv;
 
-  // Chunk fully past causal frontier: identity partial (MergeStates neutral).
   if constexpr (IsCausal) {
-    int causal_last_kv = q_block * kBr + kBr + causal_offset;
+    int causal_last_kv = q_block * Tile::kBr + Tile::kBr + causal_offset;
     if (kv_chunk_start >= causal_last_kv) {
-      const int wave_q_start = q_block * kBr + (threadIdx.x / kWaveSize) * kBrLocal;
+      const int wave_q_start = q_block * Tile::kBr + (threadIdx.x / kWaveSize) * Tile::kBrLocal;
       const int lane_id = threadIdx.x % kWaveSize;
-      __half* o_chunk = O_out + kv_chunk_idx * nhead * kHeadDim;
+      __half* o_chunk = O_out + kv_chunk_idx * nhead * Tile::kHeadDim;
       float* lse_chunk = LSE_out + kv_chunk_idx * nhead;
-      fp32_acc_tile<kBrLocal, kHeadDim> O_zero;
+      fp32_acc_tile<Tile::kBrLocal, Tile::kHeadDim> O_zero;
       O_zero.zero();
       if (wave_q_start < N_q) {
-        fa3_cdna3_epilogue<kBrLocal, kHeadDim>(
+        fa3_cdna3_epilogue<Tile::kBrLocal, Tile::kHeadDim>(
             O_zero, -3.402823466e+38f, 0.0f, scale_log2, o_chunk, lse_chunk, wave_q_start, nhead,
             head_idx, N_q, o_row_stride, lse_row_stride, lse_head_stride, base2_lse, lane_id);
       }
@@ -124,19 +123,19 @@ __global__ __launch_bounds__(256, 1) void fa3_cdna3_prefill_kernel_impl(
   args.kv_chunk_start = kv_chunk_start;
   args.kv_chunk_end = kv_chunk_end;
 
-  fp32_acc_tile<kBrLocal, kHeadDim> O_acc;
+  fp32_acc_tile<Tile::kBrLocal, Tile::kHeadDim> O_acc;
   float row_max, row_sum;
 
-  run_fa3_cdna3_pipeline<kHeadDim, IsCausal>(args, smem, O_acc, row_max, row_sum);
+  run_fa3_cdna3_pipeline<Tile, Tile::kHeadDim, IsCausal>(args, smem, O_acc, row_max, row_sum);
 
-  const int wave_q_start = q_block * kBr + (threadIdx.x / kWaveSize) * kBrLocal;
+  const int wave_q_start = q_block * Tile::kBr + (threadIdx.x / kWaveSize) * Tile::kBrLocal;
   const int lane_id = threadIdx.x % kWaveSize;
 
-  __half* o_chunk = O_out + kv_chunk_idx * nhead * kHeadDim;
+  __half* o_chunk = O_out + kv_chunk_idx * nhead * Tile::kHeadDim;
   float* lse_chunk = LSE_out + kv_chunk_idx * nhead;
 
   if (wave_q_start < N_q) {
-    fa3_cdna3_epilogue<kBrLocal, kHeadDim>(
+    fa3_cdna3_epilogue<Tile::kBrLocal, Tile::kHeadDim>(
         O_acc, row_max, row_sum, args.scale_log2, o_chunk, lse_chunk, wave_q_start, nhead, head_idx,
         N_q, o_row_stride, lse_row_stride, lse_head_stride, base2_lse, lane_id);
   }

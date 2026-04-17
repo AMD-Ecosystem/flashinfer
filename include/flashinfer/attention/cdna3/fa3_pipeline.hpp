@@ -38,69 +38,81 @@
 namespace flashinfer {
 namespace cdna3 {
 
-// ===== Tile / LDS constants ==================================================
+// ===== Tile configuration ====================================================
+// Parameterizes kBr and kNumWaves so that both Tile128x128 (4-wave, existing)
+// and Tile64x128 (2-wave, reduced-VGPR causal variant) share all pipeline code.
+// kBrLocal stays 32 in both configs (each wave processes 32 Q-rows via 32x32x8).
 
-static constexpr int kBr = 128;
-static constexpr int kBc = 128;
-static constexpr int kHeadDim = 256;
-static constexpr int kNumWaves = 4;
-static constexpr int kBrLocal = kBr / kNumWaves;  // 32
+template <int Br_, int Bc_, int HeadDim_, int NumWaves_>
+struct TileConfig {
+  static constexpr int kBr = Br_;
+  static constexpr int kBc = Bc_;
+  static constexpr int kHeadDim = HeadDim_;
+  static constexpr int kNumWaves = NumWaves_;
+  static constexpr int kBrLocal = kBr / kNumWaves;
+  static constexpr int kNumThreads = kNumWaves * kWaveSize;
 
-// QK micro-tile: kK0=32 along head-dim
-static constexpr int kK0 = 32;
-static constexpr int kK_Pad = 10;
-static constexpr int kK_RowStride = (kK0 + kK_Pad) * 2;  // 84 bytes (21 dwords, gcd(21,32)=1)
-static constexpr int kK_LDS_Size = kBc * kK_RowStride;   // 10752 bytes per buffer
-static constexpr int k0_loops = kHeadDim / kK0;          // 8
+  // QK micro-tile: kK0=32 along head-dim
+  static constexpr int kK0 = 32;
+  static constexpr int kK_Pad = 10;
+  static constexpr int kK_RowStride = (kK0 + kK_Pad) * 2;  // 84 bytes (21 dwords)
+  static constexpr int kK_LDS_Size = kBc * kK_RowStride;
+  static constexpr int k0_loops = kHeadDim / kK0;
 
-// PV micro-tile: kK1=32 along sequence dim, V K-packed (column-major) in LDS.
-// V_LDS layout: V_LDS[head_dim_pos][seq_pos] -- seq positions are contiguous.
-// MFMA A-operand needs 4 consecutive seq values at same head_dim -> ds_read_b64.
-// Bank = (t*17 + const) % 32. gcd(17,32)=1 -> zero bank conflicts.
-static constexpr int kK1 = 32;
-static constexpr int k1_loops = kBc / kK1;                   // 4
-static constexpr int kV_SeqPad = 2;                          // 2 fp16 padding per head column
-static constexpr int kV_ColStride = (kK1 + kV_SeqPad) * 2;   // 68 bytes (17 dwords)
-static constexpr int kV_LDS_Size = kHeadDim * kV_ColStride;  // 17408 bytes per buffer
+  // PV micro-tile: kK1=32 along seq dim, V K-packed (column-major) in LDS.
+  static constexpr int kK1 = 32;
+  static constexpr int k1_loops = kBc / kK1;
+  static constexpr int kV_SeqPad = 2;
+  static constexpr int kV_ColStride = (kK1 + kV_SeqPad) * 2;
+  static constexpr int kV_LDS_Size = kHeadDim * kV_ColStride;
 
-// LDS layout: K[0], K[1] (double-buffered), V[0], V[1] (double-buffered)
-static constexpr int kK_LDS_Base0 = 0;
-static constexpr int kK_LDS_Base1 = kK_LDS_Size;                          // 10752
-static constexpr int kV_LDS_Base0 = 2 * kK_LDS_Size;                      // 21504
-static constexpr int kV_LDS_Base1 = 2 * kK_LDS_Size + kV_LDS_Size;        // 38912
-static constexpr uint32_t kLDSBytes = 2 * kK_LDS_Size + 2 * kV_LDS_Size;  // 56320
+  // LDS layout: K[0], K[1] (double-buffered), V[0], V[1] (double-buffered)
+  static constexpr int kK_LDS_Base0 = 0;
+  static constexpr int kK_LDS_Base1 = kK_LDS_Size;
+  static constexpr int kV_LDS_Base0 = 2 * kK_LDS_Size;
+  static constexpr int kV_LDS_Base1 = 2 * kK_LDS_Size + kV_LDS_Size;
+  static constexpr uint32_t kLDSBytes = 2 * kK_LDS_Size + 2 * kV_LDS_Size;
 
-// GEMM iteration counts per micro-tile
-static constexpr int kQK_KSteps = kK0 / kMfmaK;  // 4 per k0-strip
-static constexpr int kQK_MTiles = kBc / kMfmaM;  // 4 (M-tiles in TransposedC = KV-col groups)
-static constexpr int kPV_KSteps = kK1 / kMfmaK;  // 4 per k1-strip
-static constexpr int kPV_MTiles =
-    kHeadDim / kMfmaM;  // 8 (M-tiles in TransposedC = head-dim groups)
+  // GEMM iteration counts
+  static constexpr int kQK_KSteps = kK0 / kMfmaK;
+  static constexpr int kQK_MTiles = kBc / kMfmaM;
+  static constexpr int kPV_KSteps = kK1 / kMfmaK;
+  static constexpr int kPV_MTiles = kHeadDim / kMfmaM;
 
-// Register-staged load sizes
-static constexpr int kK_LoadsPerThread = (kBc * kK0) / (256 * 8);       // 2
-static constexpr int kV_LoadsPerThread = (kK1 * kHeadDim) / (256 * 8);  // 4
+  // Register-staged cooperative load sizes (per thread)
+  static constexpr int kK_LoadsPerThread = (kBc * kK0) / (kNumThreads * 8);
+  static constexpr int kV_LoadsPerThread = (kK1 * kHeadDim) / (kNumThreads * 8);
+};
 
-// ===== Register-staged GMEM -> LDS loads =====================================
+using Tile128x128 = TileConfig<128, 128, 256, 4>;  // existing: 4 waves, 256 threads
+using Tile64x128 = TileConfig<64, 128, 256, 2>;    // new causal: 2 waves, 128 threads
 
+static_assert(Tile128x128::kBrLocal == 32, "");
+static_assert(Tile64x128::kBrLocal == 32, "");
+
+// ===== Register-staged GMEM -> LDS loads (templated on TileConfig) ===========
+
+template <class Tile>
 struct k_reg_buf_t {
-  uint4 data[kK_LoadsPerThread];
+  uint4 data[Tile::kK_LoadsPerThread];
 };
 
+template <class Tile>
 struct v_reg_buf_t {
-  uint4 data[kV_LoadsPerThread];
+  uint4 data[Tile::kV_LoadsPerThread];
 };
 
-__device__ __forceinline__ k_reg_buf_t cooperative_load_k_to_regs(
+template <class Tile>
+__device__ __forceinline__ k_reg_buf_t<Tile> cooperative_load_k_to_regs(
     const __half* __restrict__ gmem_base, int kv_row_stride, int thread_id, int valid_rows) {
-  k_reg_buf_t buf;
+  k_reg_buf_t<Tile> buf;
   const uint4 zero4 = {0, 0, 0, 0};
 
 #pragma unroll
-  for (int p = 0; p < kK_LoadsPerThread; ++p) {
-    int linear = (thread_id + p * 256) * 8;
-    int row = linear / kK0;
-    int col = linear % kK0;
+  for (int p = 0; p < Tile::kK_LoadsPerThread; ++p) {
+    int linear = (thread_id + p * Tile::kNumThreads) * 8;
+    int row = linear / Tile::kK0;
+    int col = linear % Tile::kK0;
 
     if (row < valid_rows) {
       buf.data[p] = *reinterpret_cast<const uint4*>(gmem_base + row * kv_row_stride + col);
@@ -111,31 +123,34 @@ __device__ __forceinline__ k_reg_buf_t cooperative_load_k_to_regs(
   return buf;
 }
 
-__device__ __forceinline__ void cooperative_store_k_to_lds(const k_reg_buf_t& buf,
+template <class Tile>
+__device__ __forceinline__ void cooperative_store_k_to_lds(const k_reg_buf_t<Tile>& buf,
                                                            char* __restrict__ smem, int thread_id,
                                                            int k_lds_base) {
 #pragma unroll
-  for (int p = 0; p < kK_LoadsPerThread; ++p) {
-    int linear = (thread_id + p * 256) * 8;
-    int row = linear / kK0;
-    int col = linear % kK0;
+  for (int p = 0; p < Tile::kK_LoadsPerThread; ++p) {
+    int linear = (thread_id + p * Tile::kNumThreads) * 8;
+    int row = linear / Tile::kK0;
+    int col = linear % Tile::kK0;
 
     uint32_t lds_off = static_cast<uint32_t>(k_lds_base) +
-                       static_cast<uint32_t>(row) * kK_RowStride + static_cast<uint32_t>(col) * 2;
+                       static_cast<uint32_t>(row) * Tile::kK_RowStride +
+                       static_cast<uint32_t>(col) * 2;
     *reinterpret_cast<uint4*>(smem + lds_off) = buf.data[p];
   }
 }
 
-__device__ __forceinline__ v_reg_buf_t cooperative_load_v_to_regs(
+template <class Tile>
+__device__ __forceinline__ v_reg_buf_t<Tile> cooperative_load_v_to_regs(
     const __half* __restrict__ gmem_base, int kv_row_stride, int thread_id, int valid_rows) {
-  v_reg_buf_t buf;
+  v_reg_buf_t<Tile> buf;
   const uint4 zero4 = {0, 0, 0, 0};
 
 #pragma unroll
-  for (int p = 0; p < kV_LoadsPerThread; ++p) {
-    int linear = (thread_id + p * 256) * 8;
-    int row = linear / kHeadDim;
-    int col = linear % kHeadDim;
+  for (int p = 0; p < Tile::kV_LoadsPerThread; ++p) {
+    int linear = (thread_id + p * Tile::kNumThreads) * 8;
+    int row = linear / Tile::kHeadDim;
+    int col = linear % Tile::kHeadDim;
 
     if (row < valid_rows) {
       buf.data[p] = *reinterpret_cast<const uint4*>(gmem_base + row * kv_row_stride + col);
@@ -146,18 +161,15 @@ __device__ __forceinline__ v_reg_buf_t cooperative_load_v_to_regs(
   return buf;
 }
 
-// ===== Store V to K-packed (column-major) LDS ================================
-// GMEM load is coalesced row-major (8 consecutive head_dim fp16 per uint4).
-// LDS write transposes to V_LDS[head][seq] so MFMA reads are contiguous.
-
-__device__ __forceinline__ void cooperative_store_v_to_lds(const v_reg_buf_t& buf,
+template <class Tile>
+__device__ __forceinline__ void cooperative_store_v_to_lds(const v_reg_buf_t<Tile>& buf,
                                                            char* __restrict__ smem, int thread_id,
                                                            int v_lds_base) {
 #pragma unroll
-  for (int p = 0; p < kV_LoadsPerThread; ++p) {
-    int linear = (thread_id + p * 256) * 8;
-    int seq = linear / kHeadDim;
-    int head = linear % kHeadDim;
+  for (int p = 0; p < Tile::kV_LoadsPerThread; ++p) {
+    int linear = (thread_id + p * Tile::kNumThreads) * 8;
+    int seq = linear / Tile::kHeadDim;
+    int head = linear % Tile::kHeadDim;
 
     uint32_t seq_bytes = static_cast<uint32_t>(seq) * 2;
     const uint16_t* vals = reinterpret_cast<const uint16_t*>(&buf.data[p]);
@@ -165,7 +177,7 @@ __device__ __forceinline__ void cooperative_store_v_to_lds(const v_reg_buf_t& bu
 #pragma unroll
     for (int i = 0; i < 8; ++i) {
       uint32_t lds_off = static_cast<uint32_t>(v_lds_base) +
-                         static_cast<uint32_t>(head + i) * kV_ColStride + seq_bytes;
+                         static_cast<uint32_t>(head + i) * Tile::kV_ColStride + seq_bytes;
       *reinterpret_cast<uint16_t*>(smem + lds_off) = vals[i];
     }
   }
@@ -173,25 +185,23 @@ __device__ __forceinline__ void cooperative_store_v_to_lds(const v_reg_buf_t& bu
 
 // ===== LDS operand reads =====================================================
 
-// K operand: K[mt*32+t%32, ks*8+(t/32)*4+{0,1,2,3}]
-// In TransposedC QK GEMM, K is the A-operand (src0).
+template <class Tile>
 __device__ __forceinline__ void load_k_operand(const char* smem, int k_lds_base, int mt, int ks,
                                                int lane_id, uint32_t* out) {
   uint32_t row = static_cast<uint32_t>(mt) * kMfmaM + (lane_id & 31);
   uint32_t col = static_cast<uint32_t>(ks) * kMfmaK + (lane_id >> 5) * 4;
-  uint32_t addr = static_cast<uint32_t>(k_lds_base) + row * kK_RowStride + col * 2;
+  uint32_t addr = static_cast<uint32_t>(k_lds_base) + row * Tile::kK_RowStride + col * 2;
   const uint32_t* src = reinterpret_cast<const uint32_t*>(smem + addr);
   out[0] = src[0];
   out[1] = src[1];
 }
 
-// V operand from K-packed V LDS: contiguous ds_read_b64 (1 instruction).
-// 4 consecutive seq positions at same head_dim are adjacent -> single 8-byte read.
+template <class Tile>
 __device__ __forceinline__ void load_v_operand(const char* smem, int v_lds_base, int ks, int dt,
                                                int lane_id, uint32_t* out) {
   uint32_t head = static_cast<uint32_t>(dt) * kMfmaN + (lane_id & 31);
   uint32_t seq = static_cast<uint32_t>(ks) * kMfmaK + (lane_id >> 5) * 4;
-  uint32_t addr = static_cast<uint32_t>(v_lds_base) + head * kV_ColStride + seq * 2;
+  uint32_t addr = static_cast<uint32_t>(v_lds_base) + head * Tile::kV_ColStride + seq * 2;
   const uint32_t* src = reinterpret_cast<const uint32_t*>(smem + addr);
   out[0] = src[0];
   out[1] = src[1];
@@ -201,28 +211,28 @@ __device__ __forceinline__ void load_v_operand(const char* smem, int v_lds_base,
 // Issues MTiles=4 x KSteps=4 = 16 MFMA instructions per call.
 // K is src0 (A-operand from LDS), Q is src1 (B-operand from registers).
 
-__device__ __forceinline__ void qk_gemm_k0(const fp16_reg_tile<kBrLocal, kHeadDim>& Q_reg,
-                                           const char* smem, int k_lds_base,
-                                           fp32_s_tile<kBrLocal, kBc>& S_acc, int strip_idx,
-                                           int lane_id) {
+template <class Tile>
+__device__ __forceinline__ void qk_gemm_k0(
+    const fp16_reg_tile<Tile::kBrLocal, Tile::kHeadDim>& Q_reg, const char* smem, int k_lds_base,
+    fp32_s_tile<Tile::kBrLocal, Tile::kBc>& S_acc, int strip_idx, int lane_id) {
   using namespace asm_primitives;
 
   uint32_t k_cur[2], k_next[2];
-  const int ks_global_base = strip_idx * kQK_KSteps;
+  const int ks_global_base = strip_idx * Tile::kQK_KSteps;
 
-  load_k_operand(smem, k_lds_base, 0, 0, lane_id, k_cur);
+  load_k_operand<Tile>(smem, k_lds_base, 0, 0, lane_id, k_cur);
 
-  static constexpr int kTotalIters = kQK_KSteps * kQK_MTiles;  // 16
+  static constexpr int kTotalIters = Tile::kQK_KSteps * Tile::kQK_MTiles;
 
 #pragma unroll
   for (int iter = 0; iter < kTotalIters; ++iter) {
-    const int ks = iter / kQK_MTiles;
-    const int mt = iter % kQK_MTiles;
+    const int ks = iter / Tile::kQK_MTiles;
+    const int mt = iter % Tile::kQK_MTiles;
 
     if (iter + 1 < kTotalIters) {
-      const int next_ks = (iter + 1) / kQK_MTiles;
-      const int next_mt = (iter + 1) % kQK_MTiles;
-      load_k_operand(smem, k_lds_base, next_mt, next_ks, lane_id, k_next);
+      const int next_ks = (iter + 1) / Tile::kQK_MTiles;
+      const int next_mt = (iter + 1) % Tile::kQK_MTiles;
+      load_k_operand<Tile>(smem, k_lds_base, next_mt, next_ks, lane_id, k_next);
     }
 
     mfma_f32_32x32x8_f16_vec(S_acc.vec(mt),
@@ -251,29 +261,30 @@ __device__ __forceinline__ void schedule_gemm0() {
 // Software-pipelined: preload first V operand, then overlap load_v(next)
 // with mfma(current) to hide DS read latency.
 
-__device__ __forceinline__ void pv_gemm_k1(const fp16_p_tile<kBrLocal, kBc>& P_f16,
+template <class Tile>
+__device__ __forceinline__ void pv_gemm_k1(const fp16_p_tile<Tile::kBrLocal, Tile::kBc>& P_f16,
                                            const char* smem, int v_lds_base,
-                                           fp32_acc_tile<kBrLocal, kHeadDim>& O_acc, int strip_idx,
-                                           int lane_id) {
+                                           fp32_acc_tile<Tile::kBrLocal, Tile::kHeadDim>& O_acc,
+                                           int strip_idx, int lane_id) {
   using namespace asm_primitives;
 
   uint32_t v_cur[2], v_next[2];
-  const int kf_base = strip_idx * kPV_KSteps;
+  const int kf_base = strip_idx * Tile::kPV_KSteps;
 
-  load_v_operand(smem, v_lds_base, 0, 0, lane_id, v_cur);
+  load_v_operand<Tile>(smem, v_lds_base, 0, 0, lane_id, v_cur);
 
-  static constexpr int kTotalIters = kPV_KSteps * kPV_MTiles;  // 32
+  static constexpr int kTotalIters = Tile::kPV_KSteps * Tile::kPV_MTiles;
 
 #pragma unroll
   for (int iter = 0; iter < kTotalIters; ++iter) {
-    const int ks = iter / kPV_MTiles;
-    const int dt = iter % kPV_MTiles;
+    const int ks = iter / Tile::kPV_MTiles;
+    const int dt = iter % Tile::kPV_MTiles;
     const uint32_t* p_frag = P_f16.frag(kf_base + ks);
 
     if (iter + 1 < kTotalIters) {
-      const int next_ks = (iter + 1) / kPV_MTiles;
-      const int next_dt = (iter + 1) % kPV_MTiles;
-      load_v_operand(smem, v_lds_base, next_ks, next_dt, lane_id, v_next);
+      const int next_ks = (iter + 1) / Tile::kPV_MTiles;
+      const int next_dt = (iter + 1) % Tile::kPV_MTiles;
+      load_v_operand<Tile>(smem, v_lds_base, next_ks, next_dt, lane_id, v_next);
     }
 
     mfma_f32_32x32x8_f16_vec(O_acc.vec(dt),
@@ -290,12 +301,12 @@ __device__ __forceinline__ void pv_gemm_k1(const fp16_p_tile<kBrLocal, kBc>& P_f
 // All 4*16=64 S values in the thread's registers belong to that single Q-row.
 // Only 1 cross-block shuffle needed.
 
-template <int D>
-__device__ __forceinline__ void online_softmax(fp32_s_tile<kBrLocal, kBc>& S,
-                                               fp32_acc_tile<kBrLocal, D>& O_acc, float& row_max,
-                                               float& row_sum, float scale_log2) {
+template <class Tile, int D>
+__device__ __forceinline__ void online_softmax(fp32_s_tile<Tile::kBrLocal, Tile::kBc>& S,
+                                               fp32_acc_tile<Tile::kBrLocal, D>& O_acc,
+                                               float& row_max, float& row_sum, float scale_log2) {
   using namespace asm_primitives;
-  static constexpr int kMT = kBc / kMfmaM;  // 4
+  static constexpr int kMT = Tile::kBc / kMfmaM;
 
   float s_max = -3.402823466e+38f;
 #pragma unroll
@@ -311,7 +322,7 @@ __device__ __forceinline__ void online_softmax(fp32_s_tile<kBrLocal, kBc>& S,
   float new_max = fmaxf(row_max, s_max);
 
   // First tile: O_acc and row_sum are still zero; skip rescaling.
-  static constexpr int kDBlks = fp32_acc_tile<kBrLocal, D>::kNumDBlks;
+  static constexpr int kDBlks = fp32_acc_tile<Tile::kBrLocal, D>::kNumDBlks;
   if (row_max > -3.0e+38f) {
     float scale = fast_exp2((row_max - new_max) * scale_log2);
 #pragma unroll
@@ -351,9 +362,11 @@ __device__ __forceinline__ void online_softmax(fp32_s_tile<kBrLocal, kBc>& S,
 //   For M-tile mt, register group [ks_local*4..ks_local*4+3] holds the 4 kv_cols
 //   needed by PV GEMM K-step (mt*4 + ks_local).
 
-__device__ __forceinline__ void p_register_repack(const fp32_s_tile<kBrLocal, kBc>& S_acc,
-                                                  fp16_p_tile<kBrLocal, kBc>& P_f16) {
-  static constexpr int kMT = kBc / kMfmaM;               // 4
+template <class Tile>
+__device__ __forceinline__ void p_register_repack(
+    const fp32_s_tile<Tile::kBrLocal, Tile::kBc>& S_acc,
+    fp16_p_tile<Tile::kBrLocal, Tile::kBc>& P_f16) {
+  static constexpr int kMT = Tile::kBc / kMfmaM;
   static constexpr int kKLocalSteps = kMfmaOutRegs / 4;  // 4
 
 #pragma unroll
@@ -386,11 +399,12 @@ __device__ __forceinline__ void p_register_repack(const fp32_s_tile<kBrLocal, kB
 // `causal_lane_base` = wave_q_start + (lane_id & 31) + causal_offset - kv_chunk_start
 // is loop-invariant and hoisted to the pipeline caller.
 
-template <bool IsCausal>
-__device__ __forceinline__ void apply_masks(fp32_s_tile<kBrLocal, kBc>& S, int kv_start_local,
-                                            int chunk_kv_len, int causal_lane_base, int lane_id) {
+template <class Tile, bool IsCausal>
+__device__ __forceinline__ void apply_masks(fp32_s_tile<Tile::kBrLocal, Tile::kBc>& S,
+                                            int kv_start_local, int chunk_kv_len,
+                                            int causal_lane_base, int lane_id) {
   using namespace asm_primitives;
-  static constexpr int kMT = kBc / kMfmaM;
+  static constexpr int kMT = Tile::kBc / kMfmaM;
   const int oob_limit = chunk_kv_len - 1 - kv_start_local;
   int limit;
   if constexpr (IsCausal) {
@@ -435,115 +449,116 @@ struct FA3CDNA3PipelineArgs {
 // which keeps codegen straight-line and avoids the barrier-deadlock hazard of
 // early-returning a subset of waves.
 
-template <int D, bool IsCausal>
-__device__ __forceinline__ void process_kv_tile(const fp16_reg_tile<kBrLocal, D>& Q_reg,
-                                                fp32_acc_tile<kBrLocal, D>& O_acc, float& row_max,
-                                                float& row_sum, const FA3CDNA3PipelineArgs& args,
-                                                char* smem, int j, const __half* k_head,
-                                                const __half* v_head, int kv_row_stride,
-                                                int chunk_kv_len, int causal_lane_base, int lane_id,
-                                                int thread_id) {
+template <class Tile, int D, bool IsCausal>
+__device__ __forceinline__ void process_kv_tile(const fp16_reg_tile<Tile::kBrLocal, D>& Q_reg,
+                                                fp32_acc_tile<Tile::kBrLocal, D>& O_acc,
+                                                float& row_max, float& row_sum,
+                                                const FA3CDNA3PipelineArgs& args, char* smem, int j,
+                                                const __half* k_head, const __half* v_head,
+                                                int kv_row_stride, int chunk_kv_len,
+                                                int causal_lane_base, int lane_id, int thread_id) {
   using namespace asm_primitives;
-  constexpr int k_bases[2] = {kK_LDS_Base0, kK_LDS_Base1};
+  constexpr int k_bases[2] = {Tile::kK_LDS_Base0, Tile::kK_LDS_Base1};
 
-  const int kv_start_local = j * kBc;
-  const int kv_valid_rows = min(kBc, chunk_kv_len - kv_start_local);
+  const int kv_start_local = j * Tile::kBc;
+  const int kv_valid_rows = min(Tile::kBc, chunk_kv_len - kv_start_local);
   const __half* k_tile_base = k_head + kv_start_local * kv_row_stride;
 
   // --- Stage 1: QK GEMM -- double-buffered K in LDS ---
-  fp32_s_tile<kBrLocal, kBc> S_acc;
+  fp32_s_tile<Tile::kBrLocal, Tile::kBc> S_acc;
   S_acc.zero();
 
-  k_reg_buf_t k_regs =
-      cooperative_load_k_to_regs(k_tile_base, kv_row_stride, thread_id, kv_valid_rows);
+  k_reg_buf_t<Tile> k_regs =
+      cooperative_load_k_to_regs<Tile>(k_tile_base, kv_row_stride, thread_id, kv_valid_rows);
   s_waitcnt_vmcnt(0);
-  cooperative_store_k_to_lds(k_regs, smem, thread_id, k_bases[0]);
+  cooperative_store_k_to_lds<Tile>(k_regs, smem, thread_id, k_bases[0]);
 
-  if (k0_loops > 1) {
-    k_regs = cooperative_load_k_to_regs(k_tile_base + kK0, kv_row_stride, thread_id, kv_valid_rows);
+  if (Tile::k0_loops > 1) {
+    k_regs = cooperative_load_k_to_regs<Tile>(k_tile_base + Tile::kK0, kv_row_stride, thread_id,
+                                              kv_valid_rows);
   }
 
 #pragma unroll
-  for (int ik = 0; ik < k0_loops - 2; ++ik) {
+  for (int ik = 0; ik < Tile::k0_loops - 2; ++ik) {
     int rd = ik & 1;
     int wr = 1 - rd;
     s_barrier();
-    qk_gemm_k0(Q_reg, smem, k_bases[rd], S_acc, ik, lane_id);
+    qk_gemm_k0<Tile>(Q_reg, smem, k_bases[rd], S_acc, ik, lane_id);
     schedule_gemm0();
     s_waitcnt_vmcnt(0);
-    cooperative_store_k_to_lds(k_regs, smem, thread_id, k_bases[wr]);
-    k_regs = cooperative_load_k_to_regs(k_tile_base + (ik + 2) * kK0, kv_row_stride, thread_id,
-                                        kv_valid_rows);
+    cooperative_store_k_to_lds<Tile>(k_regs, smem, thread_id, k_bases[wr]);
+    k_regs = cooperative_load_k_to_regs<Tile>(k_tile_base + (ik + 2) * Tile::kK0, kv_row_stride,
+                                              thread_id, kv_valid_rows);
   }
 
-  const int v0_valid = min(kK1, chunk_kv_len - kv_start_local);
-  v_reg_buf_t v_regs = cooperative_load_v_to_regs(v_head + kv_start_local * kv_row_stride,
-                                                  kv_row_stride, thread_id, max(v0_valid, 0));
+  const int v0_valid = min(Tile::kK1, chunk_kv_len - kv_start_local);
+  v_reg_buf_t<Tile> v_regs = cooperative_load_v_to_regs<Tile>(
+      v_head + kv_start_local * kv_row_stride, kv_row_stride, thread_id, max(v0_valid, 0));
 
   {
-    const int rd6 = (k0_loops - 2) & 1;
+    const int rd6 = (Tile::k0_loops - 2) & 1;
     const int wr7 = 1 - rd6;
 
     s_barrier();
-    qk_gemm_k0(Q_reg, smem, k_bases[rd6], S_acc, k0_loops - 2, lane_id);
+    qk_gemm_k0<Tile>(Q_reg, smem, k_bases[rd6], S_acc, Tile::k0_loops - 2, lane_id);
     schedule_gemm0();
 
     s_waitcnt_vmcnt(0);
-    cooperative_store_k_to_lds(k_regs, smem, thread_id, k_bases[wr7]);
+    cooperative_store_k_to_lds<Tile>(k_regs, smem, thread_id, k_bases[wr7]);
 
     s_barrier();
-    qk_gemm_k0(Q_reg, smem, k_bases[wr7], S_acc, k0_loops - 1, lane_id);
+    qk_gemm_k0<Tile>(Q_reg, smem, k_bases[wr7], S_acc, Tile::k0_loops - 1, lane_id);
     schedule_gemm0();
   }
 
   // --- Stage 2: Fused mask + softmax + P repack ---
-  apply_masks<IsCausal>(S_acc, kv_start_local, chunk_kv_len, causal_lane_base, lane_id);
+  apply_masks<Tile, IsCausal>(S_acc, kv_start_local, chunk_kv_len, causal_lane_base, lane_id);
 
-  online_softmax<D>(S_acc, O_acc, row_max, row_sum, args.scale_log2);
+  online_softmax<Tile, D>(S_acc, O_acc, row_max, row_sum, args.scale_log2);
 
-  fp16_p_tile<kBrLocal, kBc> P_f16;
-  p_register_repack(S_acc, P_f16);
+  fp16_p_tile<Tile::kBrLocal, Tile::kBc> P_f16;
+  p_register_repack<Tile>(S_acc, P_f16);
 
   // --- Stage 3: PV GEMM -- double-buffered K-packed V in LDS ---
-  constexpr int v_bases[2] = {kV_LDS_Base0, kV_LDS_Base1};
+  constexpr int v_bases[2] = {Tile::kV_LDS_Base0, Tile::kV_LDS_Base1};
 
   s_waitcnt_vmcnt(0);
-  cooperative_store_v_to_lds(v_regs, smem, thread_id, v_bases[0]);
+  cooperative_store_v_to_lds<Tile>(v_regs, smem, thread_id, v_bases[0]);
 
-  if (k1_loops > 1) {
-    const int v1_off = kv_start_local + kK1;
-    const int v1_valid = min(kK1, chunk_kv_len - v1_off);
-    v_regs = cooperative_load_v_to_regs(v_head + v1_off * kv_row_stride, kv_row_stride, thread_id,
-                                        max(v1_valid, 0));
+  if (Tile::k1_loops > 1) {
+    const int v1_off = kv_start_local + Tile::kK1;
+    const int v1_valid = min(Tile::kK1, chunk_kv_len - v1_off);
+    v_regs = cooperative_load_v_to_regs<Tile>(v_head + v1_off * kv_row_stride, kv_row_stride,
+                                              thread_id, max(v1_valid, 0));
   }
 
   s_barrier();
-  pv_gemm_k1(P_f16, smem, v_bases[0], O_acc, 0, lane_id);
+  pv_gemm_k1<Tile>(P_f16, smem, v_bases[0], O_acc, 0, lane_id);
 
 #pragma unroll
-  for (int iv = 1; iv < k1_loops; ++iv) {
+  for (int iv = 1; iv < Tile::k1_loops; ++iv) {
     const int buf = iv & 1;
 
     s_waitcnt_vmcnt(0);
-    cooperative_store_v_to_lds(v_regs, smem, thread_id, v_bases[buf]);
+    cooperative_store_v_to_lds<Tile>(v_regs, smem, thread_id, v_bases[buf]);
 
-    if (iv + 1 < k1_loops) {
-      const int next_v_off = kv_start_local + (iv + 1) * kK1;
-      const int next_v_valid = min(kK1, chunk_kv_len - next_v_off);
-      v_regs = cooperative_load_v_to_regs(v_head + next_v_off * kv_row_stride, kv_row_stride,
-                                          thread_id, max(next_v_valid, 0));
+    if (iv + 1 < Tile::k1_loops) {
+      const int next_v_off = kv_start_local + (iv + 1) * Tile::kK1;
+      const int next_v_valid = min(Tile::kK1, chunk_kv_len - next_v_off);
+      v_regs = cooperative_load_v_to_regs<Tile>(v_head + next_v_off * kv_row_stride, kv_row_stride,
+                                                thread_id, max(next_v_valid, 0));
     }
 
     s_barrier();
-    pv_gemm_k1(P_f16, smem, v_bases[buf], O_acc, iv, lane_id);
+    pv_gemm_k1<Tile>(P_f16, smem, v_bases[buf], O_acc, iv, lane_id);
   }
 }
 
 // Causal: full tiles first (no mask), then edge tiles. Non-causal: single phase.
 
-template <int D, bool IsCausal>
+template <class Tile, int D, bool IsCausal>
 __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
-                                       fp32_acc_tile<kBrLocal, D>& O_acc, float& row_max_out,
+                                       fp32_acc_tile<Tile::kBrLocal, D>& O_acc, float& row_max_out,
                                        float& row_sum_out) {
   using namespace asm_primitives;
 
@@ -551,16 +566,15 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
   const int wave_id = threadIdx.x / kWaveSize;
   const int thread_id = threadIdx.x;
 
-  const int wave_q_start = args.q_block * kBr + wave_id * kBrLocal;
+  const int wave_q_start = args.q_block * Tile::kBr + wave_id * Tile::kBrLocal;
   const int kv_row_stride = args.nhead_k * D;
 
-  // Load Q into registers (persistent across all KV-block iterations)
-  fp16_reg_tile<kBrLocal, D> Q_reg;
+  fp16_reg_tile<Tile::kBrLocal, D> Q_reg;
   {
     const __half* q_base = args.Q + wave_q_start * args.nhead * D + args.head_idx * D;
 
 #pragma unroll
-    for (int ks = 0; ks < fp16_reg_tile<kBrLocal, D>::kNumKSteps; ++ks) {
+    for (int ks = 0; ks < fp16_reg_tile<Tile::kBrLocal, D>::kNumKSteps; ++ks) {
       int row = lane_id & 31;
       int col = ks * kMfmaK + (lane_id >> 5) * 4;
 
@@ -584,31 +598,31 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
   const __half* k_head = args.K + args.head_idx_k * D + args.kv_chunk_start * kv_row_stride;
   const __half* v_head = args.V + args.head_idx_k * D + args.kv_chunk_start * kv_row_stride;
 
-  // Loop-invariant per-lane causal threshold (only read by the causal path).
   const int causal_lane_base =
       IsCausal ? (wave_q_start + (lane_id & 31) + args.causal_offset - args.kv_chunk_start) : 0;
 
-  const int T = (chunk_kv_len + kBc - 1) / kBc;
+  const int T = (chunk_kv_len + Tile::kBc - 1) / Tile::kBc;
   int max_j = T;
   int phase1_end = T;
   if constexpr (IsCausal) {
-    // Last KV tile index that any row in this q_block can still attend to.
-    int causal_end = args.q_block * kBr + kBr + args.causal_offset + kBc - 1 - args.kv_chunk_start;
-    max_j = min(T, max(causal_end, 0) / kBc);
-    // Last KV tile fully below the causal frontier for this wave's first row.
+    int causal_end = args.q_block * Tile::kBr + Tile::kBr + args.causal_offset + Tile::kBc - 1 -
+                     args.kv_chunk_start;
+    max_j = min(T, max(causal_end, 0) / Tile::kBc);
     int full_end = wave_q_start + args.causal_offset - args.kv_chunk_start + 1;
-    phase1_end = max(0, min(max_j, full_end / static_cast<int>(kBc)));
+    phase1_end = max(0, min(max_j, full_end / static_cast<int>(Tile::kBc)));
   }
 
   for (int j = 0; j < phase1_end; ++j) {
-    process_kv_tile<D, false>(Q_reg, O_acc, row_max, row_sum, args, smem, j, k_head, v_head,
-                              kv_row_stride, chunk_kv_len, causal_lane_base, lane_id, thread_id);
+    process_kv_tile<Tile, D, false>(Q_reg, O_acc, row_max, row_sum, args, smem, j, k_head, v_head,
+                                    kv_row_stride, chunk_kv_len, causal_lane_base, lane_id,
+                                    thread_id);
   }
 
   if constexpr (IsCausal) {
     for (int j = phase1_end; j < max_j; ++j) {
-      process_kv_tile<D, true>(Q_reg, O_acc, row_max, row_sum, args, smem, j, k_head, v_head,
-                               kv_row_stride, chunk_kv_len, causal_lane_base, lane_id, thread_id);
+      process_kv_tile<Tile, D, true>(Q_reg, O_acc, row_max, row_sum, args, smem, j, k_head, v_head,
+                                     kv_row_stride, chunk_kv_len, causal_lane_base, lane_id,
+                                     thread_id);
     }
   }
 
