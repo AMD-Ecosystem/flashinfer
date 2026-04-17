@@ -381,11 +381,10 @@ __device__ __forceinline__ void p_register_repack(const fp32_s_tile<kBrLocal, kB
 
 // ===== Causal + OOB masking (TransposedC layout) =============================
 // Right-aligned causal: mask when kv_col > q_row + causal_offset, where
-// causal_offset = N_kv - N_q. Fused with OOB mask (kv_col >= chunk_kv_len) in
-// a single loop with a precomputed per-lane threshold to reduce live-range
-// span and avoid the heavy `if (!skip_tile)` guard on compute stages.
+// causal_offset = N_kv - N_q. Fused with the OOB mask (kv_col >= chunk_kv_len)
+// into a single per-lane threshold check.
 // `causal_lane_base` = wave_q_start + (lane_id & 31) + causal_offset - kv_chunk_start
-// is loop-invariant (hoisted to the pipeline caller for the causal template).
+// is loop-invariant and hoisted to the pipeline caller.
 
 template <bool IsCausal>
 __device__ __forceinline__ void apply_masks(fp32_s_tile<kBrLocal, kBc>& S, int kv_start_local,
@@ -431,12 +430,10 @@ struct FA3CDNA3PipelineArgs {
   int kv_chunk_end;
 };
 
-// One KV tile: QK GEMM, softmax, PV GEMM. IsCausal selects mask path.
-// NOTE: we do NOT branch on a runtime `skip_tile` flag. If every element in
-// the tile is masked to -inf, softmax produces P=0 and PV adds 0 to O_acc, so
-// the tile is mathematically a no-op. Always executing the MFMAs keeps the
-// codegen straight-line, which is critical for the causal template's VGPR
-// pressure (eliminating the skip_tile branch removed ~20 spills).
+// One KV tile: QK GEMM, softmax, PV GEMM. IsCausal selects the mask path.
+// Fully-masked tiles are handled by the mask producing P=0 (no runtime guard),
+// which keeps codegen straight-line and avoids the barrier-deadlock hazard of
+// early-returning a subset of waves.
 
 template <int D, bool IsCausal>
 __device__ __forceinline__ void process_kv_tile(const fp16_reg_tile<kBrLocal, D>& Q_reg,
@@ -587,25 +584,20 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
   const __half* k_head = args.K + args.head_idx_k * D + args.kv_chunk_start * kv_row_stride;
   const __half* v_head = args.V + args.head_idx_k * D + args.kv_chunk_start * kv_row_stride;
 
-  // Hoisted loop-invariant: per-lane causal threshold relative to chunk start.
-  // Only used inside process_kv_tile<D, true>; non-causal path ignores it.
+  // Loop-invariant per-lane causal threshold (only read by the causal path).
   const int causal_lane_base =
       IsCausal ? (wave_q_start + (lane_id & 31) + args.causal_offset - args.kv_chunk_start) : 0;
 
   const int T = (chunk_kv_len + kBc - 1) / kBc;
   int max_j = T;
+  int phase1_end = T;
   if constexpr (IsCausal) {
+    // Last KV tile index that any row in this q_block can still attend to.
     int causal_end = args.q_block * kBr + kBr + args.causal_offset + kBc - 1 - args.kv_chunk_start;
     max_j = min(T, max(causal_end, 0) / kBc);
-    max_j = max(max_j, 0);
-  }
-
-  int phase1_end;
-  if constexpr (IsCausal) {
+    // Last KV tile fully below the causal frontier for this wave's first row.
     int full_end = wave_q_start + args.causal_offset - args.kv_chunk_start + 1;
     phase1_end = max(0, min(max_j, full_end / static_cast<int>(kBc)));
-  } else {
-    phase1_end = max_j;
   }
 
   for (int j = 0; j < phase1_end; ++j) {
