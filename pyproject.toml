@@ -168,6 +168,8 @@ ignore = [
 ]
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
+# Notebooks: cells are linted in isolation (names from prior cells look undefined).
+"examples/recommendation_system_flashinfer_rocm.ipynb" = ["F821"]
 
 
 [tool.pytest.ini_options]
