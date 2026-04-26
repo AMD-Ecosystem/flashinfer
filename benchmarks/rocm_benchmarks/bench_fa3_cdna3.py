@@ -362,7 +362,7 @@ if __name__ == "__main__":
         dry_run_ms=200,
         repeat_ms=2000,
         counters=_counters,
-        kernel_name_regex="fa3_cdna3_prefill_kernel_impl|SinglePrefillWithKVCacheKernel",
+        kernel_name_regex="fa3_cdna3_prefill_kernel_impl|SinglePrefillWithKVCacheKernel|ck_tile::kentry",
         output_dir=_OUTPUT_DIR,
         label=_label,
         roofline=(_counters == "roofline"),
