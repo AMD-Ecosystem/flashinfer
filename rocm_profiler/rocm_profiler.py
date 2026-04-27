@@ -175,6 +175,27 @@ jobs:
   # Pass 2: LDS stall cycles + total busy cycles + L2 writes
   - pmc: [SQ_WAIT_INST_LDS, SQ_BUSY_CYCLES, WriteSize]
 """,
+    # Two-pass per-class instruction-issue + wait attribution. Designed for
+    # post-2c-1 / post-2d-0 per-WG efficiency triage: split SQ_BUSY_CYCLES
+    # between (a) instruction-count-bound classes (VALU / SALU / VMEM_RD) and
+    # (b) wait-bound classes ((WAIT_ANY - WAIT_LDS) ≈ VMEM+barrier wait).
+    #
+    # Derived metrics:
+    #   SQ_INSTS_VALU / SQ_BUSY_CYCLES       → VALU issue density
+    #   SQ_INSTS_VMEM_RD / SQ_BUSY_CYCLES    → VMEM-read issue density
+    #   SQ_INSTS_LDS / SQ_BUSY_CYCLES        → DS issue density
+    #   (SQ_WAIT_INST_ANY - SQ_WAIT_INST_LDS) / SQ_BUSY_CYCLES
+    #                                        → VMEM-or-barrier wait fraction
+    #
+    # SQ_WAIT_INST_VMEM does NOT exist on gfx942 rocprofv3 1.1.0; we infer
+    # VMEM/barrier wait by subtraction against SQ_WAIT_INST_LDS.
+    "fine_attr": """\
+jobs:
+  # Pass 1: per-class instruction issue counts vs total busy cycles
+  - pmc: [SQ_INSTS_VALU, SQ_INSTS_SALU, SQ_INSTS_VMEM_RD, SQ_BUSY_CYCLES]
+  # Pass 2: total wait vs LDS wait (VMEM+barrier wait inferred by subtraction)
+  - pmc: [SQ_WAIT_INST_ANY, SQ_WAIT_INST_LDS, SQ_INSTS_LDS, WriteSize]
+""",
     # -----------------------------------------------------------------------
     # Template for custom tuning presets — copy, rename, and modify.
     # Rules for gfx942 (MI300X):
