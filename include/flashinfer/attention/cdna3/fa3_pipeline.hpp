@@ -101,8 +101,17 @@ struct TileConfig {
 
   // QK micro-tile: kK0=32 along head-dim
   static constexpr int kK0 = 32;
-  static constexpr int kK_Pad = 10;
-  static constexpr int kK_RowStride = (kK0 + kK_Pad) * 2;  // 84 bytes (21 dwords)
+  // kKPack=8 K LDS layout. Row content per seq position (one 32-head-dim strip):
+  //   bytes  0..31  = lane(l_hi=0): 4 ks slots × 8 B (K[row, 0..3, 8..11, 16..19, 24..27])
+  //   bytes 32..63  = lane(l_hi=1): 4 ks slots × 8 B (K[row, 4..7, 12..15, 20..23, 28..31])
+  //   bytes 64..79  = pad, row stride 80 B = 20 dwords. 16-byte-aligned per row
+  //   so ds_read_b128 is well-defined; gcd(20,32)=4 → 4-way bank conflict
+  //   (CK accepts the same with their +kKPack pad for hdim=256).
+  // Read addr per lane: row * 80 + (lane>>5)*32 + ks*8. ks-paired b128 covers
+  // ks_base..ks_base+1 in 16 contiguous bytes per lane.
+  // Write side: each thread's gmem uint4 (8 fp16 = K[row, c..c+7]) splits into
+  // two ds_write_b64: K[row, c..c+3] → l_hi=0 region, K[row, c+4..c+7] → l_hi=1 region.
+  static constexpr int kK_RowStride = 80;
   static constexpr int kK_LDS_Size = kBc * kK_RowStride;
   static constexpr int k0_loops = kHeadDim / kK0;
 
@@ -199,16 +208,26 @@ template <class Tile>
 __device__ __forceinline__ void cooperative_store_k_to_lds(const k_reg_buf_t<Tile>& buf,
                                                            char* __restrict__ smem, int thread_id,
                                                            int k_lds_base) {
+  // kKPack=8: gmem chunk K[row, c..c+7] (8 fp16 per thread, c ∈ {0,8,16,24})
+  // splits into two ds_write_b64. ks = c/8 picks the slot in each lane class.
+  //   K[row, c..c+3]  → l_hi=0 region, byte off = ks*8
+  //   K[row, c+4..c+7]→ l_hi=1 region, byte off = 32 + ks*8
 #pragma unroll
   for (int p = 0; p < Tile::kK_LoadsPerThread; ++p) {
     int linear = (thread_id + p * Tile::kNumThreads) * 8;
     int row = linear / Tile::kK0;
     int col = linear % Tile::kK0;
+    int ks = col >> 3;  // col / 8
 
-    uint32_t lds_off = static_cast<uint32_t>(k_lds_base) +
-                       static_cast<uint32_t>(row) * Tile::kK_RowStride +
-                       static_cast<uint32_t>(col) * 2;
-    *reinterpret_cast<uint4*>(smem + lds_off) = buf.data[p];
+    uint32_t row_base = static_cast<uint32_t>(k_lds_base) +
+                        static_cast<uint32_t>(row) * Tile::kK_RowStride;
+    uint32_t off_lo = row_base + static_cast<uint32_t>(ks) * 8u;
+    uint32_t off_hi = off_lo + 32u;
+
+    uint2 lo = make_uint2(buf.data[p].x, buf.data[p].y);
+    uint2 hi = make_uint2(buf.data[p].z, buf.data[p].w);
+    *reinterpret_cast<uint2*>(smem + off_lo) = lo;
+    *reinterpret_cast<uint2*>(smem + off_hi) = hi;
   }
 }
 
@@ -375,12 +394,32 @@ __device__ __forceinline__ void cooperative_store_v_to_lds(const v_reg_buf_t<Til
 template <class Tile>
 __device__ __forceinline__ void load_k_operand(const char* smem, int k_lds_base, int mt, int ks,
                                                int lane_id, uint32_t* out) {
+  // kKPack=8: addr = base + row*RS + l_hi*32 + ks*8.
   uint32_t row = static_cast<uint32_t>(mt) * kMfmaM + (lane_id & 31);
-  uint32_t col = static_cast<uint32_t>(ks) * kMfmaK + (lane_id >> 5) * 4;
-  uint32_t addr = static_cast<uint32_t>(k_lds_base) + row * Tile::kK_RowStride + col * 2;
+  uint32_t lane_class_off = static_cast<uint32_t>(lane_id >> 5) * 32u;
+  uint32_t ks_off = static_cast<uint32_t>(ks) * 8u;
+  uint32_t addr =
+      static_cast<uint32_t>(k_lds_base) + row * Tile::kK_RowStride + lane_class_off + ks_off;
   const uint32_t* src = reinterpret_cast<const uint32_t*>(smem + addr);
   out[0] = src[0];
   out[1] = src[1];
+}
+
+// Pairs ks_base and ks_base+1 in one ds_read_b128 (16 contiguous bytes per lane).
+// out[0..1] = K(mt, ks_base), out[2..3] = K(mt, ks_base+1).
+template <class Tile>
+__device__ __forceinline__ void load_k_operand_pair(const char* smem, int k_lds_base, int mt,
+                                                    int ks_base, int lane_id, uint32_t* out) {
+  uint32_t row = static_cast<uint32_t>(mt) * kMfmaM + (lane_id & 31);
+  uint32_t lane_class_off = static_cast<uint32_t>(lane_id >> 5) * 32u;
+  uint32_t ks_off = static_cast<uint32_t>(ks_base) * 8u;
+  uint32_t addr =
+      static_cast<uint32_t>(k_lds_base) + row * Tile::kK_RowStride + lane_class_off + ks_off;
+  uint4 v = *reinterpret_cast<const uint4*>(smem + addr);
+  out[0] = v.x;
+  out[1] = v.y;
+  out[2] = v.z;
+  out[3] = v.w;
 }
 
 template <class Tile>
@@ -432,30 +471,50 @@ __device__ __forceinline__ void qk_gemm_k0(
     fp32_s_tile<Tile::kBrLocal, Tile::kBc>& S_acc, int strip_idx, int lane_id) {
   using namespace asm_primitives;
 
-  uint32_t k_cur[2], k_next[2];
+  static_assert(Tile::kQK_KSteps % 2 == 0, "kKPack=8 ks-pairing requires even kQK_KSteps");
+  constexpr int kKPairs = Tile::kQK_KSteps / 2;
   const int ks_global_base = strip_idx * Tile::kQK_KSteps;
 
-  load_k_operand<Tile>(smem, k_lds_base, 0, 0, lane_id, k_cur);
-
-  static constexpr int kTotalIters = Tile::kQK_KSteps * Tile::kQK_MTiles;
+  // Outer: ks-pairs (each paired load = 1 ds_read_b128 covering ks=base, base+1).
+  // Inner MFMA order: sub-step outer, mt inner — preserves mt-rotated S_acc RAW
+  // spacing of 4 (hides 4-cycle MFMA latency).
+  uint32_t k_cur[Tile::kQK_MTiles][4];
+  uint32_t k_next[Tile::kQK_MTiles][4];
 
 #pragma unroll
-  for (int iter = 0; iter < kTotalIters; ++iter) {
-    const int ks = iter / Tile::kQK_MTiles;
-    const int mt = iter % Tile::kQK_MTiles;
+  for (int mt = 0; mt < Tile::kQK_MTiles; ++mt) {
+    load_k_operand_pair<Tile>(smem, k_lds_base, mt, 0, lane_id, k_cur[mt]);
+  }
 
-    if (iter + 1 < kTotalIters) {
-      const int next_ks = (iter + 1) / Tile::kQK_MTiles;
-      const int next_mt = (iter + 1) % Tile::kQK_MTiles;
-      load_k_operand<Tile>(smem, k_lds_base, next_mt, next_ks, lane_id, k_next);
+#pragma unroll
+  for (int kp = 0; kp < kKPairs; ++kp) {
+    if (kp + 1 < kKPairs) {
+#pragma unroll
+      for (int mt = 0; mt < Tile::kQK_MTiles; ++mt) {
+        load_k_operand_pair<Tile>(smem, k_lds_base, mt, (kp + 1) * 2, lane_id, k_next[mt]);
+      }
     }
 
-    mfma_f32_32x32x8_f16_vec(S_acc.vec(mt),
-                             k_cur,                             // K = A (src0)
-                             Q_reg.frag(ks_global_base + ks));  // Q = B (src1)
+#pragma unroll
+    for (int sub = 0; sub < 2; ++sub) {
+      const int ks = kp * 2 + sub;
+#pragma unroll
+      for (int mt = 0; mt < Tile::kQK_MTiles; ++mt) {
+        mfma_f32_32x32x8_f16_vec(S_acc.vec(mt),
+                                 &k_cur[mt][2 * sub],
+                                 Q_reg.frag(ks_global_base + ks));
+      }
+    }
 
-    k_cur[0] = k_next[0];
-    k_cur[1] = k_next[1];
+    if (kp + 1 < kKPairs) {
+#pragma unroll
+      for (int mt = 0; mt < Tile::kQK_MTiles; ++mt) {
+        k_cur[mt][0] = k_next[mt][0];
+        k_cur[mt][1] = k_next[mt][1];
+        k_cur[mt][2] = k_next[mt][2];
+        k_cur[mt][3] = k_next[mt][3];
+      }
+    }
   }
 }
 
@@ -666,7 +725,7 @@ struct FA3CDNA3PipelineArgs {
 // which keeps codegen straight-line and avoids the barrier-deadlock hazard of
 // early-returning a subset of waves.
 
-template <class Tile, int D, bool IsCausal>
+template <class Tile, int D, bool IsCausal, bool ApplyMask>
 __device__ __forceinline__ void process_kv_tile(const fp16_reg_tile<Tile::kBrLocal, D>& Q_reg,
                                                 fp32_acc_tile<Tile::kBrLocal, D>& O_acc,
                                                 float& row_max, float& row_sum,
@@ -797,7 +856,12 @@ __device__ __forceinline__ void process_kv_tile(const fp16_reg_tile<Tile::kBrLoc
 #endif
 
   // --- Stage 2: Fused mask + softmax + P repack ---
-  apply_masks<Tile, IsCausal>(S_acc, kv_start_local, chunk_kv_len, causal_lane_base, lane_id);
+  // Mask is elided on interior tiles where the OOB+causal limit is provably non-binding
+  // (callers select ApplyMask=false for non-causal interior tiles and for causal phase-1
+  // tiles fully covered by `phase1_end`). For other tiles ApplyMask=true keeps the masking.
+  if constexpr (ApplyMask) {
+    apply_masks<Tile, IsCausal>(S_acc, kv_start_local, chunk_kv_len, causal_lane_base, lane_id);
+  }
 
   online_softmax<Tile, D>(S_acc, O_acc, row_max, row_sum, args.scale_log2);
 
@@ -1035,17 +1099,28 @@ __device__ void run_fa3_cdna3_pipeline(FA3CDNA3PipelineArgs args, char* smem,
     phase1_end = max(0, min(max_j, full_end / static_cast<int>(Tile::kBc)));
   }
 
-  for (int j = 0; j < phase1_end; ++j) {
-    process_kv_tile<Tile, D, false>(Q_reg, O_acc, row_max, row_sum, args, smem, j, k_head, v_head,
-                                    kv_row_stride, chunk_kv_len, causal_lane_base, lane_id,
-                                    thread_id);
+  // Interior-full tile cutoff: tile j has all kv_cols in-bounds iff (j+1)*kBc <= chunk_kv_len.
+  // For non-causal these tiles need no mask at all; for causal phase-1 the OOB part is also
+  // non-binding (the causal part is non-binding by construction of phase1_end).
+  const int T_full = chunk_kv_len / static_cast<int>(Tile::kBc);
+  const int phase1_full_end = min(phase1_end, T_full);
+
+  for (int j = 0; j < phase1_full_end; ++j) {
+    process_kv_tile<Tile, D, false, false>(Q_reg, O_acc, row_max, row_sum, args, smem, j, k_head,
+                                           v_head, kv_row_stride, chunk_kv_len, causal_lane_base,
+                                           lane_id, thread_id);
+  }
+  for (int j = phase1_full_end; j < phase1_end; ++j) {
+    process_kv_tile<Tile, D, false, true>(Q_reg, O_acc, row_max, row_sum, args, smem, j, k_head,
+                                          v_head, kv_row_stride, chunk_kv_len, causal_lane_base,
+                                          lane_id, thread_id);
   }
 
   if constexpr (IsCausal) {
     for (int j = phase1_end; j < max_j; ++j) {
-      process_kv_tile<Tile, D, true>(Q_reg, O_acc, row_max, row_sum, args, smem, j, k_head, v_head,
-                                     kv_row_stride, chunk_kv_len, causal_lane_base, lane_id,
-                                     thread_id);
+      process_kv_tile<Tile, D, true, true>(Q_reg, O_acc, row_max, row_sum, args, smem, j, k_head,
+                                           v_head, kv_row_stride, chunk_kv_len, causal_lane_base,
+                                           lane_id, thread_id);
     }
   }
 
