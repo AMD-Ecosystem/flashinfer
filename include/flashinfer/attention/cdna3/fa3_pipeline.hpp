@@ -518,16 +518,96 @@ __device__ __forceinline__ void qk_gemm_k0(
   }
 }
 
+// ===== Stream-Q variant: Q strip lives in a local uint32 array (8 dwords). ==
+// Used by the pair pipeline to keep Q_reg×2 from busting the gfx942 VGPR file.
+// Identical inner loop to qk_gemm_k0 except the Q frag index is local (ks 0..3
+// within the strip) and points at the caller-provided strip array.
+
+template <class Tile>
+__device__ __forceinline__ void qk_gemm_k0_strip(
+    const uint32_t (&q_strip)[Tile::kQK_KSteps][2], const char* smem, int k_lds_base,
+    fp32_s_tile<Tile::kBrLocal, Tile::kBc>& S_acc, int lane_id) {
+  using namespace asm_primitives;
+
+  static_assert(Tile::kQK_KSteps % 2 == 0, "kKPack=8 ks-pairing requires even kQK_KSteps");
+  constexpr int kKPairs = Tile::kQK_KSteps / 2;
+
+  uint32_t k_cur[Tile::kQK_MTiles][4];
+  uint32_t k_next[Tile::kQK_MTiles][4];
+
+#pragma unroll
+  for (int mt = 0; mt < Tile::kQK_MTiles; ++mt) {
+    load_k_operand_pair<Tile>(smem, k_lds_base, mt, 0, lane_id, k_cur[mt]);
+  }
+
+#pragma unroll
+  for (int kp = 0; kp < kKPairs; ++kp) {
+    if (kp + 1 < kKPairs) {
+#pragma unroll
+      for (int mt = 0; mt < Tile::kQK_MTiles; ++mt) {
+        load_k_operand_pair<Tile>(smem, k_lds_base, mt, (kp + 1) * 2, lane_id, k_next[mt]);
+      }
+    }
+
+#pragma unroll
+    for (int sub = 0; sub < 2; ++sub) {
+      const int ks = kp * 2 + sub;
+#pragma unroll
+      for (int mt = 0; mt < Tile::kQK_MTiles; ++mt) {
+        mfma_f32_32x32x8_f16_vec(S_acc.vec(mt), &k_cur[mt][2 * sub], q_strip[ks]);
+      }
+    }
+
+    if (kp + 1 < kKPairs) {
+#pragma unroll
+      for (int mt = 0; mt < Tile::kQK_MTiles; ++mt) {
+        k_cur[mt][0] = k_next[mt][0];
+        k_cur[mt][1] = k_next[mt][1];
+        k_cur[mt][2] = k_next[mt][2];
+        k_cur[mt][3] = k_next[mt][3];
+      }
+    }
+  }
+}
+
+// Load one K0-strip of Q for one head into a local uint32 array. q_thr is the
+// per-thread Q row base (already advanced by lane_id*nhead*D). Each ks fragment
+// is 2 dwords (= 4 fp16 = MFMA B-operand width per thread per ks).
+template <class Tile>
+__device__ __forceinline__ void load_q_strip(const __half* __restrict__ q_thr, int strip_idx,
+                                             bool oob, int lane_id,
+                                             uint32_t (&q_strip)[Tile::kQK_KSteps][2]) {
+  if (oob) {
+#pragma unroll
+    for (int ks = 0; ks < Tile::kQK_KSteps; ++ks) {
+      q_strip[ks][0] = 0;
+      q_strip[ks][1] = 0;
+    }
+    return;
+  }
+  const int ks_global_base = strip_idx * Tile::kQK_KSteps;
+#pragma unroll
+  for (int ks_local = 0; ks_local < Tile::kQK_KSteps; ++ks_local) {
+    int ks_global = ks_global_base + ks_local;
+    int col = ks_global * kMfmaK + (lane_id >> 5) * 4;
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(q_thr + col);
+    q_strip[ks_local][0] = src[0];
+    q_strip[ks_local][1] = src[1];
+  }
+}
+
 // ===== QK GEMM scheduling: sched_group_barrier pattern =======================
 
 __device__ __forceinline__ void schedule_gemm0() {
   using namespace asm_primitives;
-  sched_group_barrier<0x100, 2>();  // 2 DS reads
-  sched_group_barrier<0x008, 2>();  // 2 MFMAs
-  sched_group_barrier<0x100, 1>();  // 1 DS read
-  sched_group_barrier<0x008, 2>();  // 2 MFMAs
-  sched_group_barrier<0x100, 1>();  // 1 DS read
-  sched_group_barrier<0x008, 4>();  // 4 MFMAs
+  // Post-kKPack=8 stream per qk_gemm_k0(): 8 ds_read_b128 + 16 mfma.
+  // Front-load reads under MFMA so DS-read latency hides in QK MFMA throughput.
+  sched_group_barrier<0x100, 4>();  // 4 DS reads (k_cur preload)
+  sched_group_barrier<0x008, 4>();  // 4 MFMAs (kp=0 sub=0)
+  sched_group_barrier<0x100, 2>();  // 2 DS reads (k_next prefetch, half)
+  sched_group_barrier<0x008, 4>();  // 4 MFMAs (kp=0 sub=1)
+  sched_group_barrier<0x100, 2>();  // 2 DS reads (k_next prefetch, rest)
+  sched_group_barrier<0x008, 8>();  // 8 MFMAs (kp=1)
 }
 
 // ===== TransposedC PV GEMM for one kK1=32 strip ==============================
@@ -926,8 +1006,7 @@ __device__ __forceinline__ void process_kv_tile(const fp16_reg_tile<Tile::kBrLoc
 
 template <class Tile, int D, bool IsCausal>
 __device__ __forceinline__ void process_kv_tile_pair(
-    const fp16_reg_tile<Tile::kBrLocal, D>& Q_reg_lo,
-    const fp16_reg_tile<Tile::kBrLocal, D>& Q_reg_hi,
+    const __half* __restrict__ q_thr_lo, const __half* __restrict__ q_thr_hi, bool q_oob,
     fp32_acc_tile<Tile::kBrLocal, D>& O_acc_lo, fp32_acc_tile<Tile::kBrLocal, D>& O_acc_hi,
     float& row_max_lo, float& row_max_hi, float& row_sum_lo, float& row_sum_hi,
     const FA3CDNA3PipelineArgs& args, char* smem, int j, const __half* k_head,
@@ -961,8 +1040,16 @@ __device__ __forceinline__ void process_kv_tile_pair(
     int rd = ik & 1;
     int wr = 1 - rd;
     s_barrier();
-    qk_gemm_k0<Tile>(Q_reg_lo, smem, k_bases[rd], S_acc_lo, ik, lane_id);
-    qk_gemm_k0<Tile>(Q_reg_hi, smem, k_bases[rd], S_acc_hi, ik, lane_id);
+    {
+      uint32_t q_strip[Tile::kQK_KSteps][2];
+      load_q_strip<Tile>(q_thr_lo, ik, q_oob, lane_id, q_strip);
+      qk_gemm_k0_strip<Tile>(q_strip, smem, k_bases[rd], S_acc_lo, lane_id);
+    }
+    {
+      uint32_t q_strip[Tile::kQK_KSteps][2];
+      load_q_strip<Tile>(q_thr_hi, ik, q_oob, lane_id, q_strip);
+      qk_gemm_k0_strip<Tile>(q_strip, smem, k_bases[rd], S_acc_hi, lane_id);
+    }
     schedule_gemm0();
     s_waitcnt_vmcnt(0);
     cooperative_store_k_to_lds<Tile>(k_regs, smem, thread_id, k_bases[wr]);
@@ -979,16 +1066,32 @@ __device__ __forceinline__ void process_kv_tile_pair(
     const int wr7 = 1 - rd6;
 
     s_barrier();
-    qk_gemm_k0<Tile>(Q_reg_lo, smem, k_bases[rd6], S_acc_lo, Tile::k0_loops - 2, lane_id);
-    qk_gemm_k0<Tile>(Q_reg_hi, smem, k_bases[rd6], S_acc_hi, Tile::k0_loops - 2, lane_id);
+    {
+      uint32_t q_strip[Tile::kQK_KSteps][2];
+      load_q_strip<Tile>(q_thr_lo, Tile::k0_loops - 2, q_oob, lane_id, q_strip);
+      qk_gemm_k0_strip<Tile>(q_strip, smem, k_bases[rd6], S_acc_lo, lane_id);
+    }
+    {
+      uint32_t q_strip[Tile::kQK_KSteps][2];
+      load_q_strip<Tile>(q_thr_hi, Tile::k0_loops - 2, q_oob, lane_id, q_strip);
+      qk_gemm_k0_strip<Tile>(q_strip, smem, k_bases[rd6], S_acc_hi, lane_id);
+    }
     schedule_gemm0();
 
     s_waitcnt_vmcnt(0);
     cooperative_store_k_to_lds<Tile>(k_regs, smem, thread_id, k_bases[wr7]);
 
     s_barrier();
-    qk_gemm_k0<Tile>(Q_reg_lo, smem, k_bases[wr7], S_acc_lo, Tile::k0_loops - 1, lane_id);
-    qk_gemm_k0<Tile>(Q_reg_hi, smem, k_bases[wr7], S_acc_hi, Tile::k0_loops - 1, lane_id);
+    {
+      uint32_t q_strip[Tile::kQK_KSteps][2];
+      load_q_strip<Tile>(q_thr_lo, Tile::k0_loops - 1, q_oob, lane_id, q_strip);
+      qk_gemm_k0_strip<Tile>(q_strip, smem, k_bases[wr7], S_acc_lo, lane_id);
+    }
+    {
+      uint32_t q_strip[Tile::kQK_KSteps][2];
+      load_q_strip<Tile>(q_thr_hi, Tile::k0_loops - 1, q_oob, lane_id, q_strip);
+      qk_gemm_k0_strip<Tile>(q_strip, smem, k_bases[wr7], S_acc_hi, lane_id);
+    }
     schedule_gemm0();
   }
 
@@ -1143,34 +1246,11 @@ __device__ void run_fa3_cdna3_pipeline_pair(
   const int wave_q_start = args.q_block * Tile::kBr + wave_id * Tile::kBrLocal;
   const int kv_row_stride = args.nhead_k * D;
 
-  fp16_reg_tile<Tile::kBrLocal, D> Q_reg_lo;
-  fp16_reg_tile<Tile::kBrLocal, D> Q_reg_hi;
-  {
-    const __half* q_base_lo = args.Q + wave_q_start * args.nhead * D + args.head_idx * D;
-    const __half* q_base_hi = q_base_lo + D;  // next q-head, same q-row
-
-#pragma unroll
-    for (int ks = 0; ks < fp16_reg_tile<Tile::kBrLocal, D>::kNumKSteps; ++ks) {
-      int row = lane_id & 31;
-      int col = ks * kMfmaK + (lane_id >> 5) * 4;
-
-      if (wave_q_start + row < args.N_q) {
-        const uint32_t* src_lo =
-            reinterpret_cast<const uint32_t*>(q_base_lo + row * args.nhead * D + col);
-        Q_reg_lo.data[ks][0] = src_lo[0];
-        Q_reg_lo.data[ks][1] = src_lo[1];
-        const uint32_t* src_hi =
-            reinterpret_cast<const uint32_t*>(q_base_hi + row * args.nhead * D + col);
-        Q_reg_hi.data[ks][0] = src_hi[0];
-        Q_reg_hi.data[ks][1] = src_hi[1];
-      } else {
-        Q_reg_lo.data[ks][0] = 0;
-        Q_reg_lo.data[ks][1] = 0;
-        Q_reg_hi.data[ks][0] = 0;
-        Q_reg_hi.data[ks][1] = 0;
-      }
-    }
-  }
+  // Stream Q per K0-strip: per-thread base pointer for this thread's q-row, both heads.
+  const int q_row = wave_q_start + (lane_id & 31);
+  const bool q_oob = q_row >= args.N_q;
+  const __half* q_thr_lo = args.Q + q_row * args.nhead * D + args.head_idx * D;
+  const __half* q_thr_hi = q_thr_lo + D;  // next q-head, same q-row
 
   O_acc_lo.zero();
   O_acc_hi.zero();
@@ -1198,7 +1278,7 @@ __device__ void run_fa3_cdna3_pipeline_pair(
   }
 
   for (int j = 0; j < phase1_end; ++j) {
-    process_kv_tile_pair<Tile, D, false>(Q_reg_lo, Q_reg_hi, O_acc_lo, O_acc_hi, row_max_lo,
+    process_kv_tile_pair<Tile, D, false>(q_thr_lo, q_thr_hi, q_oob, O_acc_lo, O_acc_hi, row_max_lo,
                                          row_max_hi, row_sum_lo, row_sum_hi, args, smem, j, k_head,
                                          v_head, kv_row_stride, chunk_kv_len, causal_lane_base,
                                          lane_id, thread_id);
@@ -1206,7 +1286,7 @@ __device__ void run_fa3_cdna3_pipeline_pair(
 
   if constexpr (IsCausal) {
     for (int j = phase1_end; j < max_j; ++j) {
-      process_kv_tile_pair<Tile, D, true>(Q_reg_lo, Q_reg_hi, O_acc_lo, O_acc_hi, row_max_lo,
+      process_kv_tile_pair<Tile, D, true>(q_thr_lo, q_thr_hi, q_oob, O_acc_lo, O_acc_hi, row_max_lo,
                                           row_max_hi, row_sum_lo, row_sum_hi, args, smem, j,
                                           k_head, v_head, kv_row_stride, chunk_kv_len,
                                           causal_lane_base, lane_id, thread_id);
