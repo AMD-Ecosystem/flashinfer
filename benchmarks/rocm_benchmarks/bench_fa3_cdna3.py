@@ -120,12 +120,14 @@ _CONFIGS = [
     (256, 512, 16, 4, 256, False),
     (256, 1024, 16, 4, 256, False),
     (256, 2048, 16, 4, 256, False),
+    (256, 3072, 16, 4, 256, False),
     (256, 4096, 16, 4, 256, False),
     (256, 8192, 16, 4, 256, False),
     # Alibaba chunked-prefill configs (causal)
     (256, 512, 16, 4, 256, True),
     (256, 1024, 16, 4, 256, True),
     (256, 2048, 16, 4, 256, True),
+    (256, 3072, 16, 4, 256, True),
     (256, 4096, 16, 4, 256, True),
     (256, 8192, 16, 4, 256, True),
 ]
@@ -270,12 +272,14 @@ def _run_correctness_tests():
         (256, 512, 16, 4, 256, False),
         (256, 1024, 16, 4, 256, False),
         (256, 2048, 16, 4, 256, False),
+        (256, 3072, 16, 4, 256, False),
         (256, 4096, 16, 4, 256, False),
         (256, 8192, 16, 4, 256, False),
         # Chunked prefill: q_len < kv_len (causal)
         (256, 512, 16, 4, 256, True),
         (256, 1024, 16, 4, 256, True),
         (256, 2048, 16, 4, 256, True),
+        (256, 3072, 16, 4, 256, True),
         (256, 4096, 16, 4, 256, True),
         (256, 8192, 16, 4, 256, True),
         # Edge cases
@@ -351,9 +355,11 @@ def _run_correctness_tests():
 
 
 if __name__ == "__main__":
+    import os as _os
     _skip_gpu = "--replot" in sys.argv or "--list-presets" in sys.argv
+    _is_profiler_subprocess = bool(_os.environ.get("_ROCM_PROFILER_CONFIG_IDX"))
 
-    if not _skip_gpu:
+    if not _skip_gpu and not _is_profiler_subprocess:
         _run_correctness_tests()
 
     profiler = RocmProfiler(
