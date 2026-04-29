@@ -108,12 +108,15 @@ def single_prefill_with_kv_cache_example(
     pos_encoding_mode: str,
     logits_soft_cap: float,
     return_lse: bool,
+    backend: str = "auto",
 ):
     """
     Run single_prefill_with_kv_cache and verify the output against a naive PyTorch reference implementation.
 
     This function creates random Q, K, V tensors and compares the output
     of flashinfer's single_prefill_with_kv_cache against a naive PyTorch reference implementation.
+
+    Set ``backend`` (for example ``"fa3_cdna3"`` on ROCm) to exercise a non-default attention backend.
     """
     print("\nRunning configuration:")
     print(f"  qo_len={qo_len}")
@@ -126,6 +129,7 @@ def single_prefill_with_kv_cache_example(
     print(f"  pos_encoding_mode={pos_encoding_mode}")
     print(f"  logits_soft_cap={logits_soft_cap}")
     print(f"  return_lse={return_lse}")
+    print(f"  backend={backend}")
 
     q = torch.randn(
         qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16
@@ -162,6 +166,7 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            backend=backend,
         )
         print(f"  FlashInfer output shape: {o.shape}, LSE shape: {lse.shape}")
         # Compute reference in FP32 for better accuracy
@@ -197,6 +202,7 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            backend=backend,
         )
         print(f"  FlashInfer output shape: {o.shape}")
 
@@ -269,25 +275,49 @@ if __name__ == "__main__":
         16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, True
     )
 
-    # ROCm FA3-CDNA3 backend (head_dim=256 GQA, causal). Skipped silently when
-    # the running device is not an AMD MI300X-class GPU.
-    if torch.version.hip is not None:
-        print("\n" + "=" * 60)
-        print("FA3-CDNA3 backend demo (head_dim=256, GQA 16/4, causal)")
-        print("=" * 60)
-        device = torch.cuda.current_device()
-        qo_len, kv_len = 256, 2048
-        num_qo_heads, num_kv_heads, head_dim = 16, 4, 256
-        q = torch.randn(
-            qo_len, num_qo_heads, head_dim, device=device, dtype=torch.float16
-        )
-        k = torch.randn(
-            kv_len, num_kv_heads, head_dim, device=device, dtype=torch.float16
-        )
-        v = torch.randn(
-            kv_len, num_kv_heads, head_dim, device=device, dtype=torch.float16
-        )
-        o = flashinfer.single_prefill_with_kv_cache(
-            q, k, v, causal=True, backend="fa3_cdna3"
-        )
-        print(f"  output shape: {o.shape}, ||o||_2 = {o.float().norm().item():.4f}")
+    # ROCm FA3-CDNA3 backend — configs align with benchmarks/rocm_benchmarks/bench_fa3_cdna3.py.
+    print("\n" + "=" * 60)
+    print(
+        "FA3-CDNA3 backend (q_len=256, head_dim=256, GQA 16/4; "
+        "kv_lens 512..8192; causal + non-causal)"
+    )
+    print("=" * 60)
+
+    # Non-causal (matches bench _CONFIGS)
+    single_prefill_with_kv_cache_example(
+        256, 512, 16, 4, 256, False, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+    )
+    single_prefill_with_kv_cache_example(
+        256, 1024, 16, 4, 256, False, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+    )
+    single_prefill_with_kv_cache_example(
+        256, 2048, 16, 4, 256, False, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+    )
+    single_prefill_with_kv_cache_example(
+        256, 3072, 16, 4, 256, False, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+    )
+    single_prefill_with_kv_cache_example(
+        256, 4096, 16, 4, 256, False, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+    )
+    single_prefill_with_kv_cache_example(
+        256, 8192, 16, 4, 256, False, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+    )
+    # Causal
+    single_prefill_with_kv_cache_example(
+        256, 512, 16, 4, 256, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+    )
+    single_prefill_with_kv_cache_example(
+        256, 1024, 16, 4, 256, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+    )
+    single_prefill_with_kv_cache_example(
+        256, 2048, 16, 4, 256, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+    )
+    single_prefill_with_kv_cache_example(
+        256, 3072, 16, 4, 256, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+    )
+    single_prefill_with_kv_cache_example(
+        256, 4096, 16, 4, 256, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+    )
+    single_prefill_with_kv_cache_example(
+        256, 8192, 16, 4, 256, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+    )
