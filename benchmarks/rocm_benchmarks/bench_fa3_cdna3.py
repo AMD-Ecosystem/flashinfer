@@ -13,14 +13,14 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-FA3-CDNA3 chunked-prefill benchmark for AMD MI300X.
+FA3-CDNA3 chunked-prefill benchmark for CDNA3.
 
 Benchmarks the FA3-CDNA3 kernel (head_dim=256, chunked prefill q_len != kv_len)
 against:
   - FlashInfer FA2 HIP path (existing baseline)
   - AITER flash_attn_varlen_func (if available)
 
-Sweep: q_len=256, kv_len=512..8192, GQA 16/4, d=256, both causal and non-causal.
+Sweep: q_len=256, kv_len=512..8192, GQA 16/4, d=256, causal attention.
 
 Run:
     # Full roofline pipeline:
@@ -43,12 +43,13 @@ Output files (all gitignored):
 """
 
 import argparse
-import sys
 import logging
+import sys
 import warnings
 from pathlib import Path
 
 import torch
+
 import flashinfer
 from flashinfer.jit.core import logger as fi_logger
 
@@ -117,14 +118,7 @@ if _include_aiter:
 # Chunked-prefill sweep: q_len=256, kv_len varies, GQA 16/4, d=256.
 # ---------------------------------------------------------------------------
 _CONFIGS = [
-    # Non-causal
-    (256, 512, 16, 4, 256, False),
-    (256, 1024, 16, 4, 256, False),
-    (256, 2048, 16, 4, 256, False),
-    (256, 3072, 16, 4, 256, False),
-    (256, 4096, 16, 4, 256, False),
-    (256, 8192, 16, 4, 256, False),
-    # Causal
+    # Causal Attention only
     (256, 512, 16, 4, 256, True),
     (256, 1024, 16, 4, 256, True),
     (256, 2048, 16, 4, 256, True),

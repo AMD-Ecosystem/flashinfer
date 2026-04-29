@@ -279,30 +279,11 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print(
         "FA3-CDNA3 backend (q_len=256, head_dim=256, GQA 16/4; "
-        "kv_lens 512..8192; causal + non-causal)"
+        "kv_lens 512..8192; causal attention)"
     )
     print("=" * 60)
 
-    # Non-causal (matches bench _CONFIGS)
-    single_prefill_with_kv_cache_example(
-        256, 512, 16, 4, 256, False, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
-    )
-    single_prefill_with_kv_cache_example(
-        256, 1024, 16, 4, 256, False, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
-    )
-    single_prefill_with_kv_cache_example(
-        256, 2048, 16, 4, 256, False, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
-    )
-    single_prefill_with_kv_cache_example(
-        256, 3072, 16, 4, 256, False, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
-    )
-    single_prefill_with_kv_cache_example(
-        256, 4096, 16, 4, 256, False, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
-    )
-    single_prefill_with_kv_cache_example(
-        256, 8192, 16, 4, 256, False, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
-    )
-    # Causal
+    # Causal Attention only
     single_prefill_with_kv_cache_example(
         256, 512, 16, 4, 256, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
     )
