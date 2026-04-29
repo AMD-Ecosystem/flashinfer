@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // FA3-CDNA3: JIT-compiled host-side entry point with split-KV parallelism
-// targeting AMD MI300X (gfx942).
-// Tile128x128 (4 waves, 256 threads) for non-causal.
-// Tile64x128  (2 waves, 128 threads) for causal — reduced VGPR pressure.
-// Split-KV: when CU utilization is low, splits KV dimension across multiple
-// thread blocks and merges partial results via MergeStates.
+// targeting AMD MI300X (gfx942). Tile128x128 (4 waves, 256 threads) for both
+// causal and non-causal. Split-KV: when CU utilization is low, splits KV
+// dimension across multiple thread blocks and merges partial results via
+// MergeStates.
 
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <hip/hip_fp16.h>
@@ -51,7 +50,7 @@ inline int get_device_cu_count() {
   return v;
 }
 
-template <class Tile, bool IsCausal, int PairSize>
+template <class Tile, bool IsCausal>
 void launch_fa3_prefill_kernel(dim3 grid, hipStream_t stream, size_t smem_bytes, dim3 block,
                                __half* O, float* LSE, const __half* q_ptr, const __half* k_ptr,
                                const __half* v_ptr, int N_q, int N_kv, int nhead, int nhead_k,
@@ -59,31 +58,26 @@ void launch_fa3_prefill_kernel(dim3 grid, hipStream_t stream, size_t smem_bytes,
                                int total_q_head_blocks, int kv_chunk_size, int num_kv_chunks,
                                int o_row_stride, int lse_row_stride, int lse_head_stride,
                                bool base2_lse) {
-  fa3_cdna3_prefill_kernel_impl<Tile, IsCausal, PairSize><<<grid, block, smem_bytes, stream>>>(
+  fa3_cdna3_prefill_kernel_impl<Tile, IsCausal><<<grid, block, smem_bytes, stream>>>(
       O, LSE, q_ptr, k_ptr, v_ptr, N_q, N_kv, nhead, nhead_k, scale_log2, causal_offset,
       num_q_blocks, total_q_head_blocks, kv_chunk_size, num_kv_chunks, o_row_stride, lse_row_stride,
       lse_head_stride, base2_lse);
 }
 
-template <class Tile, int PairSize>
+template <class Tile>
 void do_fa3_single_prefill(bool is_causal, int N_q, int N_kv, int nhead, int nhead_k, int D,
                            float scale_log2, const __half* q_ptr, const __half* k_ptr,
                            const __half* v_ptr, __half* o_ptr, float* lse_ptr, at::Tensor& tmp,
                            hipStream_t stream) {
   const int num_q_blocks = (N_q + Tile::kBr - 1) / Tile::kBr;
-  // Pair mode (PairSize=2): one CTA per (q_block, k_head, gqa_pair).
-  // Single mode (PairSize=1): legacy one-CTA-per-Q-head.
-  const int total_q_head_blocks = (num_q_blocks * nhead) / PairSize;
+  const int total_q_head_blocks = num_q_blocks * nhead;
   const dim3 block(Tile::kNumThreads);
   const size_t smem_bytes = Tile::kLDSBytes;
   const int causal_offset = is_causal ? (N_kv - N_q) : 0;
 
-  // Split-KV gate: pick the smallest num_kv_chunks that meaningfully reduces
-  // the per-CU wallclock cost vs. running un-split. With 32 (q_block, head_q)
-  // blocks on a 20-CU CPX device, no split = ceil(32/20) = 2 wave passes
-  // carrying full per-CTA work; split=3 → ceil(96/20)/3 = 1.67 passes worth;
-  // split=5 → ceil(160/20)/5 = 1.60. Smaller chunks also mean smaller
-  // MergeStates work, so we pick the smallest N that beats no-split by ≥5%.
+  // Split-KV gate: pick the smallest num_kv_chunks that meaningfully improves
+  // wave occupancy vs. running un-split, weighed against the extra MergeStates
+  // pass that splitting adds.
   const int num_cus = get_device_cu_count();
   static constexpr int kMinChunkBlocks = 4;
   const int min_chunk_size = kMinChunkBlocks * static_cast<int>(Tile::kBc);
@@ -108,12 +102,12 @@ void do_fa3_single_prefill(bool is_causal, int N_q, int N_kv, int nhead, int nhe
   if (num_kv_chunks <= 1) {
     const dim3 grid(total_q_head_blocks, 1);
     if (is_causal) {
-      launch_fa3_prefill_kernel<Tile, true, PairSize>(
+      launch_fa3_prefill_kernel<Tile, true>(
           grid, stream, smem_bytes, block, o_ptr, lse_ptr, q_ptr, k_ptr, v_ptr, N_q, N_kv, nhead,
           nhead_k, scale_log2, causal_offset, num_q_blocks, total_q_head_blocks, N_kv, 1,
           nhead * D, 1, N_q, false);
     } else {
-      launch_fa3_prefill_kernel<Tile, false, PairSize>(
+      launch_fa3_prefill_kernel<Tile, false>(
           grid, stream, smem_bytes, block, o_ptr, lse_ptr, q_ptr, k_ptr, v_ptr, N_q, N_kv, nhead,
           nhead_k, scale_log2, causal_offset, num_q_blocks, total_q_head_blocks, N_kv, 1,
           nhead * D, 1, N_q, false);
@@ -136,12 +130,12 @@ void do_fa3_single_prefill(bool is_causal, int N_q, int N_kv, int nhead, int nhe
     const int o_stride = num_kv_chunks * nhead * D;
     const int lse_stride = num_kv_chunks * nhead;
     if (is_causal) {
-      launch_fa3_prefill_kernel<Tile, true, PairSize>(
+      launch_fa3_prefill_kernel<Tile, true>(
           grid, stream, smem_bytes, block, tmp_o_ptr, tmp_lse_ptr, q_ptr, k_ptr, v_ptr, N_q, N_kv,
           nhead, nhead_k, scale_log2, causal_offset, num_q_blocks, total_q_head_blocks,
           kv_chunk_size, num_kv_chunks, o_stride, lse_stride, 1, true);
     } else {
-      launch_fa3_prefill_kernel<Tile, false, PairSize>(
+      launch_fa3_prefill_kernel<Tile, false>(
           grid, stream, smem_bytes, block, tmp_o_ptr, tmp_lse_ptr, q_ptr, k_ptr, v_ptr, N_q, N_kv,
           nhead, nhead_k, scale_log2, causal_offset, num_q_blocks, total_q_head_blocks,
           kv_chunk_size, num_kv_chunks, o_stride, lse_stride, 1, true);
@@ -188,17 +182,6 @@ void fa3_cdna3_single_prefill(at::Tensor q, at::Tensor k, at::Tensor v, at::Tens
   const auto* v_ptr = reinterpret_cast<const __half*>(v.data_ptr());
   auto* o_ptr = reinterpret_cast<__half*>(o.data_ptr());
 
-  // Both causal and non-causal use Tile128x128. Tile64x128 was tested but causes
-  // 3.5x more VGPR spills (117 vs 34) due to 2x more per-thread staging VGPRs
-  // from cooperative K/V loads with half the threads.
-  //
-  // Phase 2b-7 B.1 (pair-mode, PairSize=2) was implemented and regressed ~2x
-  // wallclock on every shape due to register pressure: Q_reg[2]+O_acc[2]+
-  // transient S_acc[2] busts the gfx942 512-entry unified VGPR+AGPR file,
-  // causing 909-1237 VGPR spills per kernel (vs 13-27 in single-head). The
-  // HBM win from sharing K/V loads is swamped by scratch-memory spill traffic.
-  // The PairSize=2 code path is kept in source for future iteration but is
-  // not selected at runtime. See project_fa3_phase2b7b1_pair_falsified.md.
-  do_fa3_single_prefill<Tile128x128, 1>(is_causal, N_q, N_kv, nhead, nhead_k, D, scale_log2, q_ptr,
-                                        k_ptr, v_ptr, o_ptr, lse_ptr, tmp, stream);
+  do_fa3_single_prefill<Tile128x128>(is_causal, N_q, N_kv, nhead, nhead_k, D, scale_log2, q_ptr,
+                                     k_ptr, v_ptr, o_ptr, lse_ptr, tmp, stream);
 }

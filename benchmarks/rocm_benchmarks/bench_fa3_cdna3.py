@@ -20,7 +20,7 @@ against:
   - FlashInfer FA2 HIP path (existing baseline)
   - AITER flash_attn_varlen_func (if available)
 
-Alibaba use case: q_len=256, kv_len=512..8192, GQA 16/4, d=256.
+Sweep: q_len=256, kv_len=512..8192, GQA 16/4, d=256, both causal and non-causal.
 
 Run:
     # Full roofline pipeline:
@@ -54,6 +54,7 @@ from flashinfer.jit.core import logger as fi_logger
 
 fi_logger.setLevel(logging.ERROR)
 
+# Internal-tool import: rocm_profiler is a sibling of benchmarks/, not a package.
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "rocm_profiler"))
 from rocm_profiler import KernelConfig, RocmProfiler
 
@@ -113,17 +114,17 @@ if _include_aiter:
 # Benchmark configurations:
 #   (qo_len, kv_len, num_qo_heads, num_kv_heads, head_dim, causal)
 #
-# Alibaba chunked-prefill: q_len=256, kv_len varies, GQA 16/4, d=256.
+# Chunked-prefill sweep: q_len=256, kv_len varies, GQA 16/4, d=256.
 # ---------------------------------------------------------------------------
 _CONFIGS = [
-    # Alibaba chunked-prefill configs (non-causal)
+    # Non-causal
     (256, 512, 16, 4, 256, False),
     (256, 1024, 16, 4, 256, False),
     (256, 2048, 16, 4, 256, False),
     (256, 3072, 16, 4, 256, False),
     (256, 4096, 16, 4, 256, False),
     (256, 8192, 16, 4, 256, False),
-    # Alibaba chunked-prefill configs (causal)
+    # Causal
     (256, 512, 16, 4, 256, True),
     (256, 1024, 16, 4, 256, True),
     (256, 2048, 16, 4, 256, True),
@@ -252,115 +253,8 @@ def _make_configs() -> list[KernelConfig]:
     return configs
 
 
-@torch.inference_mode()
-def _run_correctness_tests():
-    """Compare FA3-CDNA3 output vs PyTorch SDPA ground truth."""
-    import torch.nn.functional as F
-
-    print("\n" + "=" * 72)
-    print("  CORRECTNESS TEST: FA3-CDNA3 vs PyTorch SDPA ground truth")
-    print("=" * 72)
-
-    # (qo_len, kv_len, nhead_q, nhead_k, head_dim, causal)
-    test_configs = [
-        # Square configs (regression tests)
-        (64, 64, 1, 1, 256, False),
-        (64, 64, 1, 1, 256, True),
-        (128, 128, 32, 8, 256, False),
-        (128, 128, 32, 8, 256, True),
-        # Chunked prefill: q_len < kv_len (non-causal)
-        (256, 512, 16, 4, 256, False),
-        (256, 1024, 16, 4, 256, False),
-        (256, 2048, 16, 4, 256, False),
-        (256, 3072, 16, 4, 256, False),
-        (256, 4096, 16, 4, 256, False),
-        (256, 8192, 16, 4, 256, False),
-        # Chunked prefill: q_len < kv_len (causal)
-        (256, 512, 16, 4, 256, True),
-        (256, 1024, 16, 4, 256, True),
-        (256, 2048, 16, 4, 256, True),
-        (256, 3072, 16, 4, 256, True),
-        (256, 4096, 16, 4, 256, True),
-        (256, 8192, 16, 4, 256, True),
-        # Edge cases
-        (32, 256, 16, 4, 256, False),
-        (32, 256, 16, 4, 256, True),
-        (128, 512, 16, 4, 256, False),
-        (128, 512, 16, 4, 256, True),
-    ]
-
-    all_pass = True
-    for qo_len, kv_len, nhead_q, nhead_k, head_dim, causal in test_configs:
-        torch.manual_seed(42)
-        q = torch.randn(qo_len, nhead_q, head_dim, dtype=torch.half, device="cuda")
-        k = torch.randn(kv_len, nhead_k, head_dim, dtype=torch.half, device="cuda")
-        v = torch.randn(kv_len, nhead_k, head_dim, dtype=torch.half, device="cuda")
-
-        sm_scale = 1.0 / (head_dim**0.5)
-        gqa_ratio = nhead_q // nhead_k
-
-        # Ground truth via PyTorch SDPA (FP32 for accuracy)
-        q_sdpa = q.float().permute(1, 0, 2).unsqueeze(0)  # [1, nhead_q, qo_len, D]
-        k_sdpa = k.float().permute(1, 0, 2)  # [nhead_k, kv_len, D]
-        k_sdpa = k_sdpa.repeat_interleave(gqa_ratio, dim=0).unsqueeze(0)
-        v_sdpa = v.float().permute(1, 0, 2)
-        v_sdpa = v_sdpa.repeat_interleave(gqa_ratio, dim=0).unsqueeze(0)
-        if causal and qo_len != kv_len:
-            # FlashInfer uses right-aligned causal: row i sees cols 0..(i + kv_len - qo_len).
-            # PyTorch SDPA is_causal uses left-aligned for the math backend, so build
-            # the correct mask explicitly.
-            causal_offset = kv_len - qo_len
-            mask = torch.ones(qo_len, kv_len, dtype=torch.bool, device="cuda")
-            mask = mask.tril(diagonal=causal_offset)
-            attn_mask = torch.zeros(qo_len, kv_len, dtype=torch.float32, device="cuda")
-            attn_mask.masked_fill_(~mask, float("-inf"))
-            ref = F.scaled_dot_product_attention(
-                q_sdpa,
-                k_sdpa,
-                v_sdpa,
-                attn_mask=attn_mask.unsqueeze(0).unsqueeze(0),
-                scale=sm_scale,
-            )
-        else:
-            ref = F.scaled_dot_product_attention(
-                q_sdpa, k_sdpa, v_sdpa, is_causal=causal, scale=sm_scale
-            )
-        ref = ref.squeeze(0).permute(1, 0, 2).half()  # [qo_len, nhead_q, D]
-
-        out = flashinfer.single_prefill_with_kv_cache(
-            q, k, v, causal=causal, backend="fa3_cdna3"
-        )
-
-        diff = (out.float() - ref.float()).abs()
-        max_err = diff.max().item()
-        mean_err = diff.mean().item()
-
-        causal_str = "causal" if causal else "nc"
-        status = "PASS" if max_err < 0.01 else "FAIL"
-        if status == "FAIL":
-            all_pass = False
-
-        print(
-            f"  [{status}]  q={qo_len:>4d}  kv={kv_len:>5d}  h={nhead_q}/{nhead_k}  "
-            f"d={head_dim}  {causal_str:>6s}  max_err={max_err:.6f}  mean_err={mean_err:.6f}"
-        )
-
-    print("=" * 72)
-    if all_pass:
-        print("  ALL CORRECTNESS TESTS PASSED")
-    else:
-        print("  SOME TESTS FAILED -- kernel produces incorrect output")
-    print("=" * 72 + "\n")
-    return all_pass
-
-
 if __name__ == "__main__":
-    import os as _os
     _skip_gpu = "--replot" in sys.argv or "--list-presets" in sys.argv
-    _is_profiler_subprocess = bool(_os.environ.get("_ROCM_PROFILER_CONFIG_IDX"))
-
-    if not _skip_gpu and not _is_profiler_subprocess:
-        _run_correctness_tests()
 
     profiler = RocmProfiler(
         configs=[] if _skip_gpu else _make_configs(),

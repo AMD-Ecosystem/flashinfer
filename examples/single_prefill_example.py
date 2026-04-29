@@ -21,7 +21,6 @@ def naive_attention(
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """
     Naive PyTorch implementation of attention for reference.
-    We cannot use torch.nn.functional.scaled_dot_product_attention because it does not support logits soft cap.
 
     Args:
         q: query tensor, shape: [qo_len, num_qo_heads, head_dim]
@@ -109,7 +108,6 @@ def single_prefill_with_kv_cache_example(
     pos_encoding_mode: str,
     logits_soft_cap: float,
     return_lse: bool,
-    backend: str = "fa2",
 ):
     """
     Run single_prefill_with_kv_cache and verify the output against a naive PyTorch reference implementation.
@@ -128,7 +126,6 @@ def single_prefill_with_kv_cache_example(
     print(f"  pos_encoding_mode={pos_encoding_mode}")
     print(f"  logits_soft_cap={logits_soft_cap}")
     print(f"  return_lse={return_lse}")
-    print(f"  backend={backend}")
 
     q = torch.randn(
         qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16
@@ -165,7 +162,6 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
-            backend=backend,
         )
         print(f"  FlashInfer output shape: {o.shape}, LSE shape: {lse.shape}")
         # Compute reference in FP32 for better accuracy
@@ -201,7 +197,6 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
-            backend=backend,
         )
         print(f"  FlashInfer output shape: {o.shape}")
 
@@ -230,28 +225,69 @@ def single_prefill_with_kv_cache_example(
 
 if __name__ == "__main__":
     print("=" * 60)
-    print(
-        "FlashInfer single_prefill_with_kv_cache — FA3-CDNA3 (head_dim=256, GQA 16/4)"
-    )
+    print("FlashInfer Single Prefill Example")
     print("=" * 60)
 
-    qo_len, num_qo_heads, num_kv_heads, head_dim = 256, 16, 4, 256
-    kv_lens = (8192, 4096, 2048, 1024, 512)
+    # Self-attention with logits soft cap
+    single_prefill_with_kv_cache_example(
+        128, 128, 1, 1, 64, False, "NHD", "NONE", 8.0, False
+    )
+    # Self-attention without logits soft cap
+    single_prefill_with_kv_cache_example(
+        128, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, False
+    )
+    # Multi-head attention (MHA)
+    single_prefill_with_kv_cache_example(
+        128, 128, 4, 4, 64, False, "NHD", "NONE", 8.0, False
+    )
+    # Grouped query attention (GQA)
+    single_prefill_with_kv_cache_example(
+        128, 128, 8, 4, 64, False, "NHD", "NONE", 8.0, False
+    )
+    # GQA with qo_len < kv_len (typical prefill)
+    single_prefill_with_kv_cache_example(
+        15, 127, 32, 4, 64, False, "NHD", "NONE", 8.0, False
+    )
+    # GQA with LSE enabled
+    single_prefill_with_kv_cache_example(
+        15, 127, 8, 4, 64, False, "NHD", "NONE", 0.0, True
+    )
+    # GQA with soft cap and LSE enabled
+    single_prefill_with_kv_cache_example(
+        15, 127, 8, 4, 64, False, "NHD", "NONE", 8.0, True
+    )
 
-    for causal in (False, True):
-        label = "causal" if causal else "non-causal"
-        print(f"\n--- Chunked prefill ({label}) ---")
-        for kv_len in kv_lens:
-            single_prefill_with_kv_cache_example(
-                qo_len,
-                kv_len,
-                num_qo_heads,
-                num_kv_heads,
-                head_dim,
-                causal,
-                "NHD",
-                "NONE",
-                0.0,
-                False,
-                "fa3_cdna3",
-            )
+    # Test case specifically for threadblock_sync_mdo_states validation
+    # This config triggers CTA_TILE_Q=16, NUM_WARPS_KV=4, calling threadblock_sync_mdo_states
+    print("\n" + "=" * 60)
+    print("Testing threadblock_sync_mdo_states (CTA_TILE_Q=16, NUM_WARPS_KV=4)")
+    print("=" * 60)
+    single_prefill_with_kv_cache_example(
+        16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, False
+    )
+    single_prefill_with_kv_cache_example(
+        16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, True
+    )
+
+    # ROCm FA3-CDNA3 backend (head_dim=256 GQA, causal). Skipped silently when
+    # the running device is not an AMD MI300X-class GPU.
+    if torch.version.hip is not None:
+        print("\n" + "=" * 60)
+        print("FA3-CDNA3 backend demo (head_dim=256, GQA 16/4, causal)")
+        print("=" * 60)
+        device = torch.cuda.current_device()
+        qo_len, kv_len = 256, 2048
+        num_qo_heads, num_kv_heads, head_dim = 16, 4, 256
+        q = torch.randn(
+            qo_len, num_qo_heads, head_dim, device=device, dtype=torch.float16
+        )
+        k = torch.randn(
+            kv_len, num_kv_heads, head_dim, device=device, dtype=torch.float16
+        )
+        v = torch.randn(
+            kv_len, num_kv_heads, head_dim, device=device, dtype=torch.float16
+        )
+        o = flashinfer.single_prefill_with_kv_cache(
+            q, k, v, causal=True, backend="fa3_cdna3"
+        )
+        print(f"  output shape: {o.shape}, ||o||_2 = {o.float().norm().item():.4f}")

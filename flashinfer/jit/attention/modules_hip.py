@@ -848,20 +848,9 @@ def gen_fa3_cdna3_single_prefill_module() -> JitSpec:
             source = f.read()
         write_if_different(dest_path, source)
 
-    cflags = list(_FA3_CDNA3_EXTRA_CUDA_CFLAGS)
-    if os.environ.get("FA3_DISABLE_SPLIT_KV", "0") not in ("0", "", "false", "False"):
-        cflags.append("-DFA3_DISABLE_SPLIT_KV=1")
-    if os.environ.get("FA3_REPORT_RESOURCE_USAGE", "0") not in ("0", "", "false", "False"):
-        cflags += ["-Rpass-analysis=kernel-resource-usage"]
-
     spec = gen_jit_spec(
         _FA3_CDNA3_URI,
         source_paths,
-        extra_cuda_cflags=cflags,
+        extra_cuda_cflags=list(_FA3_CDNA3_EXTRA_CUDA_CFLAGS),
     )
-    # core.py only auto-writes build.ninja when it doesn't exist; force a
-    # rewrite so env-var-driven cflag changes (e.g. FA3_DISABLE_SPLIT_KV) take
-    # effect on the next ninja run. write_if_different makes this a no-op when
-    # the content already matches.
-    spec.write_ninja()
     return spec

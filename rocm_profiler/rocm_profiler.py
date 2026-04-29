@@ -175,10 +175,10 @@ jobs:
   # Pass 2: LDS stall cycles + total busy cycles + L2 writes
   - pmc: [SQ_WAIT_INST_LDS, SQ_BUSY_CYCLES, WriteSize]
 """,
-    # Two-pass per-class instruction-issue + wait attribution. Designed for
-    # post-2c-1 / post-2d-0 per-WG efficiency triage: split SQ_BUSY_CYCLES
-    # between (a) instruction-count-bound classes (VALU / SALU / VMEM_RD) and
-    # (b) wait-bound classes ((WAIT_ANY - WAIT_LDS) ≈ VMEM+barrier wait).
+    # Two-pass per-class instruction-issue + wait attribution. Splits
+    # SQ_BUSY_CYCLES between (a) instruction-count-bound classes
+    # (VALU / SALU / VMEM_RD) and (b) wait-bound classes
+    # ((WAIT_ANY - WAIT_LDS) ≈ VMEM+barrier wait).
     #
     # Derived metrics:
     #   SQ_INSTS_VALU / SQ_BUSY_CYCLES       → VALU issue density

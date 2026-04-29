@@ -1,13 +1,18 @@
-# v0.5.3+amd.2
+# v0.5.3+amd.3
 
 ## Added
 
+- FA3-CDNA3 single-prefill kernel for AMD MI300X (gfx942), `head_dim=256`, GQA, both causal and non-causal. Selectable via `backend="fa3_cdna3"` on `single_prefill_with_kv_cache`.
+- `examples/single_prefill_example.py`: appended a short FA3-CDNA3 demo (`head_dim=256`, GQA 16/4, causal).
+- `benchmarks/rocm_benchmarks/bench_fa3_cdna3.py`: chunked-prefill sweep (FA3-CDNA3 vs FA2-HIP vs AITER) with optional rocprofv3 roofline collection.
+- `tests/rocm_tests/test_fa3_cdna3_prefill_hip.py`: pytest correctness sweep for the FA3-CDNA3 backend against PyTorch SDPA.
+- `rocm_profiler`: `fine_attr` PMC preset (per-class instruction issue + wait attribution) for general kernel triage.
 - Add Jupyter notebook tutorial for using amd-flashinfer on ROCm (#213) @diptorupd
 - Add ROCm profiler module (`flashinfer/rocm_profiler/`) and FA2 single-prefill benchmark driver using rocprofv3 (#205) @diptorupd
-- Gate `torch.compile` integration behind `FLASHINFER_USE_TORCH_CUSTOM_OPS`, with HIP pytest coverage (#210) @demandal25
 
 ## Changed
 
+- `register_custom_op` is now a no-op pass-through. **Breaking change**: removes `use_torch_custom_ops_enabled` / `FLASHINFER_USE_TORCH_CUSTOM_OPS`. `torch.compile` integration is disabled until reworked.
 - FA2 prefill on HIP: improve occupancy and throughput on CDNA3 via LDS-aware `CTA_TILE_Q` selection and shared-memory budget capping (#209) @diptorupd
 - Add `k128B_16Row` swizzle mode for prefill shared memory to reduce LDS bank conflicts on CDNA3 (#207) @diptorupd
 
@@ -24,7 +29,7 @@
 
 **Contributors**: @diptorupd, @demandal25, @subhajitdchow
 
-**Summary**: This point release focuses on ROCm prefill correctness and performance, developer tooling, and install ergonomics. It fixes silent bf16 softmax scaling and custom-mask/GQA mis-indexing in HIP FA2, improves CDNA3 occupancy and LDS bank behavior for FA2 prefill, adds an opt-in `torch.compile` path, a rocprofv3-based profiling kit, and a notebook tutorial. Editable installs now pick up header edits without reinstalling.
+**Summary**: This release adds the FA3-CDNA3 single-prefill path for MI300X, profiling benchmarks and tests, and merges prior amd-integration work: ROCm prefill correctness fixes (including HIP FA2 bf16/MFMA and custom-mask GQA), CDNA3 FA2 occupancy and LDS swizzle improvements, the rocprofv3 profiling kit and notebook tutorial, and editable-install header visibility. `register_custom_op` is a pass-through (no `FLASHINFER_USE_TORCH_CUSTOM_OPS`); `torch.compile` integration is disabled until reworked.
 
 ---
 

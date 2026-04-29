@@ -255,18 +255,6 @@ def _get_fa3_cdna3_single_prefill_module():
     ) -> None:
         run_func(q, k, v, o, maybe_lse, is_causal, tmp)
 
-    @register_fake_op(f"flashinfer::{uri}_run")
-    def _fake_run_fa3_cdna3(
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        o: torch.Tensor,
-        maybe_lse: Optional[torch.Tensor],
-        is_causal: bool,
-        tmp: torch.Tensor,
-    ) -> None:
-        pass
-
     return SimpleNamespace(run=run_fa3_cdna3)
 
 
@@ -1120,9 +1108,14 @@ def single_prefill_with_kv_cache(
     rope_theta : Optional[float]
         The theta used in RoPE, if not provided, will be set to 1e4.
     backend : str
-        The implementation backend, could be ``auto``/``fa2`` or ``fa3``. Defaults to ``auto``.
-        If set to ``auto``, the function will automatically choose the backend based on the
-        device architecture and kernel availability.
+        The implementation backend, could be ``auto``/``fa2``/``fa3``/``fa3_cdna3``.
+        Defaults to ``auto``. If set to ``auto``, the function will automatically
+        choose the backend based on the device architecture and kernel availability.
+
+        ``fa3_cdna3`` is a HIP/ROCm-only backend targeting AMD CDNA3 (gfx942)
+        with ``head_dim == 256`` and GQA. Tested with the 16/4 head ratio used
+        by the chunked-prefill bench; other GQA ratios divisible by ``num_kv_heads``
+        also work but are not part of the regression suite.
     return_lse : bool
         Whether to return the log sum exp value of the attention logits.
 
@@ -2523,6 +2516,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             pin_memory=True,
             device="cpu",
         )
+        self._plan_info: Optional[torch.Tensor] = None
         self._use_cuda_graph = use_cuda_graph
         if use_cuda_graph:
             if not torch.is_tensor(qo_indptr_buf):
