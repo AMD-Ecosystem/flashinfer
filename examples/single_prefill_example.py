@@ -285,20 +285,20 @@ if __name__ == "__main__":
 
     # Causal Attention only
     single_prefill_with_kv_cache_example(
-        256, 512, 16, 4, 256, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+        256, 512, 16, 4, 64, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
     )
     single_prefill_with_kv_cache_example(
-        256, 1024, 16, 4, 256, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+        256, 1024, 16, 4, 64, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
     )
     single_prefill_with_kv_cache_example(
-        256, 2048, 16, 4, 256, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+        256, 2048, 16, 4, 64, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
     )
     single_prefill_with_kv_cache_example(
-        256, 3072, 16, 4, 256, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+        256, 3072, 16, 4, 64, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
     )
     single_prefill_with_kv_cache_example(
-        256, 4096, 16, 4, 256, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+        256, 4096, 16, 4, 64, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
     )
     single_prefill_with_kv_cache_example(
-        256, 8192, 16, 4, 256, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
+        256, 8192, 16, 4, 64, True, "NHD", "NONE", 0.0, False, backend="fa3_cdna3"
     )

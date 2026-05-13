@@ -15,16 +15,19 @@ limitations under the License.
 
 FA3-CDNA3 chunked-prefill benchmark for CDNA3.
 
-Benchmarks the FA3-CDNA3 kernel (head_dim=256, chunked prefill q_len != kv_len)
-against:
+Benchmarks the FA3-CDNA3 kernel (chunked prefill q_len != kv_len) against:
   - FlashInfer FA2 HIP path (existing baseline)
   - AITER flash_attn_varlen_func (if available)
 
-Sweep: q_len=256, kv_len=512..8192, GQA 16/4, d=256, causal attention.
+Sweep: q_len=256, kv_len=512..8192, GQA 16/4, head_dim ∈ {64, 128, 256},
+causal attention.
 
 Run:
-    # Full roofline pipeline:
+    # Full roofline pipeline (default sweep over all supported head_dims):
     python benchmarks/rocm_benchmarks/bench_fa3_cdna3.py
+
+    # Restrict to a single head_dim:
+    python benchmarks/rocm_benchmarks/bench_fa3_cdna3.py --head-dim 256
 
     # Timing only (no rocprofv3):
     python benchmarks/rocm_benchmarks/bench_fa3_cdna3.py --timing-only
@@ -43,6 +46,7 @@ Output files (all gitignored):
 """
 
 import argparse
+import itertools
 import logging
 import sys
 import warnings
@@ -84,6 +88,15 @@ _bench_parser.add_argument(
     action="store_true",
     help="Skip AITER flash_attn_varlen_func comparison.",
 )
+_bench_parser.add_argument(
+    "--head-dim",
+    type=int,
+    nargs="+",
+    choices=[64, 128, 256],
+    default=[64, 128, 256],
+    metavar="HD",
+    help="Head dimension(s) to sweep (subset of {64, 128, 256}). Default: all three.",
+)
 _bench_args, _remaining = _bench_parser.parse_known_args()
 sys.argv = [sys.argv[0]] + _remaining
 
@@ -94,6 +107,7 @@ _label = (
     else ("fa3_cdna3" if _counters == "roofline" else f"fa3_cdna3_{_counters}")
 )
 _include_aiter = not _bench_args.no_aiter
+_HEAD_DIMS = _bench_args.head_dim
 
 # ---------------------------------------------------------------------------
 # Check AITER availability
@@ -112,19 +126,19 @@ if _include_aiter:
         )
 
 # ---------------------------------------------------------------------------
-# Benchmark configurations:
-#   (qo_len, kv_len, num_qo_heads, num_kv_heads, head_dim, causal)
+# Per-shape configurations (head_dim is applied as an outer loop in _make_configs):
+#   (qo_len, kv_len, num_qo_heads, num_kv_heads, causal)
 #
-# Chunked-prefill sweep: q_len=256, kv_len varies, GQA 16/4, d=256.
+# Chunked-prefill sweep: q_len=256, kv_len varies, GQA 16/4, causal only.
 # ---------------------------------------------------------------------------
-_CONFIGS = [
+_SHAPES = [
     # Causal Attention only
-    (256, 512, 16, 4, 256, True),
-    (256, 1024, 16, 4, 256, True),
-    (256, 2048, 16, 4, 256, True),
-    (256, 3072, 16, 4, 256, True),
-    (256, 4096, 16, 4, 256, True),
-    (256, 8192, 16, 4, 256, True),
+    (256, 512, 16, 4, True),
+    (256, 1024, 16, 4, True),
+    (256, 2048, 16, 4, True),
+    (256, 3072, 16, 4, True),
+    (256, 4096, 16, 4, True),
+    (256, 8192, 16, 4, True),
 ]
 
 _OUTPUT_DIR = str(Path(__file__).parent)
@@ -154,7 +168,9 @@ def _bytes(qo_len: int, kv_len: int, nhead_q: int, nhead_k: int, head_dim: int) 
 def _make_configs() -> list[KernelConfig]:
     configs = []
 
-    for qo_len, kv_len, nhead_q, nhead_k, head_dim, causal in _CONFIGS:
+    for head_dim, (qo_len, kv_len, nhead_q, nhead_k, causal) in itertools.product(
+        _HEAD_DIMS, _SHAPES
+    ):
         q = torch.randn(qo_len, nhead_q, head_dim, dtype=torch.half, device="cuda")
         k = torch.randn(kv_len, nhead_k, head_dim, dtype=torch.half, device="cuda")
         v = torch.randn(kv_len, nhead_k, head_dim, dtype=torch.half, device="cuda")
