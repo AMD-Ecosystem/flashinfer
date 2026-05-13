@@ -166,7 +166,6 @@ if IS_CUDA:
         prepare_low_latency_gemm_weights as prepare_low_latency_gemm_weights,
     )
     from .utils import next_positive_power_of_2 as next_positive_power_of_2
-    from .utils import use_torch_custom_ops_enabled as use_torch_custom_ops_enabled
     from .xqa import xqa as xqa
     from .xqa import xqa_mla as xqa_mla
 elif IS_HIP:
@@ -260,7 +259,6 @@ elif IS_HIP:
     sys.modules["flashinfer.decode"] = sys.modules["flashinfer.decode_rocm"]
 
     from .utils import next_positive_power_of_2 as next_positive_power_of_2
-    from .utils import use_torch_custom_ops_enabled as use_torch_custom_ops_enabled
 else:
     # CPU-only torch (no CUDA or HIP)
     raise RuntimeError(
