@@ -2,10 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // FA3-CDNA3: JIT-compiled host-side entry point with split-KV parallelism
-// targeting AMD MI300X (gfx942). Tile128x128 (4 waves, 256 threads) for both
-// causal and non-causal. Split-KV: when CU utilization is low, splits KV
-// dimension across multiple thread blocks and merges partial results via
-// MergeStates.
+// targeting AMD MI300X (gfx942). Per-head-dim tile selection:
+//   HD=64  → Tile128x64_d64   (kBc=64, occupancy=3 CTAs/CU)
+//   HD=128 → Tile128x128_d128 (kBc=128, occupancy=1)
+//   HD=256 → Tile128x128      (kBc=128, occupancy=1)
+// All variants: 4 waves × 64 threads = 256 threads/CTA, both causal and
+// non-causal. Split-KV: when CU utilization is low, splits KV dimension across
+// multiple thread blocks and merges partial results via MergeStates.
+//
+// HD=64 production tuning: kBc=64 matches AITER's BlockN=64 reference
+// (CK_TILE qr_async_vr pipeline), keeping per-tile MFMA count and LDS in
+// parity. launch_bounds(256, 3) lets the gfx942 backend pick vgpr-form MFMA,
+// dropping AGPR pressure to 0 and fitting 3 CTAs/CU. Production geomean vs
+// AITER on the q=256 / GQA 16/4 / kv ∈ {512..8192} causal sweep is 1.17×
+// (matches at kv=8192). Floor is set by triple-buffer K+V async, which the
+// LDS budget does not admit at occupancy=3.
 
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <hip/hip_fp16.h>
@@ -162,7 +173,8 @@ void fa3_cdna3_single_prefill(at::Tensor q, at::Tensor k, at::Tensor v, at::Tens
   const int D = q.size(2);
   const int nhead_k = k.size(1);
 
-  TORCH_CHECK(D == 256, "FA3-CDNA3: head_dim must be 256");
+  TORCH_CHECK(D == 64 || D == 128 || D == 256,
+              "FA3-CDNA3: head_dim must be 64, 128, or 256 (got ", D, ")");
   TORCH_CHECK(N_q <= 8192, "FA3-CDNA3: q_len must be <= 8192");
   TORCH_CHECK(N_kv <= 8192, "FA3-CDNA3: kv_len must be <= 8192");
   TORCH_CHECK(nhead % nhead_k == 0, "FA3-CDNA3: nhead must be divisible by nhead_k (GQA)");
@@ -182,6 +194,20 @@ void fa3_cdna3_single_prefill(at::Tensor q, at::Tensor k, at::Tensor v, at::Tens
   const auto* v_ptr = reinterpret_cast<const __half*>(v.data_ptr());
   auto* o_ptr = reinterpret_cast<__half*>(o.data_ptr());
 
-  do_fa3_single_prefill<Tile128x128>(is_causal, N_q, N_kv, nhead, nhead_k, D, scale_log2, q_ptr,
-                                     k_ptr, v_ptr, o_ptr, lse_ptr, tmp, stream);
+  switch (D) {
+    case 64:
+      do_fa3_single_prefill<Tile128x64_d64>(is_causal, N_q, N_kv, nhead, nhead_k, D, scale_log2,
+                                            q_ptr, k_ptr, v_ptr, o_ptr, lse_ptr, tmp, stream);
+      break;
+    case 128:
+      do_fa3_single_prefill<Tile128x128_d128>(is_causal, N_q, N_kv, nhead, nhead_k, D, scale_log2,
+                                              q_ptr, k_ptr, v_ptr, o_ptr, lse_ptr, tmp, stream);
+      break;
+    case 256:
+      do_fa3_single_prefill<Tile128x128>(is_causal, N_q, N_kv, nhead, nhead_k, D, scale_log2,
+                                         q_ptr, k_ptr, v_ptr, o_ptr, lse_ptr, tmp, stream);
+      break;
+    default:
+      TORCH_INTERNAL_ASSERT(false, "FA3-CDNA3: dispatch unreachable for head_dim=", D);
+  }
 }

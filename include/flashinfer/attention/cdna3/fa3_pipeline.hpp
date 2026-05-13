@@ -93,11 +93,19 @@ struct TileConfig {
   // Register-staged cooperative load sizes (per thread)
   static constexpr int kK_LoadsPerThread = (kBc * kK0) / (kNumThreads * 8);
   static constexpr int kV_LoadsPerThread = (kK1 * kHeadDim) / (kNumThreads * 8);
+
+  // gfx942 has 64 KB of LDS per CU; every TileConfig instantiation must fit
+  // a single CTA's allocation.
+  static_assert(kLDSBytes <= 64 * 1024, "TileConfig LDS budget exceeds 64 KB CU limit");
 };
 
-using Tile128x128 = TileConfig<128, 128, 256, 4>;  // 4 waves, 256 threads
+using Tile128x128 = TileConfig<128, 128, 256, 4>;        // HD=256: kBc=128
+using Tile128x128_d128 = TileConfig<128, 128, 128, 4>;   // HD=128: kBc=128
+using Tile128x64_d64 = TileConfig<128, 64, 64, 4>;       // HD=64:  kBc=64 matches AITER's BlockN
 
 static_assert(Tile128x128::kBrLocal == 32, "");
+static_assert(Tile128x128_d128::kBrLocal == 32, "");
+static_assert(Tile128x64_d64::kBrLocal == 32, "");
 
 // ===== Register-staged GMEM -> LDS loads (templated on TileConfig) ===========
 
@@ -159,31 +167,62 @@ __device__ __forceinline__ void cooperative_store_k_to_lds(const k_reg_buf_t<Til
   }
 }
 
+// HD<256 V load/store linear-mapping decode: thread holds kV_LoadsPerThread
+// uint4 chunks at distinct (seq, head_start) pairs covering all kK1 seqs × HD
+// heads exactly once.
+template <class Tile>
+__device__ __forceinline__ void v_linear_to_seq_head_start(int linear, int& seq,
+                                                           int& head_start) {
+  constexpr int kHeadsPerSeq = Tile::kHeadDim / 8;  // uint4-chunks per seq
+  seq = linear / kHeadsPerSeq;
+  head_start = (linear % kHeadsPerSeq) * 8;
+}
+
 template <class Tile>
 __device__ __forceinline__ v_reg_buf_t<Tile> cooperative_load_v_to_regs(
     const __half* __restrict__ gmem_base, int kv_row_stride, int thread_id, int valid_rows) {
   v_reg_buf_t<Tile> buf;
   const uint4 zero4 = {0, 0, 0, 0};
 
-  // Wave-slab load: wave w covers seqs [w*8, w*8+8). Each lane holds 4 chunks
-  // at consecutive seqs of one head_block, so the kKPack=4 LDS store needs only
-  // an intra-VGPR transpose (no cross-lane shuffle).
-  //   chunk p of lane (w, l_hi, l_lo): seq = w*8 + l_hi*4 + p,
-  //                                    head_start = l_lo*8 (8 fp16 = 1 uint4)
-  static_assert(Tile::kNumWaves == 4 && Tile::kK1 == 32 && Tile::kHeadDim == 256,
-                "kKPack=4 V LDS layout requires Tile128x128 shape");
-  const int wave_id = thread_id / kWaveSize;
-  const int lane = thread_id % kWaveSize;
-  const int l_hi = lane >> 5;
-  const int l_lo = lane & 31;
+  static_assert(Tile::kNumWaves == 4 && Tile::kK1 == 32 && Tile::kHeadDim % 64 == 0 &&
+                    Tile::kHeadDim <= 256,
+                "kKPack=4 V LDS layout requires kNumWaves==4, kK1==32, HD ∈ {64,128,256}");
+
+  if constexpr (Tile::kHeadDim == 256) {
+    // Wave-slab load (HD=256 only): wave w covers seqs [w*8, w*8+8). Each lane
+    // holds 4 chunks at consecutive seqs of one head_block, so the kKPack=4 LDS
+    // store needs only an intra-VGPR transpose (no cross-lane shuffle).
+    //   chunk p of lane (w, l_hi, l_lo): seq = w*8 + l_hi*4 + p,
+    //                                    head_start = l_lo*8 (8 fp16 = 1 uint4)
+    const int wave_id = thread_id / kWaveSize;
+    const int lane = thread_id % kWaveSize;
+    const int l_hi = lane >> 5;
+    const int l_lo = lane & 31;
 #pragma unroll
-  for (int p = 0; p < Tile::kV_LoadsPerThread; ++p) {
-    int seq = wave_id * 8 + l_hi * 4 + p;
-    int head_start = l_lo * 8;
-    if (seq < valid_rows) {
-      buf.data[p] = *reinterpret_cast<const uint4*>(gmem_base + seq * kv_row_stride + head_start);
-    } else {
-      buf.data[p] = zero4;
+    for (int p = 0; p < Tile::kV_LoadsPerThread; ++p) {
+      int seq = wave_id * 8 + l_hi * 4 + p;
+      int head_start = l_lo * 8;
+      if (seq < valid_rows) {
+        buf.data[p] =
+            *reinterpret_cast<const uint4*>(gmem_base + seq * kv_row_stride + head_start);
+      } else {
+        buf.data[p] = zero4;
+      }
+    }
+  } else {
+    // HD-agnostic linear mapping for HD ∈ {64, 128}. The store helper uses the
+    // same decode and writes each chunk to its canonical layout-2 LDS slot, so
+    // no specific ordering between threads is required.
+#pragma unroll
+    for (int p = 0; p < Tile::kV_LoadsPerThread; ++p) {
+      int seq, head_start;
+      v_linear_to_seq_head_start<Tile>(thread_id * Tile::kV_LoadsPerThread + p, seq, head_start);
+      if (seq < valid_rows) {
+        buf.data[p] =
+            *reinterpret_cast<const uint4*>(gmem_base + seq * kv_row_stride + head_start);
+      } else {
+        buf.data[p] = zero4;
+      }
     }
   }
   return buf;
@@ -193,34 +232,60 @@ template <class Tile>
 __device__ __forceinline__ void cooperative_store_v_to_lds(const v_reg_buf_t<Tile>& buf,
                                                            char* __restrict__ smem, int thread_id,
                                                            int v_lds_base) {
-  // kKPack=4 store: intra-VGPR transpose + ds_write_b64 per slot.
-  // Pre-transpose, lane (w, l_hi, l_lo)'s 4 chunks each hold 8 fp16 at
-  //   (seq = w*8 + l_hi*4 + p, heads l_lo*8 .. l_lo*8 + 7).
-  // For each j in [0,8) the four chunks share the same head h=l_lo*8+j across
-  //   4 consecutive seqs — exactly the kKPack=4 slot. Pack and store:
-  //   slot = (chunk[0].fp16[j] | chunk[1].fp16[j]<<16,
-  //           chunk[2].fp16[j] | chunk[3].fp16[j]<<16) → 1 ds_write_b64.
-  static_assert(Tile::kNumWaves == 4 && Tile::kK1 == 32 && Tile::kHeadDim == 256, "");
-  const int wave_id = thread_id / kWaveSize;
-  const int lane = thread_id % kWaveSize;
-  const int l_hi = lane >> 5;
-  const int l_lo = lane & 31;
-  const uint32_t group = static_cast<uint32_t>(2 * wave_id + l_hi);
-  const uint16_t* c0 = reinterpret_cast<const uint16_t*>(&buf.data[0]);
-  const uint16_t* c1 = reinterpret_cast<const uint16_t*>(&buf.data[1]);
-  const uint16_t* c2 = reinterpret_cast<const uint16_t*>(&buf.data[2]);
-  const uint16_t* c3 = reinterpret_cast<const uint16_t*>(&buf.data[3]);
+  static_assert(Tile::kNumWaves == 4 && Tile::kK1 == 32 && Tile::kHeadDim % 64 == 0 &&
+                    Tile::kHeadDim <= 256,
+                "kKPack=4 V LDS layout requires kNumWaves==4, kK1==32, HD ∈ {64,128,256}");
+
+  if constexpr (Tile::kHeadDim == 256) {
+    // kKPack=4 store (HD=256 only): intra-VGPR transpose + ds_write_b64 per slot.
+    // Pre-transpose, lane (w, l_hi, l_lo)'s 4 chunks each hold 8 fp16 at
+    //   (seq = w*8 + l_hi*4 + p, heads l_lo*8 .. l_lo*8 + 7).
+    // The four chunks share head h=l_lo*8+j across 4 consecutive seqs — exactly
+    // the kKPack=4 slot. Pack the 4 fp16s into a uint2 and emit one ds_write_b64.
+    const int wave_id = thread_id / kWaveSize;
+    const int lane = thread_id % kWaveSize;
+    const int l_hi = lane >> 5;
+    const int l_lo = lane & 31;
+    const uint32_t group = static_cast<uint32_t>(2 * wave_id + l_hi);
+    const uint16_t* c0 = reinterpret_cast<const uint16_t*>(&buf.data[0]);
+    const uint16_t* c1 = reinterpret_cast<const uint16_t*>(&buf.data[1]);
+    const uint16_t* c2 = reinterpret_cast<const uint16_t*>(&buf.data[2]);
+    const uint16_t* c3 = reinterpret_cast<const uint16_t*>(&buf.data[3]);
 #pragma unroll
-  for (int j = 0; j < 8; ++j) {
-    const uint32_t head = static_cast<uint32_t>(l_lo * 8 + j);
-    const uint32_t row = head >> 4;
-    const uint32_t pos = head & 15u;
-    const uint32_t lds_off = static_cast<uint32_t>(v_lds_base) + group * Tile::kV_GroupStride +
-                             row * Tile::kV_RowStrideBytes + pos * Tile::kV_HeadStride;
-    uint2 packed;
-    packed.x = static_cast<uint32_t>(c0[j]) | (static_cast<uint32_t>(c1[j]) << 16);
-    packed.y = static_cast<uint32_t>(c2[j]) | (static_cast<uint32_t>(c3[j]) << 16);
-    *reinterpret_cast<uint2*>(smem + lds_off) = packed;
+    for (int j = 0; j < 8; ++j) {
+      const uint32_t head = static_cast<uint32_t>(l_lo * 8 + j);
+      const uint32_t row = head / Tile::kV_RowHeadCount;
+      const uint32_t pos = head % Tile::kV_RowHeadCount;
+      const uint32_t lds_off = static_cast<uint32_t>(v_lds_base) + group * Tile::kV_GroupStride +
+                               row * Tile::kV_RowStrideBytes + pos * Tile::kV_HeadStride;
+      uint2 packed;
+      packed.x = static_cast<uint32_t>(c0[j]) | (static_cast<uint32_t>(c1[j]) << 16);
+      packed.y = static_cast<uint32_t>(c2[j]) | (static_cast<uint32_t>(c3[j]) << 16);
+      *reinterpret_cast<uint2*>(smem + lds_off) = packed;
+    }
+  } else {
+    // HD ∈ {64, 128}: write each fp16 head to its canonical layout-2 LDS slot
+    // via ds_write_b16. 4 seqs per kKPack=4 slot at slot_pos=seq%4 → 2-byte
+    // offset within an 8-byte slot. Total V-store traffic is unchanged; the
+    // extra ds-inst count is off the QK/PV critical path.
+#pragma unroll
+    for (int p = 0; p < Tile::kV_LoadsPerThread; ++p) {
+      int seq, head_base;
+      v_linear_to_seq_head_start<Tile>(thread_id * Tile::kV_LoadsPerThread + p, seq, head_base);
+      const uint32_t group = static_cast<uint32_t>(seq / 4);
+      const uint32_t slot_pos = static_cast<uint32_t>(seq % 4);
+      const uint16_t* chunk = reinterpret_cast<const uint16_t*>(&buf.data[p]);
+#pragma unroll
+      for (int j = 0; j < 8; ++j) {
+        const uint32_t head = static_cast<uint32_t>(head_base + j);
+        const uint32_t row = head / Tile::kV_RowHeadCount;
+        const uint32_t pos = head % Tile::kV_RowHeadCount;
+        const uint32_t lds_off = static_cast<uint32_t>(v_lds_base) +
+                                 group * Tile::kV_GroupStride + row * Tile::kV_RowStrideBytes +
+                                 pos * Tile::kV_HeadStride + slot_pos * 2u;
+        *reinterpret_cast<uint16_t*>(smem + lds_off) = chunk[j];
+      }
+    }
   }
 }
 
@@ -332,17 +397,34 @@ __device__ __forceinline__ void qk_gemm_k0(
 }
 
 // ===== QK GEMM scheduling: sched_group_barrier pattern =======================
-
+//
+// Per qk_gemm_k0() call the front-end issues kQK_MTiles × kKPairs ds_read_b128
+// (kKPairs = kQK_KSteps/2 = 2) and kQK_MTiles × kQK_KSteps MFMAs. Hint the
+// canonical "front-load reads under MFMA" pattern. Counts scale with kQK_MTiles
+// (= kBc/kMfmaM); other kBc values fall through with no hint.
+template <class Tile>
 __device__ __forceinline__ void schedule_gemm0() {
   using namespace asm_primitives;
-  // Post-kKPack=8 stream per qk_gemm_k0(): 8 ds_read_b128 + 16 mfma.
-  // Front-load reads under MFMA so DS-read latency hides in QK MFMA throughput.
-  sched_group_barrier<0x100, 4>();  // 4 DS reads (k_cur preload)
-  sched_group_barrier<0x008, 4>();  // 4 MFMAs (kp=0 sub=0)
-  sched_group_barrier<0x100, 2>();  // 2 DS reads (k_next prefetch, half)
-  sched_group_barrier<0x008, 4>();  // 4 MFMAs (kp=0 sub=1)
-  sched_group_barrier<0x100, 2>();  // 2 DS reads (k_next prefetch, rest)
-  sched_group_barrier<0x008, 8>();  // 8 MFMAs (kp=1)
+  if constexpr (Tile::kQK_MTiles == 4) {
+    // kBc=128: 8 ds_read_b128 + 16 mfma per call.
+    sched_group_barrier<0x100, 4>();  // k_cur preload
+    sched_group_barrier<0x008, 4>();
+    sched_group_barrier<0x100, 2>();  // k_next prefetch, half
+    sched_group_barrier<0x008, 4>();
+    sched_group_barrier<0x100, 2>();  // k_next prefetch, rest
+    sched_group_barrier<0x008, 8>();
+  } else if constexpr (Tile::kQK_MTiles == 2) {
+    // kBc=64: 4 ds_read_b128 + 8 mfma per call.
+    sched_group_barrier<0x100, 2>();
+    sched_group_barrier<0x008, 2>();
+    sched_group_barrier<0x100, 1>();
+    sched_group_barrier<0x008, 2>();
+    sched_group_barrier<0x100, 1>();
+    sched_group_barrier<0x008, 4>();
+  } else {
+    static_assert(Tile::kQK_MTiles == 2 || Tile::kQK_MTiles == 4,
+                  "schedule_gemm0: hint not derived for this kQK_MTiles");
+  }
 }
 
 // ===== TransposedC PV GEMM for one kK1=32 strip ==============================
@@ -572,7 +654,7 @@ __device__ __forceinline__ void process_kv_tile(const fp16_reg_tile<Tile::kBrLoc
     int wr = 1 - rd;
     s_barrier();
     qk_gemm_k0<Tile>(Q_reg, smem, k_bases[rd], S_acc, ik, lane_id);
-    schedule_gemm0();
+    schedule_gemm0<Tile>();
     s_waitcnt_vmcnt(0);
     cooperative_store_k_to_lds<Tile>(k_regs, smem, thread_id, k_bases[wr]);
     k_regs = cooperative_load_k_to_regs<Tile>(k_tile_base + (ik + 2) * Tile::kK0, kv_row_stride,
@@ -589,14 +671,14 @@ __device__ __forceinline__ void process_kv_tile(const fp16_reg_tile<Tile::kBrLoc
 
     s_barrier();
     qk_gemm_k0<Tile>(Q_reg, smem, k_bases[rd6], S_acc, Tile::k0_loops - 2, lane_id);
-    schedule_gemm0();
+    schedule_gemm0<Tile>();
 
     s_waitcnt_vmcnt(0);
     cooperative_store_k_to_lds<Tile>(k_regs, smem, thread_id, k_bases[wr7]);
 
     s_barrier();
     qk_gemm_k0<Tile>(Q_reg, smem, k_bases[wr7], S_acc, Tile::k0_loops - 1, lane_id);
-    schedule_gemm0();
+    schedule_gemm0<Tile>();
   }
 
   // --- Stage 2: Fused mask + softmax + P repack ---

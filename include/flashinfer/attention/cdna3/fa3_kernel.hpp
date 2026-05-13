@@ -60,8 +60,12 @@ __device__ __forceinline__ XCDAwareMapping xcd_aware_remap(int flat_block_id, in
 // When num_kv_chunks > 1: O_out points to tmp_o, LSE_out to tmp_lse
 // ---------------------------------------------------------------------------
 
+// HD=64 fits 3 CTAs/CU under the gfx942 register and LDS budget; HD=128/256
+// already saturate one CTA/CU and would spill catastrophically at higher
+// occupancy.
 template <class Tile, bool IsCausal>
-__global__ __launch_bounds__(Tile::kNumThreads, 1) void fa3_cdna3_prefill_kernel_impl(
+__global__ __launch_bounds__(Tile::kNumThreads, (Tile::kHeadDim == 64 ? 3 : 1))
+void fa3_cdna3_prefill_kernel_impl(
     __half* __restrict__ O_out, float* __restrict__ LSE_out, const __half* __restrict__ Q,
     const __half* __restrict__ K, const __half* __restrict__ V, int N_q, int N_kv, int nhead,
     int nhead_k, float scale_log2, int causal_offset, int num_q_blocks, int total_blocks,
@@ -139,7 +143,7 @@ __global__ __launch_bounds__(Tile::kNumThreads, 1) void fa3_cdna3_prefill_kernel
 // ---------------------------------------------------------------------------
 
 inline bool can_use_fa3_cdna3(int hdim, int q_len, int kv_len) {
-  return (hdim == 256) && (q_len <= 8192) && (kv_len <= 8192);
+  return (hdim == 64 || hdim == 128 || hdim == 256) && (q_len <= 8192) && (kv_len <= 8192);
 }
 
 }  // namespace cdna3
