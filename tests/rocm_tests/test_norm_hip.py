@@ -184,6 +184,17 @@ def test_fused_add_rmsnorm_auto_selection(batch_size, hidden_size, expected):
     assert _auto_select_fused_add_rmsnorm_backend(x3d) == "native"
 
 
+@pytest.mark.parametrize("backend", ["auto", "native", "aiter"])
+def test_fused_add_rmsnorm_rejects_non_2d(backend):
+    # Both native and AITER kernels are 2D-only; any backend must raise a clear
+    # ValueError up front rather than failing deeper in the kernel.
+    x = torch.randn(4, 8, 128, dtype=torch.float16, device="cuda")
+    residual = torch.randn_like(x)
+    weight = torch.randn(128, dtype=torch.float16, device="cuda")
+    with pytest.raises(ValueError, match="2D"):
+        flashinfer.fused_add_rmsnorm(x, residual, weight, backend=backend)
+
+
 @requires_aiter
 @pytest.mark.parametrize("batch_size", [128, 2048])
 @pytest.mark.parametrize("hidden_size", [4096, 8192])

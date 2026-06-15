@@ -198,6 +198,13 @@ def fused_add_rmsnorm(
         (gfx942/gfx950) only; requires the ``aiter`` package and only supports 2D
         inputs. Precision is slightly lower than ``"native"`` at ``hidden_size >= 1024``.
     """
+    # Both the native and AITER kernels are 2D-only (the native kernel enforces
+    # CHECK_DIM(2) on input/residual), so reject other ranks up front with a clear
+    # Python error rather than letting it fail deeper in the kernel.
+    if input.ndim != 2:
+        raise ValueError(
+            f"fused_add_rmsnorm only supports 2D inputs; got {input.ndim}D."
+        )
     if IS_HIP:
         _backend = (
             backend
@@ -205,11 +212,6 @@ def fused_add_rmsnorm(
             else _auto_select_fused_add_rmsnorm_backend(input)
         )
         if _backend == "aiter":
-            if input.ndim != 2:
-                raise ValueError(
-                    f"AITER fused_add_rmsnorm only supports 2D inputs; got {input.ndim}D. "
-                    "Use backend='native' for 3D inputs."
-                )
             # CK kernel writes out/residual_out separately; alias them onto the
             # input/residual tensors to match FlashInfer's in-place semantics.
             _aiter_norm_ops().rmsnorm2d_fwd_with_add(
