@@ -160,6 +160,13 @@ def silu_and_mul(
                 "backend='aiter' requires a ROCm gfx942/gfx950 device with the "
                 "aiter package installed."
             )
+        try:
+            _aiter_act_ops()
+        except Exception as e:
+            raise ValueError(
+                "backend='aiter' requires the aiter package, which failed to "
+                f"import: {e}"
+            ) from e
     if input.shape[-1] * input.dtype.itemsize % 16 != 0:
         raise ValueError("The pointers must be multiple of 16 bytes.")
     if out is not None:

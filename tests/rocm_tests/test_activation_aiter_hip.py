@@ -83,13 +83,15 @@ def test_silu_and_mul_auto_backend_selection():
     reason="AITER backend requires gfx942/gfx950",
 )
 def test_silu_and_mul_aiter_with_out_tensor():
-    """backend='aiter' respects the out= argument."""
+    """backend='aiter' writes the correct result into the supplied out= tensor."""
     device = torch.device("cuda:0")
     x = torch.randn(8, 256, dtype=torch.float16, device=device)
-    out = torch.empty(8, 128, dtype=torch.float16, device=device)
+    # Seed out with a sentinel the kernel must overwrite, so a no-op write fails.
+    out = torch.full((8, 128), float("nan"), dtype=torch.float16, device=device)
     ret = flashinfer.activation.silu_and_mul(x, out=out, backend="aiter")
     assert ret.data_ptr() == out.data_ptr()
-    assert not torch.all(out == 0)
+    ref = _silu_and_mul_ref(x)
+    torch.testing.assert_close(out.float(), ref.float(), rtol=1e-3, atol=1e-3)
 
 
 def test_silu_and_mul_unknown_backend_raises():
