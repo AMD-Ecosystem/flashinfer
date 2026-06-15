@@ -68,7 +68,7 @@ kernel for non-attention ops). **AITER** = ROCm AITER backend.
 | **LayerNorm / Gemma RMSNorm** | ✅ | — | HIP | |
 | **Sampling** | ✅ | — | HIP | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits |
 | **Logits processor** | ✅ | — | HIP | Composable processor pipeline (cap, mask, temperature, …) |
-| **Activation** | ✅ | — | HIP | SiLU / GELU with fused gating |
+| **Activation** | ✅ `native` | ✅ | **HIP `native`**, except `silu_and_mul` resolves to **AITER** for `fp16` + 2-D + `>= 33M`-element inputs; else HIP | SiLU / GELU with fused gating. AITER path (`silu_and_mul` only) is opt-in via `backend="aiter"`; matches native precision in fp16, lower in bf16 |
 | **Quantization** | ✅ | — | HIP | `packbits`, `segment_packbits` |
 | **`torch.compile`** | ✅ (opt-in) | n/a | n/a | Set `FLASHINFER_USE_TORCH_CUSTOM_OPS=1` **before** importing `flashinfer`; requires PyTorch ≥ 2.4. Without it, `torch.compile` raises a clear error if it traces into a flashinfer op |
 
@@ -309,7 +309,7 @@ pytest -n auto --reruns 2 -m "slow"
 
 FlashInfer+ROCm can dispatch the `single_prefill`, `batch_prefill`
 (paged and ragged), `batch_decode`, `append_paged_kv_cache`, `rmsnorm`,
-`fused_add_rmsnorm`, and `MLA` paths to
+`fused_add_rmsnorm`, `silu_and_mul`, and `MLA` paths to
 [AITER](https://github.com/ROCm/aiter). MLA on ROCm
 is **AITER-only** — there is no in-tree HIP MLA kernel yet, so
 `backend="auto"` (the default for the MLA wrapper) resolves directly
@@ -322,14 +322,19 @@ a one-time `logger.warning`. Pass `backend="aiter"` to require AITER
 explicitly, or pass the in-tree backend string to skip it:
 `backend="fa2"` for the attention wrappers (single/batch
 prefill/decode), `backend="native"` for non-attention ops
-(`append_paged_kv_cache`, `rmsnorm`, `fused_add_rmsnorm`). Three
-backend-specific exceptions to "auto picks AITER when supported":
+(`append_paged_kv_cache`, `rmsnorm`, `fused_add_rmsnorm`,
+`silu_and_mul`). Four backend-specific exceptions to "auto picks AITER
+when supported":
 
 * `rmsnorm`: `backend="auto"` stays on the HIP `native` kernel; the
   AITER path is opt-in via `backend="aiter"`.
 * `fused_add_rmsnorm`: `backend="auto"` is shape-gated — it picks AITER
   only for 2-D inputs with `>= 4M` elements (where the CK kernel is
   faster) and stays on the HIP `native` kernel otherwise.
+* `silu_and_mul`: `backend="auto"` picks AITER only for `fp16` + 2-D +
+  `>= 33M`-element inputs (where it is faster and matches native
+  precision) and otherwise stays on HIP `native`; the AITER path is also
+  available explicitly via `backend="aiter"`.
 * `batch_decode`: `use_cuda_graph=True` or `use_tensor_cores=True`
   force `auto` back to `fa2` (AITER decode does not support either),
   and `pos_encoding_mode != "NONE"` raises under `backend="aiter"`.

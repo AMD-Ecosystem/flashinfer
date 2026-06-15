@@ -45,9 +45,9 @@ if IS_HIP:
     # bandwidth-bound shapes (~5-10% faster); below that a fixed ~0.7us launch
     # overhead makes it slower. It also matches the native kernel's precision
     # only in fp16 (bf16 is ~6e-2 vs ~4e-3 max err). The cutoff counts elements
-    # of the full input (rows x 2*hidden); the measured break-even is ~33M input
-    # elements (e.g. 2048 x 16384), so 64M is a safe 2x margin. fp16 only.
-    _AITER_SILU_AND_MUL_MIN_ELEMS = 64 * 1024 * 1024
+    # of the full input (rows x 2*hidden); ~33M is the measured break-even
+    # (e.g. 2048 x 16384). fp16 only.
+    _AITER_SILU_AND_MUL_MIN_ELEMS = 33 * 1024 * 1024
 
     def _auto_select_silu_and_mul_backend(input: torch.Tensor) -> str:
         # Cheapest guards first so the common small/medium case exits early.
@@ -131,7 +131,7 @@ def silu_and_mul(
 
     backend: str
         Kernel backend to use. ``"auto"`` (default) uses the native kernel for small
-        and medium inputs, and switches to AITER on ROCm for large (>= 64M element)
+        and medium inputs, and switches to AITER on ROCm for large (>= 33M element)
         2D fp16 inputs where its kernel is faster and matches native precision; it
         falls back to native whenever AITER is unavailable.
         ``"native"`` uses the FlashInfer JIT kernel on all platforms.
