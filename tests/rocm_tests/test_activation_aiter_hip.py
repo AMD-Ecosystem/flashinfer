@@ -64,7 +64,7 @@ def test_silu_and_mul_auto_backend_selection():
     # shape also clears silu_and_mul's 16-byte alignment guard, i.e. it is a
     # shape that could actually flow through the public function to AITER.
     rows = 8192
-    cols = -(-_AITER_SILU_AND_MUL_MIN_ELEMS // rows // 8) * 8  # round up to mult of 8
+    cols = -(-_AITER_SILU_AND_MUL_MIN_ELEMS // (rows * 8)) * 8  # ceil to mult of 8
     large_fp16 = torch.empty(rows, cols, dtype=torch.float16, device=device)
     assert large_fp16.numel() >= _AITER_SILU_AND_MUL_MIN_ELEMS
     assert _auto_select_silu_and_mul_backend(large_fp16) == "aiter"
@@ -92,12 +92,16 @@ def test_silu_and_mul_aiter_with_out_tensor():
     assert not torch.all(out == 0)
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
 def test_silu_and_mul_unknown_backend_raises():
-    device = torch.device("cuda:0")
-    x = torch.randn(8, 256, dtype=torch.float16, device=device)
+    # Backend validation is platform-independent, so this needs no aiter device.
+    x = torch.randn(8, 256, dtype=torch.float16)
     with pytest.raises(ValueError, match="Unknown backend"):
         flashinfer.activation.silu_and_mul(x, backend="nope")
+
+
+def test_silu_and_mul_aiter_backend_rejected_when_unsupported():
+    """Explicit backend='aiter' raises (not silently falls back) on an unsupported device."""
+    cpu_x = torch.randn(8, 256, dtype=torch.float16)
+    if not is_aiter_supported(cpu_x.device):
+        with pytest.raises(ValueError, match="requires a ROCm"):
+            flashinfer.activation.silu_and_mul(cpu_x, backend="aiter")

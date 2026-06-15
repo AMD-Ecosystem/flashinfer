@@ -136,15 +136,30 @@ def silu_and_mul(
         falls back to native whenever AITER is unavailable.
         ``"native"`` uses the FlashInfer JIT kernel on all platforms.
         ``"aiter"`` uses AMD AITER's ``silu_and_mul`` — ROCm (gfx942/gfx950) only;
-        requires the ``aiter`` package. Precision matches ``"native"`` in fp16 but is
-        lower in bf16 (max err ~6e-2 vs ~4e-3), which is why ``"auto"`` restricts the
-        AITER path to fp16.
+        requires the ``aiter`` package, and raises ``ValueError`` on any other
+        platform. Precision matches ``"native"`` in fp16 but is lower in bf16
+        (max err ~6e-2 vs ~4e-3), which is why ``"auto"`` restricts the AITER path
+        to fp16.
 
     Returns
     -------
     output: torch.Tensor
         Output tensor, shape (..., hidden_size).
     """
+    if backend not in ("auto", "native", "aiter"):
+        raise ValueError(
+            f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
+        )
+    if backend == "aiter":
+        # Validate the explicit opt-in on every platform so a misconfiguration
+        # surfaces here instead of silently running native off ROCm.
+        from .aiter_utils import is_aiter_supported
+
+        if not (IS_HIP and is_aiter_supported(input.device)):
+            raise ValueError(
+                "backend='aiter' requires a ROCm gfx942/gfx950 device with the "
+                "aiter package installed."
+            )
     if input.shape[-1] * input.dtype.itemsize % 16 != 0:
         raise ValueError("The pointers must be multiple of 16 bytes.")
     if out is not None:
@@ -162,10 +177,6 @@ def silu_and_mul(
         if _backend == "aiter":
             _aiter_act_ops().silu_and_mul(out, input)
             return out
-        if _backend != "native":
-            raise ValueError(
-                f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
-            )
     if enable_pdl is None:
         enable_pdl = device_support_pdl(input.device)
     get_act_and_mul_module("silu").silu_and_mul(
