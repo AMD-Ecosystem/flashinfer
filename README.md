@@ -61,7 +61,7 @@ kernel for non-attention ops). **AITER** = ROCm AITER backend.
 | **Cascade attention** | ✅ | — | HIP | Two-level shared-prefix attention; a fused single-kernel HIP variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1` |
 | **MLA (Multi-Latent Attention)** | — | ✅ | **AITER** (no HIP fallback) | DeepSeek-style 192/128 head-dim split; bf16 + `page_size=1`; `backend="auto"` (default) resolves to `"aiter"` |
 | **POD attention** | ✅ `fa2` | — | HIP | MHA / GQA / MQA; single + batch variants (`PODWithPagedKVCacheWrapper`, `BatchPODWithPagedKVCacheWrapper`); JIT-only (excluded from AOT, same as upstream CUDA) |
-| **RoPE (positional encoding)** | ✅ | — | HIP | LLaMA-style + LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ) |
+| **RoPE (positional encoding)** | ✅ `native` | ✅ | **AITER** for the cos/sin-cache path when inplace + `fp16` + `>= 2048` tokens + gfx942/gfx950; else **HIP `native`** | LLaMA-style + LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). AITER backend covers `apply_rope_with_cos_sin_cache` (CK `rope_cached_positions_2c`); ~1.2–1.65x over native on large-batch inplace prefill; bf16 stays native (slightly lower precision) |
 | **Paged KV-cache append** | ✅ `native` | ✅ | **AITER** when `fp16/bf16` + `NHD` + gfx942/gfx950 + AITER importable; else **HIP `native`** | `append_paged_kv_cache`; fp8 KV-cache supported on the HIP path |
 | **RMSNorm** | ✅ `native` | ✅ | **HIP `native`** (auto stays on HIP — AITER is opt-in via `backend="aiter"`) | AITER path is fp16/bf16, 2-D only; slightly lower precision at `hidden_size >= 1024` |
 | **Fused add RMSNorm** | ✅ `native` | ✅ | **AITER** when 2-D + `>= 4M` elements + gfx942/gfx950 + AITER importable; else **HIP `native`** | `fused_add_rmsnorm`; AITER (CK `rmsnorm2d_fwd_with_add`) wins on large bandwidth-bound shapes; 2-D only, slightly lower precision at `hidden_size >= 1024` |
@@ -309,8 +309,8 @@ pytest -n auto --reruns 2 -m "slow"
 
 FlashInfer+ROCm can dispatch the `single_prefill`, `batch_prefill`
 (paged and ragged), `batch_decode`, `append_paged_kv_cache`, `rmsnorm`,
-`fused_add_rmsnorm`, `silu_and_mul`, and `MLA` paths to
-[AITER](https://github.com/ROCm/aiter). MLA on ROCm
+`fused_add_rmsnorm`, `silu_and_mul`, `rope` (cos/sin-cache path), and
+`MLA` paths to [AITER](https://github.com/ROCm/aiter). MLA on ROCm
 is **AITER-only** — there is no in-tree HIP MLA kernel yet, so
 `backend="auto"` (the default for the MLA wrapper) resolves directly
 to `"aiter"`.
@@ -323,8 +323,8 @@ explicitly, or pass the in-tree backend string to skip it:
 `backend="fa2"` for the attention wrappers (single/batch
 prefill/decode), `backend="native"` for non-attention ops
 (`append_paged_kv_cache`, `rmsnorm`, `fused_add_rmsnorm`,
-`silu_and_mul`). Four backend-specific exceptions to "auto picks AITER
-when supported":
+`silu_and_mul`, `rope`). Five backend-specific exceptions to "auto picks
+AITER when supported":
 
 * `rmsnorm`: `backend="auto"` stays on the HIP `native` kernel; the
   AITER path is opt-in via `backend="aiter"`.
@@ -334,6 +334,14 @@ when supported":
 * `silu_and_mul`: `backend="auto"` picks AITER only for `fp16` + 2-D +
   `>= 33M`-element inputs (where it is faster and matches native
   precision) and otherwise stays on HIP `native`; the AITER path is also
+  available explicitly via `backend="aiter"`.
+* `rope` (`apply_rope_with_cos_sin_cache` / `_inplace`): `backend="auto"`
+  picks AITER only on the **inplace** path for `fp16` inputs with
+  `>= 2048` tokens (where the AITER kernel is ~1.2–1.65x faster and fp16
+  precision stays inside tolerance) and otherwise stays on HIP `native` —
+  the out-of-place path always stays native (AITER's kernel is in-place
+  only, so the wrapper's Q/K copy erases the speedup), and bf16 always
+  stays native (slightly lower precision). The AITER path is also
   available explicitly via `backend="aiter"`.
 * `batch_decode`: `use_cuda_graph=True` or `use_tensor_cores=True`
   force `auto` back to `fa2` (AITER decode does not support either),

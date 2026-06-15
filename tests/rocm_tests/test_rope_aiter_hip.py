@@ -122,13 +122,30 @@ def test_rope_cos_sin_cache_aiter_inplace(is_neox_style, dtype):
     torch.testing.assert_close(key_inplace, key_out, rtol=0, atol=0)
 
 
-def test_rope_auto_backend_stays_native():
-    """auto backend on gfx942/950 stays on the native kernel (precision parity)."""
-    from flashinfer.rope import _auto_select_rope_backend
+def test_rope_auto_backend_selection():
+    """auto picks AITER only for the inplace + fp16 + large-nnz envelope where it
+    is both faster (measured ~1.2-1.65x) and precise enough (fp16 err ~7e-3);
+    bf16, small nnz, and the out-of-place path all stay native."""
+    from flashinfer.rope import _AITER_ROPE_MIN_TOKENS, _auto_select_rope_backend
 
     device = torch.device("cuda:0")
-    q = torch.randn(8, 128, dtype=torch.bfloat16, device=device)
-    assert _auto_select_rope_backend(q) == "native"
+    big = _AITER_ROPE_MIN_TOKENS
+    small = _AITER_ROPE_MIN_TOKENS - 1
+
+    # The one case auto routes to AITER: inplace, fp16, nnz >= threshold.
+    q_fp16_big = torch.randn(big, 128, dtype=torch.float16, device=device)
+    assert _auto_select_rope_backend(q_fp16_big, inplace=True) == "aiter"
+
+    # Out-of-place always native (the Q/K copy erases AITER's throughput win).
+    assert _auto_select_rope_backend(q_fp16_big, inplace=False) == "native"
+
+    # bf16 always native (precision: ~5e-2 vs native ~3e-2).
+    q_bf16_big = torch.randn(big, 128, dtype=torch.bfloat16, device=device)
+    assert _auto_select_rope_backend(q_bf16_big, inplace=True) == "native"
+
+    # Below the token threshold, native's lower launch overhead wins.
+    q_fp16_small = torch.randn(small, 128, dtype=torch.float16, device=device)
+    assert _auto_select_rope_backend(q_fp16_small, inplace=True) == "native"
 
 
 def test_rope_unknown_backend_raises():
