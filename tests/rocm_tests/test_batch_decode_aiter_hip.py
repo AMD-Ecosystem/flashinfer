@@ -9,7 +9,7 @@ import pytest
 import torch
 
 import flashinfer
-from flashinfer.aiter_utils import is_aiter_supported
+from tests.test_helpers.test_helpers import requires_aiter
 from flashinfer.jit.core import logger
 
 logger.setLevel(logging.ERROR)
@@ -57,10 +57,7 @@ def _build_paged_kv(
     )
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("batch_size", [1, 4, 17])
 @pytest.mark.parametrize("page_size", [16, 32])
@@ -127,10 +124,7 @@ def test_batch_decode_aiter_vs_fa2(
     torch.testing.assert_close(o_cand.float(), o_ref.float(), rtol=rtol, atol=atol)
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 def test_batch_decode_aiter_rejects_invalid_config():
     """plan() should reject unsupported configs with a clear error."""
     device = torch.device("cuda:0")
@@ -217,10 +211,7 @@ def test_batch_decode_aiter_rejects_invalid_config():
         )
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("batch_size", [1, 8])
 @pytest.mark.parametrize("page_size", [16])
@@ -295,10 +286,7 @@ def test_batch_decode_aiter_sliding_window_vs_fa2(
     torch.testing.assert_close(o_cand.float(), o_ref.float(), rtol=rtol, atol=atol)
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("window_left", [-1, 31])
 def test_batch_decode_aiter_return_lse_via_fa2(dtype, window_left):
@@ -367,10 +355,7 @@ def test_batch_decode_aiter_return_lse_via_fa2(dtype, window_left):
     torch.testing.assert_close(lse_cand, lse_ref, rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 def test_batch_decode_auto_routes_cuda_graph_to_fa2():
     """backend='auto' with use_cuda_graph=True must route to fa2 (AITER doesn't
     support graph capture)."""

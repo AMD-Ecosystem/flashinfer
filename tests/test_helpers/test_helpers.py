@@ -1,9 +1,24 @@
 import torch
 import functools
+import importlib.util
 import os
 from flashinfer.utils import GPUArchitectureError
+from flashinfer.aiter_utils import is_aiter_supported
 import pytest
 import gc
+
+
+# is_aiter_supported only checks the GPU arch; AITER is a separate source install,
+# so a supported board can still lack the package. Require both so AITER tests skip
+# (rather than error/fail) when the arch matches but aiter isn't importable.
+_aiter_available = (
+    is_aiter_supported(torch.device("cuda:0"))
+    and importlib.util.find_spec("aiter") is not None
+)
+requires_aiter = pytest.mark.skipif(
+    not _aiter_available,
+    reason="AITER backend requires gfx942/gfx950 and the aiter package",
+)
 
 
 @functools.cache
