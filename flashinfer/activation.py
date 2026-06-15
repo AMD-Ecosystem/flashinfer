@@ -109,7 +109,7 @@ def _check_shape(input: torch.Tensor, output: torch.Tensor) -> None:
 
 def silu_and_mul(
     input: torch.Tensor,
-    out: torch.Tensor = None,
+    out: Optional[torch.Tensor] = None,
     enable_pdl: Optional[bool] = None,
     backend: str = "auto",
 ) -> torch.Tensor:
@@ -157,8 +157,8 @@ def silu_and_mul(
 
         if not (IS_HIP and is_aiter_supported(input.device)):
             raise ValueError(
-                "backend='aiter' requires a ROCm gfx942/gfx950 device with the "
-                "aiter package installed."
+                f"backend='aiter' requires a ROCm gfx942/gfx950 device; got "
+                f"device {input.device}."
             )
         try:
             _aiter_act_ops()

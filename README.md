@@ -68,7 +68,7 @@ kernel for non-attention ops). **AITER** = ROCm AITER backend.
 | **LayerNorm / Gemma RMSNorm** | ✅ | — | HIP | |
 | **Sampling** | ✅ | — | HIP | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits |
 | **Logits processor** | ✅ | — | HIP | Composable processor pipeline (cap, mask, temperature, …) |
-| **Activation** | ✅ `native` | ✅ | **HIP `native`**, except `silu_and_mul` resolves to **AITER** for `fp16` + 2-D + `>= 33M`-element inputs; else HIP | SiLU / GELU with fused gating. AITER path (`silu_and_mul` only) is opt-in via `backend="aiter"`; matches native precision in fp16, lower in bf16 |
+| **Activation** | ✅ `native` | ✅ | **AITER** for `silu_and_mul` when `fp16` + 2-D + `>= 33M` elements; else **HIP `native`** | SiLU / GELU with fused gating. AITER path (`silu_and_mul` only) is opt-in via `backend="aiter"`; matches native precision in fp16, lower in bf16 |
 | **Quantization** | ✅ | — | HIP | `packbits`, `segment_packbits` |
 | **`torch.compile`** | ✅ (opt-in) | n/a | n/a | Set `FLASHINFER_USE_TORCH_CUSTOM_OPS=1` **before** importing `flashinfer`; requires PyTorch ≥ 2.4. Without it, `torch.compile` raises a clear error if it traces into a flashinfer op |
 
