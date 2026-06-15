@@ -15,10 +15,25 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import importlib.util
+
 import pytest
 import torch
 
 import flashinfer
+from flashinfer.aiter_utils import is_aiter_supported
+
+# is_aiter_supported only checks the GPU arch; AITER is a separate source install,
+# so a supported board can still lack the package. Require both so these tests skip
+# (rather than error/fail) when the arch matches but aiter isn't importable.
+_aiter_available = (
+    is_aiter_supported(torch.device("cuda:0"))
+    and importlib.util.find_spec("aiter") is not None
+)
+requires_aiter = pytest.mark.skipif(
+    not _aiter_available,
+    reason="AITER backend requires gfx942/gfx950 and the aiter package",
+)
 
 
 def llama_rms_norm(x, w, eps=1e-6):
@@ -121,6 +136,78 @@ def test_fused_add_rmsnorm(batch_size, hidden_size, dtype, enable_pdl, contiguou
     rtol, atol = (1.6e-2, 1.6e-2) if dtype == torch.bfloat16 else (1e-3, 1e-3)
     torch.testing.assert_close(x_fused, x_native, rtol=rtol, atol=atol)
     torch.testing.assert_close(residual_fused, residual_native, rtol=rtol, atol=atol)
+
+
+@requires_aiter
+@pytest.mark.parametrize("batch_size", [1, 19, 99, 989])
+@pytest.mark.parametrize("hidden_size", [111, 500, 1024, 3072, 3584, 4096, 8192])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_fused_add_rmsnorm_aiter(batch_size, hidden_size, dtype):
+    eps = 1e-6
+
+    x = torch.randn(batch_size, hidden_size, dtype=dtype, device="cuda")
+    residual = torch.randn_like(x)
+    weight = torch.randn(hidden_size, dtype=dtype, device="cuda")
+
+    x_native, residual_native = fused_add_rms_norm(
+        x.clone(), residual.clone(), weight, eps
+    )
+
+    x_fused = x.clone()
+    residual_fused = residual.clone()
+    flashinfer.fused_add_rmsnorm(x_fused, residual_fused, weight, eps, backend="aiter")
+
+    # AITER CK reductions are lower precision than the native kernel.
+    rtol, atol = (7e-2, 7e-2) if dtype == torch.bfloat16 else (4e-3, 4e-3)
+    torch.testing.assert_close(x_fused, x_native, rtol=rtol, atol=atol)
+    torch.testing.assert_close(residual_fused, residual_native, rtol=rtol, atol=atol)
+
+
+@requires_aiter
+@pytest.mark.parametrize(
+    "batch_size,hidden_size,expected",
+    [
+        (1, 4096, "native"),  # small
+        (128, 4096, "native"),  # medium, below cutoff
+        (989, 4096, "native"),  # ~4M elems, tie -> native
+        (2048, 8192, "aiter"),  # >= 8M elems -> aiter
+        (4096, 8192, "aiter"),  # large -> aiter
+    ],
+)
+def test_fused_add_rmsnorm_auto_selection(batch_size, hidden_size, expected):
+    from flashinfer.norm import _auto_select_fused_add_rmsnorm_backend
+
+    x = torch.empty(batch_size, hidden_size, dtype=torch.float16, device="cuda")
+    assert _auto_select_fused_add_rmsnorm_backend(x) == expected
+    # 3D always routes to native regardless of size.
+    x3d = torch.empty(batch_size, 4, hidden_size, dtype=torch.float16, device="cuda")
+    assert _auto_select_fused_add_rmsnorm_backend(x3d) == "native"
+
+
+@requires_aiter
+@pytest.mark.parametrize("batch_size", [128, 2048])
+@pytest.mark.parametrize("hidden_size", [4096, 8192])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_fused_add_rmsnorm_auto_correct(batch_size, hidden_size, dtype):
+    # 2048x8192 lands above the 8M cutoff, so this grid exercises the AITER path
+    # under backend="auto" (not just native), confirming auto stays correct there.
+    eps = 1e-6
+    x = torch.randn(batch_size, hidden_size, dtype=dtype, device="cuda")
+    residual = torch.randn_like(x)
+    weight = torch.randn(hidden_size, dtype=dtype, device="cuda")
+
+    x_native, residual_native = fused_add_rms_norm(
+        x.clone(), residual.clone(), weight, eps
+    )
+
+    x_auto = x.clone()
+    residual_auto = residual.clone()
+    flashinfer.fused_add_rmsnorm(x_auto, residual_auto, weight, eps, backend="auto")
+
+    # auto may pick AITER (CK lower precision) for large shapes, so use relaxed tol.
+    rtol, atol = (7e-2, 7e-2) if dtype == torch.bfloat16 else (4e-3, 4e-3)
+    torch.testing.assert_close(x_auto, x_native, rtol=rtol, atol=atol)
+    torch.testing.assert_close(residual_auto, residual_native, rtol=rtol, atol=atol)
 
 
 @pytest.mark.parametrize("batch_size", [1, 19, 99, 989])

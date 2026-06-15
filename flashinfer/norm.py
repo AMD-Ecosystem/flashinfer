@@ -43,6 +43,31 @@ if IS_HIP:
         # Keep auto on the native JIT kernel; pass backend="aiter" to opt in explicitly.
         return "native"
 
+    # AITER's CK fused_add_rmsnorm only overtakes the native kernel on large,
+    # bandwidth-bound shapes (~10-14% faster at >=2048 rows x 8192 cols); below
+    # that the native kernel is faster and more accurate. Route auto to AITER only
+    # past this element-count cutoff, safely above the ~4M-element tie point.
+    _AITER_FUSED_ADD_RMSNORM_MIN_ELEMS = 8 * 1024 * 1024
+
+    def _auto_select_fused_add_rmsnorm_backend(input: torch.Tensor) -> str:
+        # Cheapest guards first so the common small/medium case exits early.
+        if input.ndim != 2:
+            return "native"
+        if input.numel() < _AITER_FUSED_ADD_RMSNORM_MIN_ELEMS:
+            return "native"
+        from .aiter_utils import is_aiter_supported
+
+        if not is_aiter_supported(input.device):
+            return "native"
+        try:
+            # Best-effort probe: a supported arch can still lack a usable aiter
+            # (not installed, or its compiled extension fails to load). auto must
+            # always be able to fall back to native, so catch any import failure.
+            _aiter_norm_ops()
+        except Exception:
+            return "native"
+        return "aiter"
+
 
 def rmsnorm(
     input: torch.Tensor,
@@ -134,13 +159,13 @@ def _rmsnorm_fake(
     pass
 
 
-@register_custom_op("flashinfer::fused_add_rmsnorm", mutates_args=("input", "residual"))
 def fused_add_rmsnorm(
     input: torch.Tensor,
     residual: torch.Tensor,
     weight: torch.Tensor,
     eps: float = 1e-6,
     enable_pdl: Optional[bool] = None,
+    backend: str = "auto",
 ) -> None:
     r"""Fused add root mean square normalization.
 
@@ -163,7 +188,49 @@ def fused_add_rmsnorm(
     enable_pdl: bool
         Whether to enable `programmatic dependent launch
         <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
+    backend: str
+        Kernel backend to use. ``"auto"`` (default) uses the native kernel for small
+        and medium inputs, and switches to AITER on ROCm for large (>= 8M element) 2D
+        inputs where its CK kernel is faster; it falls back to native whenever AITER
+        is unavailable.
+        ``"native"`` uses the FlashInfer JIT kernel on all platforms.
+        ``"aiter"`` uses AMD AITER's CK ``rmsnorm2d_fwd_with_add`` — ROCm
+        (gfx942/gfx950) only; requires the ``aiter`` package and only supports 2D
+        inputs. Precision is slightly lower than ``"native"`` at ``hidden_size >= 1024``.
     """
+    if IS_HIP:
+        _backend = (
+            backend
+            if backend != "auto"
+            else _auto_select_fused_add_rmsnorm_backend(input)
+        )
+        if _backend == "aiter":
+            if input.ndim != 2:
+                raise ValueError(
+                    f"AITER fused_add_rmsnorm only supports 2D inputs; got {input.ndim}D. "
+                    "Use backend='native' for 3D inputs."
+                )
+            # CK kernel writes out/residual_out separately; alias them onto the
+            # input/residual tensors to match FlashInfer's in-place semantics.
+            _aiter_norm_ops().rmsnorm2d_fwd_with_add(
+                input, input, residual, residual, weight, eps
+            )
+            return
+        if _backend != "native":
+            raise ValueError(
+                f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
+            )
+    _fused_add_rmsnorm(input, residual, weight, eps, enable_pdl)
+
+
+@register_custom_op("flashinfer::fused_add_rmsnorm", mutates_args=("input", "residual"))
+def _fused_add_rmsnorm(
+    input: torch.Tensor,
+    residual: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float,
+    enable_pdl: Optional[bool],
+) -> None:
     if enable_pdl is None:
         enable_pdl = device_support_pdl(input.device)
     get_norm_module().fused_add_rmsnorm(input, residual, weight, eps, enable_pdl)
@@ -174,8 +241,8 @@ def _fused_add_rmsnorm_fake(
     input: torch.Tensor,
     residual: torch.Tensor,
     weight: torch.Tensor,
-    eps: float = 1e-6,
-    enable_pdl: Optional[bool] = None,
+    eps: float,
+    enable_pdl: Optional[bool],
 ) -> None:
     pass
 
