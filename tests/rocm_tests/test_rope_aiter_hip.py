@@ -246,3 +246,25 @@ def test_rope_aiter_noncontiguous_positions(dtype):
     )
     torch.testing.assert_close(q_strided, q_contig, rtol=0, atol=0)
     torch.testing.assert_close(k_strided, k_contig, rtol=0, atol=0)
+
+
+def test_rope_auto_falls_back_when_aiter_unimportable(monkeypatch):
+    """On a supported arch with a missing/broken aiter install, auto must fall
+    back to native rather than raise — _auto_select_rope_backend probes the
+    import and returns 'native' on failure."""
+    from flashinfer import rope
+    from flashinfer.rope import _AITER_ROPE_MIN_TOKENS, _auto_select_rope_backend
+
+    device = torch.device("cuda:0")
+    n = _AITER_ROPE_MIN_TOKENS
+    q = torch.randn(n, 128, dtype=torch.float16, device=device)
+    k = torch.randn(n, 128, dtype=torch.float16, device=device)
+
+    # Sanity: with aiter importable this shape selects aiter.
+    assert _auto_select_rope_backend(q, k) == "aiter"
+
+    def _boom():
+        raise ImportError("simulated missing aiter")
+
+    monkeypatch.setattr(rope, "_aiter_rope_ops", _boom)
+    assert _auto_select_rope_backend(q, k) == "native"
