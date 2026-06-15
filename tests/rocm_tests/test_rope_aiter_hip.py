@@ -13,13 +13,13 @@ import pytest
 import torch
 
 import flashinfer
-from flashinfer.aiter_utils import is_aiter_supported
 from tests.test_helpers.rope_reference import RotaryEmbedding
+from tests.test_helpers.test_helpers import requires_aiter
 
-pytestmark = pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+# Skip when the arch is unsupported OR the aiter package is missing — checking
+# arch alone would let these tests run and then fail on a supported GPU without
+# aiter installed. Matches the other test_*_aiter_hip.py modules.
+pytestmark = requires_aiter
 
 
 @pytest.mark.parametrize("is_neox_style", [True, False])
