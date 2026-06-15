@@ -20,7 +20,7 @@ from typing import Optional
 
 import torch
 
-from .device_utils import IS_CUDA
+from .device_utils import IS_CUDA, IS_HIP
 from .jit import gen_act_and_mul_module
 from .utils import (
     device_support_pdl,
@@ -31,6 +31,44 @@ from .utils import (
 
 if IS_CUDA:
     from .fp4_quantization import get_fp4_quantization_module
+
+
+if IS_HIP:
+
+    @functools.cache
+    def _aiter_act_ops():
+        import aiter as _aiter
+
+        return _aiter
+
+    # AITER's silu_and_mul only overtakes the native kernel on large,
+    # bandwidth-bound shapes (~5-10% faster); below that a fixed ~0.7us launch
+    # overhead makes it slower. It also matches the native kernel's precision
+    # only in fp16 (bf16 is ~6e-2 vs ~4e-3 max err). The cutoff counts elements
+    # of the full input (rows x 2*hidden); the measured break-even is ~33M input
+    # elements (e.g. 2048 x 16384), so 64M is a safe 2x margin. fp16 only.
+    _AITER_SILU_AND_MUL_MIN_ELEMS = 64 * 1024 * 1024
+
+    def _auto_select_silu_and_mul_backend(input: torch.Tensor) -> str:
+        # Cheapest guards first so the common small/medium case exits early.
+        if input.dtype != torch.float16:
+            return "native"
+        if input.ndim != 2:
+            return "native"
+        if input.numel() < _AITER_SILU_AND_MUL_MIN_ELEMS:
+            return "native"
+        from .aiter_utils import is_aiter_supported
+
+        if not is_aiter_supported(input.device):
+            return "native"
+        try:
+            # Best-effort probe: a supported arch can still lack a usable aiter
+            # (not installed, or its compiled extension fails to load). auto must
+            # always be able to fall back to native, so catch any import failure.
+            _aiter_act_ops()
+        except Exception:
+            return "native"
+        return "aiter"
 
 
 @functools.cache
@@ -70,7 +108,10 @@ def _check_shape(input: torch.Tensor, output: torch.Tensor) -> None:
 
 
 def silu_and_mul(
-    input: torch.Tensor, out: torch.Tensor = None, enable_pdl: Optional[bool] = None
+    input: torch.Tensor,
+    out: torch.Tensor = None,
+    enable_pdl: Optional[bool] = None,
+    backend: str = "auto",
 ) -> torch.Tensor:
     r"""Fused SiLU and Mul operation.
 
@@ -88,13 +129,22 @@ def silu_and_mul(
         Whether to enable `programmatic dependent launch
         <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
 
+    backend: str
+        Kernel backend to use. ``"auto"`` (default) uses the native kernel for small
+        and medium inputs, and switches to AITER on ROCm for large (>= 64M element)
+        2D fp16 inputs where its kernel is faster and matches native precision; it
+        falls back to native whenever AITER is unavailable.
+        ``"native"`` uses the FlashInfer JIT kernel on all platforms.
+        ``"aiter"`` uses AMD AITER's ``silu_and_mul`` — ROCm (gfx942/gfx950) only;
+        requires the ``aiter`` package. Precision matches ``"native"`` in fp16 but is
+        lower in bf16 (max err ~6e-2 vs ~4e-3), which is why ``"auto"`` restricts the
+        AITER path to fp16.
+
     Returns
     -------
     output: torch.Tensor
         Output tensor, shape (..., hidden_size).
     """
-    if enable_pdl is None:
-        enable_pdl = device_support_pdl(input.device)
     if input.shape[-1] * input.dtype.itemsize % 16 != 0:
         raise ValueError("The pointers must be multiple of 16 bytes.")
     if out is not None:
@@ -105,6 +155,19 @@ def silu_and_mul(
             device=input.device,
             dtype=input.dtype,
         )
+    if IS_HIP:
+        _backend = (
+            backend if backend != "auto" else _auto_select_silu_and_mul_backend(input)
+        )
+        if _backend == "aiter":
+            _aiter_act_ops().silu_and_mul(out, input)
+            return out
+        if _backend != "native":
+            raise ValueError(
+                f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
+            )
+    if enable_pdl is None:
+        enable_pdl = device_support_pdl(input.device)
     get_act_and_mul_module("silu").silu_and_mul(
         out,
         input,
