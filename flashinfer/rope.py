@@ -15,10 +15,12 @@ limitations under the License.
 """
 
 import functools
+import weakref
 from typing import Optional, Tuple
 
 import torch
 
+from .device_utils import IS_HIP
 from .jit.rope import gen_rope_module
 from .utils import register_custom_op, register_fake_op
 
@@ -26,6 +28,111 @@ from .utils import register_custom_op, register_fake_op
 @functools.cache
 def get_rope_module():
     return gen_rope_module().build_and_load()
+
+
+if IS_HIP:
+
+    @functools.cache
+    def _aiter_rope_ops():
+        import aiter as _aiter
+
+        return _aiter
+
+    def _auto_select_rope_backend(query: torch.Tensor) -> str:
+        # AITER's cos/sin-cache rope consumes the cos/sin tables in the query
+        # dtype (bf16/fp16), whereas the native JIT kernel rotates in float32.
+        # For bf16 this pushes max abs error to ~5e-2 (vs native ~3e-2), at the
+        # edge of the flashinfer rope test tolerance. Keep auto on the native
+        # kernel; pass backend="aiter" to opt in explicitly.
+        return "native"
+
+    # Memoize the AITER-format cos/sin tables. ``cos_sin_cache`` is a fixed
+    # precomputed float32 table (typically a persistent module buffer) reused
+    # across every forward pass, so converting the whole table to the query
+    # dtype on each call is pure overhead — significant during decode, where
+    # nnz is tiny but max_seq_len is large. Keyed by id() (tensors aren't
+    # value-hashable) with a finalizer that evicts the entry when the cache is
+    # GC'd, so the cached tables never outlive their source.
+    _aiter_cos_sin_tables: dict = {}
+
+    def _aiter_rope_cos_sin(
+        cos_sin_cache: torch.Tensor, dtype: torch.dtype
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        key = id(cos_sin_cache)
+        cached = _aiter_cos_sin_tables.get(key)
+        if cached is not None and cached[0] == dtype:
+            return cached[1], cached[2]
+        half = cos_sin_cache.shape[-1] // 2
+        cos = cos_sin_cache[:, :half].unsqueeze(1).unsqueeze(1).to(dtype)
+        sin = cos_sin_cache[:, half:].unsqueeze(1).unsqueeze(1).to(dtype)
+        if cached is None:
+            weakref.finalize(cos_sin_cache, _aiter_cos_sin_tables.pop, key, None)
+        _aiter_cos_sin_tables[key] = (dtype, cos, sin)
+        return cos, sin
+
+    def _apply_rope_cos_sin_cache_aiter(
+        query: torch.Tensor,
+        key: torch.Tensor,
+        query_out: torch.Tensor,
+        key_out: torch.Tensor,
+        cos_sin_cache: torch.Tensor,
+        positions: torch.Tensor,
+        head_size: int,
+        is_neox: bool,
+    ) -> None:
+        r"""Dispatch the cos/sin-cache rope to AITER's rope_cached_positions_2c kernel.
+
+        FlashInfer stores ``cos_sin_cache`` as ``(max_seq_len, rotary_dim)`` float32
+        with cosine in the first half and sine in the second half. AITER wants two
+        separate ``(max_seq_len, 1, 1, rotary_dim // 2)`` tables in the query dtype
+        with ``reuse_freqs_front_part=True``. Q/K are reshaped to AITER's
+        ``(1, nnz, num_heads, head_dim)`` layout and only the leading ``rotary_dim``
+        slice is rotated (matching ``nope_first=False``). Writes through views, so
+        ``query_out``/``key_out`` are updated in place (alias the inputs for the
+        inplace variant).
+        """
+        from .aiter_utils import is_aiter_supported
+
+        if not is_aiter_supported(query.device):
+            raise ValueError(
+                "AITER rope backend requires an AMD gfx942/gfx950 device; "
+                "use backend='native' instead."
+            )
+        if key.dtype != query.dtype:
+            # AITER rotates Q and K with a single cos/sin table built in the
+            # query dtype; the native path tolerates mixed dtypes by rotating
+            # in float32, but AITER cannot.
+            raise ValueError(
+                "AITER rope backend requires query and key to share a dtype; "
+                f"got query={query.dtype}, key={key.dtype}. Use backend='native'."
+            )
+
+        nnz = query.shape[0]
+        rotary_dim = cos_sin_cache.shape[-1]
+        cos, sin = _aiter_rope_cos_sin(cos_sin_cache, query.dtype)
+
+        q_view = query_out.view(1, nnz, -1, head_size)
+        k_view = key_out.view(1, nnz, -1, head_size)
+        if query_out.data_ptr() != query.data_ptr():
+            q_view.copy_(query.view(1, nnz, -1, head_size))
+        if key_out.data_ptr() != key.data_ptr():
+            k_view.copy_(key.view(1, nnz, -1, head_size))
+
+        # AITER's HIP kernel asserts int64, contiguous positions of shape
+        # (1, nnz) (stride(1) == 1) — a strided/non-int64 positions tensor
+        # otherwise trips a C assert that aborts the process.
+        pos = positions.to(torch.int64).contiguous().view(1, nnz)
+
+        _aiter_rope_ops().rope_cached_positions_2c_fwd_inplace(
+            q_view[..., :rotary_dim],
+            k_view[..., :rotary_dim],
+            cos,
+            sin,
+            pos,
+            0 if is_neox else 1,  # rotate_style: 0=NEOX, 1=GPT-J
+            True,  # reuse_freqs_front_part (cos/sin are rotary_dim//2 sized)
+            False,  # nope_first
+        )
 
 
 @register_custom_op("flashinfer::apply_rope", mutates_args=("q_rope", "k_rope"))
@@ -1138,6 +1245,7 @@ def apply_rope_with_cos_sin_cache(
     head_size: int,
     cos_sin_cache: torch.Tensor,
     is_neox: bool = True,
+    backend: str = "auto",
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Apply rotary embedding to keys and queries with precomputed cos/sin values.
@@ -1164,6 +1272,14 @@ def apply_rope_with_cos_sin_cache(
         * If ``False``, the last dimension of the query/key tensor is interleaved, i.e.,
           we rotate the even dimensions ``([..., ::2])`` and odd dimensions ``([..., 1::2])``.
 
+    backend : str
+        Kernel backend to use. ``"auto"`` (default) selects the best available backend.
+        ``"native"`` uses the FlashInfer JIT kernel on all platforms.
+        ``"aiter"`` uses AMD AITER's rope_cached kernel — ROCm (gfx942/gfx950) only;
+        requires the ``aiter`` package. Precision is slightly lower than ``"native"``
+        for bfloat16 (max abs error ~5e-2 vs ~3e-2) because AITER consumes the cos/sin
+        tables in the query dtype rather than float32.
+
     Returns
     -------
     query_out : torch.Tensor
@@ -1180,6 +1296,25 @@ def apply_rope_with_cos_sin_cache(
 
     query_out = torch.empty_like(query)
     key_out = torch.empty_like(key)
+
+    if IS_HIP:
+        _backend = backend if backend != "auto" else _auto_select_rope_backend(query)
+        if _backend == "aiter":
+            _apply_rope_cos_sin_cache_aiter(
+                query=query,
+                key=key,
+                query_out=query_out,
+                key_out=key_out,
+                cos_sin_cache=cos_sin_cache,
+                positions=positions,
+                head_size=head_size,
+                is_neox=is_neox,
+            )
+            return query_out, key_out
+        if _backend != "native":
+            raise ValueError(
+                f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
+            )
 
     _apply_rope_pos_ids_cos_sin_cache(
         q=query.view(query.shape[0], -1, head_size),
@@ -1201,6 +1336,7 @@ def apply_rope_with_cos_sin_cache_inplace(
     head_size: int,
     cos_sin_cache: torch.Tensor,
     is_neox: bool = True,
+    backend: str = "auto",
 ) -> None:
     r"""
     Apply rotary embedding to keys and queries with precomputed cos/sin values.
@@ -1227,12 +1363,40 @@ def apply_rope_with_cos_sin_cache_inplace(
 
         * If ``False``, the last dimension of the query/key tensor is interleaved, i.e.,
           we rotate the even dimensions ``([..., ::2])`` and odd dimensions ``([..., 1::2])``.
+
+    backend : str
+        Kernel backend to use. ``"auto"`` (default) selects the best available backend.
+        ``"native"`` uses the FlashInfer JIT kernel on all platforms.
+        ``"aiter"`` uses AMD AITER's rope_cached kernel — ROCm (gfx942/gfx950) only;
+        requires the ``aiter`` package. Precision is slightly lower than ``"native"``
+        for bfloat16 (max abs error ~5e-2 vs ~3e-2) because AITER consumes the cos/sin
+        tables in the query dtype rather than float32.
+
     Note
     ----
     The rotary dimension is determined by the cosine cache and sine cache.
     """
     if cos_sin_cache.dtype != torch.float32:
         raise ValueError("cos_sin_cache should be float32")
+
+    if IS_HIP:
+        _backend = backend if backend != "auto" else _auto_select_rope_backend(query)
+        if _backend == "aiter":
+            _apply_rope_cos_sin_cache_aiter(
+                query=query,
+                key=key,
+                query_out=query,
+                key_out=key,
+                cos_sin_cache=cos_sin_cache,
+                positions=positions,
+                head_size=head_size,
+                is_neox=is_neox,
+            )
+            return
+        if _backend != "native":
+            raise ValueError(
+                f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
+            )
 
     # pass q_rope and k_rope as q and k to perform inplace operation
     _apply_rope_pos_ids_cos_sin_cache(
