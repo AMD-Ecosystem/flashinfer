@@ -123,29 +123,34 @@ def test_rope_cos_sin_cache_aiter_inplace(is_neox_style, dtype):
 
 
 def test_rope_auto_backend_selection():
-    """auto picks AITER only for the inplace + fp16 + large-nnz envelope where it
-    is both faster (measured ~1.2-1.65x) and precise enough (fp16 err ~7e-3);
-    bf16, small nnz, and the out-of-place path all stay native."""
+    """auto picks AITER for fp16 + large-nnz (both inplace and out-of-place, since
+    the _impl path needs no Q/K copy), where it is both faster (~1.3-2.8x) and
+    precise enough (fp16 err ~7e-3); bf16 and small nnz stay native."""
     from flashinfer.rope import _AITER_ROPE_MIN_TOKENS, _auto_select_rope_backend
 
     device = torch.device("cuda:0")
     big = _AITER_ROPE_MIN_TOKENS
     small = _AITER_ROPE_MIN_TOKENS - 1
 
-    # The one case auto routes to AITER: inplace, fp16, nnz >= threshold.
+    # fp16 + nnz >= threshold routes to AITER (selection is shape/dtype-based and
+    # backend dispatch is shared by both the inplace and out-of-place wrappers).
     q_fp16_big = torch.randn(big, 128, dtype=torch.float16, device=device)
-    assert _auto_select_rope_backend(q_fp16_big, inplace=True) == "aiter"
-
-    # Out-of-place always native (the Q/K copy erases AITER's throughput win).
-    assert _auto_select_rope_backend(q_fp16_big, inplace=False) == "native"
+    k_fp16_big = torch.randn(big, 128, dtype=torch.float16, device=device)
+    assert _auto_select_rope_backend(q_fp16_big, k_fp16_big) == "aiter"
 
     # bf16 always native (precision: ~5e-2 vs native ~3e-2).
     q_bf16_big = torch.randn(big, 128, dtype=torch.bfloat16, device=device)
-    assert _auto_select_rope_backend(q_bf16_big, inplace=True) == "native"
+    k_bf16_big = torch.randn(big, 128, dtype=torch.bfloat16, device=device)
+    assert _auto_select_rope_backend(q_bf16_big, k_bf16_big) == "native"
 
     # Below the token threshold, native's lower launch overhead wins.
     q_fp16_small = torch.randn(small, 128, dtype=torch.float16, device=device)
-    assert _auto_select_rope_backend(q_fp16_small, inplace=True) == "native"
+    k_fp16_small = torch.randn(small, 128, dtype=torch.float16, device=device)
+    assert _auto_select_rope_backend(q_fp16_small, k_fp16_small) == "native"
+
+    # Mixed q/k dtype falls back to native rather than raising: AITER can't rotate
+    # both with one cos/sin table, but auto must never raise.
+    assert _auto_select_rope_backend(q_fp16_big, k_bf16_big) == "native"
 
 
 def test_rope_unknown_backend_raises():
