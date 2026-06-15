@@ -120,6 +120,13 @@ if IS_HIP:
                 "AITER rope backend requires an AMD gfx942/gfx950 device; "
                 "use backend='native' instead."
             )
+        try:
+            aiter_ops = _aiter_rope_ops()
+        except Exception as e:
+            raise ValueError(
+                "backend='aiter' requires the aiter package, which failed to "
+                f"import: {e}"
+            ) from e
         if key.dtype != query.dtype:
             # AITER rotates Q and K with a single cos/sin table built in the
             # query dtype; the native path tolerates mixed dtypes by rotating
@@ -129,8 +136,20 @@ if IS_HIP:
                 f"got query={query.dtype}, key={key.dtype}. Use backend='native'."
             )
 
-        nnz = query.shape[0]
         rotary_dim = cos_sin_cache.shape[-1]
+        # cos_sin_cache stacks cos||sin on its last dim, so rotary_dim must be
+        # even, and the rotated slice q[..., :rotary_dim] must fit in head_size.
+        if rotary_dim % 2 != 0:
+            raise ValueError(
+                f"cos_sin_cache last dim must be even (cos||sin); got {rotary_dim}."
+            )
+        if rotary_dim > head_size:
+            raise ValueError(
+                f"rotary_dim ({rotary_dim}) from cos_sin_cache exceeds head_size "
+                f"({head_size})."
+            )
+
+        nnz = query.shape[0]
         cos, sin = _aiter_rope_cos_sin(cos_sin_cache, query.dtype)
 
         q_view = query_out.view(1, nnz, -1, head_size)
@@ -145,7 +164,7 @@ if IS_HIP:
         # otherwise trips a C assert that aborts the process.
         pos = positions.to(torch.int64).contiguous().view(1, nnz)
 
-        _aiter_rope_ops().rope_cached_positions_2c_fwd_inplace(
+        aiter_ops.rope_cached_positions_2c_fwd_inplace(
             q_view[..., :rotary_dim],
             k_view[..., :rotary_dim],
             cos,

@@ -174,6 +174,33 @@ def test_rope_aiter_mixed_dtype_raises():
         )
 
 
+def test_rope_aiter_odd_rotary_dim_raises():
+    """An odd cos_sin_cache last dim cannot split into equal cos||sin halves."""
+    device = torch.device("cuda:0")
+    cos_sin_cache = torch.randn(64, 63, dtype=torch.float32, device=device)
+    pos_ids = torch.arange(8, device=device)
+    query = torch.randn(8, 8 * 128, dtype=torch.float16, device=device)
+    key = torch.randn(8, 8 * 128, dtype=torch.float16, device=device)
+    with pytest.raises(ValueError, match="even"):
+        flashinfer.apply_rope_with_cos_sin_cache(
+            pos_ids, query, key, 128, cos_sin_cache, backend="aiter"
+        )
+
+
+def test_rope_aiter_rotary_dim_exceeds_head_size_raises():
+    """rotary_dim derived from cos_sin_cache must fit within head_size."""
+    device = torch.device("cuda:0")
+    head_size = 64
+    cos_sin_cache = torch.randn(64, 128, dtype=torch.float32, device=device)
+    pos_ids = torch.arange(8, device=device)
+    query = torch.randn(8, 8 * head_size, dtype=torch.float16, device=device)
+    key = torch.randn(8, 8 * head_size, dtype=torch.float16, device=device)
+    with pytest.raises(ValueError, match="exceeds head_size"):
+        flashinfer.apply_rope_with_cos_sin_cache(
+            pos_ids, query, key, head_size, cos_sin_cache, backend="aiter"
+        )
+
+
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_rope_aiter_noncontiguous_positions(dtype):
     """A strided positions tensor must be normalized before reaching the AITER
