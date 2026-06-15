@@ -12,7 +12,7 @@ import pytest
 import torch
 
 import flashinfer
-from flashinfer.aiter_utils import is_aiter_supported
+from tests.test_helpers.test_helpers import requires_aiter
 
 
 def _rms_norm_ref(x: torch.Tensor, w: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -23,10 +23,7 @@ def _rms_norm_ref(x: torch.Tensor, w: torch.Tensor, eps: float = 1e-6) -> torch.
     return (x * torch.rsqrt(variance + eps) * w.float()).to(orig)
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("hidden_size", [128, 512, 1024, 4096])
 @pytest.mark.parametrize("batch_size", [1, 32, 256])
@@ -44,10 +41,7 @@ def test_rmsnorm_aiter_vs_ref(dtype, hidden_size, batch_size):
     torch.testing.assert_close(got.float(), ref.float(), rtol=rtol, atol=atol)
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 def test_rmsnorm_auto_backend_stays_native():
     """auto backend on gfx942/950 should stay on native kernel (precision parity with tests)."""
     from flashinfer.norm import _auto_select_norm_backend
@@ -59,10 +53,7 @@ def test_rmsnorm_auto_backend_stays_native():
     assert _auto_select_norm_backend(device, torch.float32) == "native"
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 def test_rmsnorm_aiter_with_out_tensor():
     """backend='aiter' respects the out= argument."""
     device = torch.device("cuda:0")

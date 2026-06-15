@@ -10,7 +10,7 @@ import pytest
 import torch
 
 import flashinfer
-from flashinfer.aiter_utils import is_aiter_supported
+from tests.test_helpers.test_helpers import requires_aiter
 from flashinfer.jit.core import logger
 
 logger.setLevel(logging.ERROR)
@@ -63,10 +63,7 @@ def _build_append_inputs(append_lens, page_size, num_kv_heads, head_dim, dtype, 
     )
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("page_size", [16, 32])
 @pytest.mark.parametrize("num_kv_heads,head_dim", [(4, 64), (8, 128), (16, 128)])
@@ -133,10 +130,7 @@ def test_append_paged_kv_cache_aiter_vs_native(
     torch.testing.assert_close(v_aiter, v_native, rtol=0, atol=0)
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 def test_append_paged_kv_cache_aiter_auto_routes_on_nhd_fp16():
     """auto backend should pick aiter when device + dtype + layout match constraints."""
     from flashinfer.page import _auto_select_kv_append_backend

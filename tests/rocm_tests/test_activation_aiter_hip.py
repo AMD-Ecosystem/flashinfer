@@ -13,6 +13,7 @@ import torch
 
 import flashinfer
 from flashinfer.aiter_utils import is_aiter_supported
+from tests.test_helpers.test_helpers import requires_aiter
 
 
 def _silu_and_mul_ref(x: torch.Tensor) -> torch.Tensor:
@@ -22,10 +23,7 @@ def _silu_and_mul_ref(x: torch.Tensor) -> torch.Tensor:
     return (gate / (1.0 + torch.exp(-gate)) * up).to(x.dtype)
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("d", [128, 512, 4096, 8192, 14336])
 @pytest.mark.parametrize("num_tokens", [1, 8, 256])
@@ -42,10 +40,7 @@ def test_silu_and_mul_aiter_vs_ref(dtype, d, num_tokens):
     torch.testing.assert_close(got.float(), ref.float(), rtol=rtol, atol=atol)
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 def test_silu_and_mul_auto_backend_selection():
     """auto stays native for small/bf16 inputs and picks AITER for large fp16 2D inputs."""
     from flashinfer.activation import (
@@ -78,10 +73,7 @@ def test_silu_and_mul_auto_backend_selection():
     assert _auto_select_silu_and_mul_backend(large_3d) == "native"
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 def test_silu_and_mul_aiter_with_out_tensor():
     """backend='aiter' writes the correct result into the supplied out= tensor."""
     device = torch.device("cuda:0")

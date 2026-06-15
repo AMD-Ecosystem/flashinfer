@@ -15,25 +15,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-import importlib.util
-
 import pytest
 import torch
 
 import flashinfer
-from flashinfer.aiter_utils import is_aiter_supported
-
-# is_aiter_supported only checks the GPU arch; AITER is a separate source install,
-# so a supported board can still lack the package. Require both so these tests skip
-# (rather than error/fail) when the arch matches but aiter isn't importable.
-_aiter_available = (
-    is_aiter_supported(torch.device("cuda:0"))
-    and importlib.util.find_spec("aiter") is not None
-)
-requires_aiter = pytest.mark.skipif(
-    not _aiter_available,
-    reason="AITER backend requires gfx942/gfx950 and the aiter package",
-)
+from tests.test_helpers.test_helpers import requires_aiter
 
 
 def llama_rms_norm(x, w, eps=1e-6):

@@ -9,7 +9,7 @@ import math
 import pytest
 import torch
 
-from flashinfer.aiter_utils import is_aiter_supported
+from tests.test_helpers.test_helpers import requires_aiter
 
 
 def _paged_mla_ref(
@@ -101,10 +101,7 @@ def _build_paged_kv(
     return ckv_cache, kpe_cache, kv_indptr, kv_indices, kv_last_page_len
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 @pytest.mark.parametrize("dtype", [torch.bfloat16])
 @pytest.mark.parametrize("page_size", [1])
 @pytest.mark.parametrize("num_heads,head_dim_ckv,head_dim_kpe", [(16, 512, 64)])
@@ -185,10 +182,7 @@ def test_mla_decode_vs_ref(
     torch.testing.assert_close(got.float(), ref.float(), rtol=rtol, atol=atol)
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 def test_mla_decode_out_tensor():
     """run() respects a pre-allocated out= tensor."""
     from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
@@ -237,10 +231,7 @@ def test_mla_decode_out_tensor():
     assert not torch.all(out == 0)
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 def test_mla_plan_validation():
     """plan() raises on invalid arguments."""
     from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
@@ -278,10 +269,7 @@ def test_mla_plan_validation():
         )
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 def test_mla_plan_kv_len_inconsistent_with_paging():
     """Passing last-page counts as kv_len_arr must fail (was accepted pre-conversion)."""
     from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
@@ -308,10 +296,7 @@ def test_mla_plan_kv_len_inconsistent_with_paging():
         )
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 def test_mla_run_before_plan_raises():
     """run() before plan() raises RuntimeError."""
     from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
@@ -328,10 +313,7 @@ def test_mla_run_before_plan_raises():
         )
 
 
-@pytest.mark.skipif(
-    not is_aiter_supported(torch.device("cuda:0")),
-    reason="AITER backend requires gfx942/gfx950",
-)
+@requires_aiter
 @pytest.mark.parametrize("backend", ["auto", "aiter"])
 def test_mla_backend_accepts_auto_and_aiter(backend):
     """The ROCm MLA wrapper accepts both 'auto' (default) and 'aiter'.
