@@ -1,6 +1,6 @@
 ARG ROCM_VERSION=7.2
 
-FROM mambaorg/micromamba:2.1.1 as micromamba
+FROM mambaorg/micromamba:2.1.1 AS micromamba
 
 FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete
 
@@ -82,8 +82,8 @@ RUN \
 
 # Create a new micromamba env and install needed packages for flashinfer development
 RUN /bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} gtest gmock bash-completion -c conda-forge && \
-    /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir cmake ninja scikit-build-core setuptools-scm pre-commit numpy pytest pytest-cov pytest-xdist pybind11 ruff && \
-    /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/ && \
+    /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir cmake ninja "scikit-build-core>=0.4.3" "setuptools-scm>=9.2" pre-commit numpy pytest pytest-cov pytest-xdist pytest-rerunfailures pybind11 ruff && \
+    /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir torch==${TORCH_VERSION} --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/ && \
     /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install amd_aiter==${AITER_VERSION} --extra-index-url https://pypi.amd.com/rocm-${AITER_ROCM_VERSION}/simple
 SHELL ["/usr/local/bin/_dockerfile_shell.sh"]
 
