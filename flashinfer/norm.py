@@ -45,9 +45,9 @@ if IS_HIP:
 
     # AITER's CK fused_add_rmsnorm only overtakes the native kernel on large,
     # bandwidth-bound shapes (~10-14% faster at >=2048 rows x 8192 cols); below
-    # that the native kernel is faster and more accurate. Route auto to AITER only
-    # past this element-count cutoff, safely above the ~4M-element tie point.
-    _AITER_FUSED_ADD_RMSNORM_MIN_ELEMS = 8 * 1024 * 1024
+    # that the native kernel is faster and more accurate. Route auto to AITER once
+    # the input reaches this element-count cutoff (around the measured break-even).
+    _AITER_FUSED_ADD_RMSNORM_MIN_ELEMS = 4 * 1024 * 1024
 
     def _auto_select_fused_add_rmsnorm_backend(input: torch.Tensor) -> str:
         # Cheapest guards first so the common small/medium case exits early.
@@ -190,7 +190,7 @@ def fused_add_rmsnorm(
         <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
     backend: str
         Kernel backend to use. ``"auto"`` (default) uses the native kernel for small
-        and medium inputs, and switches to AITER on ROCm for large (>= 8M element) 2D
+        and medium inputs, and switches to AITER on ROCm for large (>= 4M element) 2D
         inputs where its CK kernel is faster; it falls back to native whenever AITER
         is unavailable.
         ``"native"`` uses the FlashInfer JIT kernel on all platforms.

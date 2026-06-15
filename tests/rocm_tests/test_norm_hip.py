@@ -169,8 +169,9 @@ def test_fused_add_rmsnorm_aiter(batch_size, hidden_size, dtype):
     [
         (1, 4096, "native"),  # small
         (128, 4096, "native"),  # medium, below cutoff
-        (989, 4096, "native"),  # ~4M elems, tie -> native
-        (2048, 8192, "aiter"),  # >= 8M elems -> aiter
+        (989, 4096, "native"),  # ~4.05M elems, just below 4M cutoff -> native
+        (512, 8192, "aiter"),  # exactly 4M elems (cutoff) -> aiter
+        (2048, 8192, "aiter"),  # >= 4M elems -> aiter
         (4096, 8192, "aiter"),  # large -> aiter
     ],
 )
@@ -200,8 +201,9 @@ def test_fused_add_rmsnorm_rejects_non_2d(backend):
 @pytest.mark.parametrize("hidden_size", [4096, 8192])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_fused_add_rmsnorm_auto_correct(batch_size, hidden_size, dtype):
-    # 2048x8192 lands above the 8M cutoff, so this grid exercises the AITER path
-    # under backend="auto" (not just native), confirming auto stays correct there.
+    # The 2048-row shapes land above the 4M cutoff, so this grid exercises the
+    # AITER path under backend="auto" (not just native), confirming auto stays
+    # correct there.
     eps = 1e-6
     x = torch.randn(batch_size, hidden_size, dtype=dtype, device="cuda")
     residual = torch.randn_like(x)
