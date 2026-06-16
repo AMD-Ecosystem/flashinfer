@@ -21,6 +21,27 @@ def is_aiter_supported(device: torch.device) -> bool:
     return arch in FLASHINFER_SUPPORTED_ROCM_ARCHS
 
 
+@functools.lru_cache(maxsize=1)
+def _aiter_importable() -> bool:
+    """True when the AITER source package needed for the C++ backends is importable."""
+    import importlib.util
+
+    return (
+        importlib.util.find_spec("aiter") is not None
+        and importlib.util.find_spec("aiter_meta") is not None
+    )
+
+
+def is_aiter_available(device: torch.device) -> bool:
+    """Return True when ``backend="auto"`` may route to AITER for ``device``.
+
+    Combines the arch check with a cheap import probe so ``auto`` falls back to the
+    native kernel (rather than raising at build time) when the AITER package is not
+    installed. Explicit ``backend="aiter"`` still surfaces a clear error.
+    """
+    return is_aiter_supported(device) and _aiter_importable()
+
+
 @functools.cache
 def get_aiter_mha_module():
     from aiter.ops import mha as aiter_mha_module
