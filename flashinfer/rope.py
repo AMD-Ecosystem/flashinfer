@@ -60,13 +60,9 @@ if IS_HIP:
         is_neox: bool,
     ) -> None:
         r"""Dispatch the cos/sin-cache rope to AITER's C++ rope_cached_positions_2c kernel."""
-        from .aiter_utils import is_aiter_supported
+        from .aiter_utils import require_aiter
 
-        if not is_aiter_supported(query.device):
-            raise ValueError(
-                "AITER rope backend requires an AMD gfx942/gfx950 device; "
-                "use backend='native' instead."
-            )
+        require_aiter(query.device, "rope")
         if key.dtype != query.dtype:
             raise ValueError(
                 "AITER rope backend requires query and key to share a dtype; "

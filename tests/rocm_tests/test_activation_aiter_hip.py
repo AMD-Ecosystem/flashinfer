@@ -74,5 +74,5 @@ def test_silu_and_mul_aiter_backend_rejected_when_unsupported():
     """Explicit backend='aiter' raises (not silently falls back) on an unsupported device."""
     cpu_x = torch.randn(8, 256, dtype=torch.float16)
     if not is_aiter_supported(cpu_x.device):
-        with pytest.raises(ValueError, match="requires a ROCm"):
+        with pytest.raises(ValueError, match="gfx942/gfx950"):
             flashinfer.activation.silu_and_mul(cpu_x, backend="aiter")

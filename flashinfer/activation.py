@@ -127,15 +127,12 @@ def silu_and_mul(
             f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
         )
     if backend == "aiter":
-        # Validate the explicit opt-in on every platform so a misconfiguration
-        # surfaces here instead of silently running native off ROCm.
-        from .aiter_utils import is_aiter_supported
+        # Validate the explicit opt-in up front so a misconfiguration (unsupported
+        # device or missing aiter package) surfaces as a clear ValueError here
+        # instead of a raw import/build error deeper in the JIT loader.
+        from .aiter_utils import require_aiter
 
-        if not (IS_HIP and is_aiter_supported(input.device)):
-            raise ValueError(
-                f"backend='aiter' requires a ROCm gfx942/gfx950 device; got "
-                f"device {input.device}."
-            )
+        require_aiter(input.device, "silu_and_mul")
     if input.shape[-1] * input.dtype.itemsize % 16 != 0:
         raise ValueError("The pointers must be multiple of 16 bytes.")
     if out is not None:

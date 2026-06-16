@@ -4,8 +4,11 @@
 Shared plumbing for FlashInfer's C++-level AITER backends (ROCm).
 
 FlashInfer wraps AITER kernels by compiling a small ``csrc_rocm/*_aiter.cu`` shim
-that ``#include``s AITER's public C++ header and calls the kernel directly, then
-links the symbol-visible AITER ``.so``.
+that calls AITER's C++ entry point directly and links the symbol-visible AITER
+``.so``. The shim forward-declares the entry point rather than ``#include``-ing
+AITER's public header, because that header pulls in pybind11, which clashes with
+FlashInfer's ``-DPy_LIMITED_API`` build; ``torch::Tensor`` is ``at::Tensor``, so
+the linker resolves the symbol from the AITER ``.so``.
 
 AITER's installed wheel builds its modules with ``-fvisibility=hidden``, so the
 kernel symbols (e.g. ``rope_cached_positions_2c_fwd_impl``) are not linkable. This

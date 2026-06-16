@@ -95,13 +95,9 @@ def rmsnorm(
             backend if backend != "auto" else _auto_select_norm_backend(input.device)
         )
         if _backend == "aiter":
-            from .aiter_utils import is_aiter_supported
+            from .aiter_utils import require_aiter
 
-            if not is_aiter_supported(input.device):
-                raise ValueError(
-                    "AITER rmsnorm requires an AMD gfx942/gfx950 device; "
-                    "use backend='native' instead."
-                )
+            require_aiter(input.device, "rmsnorm")
             if input.ndim != 2:
                 raise ValueError(
                     f"AITER rmsnorm only supports 2D inputs; got {input.ndim}D. "
@@ -199,13 +195,9 @@ def fused_add_rmsnorm(
             else _auto_select_fused_add_rmsnorm_backend(input)
         )
         if _backend == "aiter":
-            from .aiter_utils import is_aiter_supported
+            from .aiter_utils import require_aiter
 
-            if not is_aiter_supported(input.device):
-                raise ValueError(
-                    "AITER fused_add_rmsnorm requires an AMD gfx942/gfx950 device; "
-                    "use backend='native' instead."
-                )
+            require_aiter(input.device, "fused_add_rmsnorm")
             get_norm_aiter_module().fused_add_rmsnorm_aiter(
                 input, residual, weight, eps
             )
