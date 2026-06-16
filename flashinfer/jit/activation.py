@@ -148,3 +148,18 @@ def gen_act_and_mul_module(act_func_name: str) -> JitSpec:
         f"{act_func_name}_and_mul",
         sources,
     )
+
+
+def gen_silu_and_mul_aiter_module() -> JitSpec:
+    from .aiter_source import aiter_jitspec_flags
+
+    extra_include_paths, extra_ldflags = aiter_jitspec_flags("module_activation")
+    return gen_jit_spec(
+        "silu_and_mul_aiter",
+        [
+            jit_env.FLASHINFER_CSRC_DIR / "activation_aiter.cu",
+            jit_env.FLASHINFER_CSRC_DIR / "activation_aiter_jit_pybind.cu",
+        ],
+        extra_include_paths=extra_include_paths,
+        extra_ldflags=extra_ldflags,
+    )

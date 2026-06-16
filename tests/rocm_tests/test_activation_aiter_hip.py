@@ -42,35 +42,12 @@ def test_silu_and_mul_aiter_vs_ref(dtype, d, num_tokens):
 
 @requires_aiter
 def test_silu_and_mul_auto_backend_selection():
-    """auto stays native for small/bf16 inputs and picks AITER for large fp16 2D inputs."""
-    from flashinfer.activation import (
-        _AITER_SILU_AND_MUL_MIN_ELEMS,
-        _auto_select_silu_and_mul_backend,
-    )
+    """auto routes to the C++ AITER kernel on supported gfx942/gfx950 devices."""
+    from flashinfer.activation import _auto_select_silu_and_mul_backend
 
     device = torch.device("cuda:0")
-
-    # Small inputs: native regardless of dtype.
-    for dtype in (torch.float16, torch.bfloat16):
-        small = torch.empty(8, 256, dtype=dtype, device=device)
-        assert _auto_select_silu_and_mul_backend(small) == "native"
-
-    # Large enough fp16 2D input (>= cutoff). cols is a multiple of 8 so the
-    # shape also clears silu_and_mul's 16-byte alignment guard, i.e. it is a
-    # shape that could actually flow through the public function to AITER.
-    rows = 8192
-    cols = -(-_AITER_SILU_AND_MUL_MIN_ELEMS // (rows * 8)) * 8  # ceil to mult of 8
-    large_fp16 = torch.empty(rows, cols, dtype=torch.float16, device=device)
-    assert large_fp16.numel() >= _AITER_SILU_AND_MUL_MIN_ELEMS
-    assert _auto_select_silu_and_mul_backend(large_fp16) == "aiter"
-
-    # Same large shape in bf16: native (precision guard).
-    large_bf16 = torch.empty(rows, cols, dtype=torch.bfloat16, device=device)
-    assert _auto_select_silu_and_mul_backend(large_bf16) == "native"
-
-    # Large fp16 but 3D: native (2D guard).
-    large_3d = torch.empty(2, rows, cols, dtype=torch.float16, device=device)
-    assert _auto_select_silu_and_mul_backend(large_3d) == "native"
+    x = torch.empty(8, 256, dtype=torch.float16, device=device)
+    assert _auto_select_silu_and_mul_backend(x) == "aiter"
 
 
 @requires_aiter
@@ -97,5 +74,5 @@ def test_silu_and_mul_aiter_backend_rejected_when_unsupported():
     """Explicit backend='aiter' raises (not silently falls back) on an unsupported device."""
     cpu_x = torch.randn(8, 256, dtype=torch.float16)
     if not is_aiter_supported(cpu_x.device):
-        with pytest.raises(ValueError, match="requires a ROCm"):
+        with pytest.raises(ValueError, match="gfx942/gfx950"):
             flashinfer.activation.silu_and_mul(cpu_x, backend="aiter")

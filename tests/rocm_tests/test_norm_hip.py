@@ -150,25 +150,12 @@ def test_fused_add_rmsnorm_aiter(batch_size, hidden_size, dtype):
 
 
 @requires_aiter
-@pytest.mark.parametrize(
-    "batch_size,hidden_size,expected",
-    [
-        (1, 4096, "native"),  # small
-        (128, 4096, "native"),  # medium, below cutoff
-        (989, 4096, "native"),  # ~4.05M elems, just below 4M cutoff -> native
-        (512, 8192, "aiter"),  # exactly 4M elems (cutoff) -> aiter
-        (2048, 8192, "aiter"),  # >= 4M elems -> aiter
-        (4096, 8192, "aiter"),  # large -> aiter
-    ],
-)
-def test_fused_add_rmsnorm_auto_selection(batch_size, hidden_size, expected):
+def test_fused_add_rmsnorm_auto_selection():
+    """auto routes fused_add_rmsnorm to the C++ AITER kernel on supported devices."""
     from flashinfer.norm import _auto_select_fused_add_rmsnorm_backend
 
-    x = torch.empty(batch_size, hidden_size, dtype=torch.float16, device="cuda")
-    assert _auto_select_fused_add_rmsnorm_backend(x) == expected
-    # 3D always routes to native regardless of size.
-    x3d = torch.empty(batch_size, 4, hidden_size, dtype=torch.float16, device="cuda")
-    assert _auto_select_fused_add_rmsnorm_backend(x3d) == "native"
+    x = torch.empty(512, 8192, dtype=torch.float16, device="cuda")
+    assert _auto_select_fused_add_rmsnorm_backend(x) == "aiter"
 
 
 @pytest.mark.parametrize("backend", ["auto", "native", "aiter"])

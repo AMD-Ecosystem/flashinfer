@@ -32,41 +32,25 @@ def get_norm_module():
 if IS_HIP:
 
     @functools.cache
-    def _aiter_norm_ops():
-        import aiter as _aiter
+    def get_norm_aiter_module():
+        from .jit.norm import gen_norm_aiter_module
 
-        return _aiter
+        return gen_norm_aiter_module().build_and_load()
 
-    def _auto_select_norm_backend(device: torch.device, dtype: torch.dtype) -> str:
-        # AITER rms_norm uses lower-precision reductions that exceed the flashinfer
-        # test tolerance (fp16 atol=1e-3, bf16 atol=1.6e-2) at hidden_size >= 1024.
-        # Keep auto on the native JIT kernel; pass backend="aiter" to opt in explicitly.
+    def _auto_select_norm_backend(device: torch.device) -> str:
+        # auto routes plain rmsnorm to native: AITER's rms_norm uses lower-precision
+        # reductions that exceed the flashinfer test tolerance at hidden_size >= 1024.
+        # Pass backend="aiter" to opt in explicitly.
         return "native"
 
-    # AITER's CK fused_add_rmsnorm only overtakes the native kernel on large,
-    # bandwidth-bound shapes (~10-14% faster at >=2048 rows x 8192 cols); below
-    # that the native kernel is faster and more accurate. Route auto to AITER once
-    # the input reaches this element-count cutoff (around the measured break-even).
-    _AITER_FUSED_ADD_RMSNORM_MIN_ELEMS = 4 * 1024 * 1024
-
     def _auto_select_fused_add_rmsnorm_backend(input: torch.Tensor) -> str:
-        # Cheapest guards first so the common small/medium case exits early.
-        if input.ndim != 2:
-            return "native"
-        if input.numel() < _AITER_FUSED_ADD_RMSNORM_MIN_ELEMS:
-            return "native"
-        from .aiter_utils import is_aiter_supported
+        # auto routes fused_add_rmsnorm to the C++ AITER CK kernel on supported
+        # devices and falls back to native everywhere else (incl. when AITER is not
+        # installed, so auto never raises). (Shape/precision tuning is deferred to
+        # a later performance pass.)
+        from .aiter_utils import is_aiter_available
 
-        if not is_aiter_supported(input.device):
-            return "native"
-        try:
-            # Best-effort probe: a supported arch can still lack a usable aiter
-            # (not installed, or its compiled extension fails to load). auto must
-            # always be able to fall back to native, so catch any import failure.
-            _aiter_norm_ops()
-        except Exception:
-            return "native"
-        return "aiter"
+        return "aiter" if is_aiter_available(input.device) else "native"
 
 
 def rmsnorm(
@@ -97,9 +81,9 @@ def rmsnorm(
     backend: str
         Kernel backend to use. ``"auto"`` (default) selects the best available backend.
         ``"native"`` uses the FlashInfer JIT kernel on all platforms.
-        ``"aiter"`` uses AMD AITER's rms_norm — ROCm (gfx942/gfx950) only; requires the
-        ``aiter`` package and only supports 2D inputs. Precision is slightly lower than
-        ``"native"`` at ``hidden_size >= 1024`` (fp16 atol ~4e-3, bf16 ~7e-2).
+        ``"aiter"`` uses AMD AITER's ``rms_norm`` C++ kernel — ROCm (gfx942/gfx950)
+        only, 2D inputs only. Precision is slightly lower than ``"native"`` at
+        ``hidden_size >= 1024`` (fp16 atol ~4e-3, bf16 ~7e-2).
 
     Returns
     -------
@@ -108,21 +92,21 @@ def rmsnorm(
     """
     if IS_HIP:
         _backend = (
-            backend
-            if backend != "auto"
-            else _auto_select_norm_backend(input.device, input.dtype)
+            backend if backend != "auto" else _auto_select_norm_backend(input.device)
         )
         if _backend == "aiter":
+            from .aiter_utils import require_aiter
+
+            require_aiter(input.device, "rmsnorm")
             if input.ndim != 2:
                 raise ValueError(
                     f"AITER rmsnorm only supports 2D inputs; got {input.ndim}D. "
                     "Use backend='native' for 3D inputs."
                 )
-            result = _aiter_norm_ops().rms_norm(input, weight, eps)
-            if out is not None:
-                out.copy_(result)
-                return out
-            return result
+            if out is None:
+                out = torch.empty_like(input)
+            get_norm_aiter_module().rmsnorm_aiter(out, input, weight, eps)
+            return out
         if _backend not in ("native",):
             raise ValueError(
                 f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
@@ -189,14 +173,13 @@ def fused_add_rmsnorm(
         Whether to enable `programmatic dependent launch
         <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
     backend: str
-        Kernel backend to use. ``"auto"`` (default) uses the native kernel for small
-        and medium inputs, and switches to AITER on ROCm for large (>= 4M element) 2D
-        inputs where its CK kernel is faster; it falls back to native whenever AITER
-        is unavailable.
+        Kernel backend to use. ``"auto"`` (default) routes to the C++ AITER CK
+        kernel on ROCm (gfx942/gfx950) and to the native FlashInfer JIT kernel
+        everywhere else.
         ``"native"`` uses the FlashInfer JIT kernel on all platforms.
-        ``"aiter"`` uses AMD AITER's CK ``rmsnorm2d_fwd_with_add`` — ROCm
-        (gfx942/gfx950) only; requires the ``aiter`` package and only supports 2D
-        inputs. Precision is slightly lower than ``"native"`` at ``hidden_size >= 1024``.
+        ``"aiter"`` uses AMD AITER's CK ``rmsnorm2d_with_add`` C++ kernel — ROCm
+        (gfx942/gfx950) only, 2D inputs only. Precision is slightly lower than
+        ``"native"`` at ``hidden_size >= 1024``.
     """
     # Both the native and AITER kernels are 2D-only (the native kernel enforces
     # CHECK_DIM(2) on input/residual), so reject other ranks up front with a clear
@@ -212,10 +195,11 @@ def fused_add_rmsnorm(
             else _auto_select_fused_add_rmsnorm_backend(input)
         )
         if _backend == "aiter":
-            # CK kernel writes out/residual_out separately; alias them onto the
-            # input/residual tensors to match FlashInfer's in-place semantics.
-            _aiter_norm_ops().rmsnorm2d_fwd_with_add(
-                input, input, residual, residual, weight, eps
+            from .aiter_utils import require_aiter
+
+            require_aiter(input.device, "fused_add_rmsnorm")
+            get_norm_aiter_module().fused_add_rmsnorm_aiter(
+                input, residual, weight, eps
             )
             return
         if _backend != "native":

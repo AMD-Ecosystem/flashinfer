@@ -31,3 +31,18 @@ def gen_norm_module() -> JitSpec:
         ],
         extra_cuda_cflags=nvcc_flags,
     )
+
+
+def gen_norm_aiter_module() -> JitSpec:
+    from .aiter_source import aiter_jitspec_flags
+
+    extra_include_paths, extra_ldflags = aiter_jitspec_flags("module_rmsnorm")
+    return gen_jit_spec(
+        "norm_aiter",
+        [
+            jit_env.FLASHINFER_CSRC_DIR / "norm_aiter.cu",
+            jit_env.FLASHINFER_CSRC_DIR / "norm_aiter_jit_pybind.cu",
+        ],
+        extra_include_paths=extra_include_paths,
+        extra_ldflags=extra_ldflags,
+    )
