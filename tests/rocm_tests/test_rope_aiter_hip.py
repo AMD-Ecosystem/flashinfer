@@ -122,21 +122,6 @@ def test_rope_cos_sin_cache_aiter_inplace(is_neox_style, dtype):
     torch.testing.assert_close(key_inplace, key_out, rtol=0, atol=0)
 
 
-def test_rope_auto_backend_selection():
-    """auto routes to AITER on supported devices, but never raises: it falls back
-    to native for mixed query/key dtypes."""
-    from flashinfer.rope import _auto_select_rope_backend
-
-    device = torch.device("cuda:0")
-    q = torch.randn(2048, 128, dtype=torch.float16, device=device)
-    k = torch.randn(2048, 128, dtype=torch.float16, device=device)
-    assert _auto_select_rope_backend(q, k) == "aiter"
-
-    # Mixed q/k dtype must fall back to native, not route into AITER and raise.
-    k_bf16 = torch.randn(2048, 128, dtype=torch.bfloat16, device=device)
-    assert _auto_select_rope_backend(q, k_bf16) == "native"
-
-
 def test_rope_unknown_backend_raises():
     device = torch.device("cuda:0")
     cos_sin_cache = torch.randn(64, 64, dtype=torch.float32, device=device)

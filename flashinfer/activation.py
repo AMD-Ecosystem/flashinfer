@@ -42,13 +42,10 @@ if IS_HIP:
         return gen_silu_and_mul_aiter_module().build_and_load()
 
     def _auto_select_silu_and_mul_backend(input: torch.Tensor) -> str:
-        # auto routes to the C++ AITER kernel on supported gfx942/gfx950 devices
-        # and falls back to native everywhere else (incl. when AITER is not
-        # installed, so auto never raises). (Shape/precision tuning is deferred to
-        # a later performance pass.)
-        from .aiter_utils import is_aiter_available
-
-        return "aiter" if is_aiter_available(input.device) else "native"
+        # Experimentation found the in-tree native kernel to be the better default
+        # for silu_and_mul, so auto always resolves to native. The C++ AITER kernel
+        # remains reachable via an explicit backend="aiter".
+        return "native"
 
 
 @functools.cache
@@ -110,9 +107,8 @@ def silu_and_mul(
         <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
 
     backend: str
-        Kernel backend to use. ``"auto"`` (default) routes to the C++ AITER kernel
-        on ROCm (gfx942/gfx950) and to the native FlashInfer JIT kernel everywhere
-        else.
+        Kernel backend to use. ``"auto"`` (default) resolves to the native
+        FlashInfer JIT kernel on all platforms.
         ``"native"`` uses the FlashInfer JIT kernel on all platforms.
         ``"aiter"`` uses AMD AITER's ``silu_and_mul`` C++ kernel — ROCm
         (gfx942/gfx950) only; raises ``ValueError`` on any other platform.
