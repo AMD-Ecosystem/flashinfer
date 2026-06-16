@@ -42,12 +42,15 @@ def test_rmsnorm_aiter_vs_ref(dtype, hidden_size, batch_size):
 
 
 @requires_aiter
-def test_rmsnorm_auto_backend_stays_native():
-    """auto backend on gfx942/950 should stay on native kernel (precision parity with tests)."""
+def test_rmsnorm_auto_backend_selects_aiter_for_2d():
+    """auto backend on gfx942/950 routes 2D inputs to AITER and 3D inputs to native."""
     from flashinfer.norm import _auto_select_norm_backend
 
     device = torch.device("cuda:0")
-    assert _auto_select_norm_backend(device) == "native"
+    x2d = torch.randn(8, 128, dtype=torch.float16, device=device)
+    x3d = torch.randn(8, 4, 128, dtype=torch.float16, device=device)
+    assert _auto_select_norm_backend(x2d) == "aiter"
+    assert _auto_select_norm_backend(x3d) == "native"
 
 
 @requires_aiter
