@@ -37,20 +37,22 @@ if IS_HIP:
 
         return gen_norm_aiter_module().build_and_load()
 
-    def _auto_select_norm_backend(input: torch.Tensor) -> str:
+    def _auto_select_norm_backend(input: torch.Tensor, weight: torch.Tensor) -> str:
         # auto routes plain rmsnorm to the C++ AITER kernel only when the input is
-        # 2D fp16/bf16 (the CK rmsnorm2d kernel rejects other ranks/dtypes) and
-        # AITER is available; everything else falls back to native. (fp32 is
-        # unsupported by both the AITER and native ROCm kernels, so it still raises
-        # downstream — routing it to native just keeps the error consistent with the
-        # default kernel rather than exposing a CK-specific message.) Note: AITER's
-        # CK rmsnorm2d uses lower-precision reductions that exceed the flashinfer
-        # test tolerance at hidden_size >= 1024 (fp16 atol ~4e-3, bf16 ~7e-2).
+        # 2D fp16/bf16 with a matching weight dtype (the CK rmsnorm2d kernel rejects
+        # other ranks/dtypes and reads weight with the input dtype) and AITER is
+        # available; everything else falls back to native. (fp32 is unsupported by
+        # both the AITER and native ROCm kernels, so it still raises downstream —
+        # routing it to native just keeps the error consistent with the default
+        # kernel rather than exposing a CK-specific message.) Note: AITER's CK
+        # rmsnorm2d uses lower-precision reductions that exceed the flashinfer test
+        # tolerance at hidden_size >= 1024 (fp16 atol ~4e-3, bf16 ~7e-2).
         from .aiter_utils import is_aiter_available
 
         if (
             input.ndim == 2
             and input.dtype in (torch.float16, torch.bfloat16)
+            and weight.dtype == input.dtype
             and is_aiter_available(input.device)
         ):
             return "aiter"
@@ -105,7 +107,9 @@ def rmsnorm(
         Normalized tensor, 2D shape (batch_size, hidden_size) or 3D shape (batch_size, num_heads, hidden_size).
     """
     if IS_HIP:
-        _backend = backend if backend != "auto" else _auto_select_norm_backend(input)
+        _backend = (
+            backend if backend != "auto" else _auto_select_norm_backend(input, weight)
+        )
         if _backend == "aiter":
             from .aiter_utils import require_aiter
 
@@ -118,6 +122,13 @@ def rmsnorm(
             if input.dtype not in (torch.float16, torch.bfloat16):
                 raise ValueError(
                     f"AITER rmsnorm only supports float16/bfloat16 inputs; got {input.dtype}."
+                )
+            if weight.dtype != input.dtype:
+                # CK rmsnorm2d derives a single dtype from input and reads weight
+                # bytes with it; a mismatched weight dtype silently yields NaN/garbage.
+                raise ValueError(
+                    f"AITER rmsnorm requires weight.dtype == input.dtype; got "
+                    f"weight {weight.dtype} vs input {input.dtype}."
                 )
             if out is None:
                 out = torch.empty_like(input)
