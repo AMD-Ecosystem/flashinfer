@@ -61,14 +61,14 @@ kernel for non-attention ops). **AITER** = ROCm AITER backend.
 | **Cascade attention** | ✅ | — | HIP | Two-level shared-prefix attention; a fused single-kernel HIP variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1` |
 | **MLA (Multi-Latent Attention)** | — | ✅ | **AITER** (no HIP fallback) | DeepSeek-style 192/128 head-dim split; bf16 + `page_size=1`; `backend="auto"` (default) resolves to `"aiter"` |
 | **POD attention** | ✅ `fa2` | — | HIP | MHA / GQA / MQA; single + batch variants (`PODWithPagedKVCacheWrapper`, `BatchPODWithPagedKVCacheWrapper`); JIT-only (excluded from AOT, same as upstream CUDA) |
-| **RoPE (positional encoding)** | ✅ `native` | ✅ | **AITER** for the cos/sin-cache path when `fp16` + `>= 2048` tokens + gfx942/gfx950; else **HIP `native`** | LLaMA-style + LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). AITER backend covers `apply_rope_with_cos_sin_cache` and its inplace variant (CK `rope_cached_positions_2c`); ~1.3–2.8x over native at large nnz (zero-copy via the `_impl` entry point); bf16 stays native (slightly lower precision) |
+| **RoPE (positional encoding)** | ✅ `native` | ✅ | **AITER** for the cos/sin-cache path on gfx942/gfx950; else **HIP `native`** | LLaMA-style + LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). AITER backend covers `apply_rope_with_cos_sin_cache` and its inplace variant via AITER's C++ `rope_cached_positions_2c_fwd_impl` (linked at the C++ level, no runtime `import aiter`); cos/sin passed as float32 |
 | **Paged KV-cache append** | ✅ `native` | ✅ | **AITER** when `fp16/bf16` + `NHD` + gfx942/gfx950 + AITER importable; else **HIP `native`** | `append_paged_kv_cache`; fp8 KV-cache supported on the HIP path |
 | **RMSNorm** | ✅ `native` | ✅ | **HIP `native`** (auto stays on HIP — AITER is opt-in via `backend="aiter"`) | AITER path is fp16/bf16, 2-D only; slightly lower precision at `hidden_size >= 1024` |
-| **Fused add RMSNorm** | ✅ `native` | ✅ | **AITER** when 2-D + `>= 4M` elements + gfx942/gfx950 + AITER importable; else **HIP `native`** | `fused_add_rmsnorm`; AITER (CK `rmsnorm2d_fwd_with_add`) wins on large bandwidth-bound shapes; 2-D only, slightly lower precision at `hidden_size >= 1024` |
+| **Fused add RMSNorm** | ✅ `native` | ✅ | **AITER** on gfx942/gfx950; else **HIP `native`** | `fused_add_rmsnorm`; AITER's C++ CK `rmsnorm2d_with_add` (linked at the C++ level, no runtime `import aiter`); 2-D only, slightly lower precision at `hidden_size >= 1024` |
 | **LayerNorm / Gemma RMSNorm** | ✅ | — | HIP | |
 | **Sampling** | ✅ | — | HIP | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits |
 | **Logits processor** | ✅ | — | HIP | Composable processor pipeline (cap, mask, temperature, …) |
-| **Activation** | ✅ `native` | ✅ | **AITER** for `silu_and_mul` when `fp16` + 2-D + `>= 33M` elements; else **HIP `native`** | SiLU / GELU with fused gating. AITER path (`silu_and_mul` only) is opt-in via `backend="aiter"`; matches native precision in fp16, lower in bf16 |
+| **Activation** | ✅ `native` | ✅ | **AITER** for `silu_and_mul` on gfx942/gfx950; else **HIP `native`** | SiLU / GELU with fused gating. AITER path (`silu_and_mul` only) via AITER's C++ `aiter::silu_and_mul` (linked at the C++ level, no runtime `import aiter`); matches native precision in fp16, lower in bf16 |
 | **Quantization** | ✅ | — | HIP | `packbits`, `segment_packbits` |
 | **`torch.compile`** | ✅ (opt-in) | n/a | n/a | Set `FLASHINFER_USE_TORCH_CUSTOM_OPS=1` **before** importing `flashinfer`; requires PyTorch ≥ 2.4. Without it, `torch.compile` raises a clear error if it traces into a flashinfer op |
 
@@ -323,26 +323,25 @@ explicitly, or pass the in-tree backend string to skip it:
 `backend="fa2"` for the attention wrappers (single/batch
 prefill/decode), `backend="native"` for non-attention ops
 (`append_paged_kv_cache`, `rmsnorm`, `fused_add_rmsnorm`,
-`silu_and_mul`, `rope`). Five backend-specific exceptions to "auto picks
-AITER when supported":
+`silu_and_mul`, `rope`).
+
+The `fused_add_rmsnorm`, `silu_and_mul`, and `rope` (cos/sin-cache) AITER
+backends are integrated at the **C++ level**: FlashInfer's JIT compiles a
+small HIP shim that calls AITER's C++ kernels
+(`rmsnorm2d_with_add`, `aiter::silu_and_mul`,
+`rope_cached_positions_2c_fwd_impl`) directly and links a symbol-visible
+AITER `.so` — there is no runtime `import aiter` on these paths. The first
+JIT build of each op builds the corresponding AITER module once with
+`AITER_SYMBOL_VISIBLE=1` and caches it under
+`~/.cache/flashinfer/aiter_libs/` (the CK `module_rmsnorm` build is large
+and can take many minutes the first time). For these three ops,
+`backend="auto"` resolves to AITER on gfx942/gfx950 and to HIP `native`
+elsewhere; a later performance pass may re-introduce shape-based gating.
+
+Backend-specific exceptions to "auto picks AITER when supported":
 
 * `rmsnorm`: `backend="auto"` stays on the HIP `native` kernel; the
-  AITER path is opt-in via `backend="aiter"`.
-* `fused_add_rmsnorm`: `backend="auto"` is shape-gated — it picks AITER
-  only for 2-D inputs with `>= 4M` elements (where the CK kernel is
-  faster) and stays on the HIP `native` kernel otherwise.
-* `silu_and_mul`: `backend="auto"` picks AITER only for `fp16` + 2-D +
-  `>= 33M`-element inputs (where it is faster and matches native
-  precision) and otherwise stays on HIP `native`; the AITER path is also
-  available explicitly via `backend="aiter"`.
-* `rope` (`apply_rope_with_cos_sin_cache` / `_inplace`): `backend="auto"`
-  picks AITER for `fp16` inputs with `>= 2048` tokens (where the AITER
-  kernel is ~1.3–2.8x faster and fp16 precision stays inside tolerance)
-  and otherwise stays on HIP `native`. Both the inplace and out-of-place
-  wrappers benefit — the helper uses AITER's `..._impl` entry point with
-  distinct in/out tensors, so the out-of-place path needs no Q/K copy.
-  bf16 always stays native (slightly lower precision). The AITER path is
-  also available explicitly via `backend="aiter"`.
+  AITER C++ path (`rms_norm`) is opt-in via `backend="aiter"`.
 * `batch_decode`: `use_cuda_graph=True` or `use_tensor_cores=True`
   force `auto` back to `fa2` (AITER decode does not support either),
   and `pos_encoding_mode != "NONE"` raises under `backend="aiter"`.
