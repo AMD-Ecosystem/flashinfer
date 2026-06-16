@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// PyTorch entry point for AITER's CK fused-add RMSNorm (rmsnorm2d_with_add).
-// FlashInfer links the symbol-visible AITER module (see
-// flashinfer/jit/aiter_source.py) and calls the kernel directly — no Python
-// `import aiter` at runtime.
+// PyTorch entry points for AITER's CK RMSNorm kernels: plain rmsnorm
+// (rmsnorm2d) and fused-add rmsnorm (rmsnorm2d_with_add). FlashInfer links the
+// symbol-visible AITER module (see flashinfer/jit/aiter_source.py) and calls the
+// kernels directly — no Python `import aiter` at runtime.
 //
 // FlashInfer's fused_add_rmsnorm is in-place:
 //   residual = input + residual; input = rmsnorm(residual) * weight
@@ -22,7 +22,10 @@
 void rmsnorm2d_with_add(at::Tensor& out, at::Tensor& input, at::Tensor& residual_in,
                         at::Tensor& residual_out, at::Tensor& weight, double epsilon,
                         int use_model_sensitive_rmsnorm);
-void rms_norm(at::Tensor& out, at::Tensor& input, at::Tensor& weight, double epsilon);
+// CK 2D forward (the symbol the AITER `rmsnorm2d_fwd` pybind name binds to);
+// the in-place overload writes `out` directly.
+void rmsnorm2d(at::Tensor& out, at::Tensor& input, at::Tensor& weight, double epsilon,
+               int use_model_sensitive_rmsnorm);
 
 void fused_add_rmsnorm_aiter(at::Tensor input, at::Tensor residual, at::Tensor weight, double eps) {
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(input.device());
@@ -36,5 +39,7 @@ void fused_add_rmsnorm_aiter(at::Tensor input, at::Tensor residual, at::Tensor w
 
 void rmsnorm_aiter(at::Tensor out, at::Tensor input, at::Tensor weight, double eps) {
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(input.device());
-  rms_norm(out, input, weight, eps);
+  // CK expects weight as [1, n]; FlashInfer passes [n] (see fused-add note above).
+  at::Tensor weight2d = weight.reshape({1, -1});
+  rmsnorm2d(out, input, weight2d, eps, /*use_model_sensitive_rmsnorm=*/0);
 }
