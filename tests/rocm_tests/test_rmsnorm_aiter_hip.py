@@ -47,10 +47,7 @@ def test_rmsnorm_auto_backend_stays_native():
     from flashinfer.norm import _auto_select_norm_backend
 
     device = torch.device("cuda:0")
-    assert _auto_select_norm_backend(device, torch.float16) == "native"
-    assert _auto_select_norm_backend(device, torch.bfloat16) == "native"
-    # fp32 also native (no AITER path for fp32)
-    assert _auto_select_norm_backend(device, torch.float32) == "native"
+    assert _auto_select_norm_backend(device) == "native"
 
 
 @requires_aiter
