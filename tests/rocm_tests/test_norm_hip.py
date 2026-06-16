@@ -82,11 +82,14 @@ def test_norm(batch_size, hidden_size, dtype, specify_out, enable_pdl, contiguou
     w = torch.randn(hidden_size).to(0).to(dtype)
 
     y_ref = llama_rms_norm(x, w)
+    # Pin to native: this test checks the native kernel against a tight float32
+    # reference. On ROCm, backend="auto" routes 2D inputs to AITER's lower-precision
+    # rms_norm, whose accuracy is validated separately in test_rmsnorm_aiter_hip.py.
     if specify_out:
         y = torch.empty_like(x)
-        flashinfer.norm.rmsnorm(x, w, out=y, enable_pdl=enable_pdl)
+        flashinfer.norm.rmsnorm(x, w, out=y, enable_pdl=enable_pdl, backend="native")
     else:
-        y = flashinfer.norm.rmsnorm(x, w, enable_pdl=enable_pdl)
+        y = flashinfer.norm.rmsnorm(x, w, enable_pdl=enable_pdl, backend="native")
 
     rtol, atol = (1.6e-2, 1.6e-2) if dtype == torch.bfloat16 else (1e-3, 1e-3)
     torch.testing.assert_close(y_ref, y, rtol=rtol, atol=atol)

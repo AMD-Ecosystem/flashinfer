@@ -63,7 +63,7 @@ kernel for non-attention ops). **AITER** = ROCm AITER backend.
 | **POD attention** | ✅ `fa2` | — | HIP | MHA / GQA / MQA; single + batch variants (`PODWithPagedKVCacheWrapper`, `BatchPODWithPagedKVCacheWrapper`); JIT-only (excluded from AOT, same as upstream CUDA) |
 | **RoPE (positional encoding)** | ✅ `native` | ✅ | **AITER** for the cos/sin-cache path on gfx942/gfx950; else **HIP `native`** | LLaMA-style + LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). AITER backend covers `apply_rope_with_cos_sin_cache` and its inplace variant via AITER's C++ `rope_cached_positions_2c_fwd_impl` (linked at the C++ level, no runtime `import aiter`); cos/sin passed as float32 |
 | **Paged KV-cache append** | ✅ `native` | ✅ | **AITER** when `fp16/bf16` + `NHD` + gfx942/gfx950 + AITER importable; else **HIP `native`** | `append_paged_kv_cache`; fp8 KV-cache supported on the HIP path |
-| **RMSNorm** | ✅ `native` | ✅ | **HIP `native`** (auto stays on HIP — AITER is opt-in via `backend="aiter"`) | AITER path is fp16/bf16, 2-D only; slightly lower precision at `hidden_size >= 1024` |
+| **RMSNorm** | ✅ `native` | ✅ | **AITER** for 2-D inputs on gfx942/gfx950; else **HIP `native`** (3-D inputs or AITER unavailable) | `rmsnorm`; AITER's C++ `rms_norm` (linked at the C++ level, no runtime `import aiter`); fp16/bf16, 2-D only, slightly lower precision at `hidden_size >= 1024` |
 | **Fused add RMSNorm** | ✅ `native` | ✅ | **AITER** on gfx942/gfx950; else **HIP `native`** | `fused_add_rmsnorm`; AITER's C++ CK `rmsnorm2d_with_add` (linked at the C++ level, no runtime `import aiter`); 2-D only, slightly lower precision at `hidden_size >= 1024` |
 | **LayerNorm / Gemma RMSNorm** | ✅ | — | HIP | |
 | **Sampling** | ✅ | — | HIP | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits |
@@ -325,23 +325,25 @@ prefill/decode), `backend="native"` for non-attention ops
 (`append_paged_kv_cache`, `rmsnorm`, `fused_add_rmsnorm`,
 `silu_and_mul`, `rope`).
 
-The `fused_add_rmsnorm`, `silu_and_mul`, and `rope` (cos/sin-cache) AITER
-backends are integrated at the **C++ level**: FlashInfer's JIT compiles a
-small HIP shim that calls AITER's C++ kernels
-(`rmsnorm2d_with_add`, `aiter::silu_and_mul`,
+The `rmsnorm`, `fused_add_rmsnorm`, `silu_and_mul`, and `rope`
+(cos/sin-cache) AITER backends are integrated at the **C++ level**:
+FlashInfer's JIT compiles a small HIP shim that calls AITER's C++ kernels
+(`rms_norm`, `rmsnorm2d_with_add`, `aiter::silu_and_mul`,
 `rope_cached_positions_2c_fwd_impl`) directly and links a symbol-visible
 AITER `.so` — there is no runtime `import aiter` on these paths. The first
 JIT build of each op builds the corresponding AITER module once with
 `AITER_SYMBOL_VISIBLE=1` and caches it under
 `~/.cache/flashinfer/aiter_libs/` (the CK `module_rmsnorm` build is large
-and can take many minutes the first time). For these three ops,
+and can take many minutes the first time). For these ops,
 `backend="auto"` resolves to AITER on gfx942/gfx950 and to HIP `native`
-elsewhere; a later performance pass may re-introduce shape-based gating.
+elsewhere, subject to op-specific constraints (e.g. `rmsnorm` auto only
+routes 2-D inputs to AITER); a later performance pass may extend this
+shape-based gating to the other ops.
 
 Backend-specific exceptions to "auto picks AITER when supported":
 
-* `rmsnorm`: `backend="auto"` stays on the HIP `native` kernel; the
-  AITER C++ path (`rms_norm`) is opt-in via `backend="aiter"`.
+* `rmsnorm`: `backend="auto"` picks the AITER C++ path (`rms_norm`) only
+  for 2-D inputs; 3-D inputs fall back to the HIP `native` kernel.
 * `batch_decode`: `use_cuda_graph=True` or `use_tensor_cores=True`
   force `auto` back to `fa2` (AITER decode does not support either),
   and `pos_encoding_mode != "NONE"` raises under `backend="aiter"`.

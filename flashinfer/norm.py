@@ -37,10 +37,16 @@ if IS_HIP:
 
         return gen_norm_aiter_module().build_and_load()
 
-    def _auto_select_norm_backend(device: torch.device) -> str:
-        # auto routes plain rmsnorm to native: AITER's rms_norm uses lower-precision
-        # reductions that exceed the flashinfer test tolerance at hidden_size >= 1024.
-        # Pass backend="aiter" to opt in explicitly.
+    def _auto_select_norm_backend(input: torch.Tensor) -> str:
+        # auto routes plain rmsnorm to the C++ AITER kernel on supported devices
+        # (2D inputs only) and falls back to native everywhere else (3D inputs, or
+        # when AITER is not installed, so auto never raises). Note: AITER's rms_norm
+        # uses lower-precision reductions that exceed the flashinfer test tolerance
+        # at hidden_size >= 1024 (fp16 atol ~4e-3, bf16 ~7e-2).
+        from .aiter_utils import is_aiter_available
+
+        if input.ndim == 2 and is_aiter_available(input.device):
+            return "aiter"
         return "native"
 
     def _auto_select_fused_add_rmsnorm_backend(input: torch.Tensor) -> str:
@@ -79,7 +85,8 @@ def rmsnorm(
         Whether to enable `programmatic dependent launch
         <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
     backend: str
-        Kernel backend to use. ``"auto"`` (default) selects the best available backend.
+        Kernel backend to use. ``"auto"`` (default) selects the best available backend:
+        the AITER C++ kernel for 2D inputs on supported ROCm devices, else native.
         ``"native"`` uses the FlashInfer JIT kernel on all platforms.
         ``"aiter"`` uses AMD AITER's ``rms_norm`` C++ kernel — ROCm (gfx942/gfx950)
         only, 2D inputs only. Precision is slightly lower than ``"native"`` at
@@ -91,9 +98,7 @@ def rmsnorm(
         Normalized tensor, 2D shape (batch_size, hidden_size) or 3D shape (batch_size, num_heads, hidden_size).
     """
     if IS_HIP:
-        _backend = (
-            backend if backend != "auto" else _auto_select_norm_backend(input.device)
-        )
+        _backend = backend if backend != "auto" else _auto_select_norm_backend(input)
         if _backend == "aiter":
             from .aiter_utils import require_aiter
 
