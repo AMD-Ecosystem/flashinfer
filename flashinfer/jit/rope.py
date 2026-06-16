@@ -26,3 +26,16 @@ def gen_rope_module() -> JitSpec:
             jit_env.FLASHINFER_CSRC_DIR / "flashinfer_rope_binding.cu",
         ],
     )
+
+
+def gen_rope_aiter_module() -> JitSpec:
+    from .aiter_source import aiter_jitspec_kwargs
+
+    return gen_jit_spec(
+        "rope_aiter",
+        [
+            jit_env.FLASHINFER_CSRC_DIR / "rope_aiter.cu",
+            jit_env.FLASHINFER_CSRC_DIR / "rope_aiter_jit_pybind.cu",
+        ],
+        **aiter_jitspec_kwargs("module_rope_pos_fwd"),
+    )

@@ -123,34 +123,18 @@ def test_rope_cos_sin_cache_aiter_inplace(is_neox_style, dtype):
 
 
 def test_rope_auto_backend_selection():
-    """auto picks AITER for fp16 + large-nnz (both inplace and out-of-place, since
-    the _impl path needs no Q/K copy), where it is both faster (~1.3-2.8x) and
-    precise enough (fp16 err ~7e-3); bf16 and small nnz stay native."""
-    from flashinfer.rope import _AITER_ROPE_MIN_TOKENS, _auto_select_rope_backend
+    """auto routes to AITER on supported devices, but never raises: it falls back
+    to native for mixed query/key dtypes."""
+    from flashinfer.rope import _auto_select_rope_backend
 
     device = torch.device("cuda:0")
-    big = _AITER_ROPE_MIN_TOKENS
-    small = _AITER_ROPE_MIN_TOKENS - 1
+    q = torch.randn(2048, 128, dtype=torch.float16, device=device)
+    k = torch.randn(2048, 128, dtype=torch.float16, device=device)
+    assert _auto_select_rope_backend(q, k) == "aiter"
 
-    # fp16 + nnz >= threshold routes to AITER (selection is shape/dtype-based and
-    # backend dispatch is shared by both the inplace and out-of-place wrappers).
-    q_fp16_big = torch.randn(big, 128, dtype=torch.float16, device=device)
-    k_fp16_big = torch.randn(big, 128, dtype=torch.float16, device=device)
-    assert _auto_select_rope_backend(q_fp16_big, k_fp16_big) == "aiter"
-
-    # bf16 always native (precision: ~5e-2 vs native ~3e-2).
-    q_bf16_big = torch.randn(big, 128, dtype=torch.bfloat16, device=device)
-    k_bf16_big = torch.randn(big, 128, dtype=torch.bfloat16, device=device)
-    assert _auto_select_rope_backend(q_bf16_big, k_bf16_big) == "native"
-
-    # Below the token threshold, native's lower launch overhead wins.
-    q_fp16_small = torch.randn(small, 128, dtype=torch.float16, device=device)
-    k_fp16_small = torch.randn(small, 128, dtype=torch.float16, device=device)
-    assert _auto_select_rope_backend(q_fp16_small, k_fp16_small) == "native"
-
-    # Mixed q/k dtype falls back to native rather than raising: AITER can't rotate
-    # both with one cos/sin table, but auto must never raise.
-    assert _auto_select_rope_backend(q_fp16_big, k_bf16_big) == "native"
+    # Mixed q/k dtype must fall back to native, not route into AITER and raise.
+    k_bf16 = torch.randn(2048, 128, dtype=torch.bfloat16, device=device)
+    assert _auto_select_rope_backend(q, k_bf16) == "native"
 
 
 def test_rope_unknown_backend_raises():
@@ -186,7 +170,7 @@ def test_rope_aiter_odd_rotary_dim_raises():
     pos_ids = torch.arange(8, device=device)
     query = torch.randn(8, 8 * 128, dtype=torch.float16, device=device)
     key = torch.randn(8, 8 * 128, dtype=torch.float16, device=device)
-    with pytest.raises(ValueError, match="even"):
+    with pytest.raises((ValueError, RuntimeError), match="even"):
         flashinfer.apply_rope_with_cos_sin_cache(
             pos_ids, query, key, 128, cos_sin_cache, backend="aiter"
         )
@@ -200,7 +184,7 @@ def test_rope_aiter_rotary_dim_exceeds_head_size_raises():
     pos_ids = torch.arange(8, device=device)
     query = torch.randn(8, 8 * head_size, dtype=torch.float16, device=device)
     key = torch.randn(8, 8 * head_size, dtype=torch.float16, device=device)
-    with pytest.raises(ValueError, match="exceeds head_size"):
+    with pytest.raises((ValueError, RuntimeError), match="exceeds head_size"):
         flashinfer.apply_rope_with_cos_sin_cache(
             pos_ids, query, key, head_size, cos_sin_cache, backend="aiter"
         )
@@ -246,25 +230,3 @@ def test_rope_aiter_noncontiguous_positions(dtype):
     )
     torch.testing.assert_close(q_strided, q_contig, rtol=0, atol=0)
     torch.testing.assert_close(k_strided, k_contig, rtol=0, atol=0)
-
-
-def test_rope_auto_falls_back_when_aiter_unimportable(monkeypatch):
-    """On a supported arch with a missing/broken aiter install, auto must fall
-    back to native rather than raise — _auto_select_rope_backend probes the
-    import and returns 'native' on failure."""
-    from flashinfer import rope
-    from flashinfer.rope import _AITER_ROPE_MIN_TOKENS, _auto_select_rope_backend
-
-    device = torch.device("cuda:0")
-    n = _AITER_ROPE_MIN_TOKENS
-    q = torch.randn(n, 128, dtype=torch.float16, device=device)
-    k = torch.randn(n, 128, dtype=torch.float16, device=device)
-
-    # Sanity: with aiter importable this shape selects aiter.
-    assert _auto_select_rope_backend(q, k) == "aiter"
-
-    def _boom():
-        raise ImportError("simulated missing aiter")
-
-    monkeypatch.setattr(rope, "_aiter_rope_ops", _boom)
-    assert _auto_select_rope_backend(q, k) == "native"
