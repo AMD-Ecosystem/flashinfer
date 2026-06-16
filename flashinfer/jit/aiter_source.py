@@ -22,7 +22,7 @@ import functools
 import os
 import shutil
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional, Tuple, Union
 
 from . import env as jit_env
 
@@ -175,19 +175,20 @@ def _find_built_so(module_name: str, *search_dirs: Path) -> Optional[Path]:
     return None
 
 
-def aiter_jitspec_kwargs(module_name: str) -> Dict[str, List]:
+def aiter_jitspec_flags(
+    module_name: str,
+) -> Tuple[List[Union[str, Path]], List[str]]:
     """
-    Build the AITER lib if needed and return the ``extra_include_paths`` /
-    ``extra_ldflags`` to merge into ``gen_jit_spec`` so the FlashInfer shim can
-    ``#include`` AITER's header and link the kernel.
+    Build the AITER lib if needed and return ``(extra_include_paths, extra_ldflags)``
+    to pass to ``gen_jit_spec`` so the FlashInfer shim can find AITER's header and
+    link the kernel.
     """
     ensure_aiter_lib(module_name)
     libs_dir = _aiter_libs_dir()
-    return {
-        "extra_include_paths": [str(_aiter_csrc_include_dir())],
-        "extra_ldflags": [
-            f"-L{libs_dir}",
-            f"-l{module_name}",
-            f"-Wl,-rpath,{libs_dir}",
-        ],
-    }
+    extra_include_paths: List[Union[str, Path]] = [str(_aiter_csrc_include_dir())]
+    extra_ldflags = [
+        f"-L{libs_dir}",
+        f"-l{module_name}",
+        f"-Wl,-rpath,{libs_dir}",
+    ]
+    return extra_include_paths, extra_ldflags
