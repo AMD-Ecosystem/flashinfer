@@ -336,7 +336,9 @@ JIT build of each op builds the corresponding AITER module once with
 `~/.cache/flashinfer/aiter_libs/` (the CK `module_rmsnorm` build is large
 and can take many minutes the first time). For these ops,
 `backend="auto"` resolves to AITER on gfx942/gfx950 and to HIP `native`
-elsewhere; a later performance pass may re-introduce shape-based gating.
+elsewhere, subject to op-specific constraints (e.g. `rmsnorm` auto only
+routes 2-D inputs to AITER); a later performance pass may extend this
+shape-based gating to the other ops.
 
 Backend-specific exceptions to "auto picks AITER when supported":
 
