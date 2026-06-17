@@ -1233,6 +1233,18 @@ def apply_rope_with_cos_sin_cache(
     if cos_sin_cache.dtype != torch.float32:
         raise ValueError("cos_sin_cache should be float32")
 
+    if backend not in ("auto", "native", "aiter"):
+        raise ValueError(
+            f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
+        )
+    if backend == "aiter":
+        # Validate the explicit opt-in up front so a misconfiguration (unsupported
+        # device or missing aiter package) surfaces as a clear ValueError here
+        # instead of silently falling through to native on non-HIP platforms.
+        from .aiter_utils import require_aiter
+
+        require_aiter(query.device, "rope")
+
     query_out = torch.empty_like(query)
     key_out = torch.empty_like(key)
 
@@ -1252,10 +1264,6 @@ def apply_rope_with_cos_sin_cache(
                 is_neox=is_neox,
             )
             return query_out, key_out
-        if _backend != "native":
-            raise ValueError(
-                f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
-            )
 
     _apply_rope_pos_ids_cos_sin_cache(
         q=query.view(query.shape[0], -1, head_size),
@@ -1320,6 +1328,18 @@ def apply_rope_with_cos_sin_cache_inplace(
     if cos_sin_cache.dtype != torch.float32:
         raise ValueError("cos_sin_cache should be float32")
 
+    if backend not in ("auto", "native", "aiter"):
+        raise ValueError(
+            f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
+        )
+    if backend == "aiter":
+        # Validate the explicit opt-in up front so a misconfiguration (unsupported
+        # device or missing aiter package) surfaces as a clear ValueError here
+        # instead of silently falling through to native on non-HIP platforms.
+        from .aiter_utils import require_aiter
+
+        require_aiter(query.device, "rope")
+
     if IS_HIP:
         _backend = (
             backend if backend != "auto" else _auto_select_rope_backend(query, key)
@@ -1336,10 +1356,6 @@ def apply_rope_with_cos_sin_cache_inplace(
                 is_neox=is_neox,
             )
             return
-        if _backend != "native":
-            raise ValueError(
-                f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
-            )
 
     # pass q_rope and k_rope as q and k to perform inplace operation
     _apply_rope_pos_ids_cos_sin_cache(
