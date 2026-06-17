@@ -1329,6 +1329,23 @@ def test_rope_quantize_fp8_append_paged_kv_cache_decode_hip(
             )
 
 
+def test_rope_auto_backend_selection():
+    """auto resolves to the in-tree native kernel; AITER is opt-in via backend='aiter'.
+
+    Independent of the aiter package, so it lives in the native test module to run
+    on any HIP build (the contract must hold even when aiter is not installed).
+    """
+    from flashinfer.rope import _auto_select_rope_backend
+
+    q = torch.randn(2048, 128, dtype=torch.float16, device="cuda")
+    k = torch.randn(2048, 128, dtype=torch.float16, device="cuda")
+    assert _auto_select_rope_backend(q, k) == "native"
+
+    # Mixed q/k dtype must also resolve to native (it would be rejected by AITER).
+    k_bf16 = torch.randn(2048, 128, dtype=torch.bfloat16, device="cuda")
+    assert _auto_select_rope_backend(q, k_bf16) == "native"
+
+
 if __name__ == "__main__":
     test_rope(2, 1, 8, 8, 1, 128, "llama", 1.0, False)
     test_rope_pos_ids(2, 1, 8, 8, 1, 128, "llama", 1.0, False, True)

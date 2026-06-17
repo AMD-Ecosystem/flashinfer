@@ -79,3 +79,15 @@ def test_gelu_and_mul(num_tokens, d, dtype):
     out = flashinfer.activation.gelu_and_mul(x)
     rtol, atol = (2e-2, 2e-2) if dtype == torch.bfloat16 else (1e-3, 1e-3)
     torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
+
+
+def test_silu_and_mul_auto_backend_selection():
+    """auto resolves to the in-tree native kernel; AITER is opt-in via backend='aiter'.
+
+    Independent of the aiter package, so it lives in the native test module to run
+    on any HIP build (the contract must hold even when aiter is not installed).
+    """
+    from flashinfer.activation import _auto_select_silu_and_mul_backend
+
+    x = torch.empty(8, 256, dtype=torch.float16, device="cuda")
+    assert _auto_select_silu_and_mul_backend(x) == "native"

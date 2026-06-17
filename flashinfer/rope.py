@@ -38,16 +38,10 @@ if IS_HIP:
         return gen_rope_aiter_module().build_and_load()
 
     def _auto_select_rope_backend(query: torch.Tensor, key: torch.Tensor) -> str:
-        # auto routes to the C++ AITER kernel on supported devices and falls back
-        # to native everywhere else. auto must never raise, so fall back to native
-        # for cases the AITER kernel rejects: mixed query/key dtypes (it rotates
-        # both with one cos/sin table), and when AITER is unavailable. (Shape /
-        # precision tuning is deferred to a later performance pass.)
-        from .aiter_utils import is_aiter_available
-
-        if key.dtype != query.dtype:
-            return "native"
-        return "aiter" if is_aiter_available(query.device) else "native"
+        # Experimentation found the in-tree native kernel to be the better default
+        # for the cos/sin-cache rope, so auto always resolves to native. The C++
+        # AITER kernel remains reachable via an explicit backend="aiter".
+        return "native"
 
     def _apply_rope_cos_sin_cache_aiter(
         query: torch.Tensor,
@@ -1218,10 +1212,8 @@ def apply_rope_with_cos_sin_cache(
           we rotate the even dimensions ``([..., ::2])`` and odd dimensions ``([..., 1::2])``.
 
     backend : str
-        Kernel backend to use. ``"auto"`` (default) routes to the C++ AITER kernel
-        on ROCm (gfx942/gfx950) and to the native FlashInfer JIT kernel everywhere
-        else; it also falls back to native for mixed query/key dtypes and when the
-        AITER package is unavailable, so it never raises.
+        Kernel backend to use. ``"auto"`` (default) resolves to the native
+        FlashInfer JIT kernel on all platforms.
         ``"native"`` uses the FlashInfer JIT kernel on all platforms.
         ``"aiter"`` uses AMD AITER's C++ ``rope_cached_positions_2c_fwd_impl``
         kernel — ROCm (gfx942/gfx950) only; requires the ``aiter`` package and
@@ -1240,6 +1232,18 @@ def apply_rope_with_cos_sin_cache(
     """
     if cos_sin_cache.dtype != torch.float32:
         raise ValueError("cos_sin_cache should be float32")
+
+    if backend not in ("auto", "native", "aiter"):
+        raise ValueError(
+            f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
+        )
+    if backend == "aiter":
+        # Validate the explicit opt-in up front so a misconfiguration (unsupported
+        # device or missing aiter package) surfaces as a clear ValueError here
+        # instead of silently falling through to native on non-HIP platforms.
+        from .aiter_utils import require_aiter
+
+        require_aiter(query.device, "rope")
 
     query_out = torch.empty_like(query)
     key_out = torch.empty_like(key)
@@ -1260,10 +1264,6 @@ def apply_rope_with_cos_sin_cache(
                 is_neox=is_neox,
             )
             return query_out, key_out
-        if _backend != "native":
-            raise ValueError(
-                f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
-            )
 
     _apply_rope_pos_ids_cos_sin_cache(
         q=query.view(query.shape[0], -1, head_size),
@@ -1314,16 +1314,12 @@ def apply_rope_with_cos_sin_cache_inplace(
           we rotate the even dimensions ``([..., ::2])`` and odd dimensions ``([..., 1::2])``.
 
     backend : str
-        Kernel backend to use. ``"auto"`` (default) selects the best backend for
-        the call: on ROCm (gfx942/gfx950) it picks AITER for fp16 inputs with at
-        least ~2048 tokens (where AITER's kernel is measurably faster), and stays
-        on ``"native"`` otherwise — for bf16 (precision), small token counts
-        (launch overhead), and non-ROCm platforms.
+        Kernel backend to use. ``"auto"`` (default) resolves to the native
+        FlashInfer JIT kernel on all platforms.
         ``"native"`` uses the FlashInfer JIT kernel on all platforms.
-        ``"aiter"`` uses AMD AITER's rope_cached kernel — ROCm (gfx942/gfx950) only;
-        requires the ``aiter`` package. Precision is slightly lower than ``"native"``
-        for bfloat16 (max abs error ~5e-2 vs ~3e-2) because AITER consumes the cos/sin
-        tables in the query dtype rather than float32.
+        ``"aiter"`` uses AMD AITER's C++ ``rope_cached_positions_2c_fwd_impl``
+        kernel — ROCm (gfx942/gfx950) only; requires the ``aiter`` package and
+        query/key to share a dtype.
 
     Note
     ----
@@ -1331,6 +1327,18 @@ def apply_rope_with_cos_sin_cache_inplace(
     """
     if cos_sin_cache.dtype != torch.float32:
         raise ValueError("cos_sin_cache should be float32")
+
+    if backend not in ("auto", "native", "aiter"):
+        raise ValueError(
+            f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
+        )
+    if backend == "aiter":
+        # Validate the explicit opt-in up front so a misconfiguration (unsupported
+        # device or missing aiter package) surfaces as a clear ValueError here
+        # instead of silently falling through to native on non-HIP platforms.
+        from .aiter_utils import require_aiter
+
+        require_aiter(query.device, "rope")
 
     if IS_HIP:
         _backend = (
@@ -1348,10 +1356,6 @@ def apply_rope_with_cos_sin_cache_inplace(
                 is_neox=is_neox,
             )
             return
-        if _backend != "native":
-            raise ValueError(
-                f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
-            )
 
     # pass q_rope and k_rope as q and k to perform inplace operation
     _apply_rope_pos_ids_cos_sin_cache(

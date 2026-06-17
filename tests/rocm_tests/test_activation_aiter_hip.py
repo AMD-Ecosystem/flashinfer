@@ -41,16 +41,6 @@ def test_silu_and_mul_aiter_vs_ref(dtype, d, num_tokens):
 
 
 @requires_aiter
-def test_silu_and_mul_auto_backend_selection():
-    """auto routes to the C++ AITER kernel on supported gfx942/gfx950 devices."""
-    from flashinfer.activation import _auto_select_silu_and_mul_backend
-
-    device = torch.device("cuda:0")
-    x = torch.empty(8, 256, dtype=torch.float16, device=device)
-    assert _auto_select_silu_and_mul_backend(x) == "aiter"
-
-
-@requires_aiter
 def test_silu_and_mul_aiter_with_out_tensor():
     """backend='aiter' writes the correct result into the supplied out= tensor."""
     device = torch.device("cuda:0")
