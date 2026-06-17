@@ -369,15 +369,17 @@ _aiter_bootstrap_lock = threading.Lock()
 @functools.lru_cache(maxsize=None)
 def _aiter_bootstrap_single_prefill_varlen(
     dtype: torch.dtype,
+    causal: bool,
     head_dim: int,
     device_idx: int,
 ) -> None:
-    """Force AITER's lazy JIT to compile mha_varlen_fwd_*.so for logits+causal variants.
+    """Force AITER's lazy JIT to compile mha_varlen_fwd_*.so logits variants.
 
-    Non-logits and non-causal variants are pre-shipped with the AITER package.
-    The logits+causal combination is missing from the pre-built set and must be
-    bootstrapped on first use. Used by single-prefill when logits_soft_cap > 0
-    (which forces the varlen .so because mha_fwd has no _logits arm).
+    Non-logits variants are pre-shipped with the AITER package; the logits
+    combination is missing from the pre-built set and must be bootstrapped on
+    first use. Used by single-prefill when logits_soft_cap > 0 (which forces the
+    varlen .so because mha_fwd has no _logits arm). The .so is split by causal
+    (mask vs nmask), so build the variant matching the actual request.
     """
     device = torch.device("cuda", device_idx)
     q = torch.zeros(2, 2, head_dim, dtype=dtype, device=device)
@@ -394,7 +396,7 @@ def _aiter_bootstrap_single_prefill_varlen(
         softmax_scale=scale,
         logits_soft_cap=0.5,
         zero_tensors=False,
-        is_causal=True,
+        is_causal=causal,
         window_size_left=-1,
         window_size_right=-1,
         sink_size=0,
@@ -1351,7 +1353,7 @@ def single_prefill_with_kv_cache(
         with _aiter_bootstrap_lock:
             if logits_soft_cap > 0:
                 _aiter_bootstrap_single_prefill_varlen(
-                    q.dtype, q.shape[-1], q.device.index or 0
+                    q.dtype, causal, q.shape[-1], q.device.index or 0
                 )
             else:
                 _aiter_bootstrap_single_prefill_mha_fwd(
