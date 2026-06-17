@@ -376,7 +376,7 @@ def _aiter_bootstrap_single_prefill_varlen(
     """Force AITER's lazy JIT to compile mha_varlen_fwd_*.so logits variants.
 
     Non-logits variants are pre-shipped with the AITER package; the logits
-    combination is missing from the pre-built set and must be bootstrapped on
+    variants are missing from the pre-built set and must be bootstrapped on
     first use. Used by single-prefill when logits_soft_cap > 0 (which forces the
     varlen .so because mha_fwd has no _logits arm). The .so is split by causal
     (mask vs nmask), so build the variant matching the actual request.
@@ -1347,7 +1347,8 @@ def single_prefill_with_kv_cache(
                 "use backend='fa2' or backend='auto' instead."
             )
         # logits_soft_cap > 0 forces the varlen .so (mha_fwd template has no _logits
-        # arm); only the (logits, causal) combo isn't pre-shipped by AITER.
+        # arm); the logits .so is split by causality (mask vs nmask) and neither is
+        # pre-shipped by AITER, so bootstrap the variant matching the request.
         # logits_soft_cap == 0 takes the mha_fwd .so, none of whose variants are
         # pre-shipped — JIT-build the exact (dtype, causal, has_lse) we need.
         with _aiter_bootstrap_lock:
