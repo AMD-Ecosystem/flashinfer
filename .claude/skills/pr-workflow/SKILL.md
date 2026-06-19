@@ -58,6 +58,10 @@ for a PR or running `gh pr create`, check the current branch:
 git branch --show-current   # if this is "amd-integration" (or empty/detached), do NOT push/PR from it
 ```
 
+This command prints an **empty string** in a detached-HEAD state. Treat empty
+output as an abort condition too — do NOT push/PR from a detached HEAD; STOP and
+report so the user can check out a proper topic branch first.
+
 If you are on `amd-integration` and have commits to ship, do NOT raise the PR
 from it. Instead, relocate the commits to a fresh topic branch, restore
 `amd-integration` to match the remote, then PR from the topic branch:

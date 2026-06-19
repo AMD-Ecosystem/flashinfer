@@ -16,8 +16,11 @@ Failing to raise a PR is always preferable to raising one against upstream.
 
 Also NEVER push to or raise a PR from the `amd-integration` branch itself — it
 is the base, never the head. If you are on `amd-integration` with commits to
-ship, preserve them on a fresh topic branch at the current HEAD (`git branch <topic-branch>`),
-reset `amd-integration` to `origin/amd-integration`, then PR from the topic branch.
+ship, create a fresh topic branch at the current HEAD
+(`git branch <topic-branch>`), then `git fetch origin amd-integration &&
+git reset --hard origin/amd-integration` to restore `amd-integration` (the
+commits stay safe on `<topic-branch>`), and PR from `<topic-branch>`. Treat a
+detached HEAD (empty `git branch --show-current`) as an abort condition too.
 Full procedure: `pr-workflow` skill.
 
 ## Essential Commands
