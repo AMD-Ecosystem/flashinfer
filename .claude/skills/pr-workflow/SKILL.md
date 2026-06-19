@@ -104,6 +104,80 @@ publish to a shared repo and shouldn't be triggered without explicit consent.
 Before any `gh pr create`, also complete the fail-closed PR target safeguard
 above.
 
+## Before creating a PR: quality gate
+
+Run this gate on the branch's full diff before `gh pr create`, in order:
+
+1. **Simplify / make production-ready.** Review all changes on the branch and run
+   `/simplify`: remove dead code, debug/scratch code, debug-only comments, and
+   unused imports. Keep comments that carry real value (the *why*, hidden
+   constraints, non-obvious invariants) — do not strip those.
+
+2. **Code review.** Run `/code-review` on the diff, then apply the suggestions and
+   recommendations you judge worthwhile.
+
+3. **Run the relevant tests.** Run the pytests covering the changed code (see
+   CLAUDE.md for commands, e.g. `pytest -n auto --reruns 2 -m "not slow"`) and
+   make sure there are no failures after the changes. Docs/skill-only branches
+   that touch no Python have no relevant tests — say so explicitly rather than
+   claiming a run.
+
+4. **Commit** the resulting changes.
+
+Only after this gate passes do the pre-flight safeguards and `gh pr create`.
+
+## After creating a PR: handle the Copilot review
+
+Every PR on this repo gets an automated Copilot review. After `gh pr create`,
+always run this loop before considering the PR done:
+
+1. **Wait for all Copilot comments to land.** The review is not instant — Copilot
+   posts a top-level review plus inline comments a short while after the PR (and
+   after each later push). Poll until the review has arrived and the comment set
+   is stable; don't evaluate a half-posted review. Copilot may also *auto-push*
+   "Potential fix for pull request finding" commits to the branch — if so,
+   `git fetch` and integrate them before adding your own (rebase; resolve
+   conflicts keeping the more complete version).
+
+2. **Evaluate each comment on its merits.** Decide per comment whether to fix it
+   — Copilot is often right but not always. Use judgement; do not blanket-apply.
+
+3. **Address the ones worth fixing**, commit, and push to the PR branch.
+
+4. **Resolve every thread**, with the right closure for each:
+   - *Fixed* → reply citing the commit SHA, then resolve the thread.
+   - *Won't fix* → reply with the reason you decided not to address it, then
+     resolve the thread.
+   Either way the thread ends resolved with a written rationale.
+
+List threads with their resolved status, and resolve them, via GraphQL. GraphQL
+is required because thread resolution and the thread-level `isResolved` flag are
+not exposed via REST (replying to a comment is available over REST — see below):
+
+```bash
+# List threads (id + resolved + comment bodies).
+# Bump `first:` if a PR may have more than 50 threads / 10 comments per thread —
+# this query is not exhaustive beyond those limits.
+gh api graphql -f query='
+{ repository(owner:"ROCm", name:"flashinfer") {
+    pullRequest(number: <PR>) {
+      reviewThreads(first: 50) { nodes {
+        id isResolved
+        comments(first: 10) { nodes { databaseId author { login } path body } } } } } } }'
+
+# Reply to a comment (use the databaseId from above)
+gh api repos/ROCm/flashinfer/pulls/<PR>/comments/<commentDatabaseId>/replies \
+  --method POST --field body="<reply>"
+
+# Resolve a thread (use the thread node id, e.g. PRRT_...)
+gh api graphql -f query='
+mutation { resolveReviewThread(input:{threadId:"<threadId>"}) {
+  thread { isResolved } } }'
+```
+
+Done = no unresolved Copilot threads remain, each carrying either a fix+SHA reply
+or a won't-fix rationale.
+
 ## PR Description
 
 **Body** — include sections that apply, skip the rest:
