@@ -12,8 +12,16 @@ defaults the base to the fork parent, so always pass
 `--repo ROCm/flashinfer --base amd-integration` explicitly, and run `gh repo set-default --view` first —
 it MUST print `ROCm/flashinfer` or you abort. If the target owner cannot be
 positively confirmed as `ROCm`, do not create the PR; stop and report why.
-Failing to raise a PR is always preferable to raising one against upstream. Full
-procedure: `pr-workflow` skill.
+Failing to raise a PR is always preferable to raising one against upstream.
+
+Also NEVER push to or raise a PR from the `amd-integration` branch itself — it
+is the base, never the head. If you are on `amd-integration` with commits to
+ship, create a fresh topic branch at the current HEAD
+(`git branch <topic-branch>`), then `git fetch origin amd-integration &&
+git reset --hard origin/amd-integration` to restore `amd-integration` (the
+commits stay safe on `<topic-branch>`), and PR from `<topic-branch>`. Treat a
+detached HEAD (empty `git branch --show-current`) as an abort condition too.
+Full procedure: `pr-workflow` skill.
 
 ## Essential Commands
 
