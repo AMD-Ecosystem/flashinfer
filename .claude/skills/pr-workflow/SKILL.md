@@ -48,6 +48,41 @@ gh repo set-default ROCm/flashinfer  # pin gh base repo so it does not fall back
 If a remote pointing at `flashinfer-ai/flashinfer` exists, remove it:
 `git remote remove <name>`.
 
+## CRITICAL: never PR from `amd-integration` (fail-closed)
+
+`amd-integration` is the **base** branch — it must never be the **head** of a
+PR, and must never be pushed to directly via a PR flow. Before pushing a branch
+for a PR or running `gh pr create`, check the current branch:
+
+```bash
+git branch --show-current   # if this is "amd-integration", do NOT push/PR from it
+```
+
+If you are on `amd-integration` and have commits to ship, do NOT raise the PR
+from it. Instead, relocate the commits to a fresh topic branch, restore
+`amd-integration` to match the remote, then PR from the topic branch:
+
+```bash
+# 1. Capture the local-only commits onto a new branch at current HEAD
+git branch <topic-branch>
+
+# 2. Move amd-integration back to the pristine remote state (no commits lost —
+#    they are preserved on <topic-branch>). Verify origin/amd-integration is
+#    fetched and up to date first.
+git fetch origin amd-integration
+git reset --hard origin/amd-integration
+
+# 3. Switch to the topic branch and proceed with the normal PR flow
+git checkout <topic-branch>
+```
+
+Only `git reset --hard` here because the commits are already safe on
+`<topic-branch>` (confirm with `git log <topic-branch>` before resetting). If
+anything is ambiguous — uncommitted changes, unclear which commits are
+local-only, the topic branch already exists — STOP and report rather than
+reset. It is always better to fail to raise a PR than to push to or PR from
+`amd-integration`.
+
 ## GitHub CLI
 
 `gh pr edit` fails with a "Projects (classic) is being deprecated" GraphQL error on this repo. Use the REST API instead:
