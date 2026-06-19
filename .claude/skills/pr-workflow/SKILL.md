@@ -8,6 +8,46 @@ description: How to create and edit PRs on the ROCm/flashinfer GitHub repo (whic
 > The GitHub repo is `ROCm/flashinfer`; the Python package it publishes is
 > `amd-flashinfer`. All `gh` commands below target the GitHub repo.
 
+## CRITICAL: PR target safeguard (fail-closed)
+
+`ROCm/flashinfer` is a **GitHub fork** of `flashinfer-ai/flashinfer` (the true
+upstream). Because of this, `gh pr create` defaults the PR base to the
+fork-parent `flashinfer-ai/flashinfer` unless explicitly overridden. **A PR must
+NEVER be opened against `flashinfer-ai/flashinfer`.**
+
+All PRs go to **`ROCm/flashinfer`**, base branch **`amd-integration`**.
+
+**Before ANY `gh pr create`, run this pre-flight check and ABORT if it fails:**
+
+```bash
+gh repo set-default --view   # MUST print exactly: ROCm/flashinfer
+```
+
+If it prints anything else (or errors), STOP — do not create the PR. Report the
+mismatch to the user instead. Never guess the target.
+
+**Always pass the target and base explicitly** — never rely on gh defaults:
+
+```bash
+gh pr create --repo ROCm/flashinfer --base amd-integration \
+  --title "<title>" --body "$(cat /tmp/pr_body.md)"
+```
+
+If the resolved owner of `--repo` is ever `flashinfer-ai`, abort. It is always
+better to fail to raise a PR and explain why than to raise one against upstream.
+
+### One-time setup after a fresh clone
+
+These are local config (not checked in) and must be redone per clone:
+
+```bash
+git remote -v                        # origin should be ROCm/flashinfer; there must be NO flashinfer-ai remote
+gh repo set-default ROCm/flashinfer  # pin gh base repo so it does not fall back to the fork parent
+```
+
+If a remote pointing at `flashinfer-ai/flashinfer` exists, remove it:
+`git remote remove <name>`.
+
 ## GitHub CLI
 
 `gh pr edit` fails with a "Projects (classic) is being deprecated" GraphQL error on this repo. Use the REST API instead:
@@ -22,6 +62,8 @@ gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="$(cat /
 
 Ask the user to confirm before running `git push` or `gh pr create` — these
 publish to a shared repo and shouldn't be triggered without explicit consent.
+Before any `gh pr create`, also complete the fail-closed PR target safeguard
+above.
 
 ## PR Description
 
