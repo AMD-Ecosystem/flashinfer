@@ -55,7 +55,7 @@ PR, and must never be pushed to directly via a PR flow. Before pushing a branch
 for a PR or running `gh pr create`, check the current branch:
 
 ```bash
-git branch --show-current   # if this is "amd-integration", do NOT push/PR from it
+git branch --show-current   # if this is "amd-integration" (or empty/detached), do NOT push/PR from it
 ```
 
 If you are on `amd-integration` and have commits to ship, do NOT raise the PR
