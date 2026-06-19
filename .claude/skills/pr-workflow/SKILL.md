@@ -104,6 +104,28 @@ publish to a shared repo and shouldn't be triggered without explicit consent.
 Before any `gh pr create`, also complete the fail-closed PR target safeguard
 above.
 
+## Before creating a PR: quality gate
+
+Run this gate on the branch's full diff before `gh pr create`, in order:
+
+1. **Simplify / make production-ready.** Review all changes on the branch and run
+   `/simplify`: remove dead code, debug/scratch code, debug-only comments, and
+   unused imports. Keep comments that carry real value (the *why*, hidden
+   constraints, non-obvious invariants) — do not strip those.
+
+2. **Code review.** Run `/code-review` on the diff, then apply the suggestions and
+   recommendations you judge worthwhile.
+
+3. **Run the relevant tests.** Run the pytests covering the changed code (see
+   CLAUDE.md for commands, e.g. `pytest -n auto --reruns 2 -m "not slow"`) and
+   make sure there are no failures after the changes. Docs/skill-only branches
+   that touch no Python have no relevant tests — say so explicitly rather than
+   claiming a run.
+
+4. **Commit** the resulting changes.
+
+Only after this gate passes do the pre-flight safeguards and `gh pr create`.
+
 ## After creating a PR: handle the Copilot review
 
 Every PR on this repo gets an automated Copilot review. After `gh pr create`,
@@ -128,11 +150,14 @@ always run this loop before considering the PR done:
      resolve the thread.
    Either way the thread ends resolved with a written rationale.
 
-List threads with their resolved status, and resolve them, via GraphQL (the REST
-`/comments/<id>` endpoint 404s on these review-thread comments):
+List threads with their resolved status, and resolve them, via GraphQL. GraphQL
+is required because thread resolution and the thread-level `isResolved` flag are
+not exposed via REST (replying to a comment is available over REST — see below):
 
 ```bash
-# List threads (id + resolved + comment bodies)
+# List threads (id + resolved + comment bodies).
+# Bump `first:` if a PR may have more than 50 threads / 10 comments per thread —
+# this query is not exhaustive beyond those limits.
 gh api graphql -f query='
 { repository(owner:"ROCm", name:"flashinfer") {
     pullRequest(number: <PR>) {
