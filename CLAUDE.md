@@ -8,8 +8,8 @@
 
 All PRs go to **`ROCm/flashinfer`**, base branch **`amd-integration`** — NEVER
 to `flashinfer-ai/flashinfer` (the fork parent / true upstream). `gh pr create`
-defaults the base to the fork parent, so always pass `--repo ROCm/flashinfer
---base amd-integration` explicitly, and run `gh repo set-default --view` first —
+defaults the base to the fork parent, so always pass
+`--repo ROCm/flashinfer --base amd-integration` explicitly, and run `gh repo set-default --view` first —
 it MUST print `ROCm/flashinfer` or you abort. If the target owner cannot be
 positively confirmed as `ROCm`, do not create the PR; stop and report why.
 Failing to raise a PR is always preferable to raising one against upstream. Full
