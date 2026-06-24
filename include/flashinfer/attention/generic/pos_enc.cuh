@@ -606,12 +606,14 @@ gpuError_t BatchQKApplyRotaryPosIdsCosSinCache(
       auto kernel_0 = BatchQKApplyRotaryPosIdsCosSinCacheKernel<INTERLEAVE, HEAD_DIM, vec_size, bdx,
                                                                 DType, IdType>;
 
-      int num_blocks_per_sm_0 = 0;
-      FI_GPU_CALL(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm_0, kernel_0,
-                                                               num_threads, /*smem_size=*/0));
-      uint32_t num_ctas_0 = num_blocks_per_sm_0 * num_sms;
-
-      if ((nnz + bdy - 1) / bdy >= num_ctas_0) {
+      // Pick token-parallel (kernel_0) once it launches enough blocks to fill the
+      // device. kernel_0 gives each block bdy contiguous tokens across all heads
+      // (contiguous DRAM), while kernel_1 scatters one head across tokens (strided).
+      // The token-parallel layout is markedly faster (measured ~1.4x at seq_len 8192
+      // on gfx942) whenever it has enough blocks; below that it under-fills the GPU
+      // and the head-parallel form (num_heads x more blocks) wins. Crossover measured
+      // at nblks_x ~= 2 * num_sms on CDNA3 (independent of head count).
+      if (nblks_x >= 2u * static_cast<uint32_t>(num_sms)) {
         dim3 nblks(nblks_x);
         dim3 nthrs(bdx, bdy);
         FI_GPU_CALL(gpuLaunchKernel((void*)kernel_0, nblks, nthrs, args, 0, stream));
@@ -677,11 +679,10 @@ gpuError_t BatchQKApplyRotaryPosIds(
       auto kernel_0 =
           BatchQKApplyRotaryPosIdsKernel<INTERLEAVE, HEAD_DIM, vec_size, bdx, DType, IdType>;
 
-      int num_blocks_per_sm_0 = 0;
-      FI_GPU_CALL(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm_0, kernel_0,
-                                                               num_threads, /*smem_size=*/0));
-      uint32_t num_ctas_0 = num_blocks_per_sm_0 * num_sms;
-      if (nblks_x >= num_ctas_0) {
+      // Same token- vs head-parallel tradeoff as the cos/sin-cache path: token-parallel
+      // (kernel_0) keeps each block's memory accesses contiguous across heads and wins
+      // once it has enough blocks to fill the device (~2 * num_sms on CDNA3).
+      if (nblks_x >= 2u * static_cast<uint32_t>(num_sms)) {
         dim3 nblks(nblks_x);
         dim3 nthrs(bdx, bdy);
 
