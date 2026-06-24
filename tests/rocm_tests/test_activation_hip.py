@@ -45,6 +45,8 @@ _SHAPES = [
     (16, 7168),  # Mistral-7B ffn_dim // 2
     (1, 8192),  # hits 1024-thread cap
     (4, 14336),  # Llama-3-70B ffn_dim // 2, multiple stride iterations
+    (2, 14336),  # few tokens, large d → blocks_per_row > 1 (row split across blocks)
+    (4096, 4096),  # prefill-scale token count → blocks_per_row == 1 (no row split)
 ]
 
 
