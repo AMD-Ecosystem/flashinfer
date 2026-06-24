@@ -8,7 +8,7 @@ ARG ROCM_VERSION
 ARG PY_VERSION=3.12
 ARG TORCH_VERSION=2.9.1
 ARG AITER_VERSION=0.1.10
-ARG AITER_ROCM_VERSION=7.1.1
+ARG AITER_ROCM_VERSION=${ROCM_VERSION}
 
 # Update package lists and install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
