@@ -28,6 +28,7 @@ if IS_HIP:
   void {{ func_name }}(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
     int d = input.size(-1) / 2;
     int64_t num_tokens = input.numel() / input.size(-1);
+    if (num_tokens == 0) return;  // empty input → no-op (a 0-sized grid is an invalid launch)
 
     const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(out.device());
     auto stream = at::hip::getCurrentHIPStream();

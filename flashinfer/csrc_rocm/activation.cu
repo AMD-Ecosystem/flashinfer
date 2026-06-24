@@ -35,6 +35,7 @@ __device__ __forceinline__ float gelu_tanh(const float& val) {
 void silu_and_mul(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
   int d = input.size(-1) / 2;
   int64_t num_tokens = input.numel() / input.size(-1);
+  if (num_tokens == 0) return;  // empty input → no-op (a 0-sized grid is an invalid launch)
 
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(out.device());
   const hipStream_t stream = at::hip::getCurrentHIPStream();
@@ -59,6 +60,7 @@ void silu_and_mul(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
 void gelu_tanh_and_mul(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
   int d = input.size(-1) / 2;
   int64_t num_tokens = input.numel() / input.size(-1);
+  if (num_tokens == 0) return;  // empty input → no-op (a 0-sized grid is an invalid launch)
 
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(out.device());
   const hipStream_t stream = at::hip::getCurrentHIPStream();
@@ -82,6 +84,7 @@ void gelu_tanh_and_mul(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
 void gelu_and_mul(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
   int d = input.size(-1) / 2;
   int64_t num_tokens = input.numel() / input.size(-1);
+  if (num_tokens == 0) return;  // empty input → no-op (a 0-sized grid is an invalid launch)
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(out.device());
   const hipStream_t stream = at::hip::getCurrentHIPStream();
 
