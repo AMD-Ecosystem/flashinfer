@@ -71,15 +71,26 @@ _BACKENDS = ["native", "aiter"]
 _OP_MODES = ["inplace", "outplace"]
 
 
+_COS_SIN_CACHE: torch.Tensor | None = None
+
+
+def _shared_cos_sin_cache() -> torch.Tensor:
+    # cos||sin cache is float32 on the HIP path (see rope_aiter.cu) and is
+    # read-only, so a single ~32 MiB tensor is shared across all configs
+    # rather than reallocated per config.
+    global _COS_SIN_CACHE
+    if _COS_SIN_CACHE is None:
+        _COS_SIN_CACHE = torch.randn(
+            _MAX_SEQ_LEN, _ROTARY_DIM, device="cuda", dtype=torch.float32
+        )
+    return _COS_SIN_CACHE
+
+
 def _make_inputs(nnz: int, dtype: torch.dtype):
     positions = torch.arange(nnz, device="cuda", dtype=torch.int64) % _MAX_SEQ_LEN
     query = torch.randn(nnz, _NUM_Q_HEADS * _HEAD_SIZE, device="cuda", dtype=dtype)
     key = torch.randn(nnz, _NUM_KV_HEADS * _HEAD_SIZE, device="cuda", dtype=dtype)
-    # cos||sin cache is float32 on the HIP path (see rope_aiter.cu).
-    cos_sin_cache = torch.randn(
-        _MAX_SEQ_LEN, _ROTARY_DIM, device="cuda", dtype=torch.float32
-    )
-    return positions, query, key, cos_sin_cache
+    return positions, query, key, _shared_cos_sin_cache()
 
 
 def _run_fn(op_mode, positions, query, key, cos_sin_cache, backend):
@@ -181,8 +192,8 @@ def _accuracy() -> None:
                 backend="aiter",
             )
             err = max(
-                (q_ait - q_ref).abs().max().item(),
-                (k_ait - k_ref).abs().max().item(),
+                (q_ait.float() - q_ref.float()).abs().max().item(),
+                (k_ait.float() - k_ref.float()).abs().max().item(),
             )
             print(f"{dt_name:>6s} {nnz:>7d} {err:>14.2e}")
 
