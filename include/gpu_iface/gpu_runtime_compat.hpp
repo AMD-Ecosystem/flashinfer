@@ -135,6 +135,25 @@
     }                                                                                              \
   } while (0)
 
+/// Returns the number of multiprocessors (CUs on CDNA / SMs on CUDA).
+///
+/// Cached per device id to avoid repeating the attribute query on every kernel
+/// launch. The cache is thread_local so concurrent callers (e.g. multi-threaded
+/// Python) never race on it. 0 is treated as "not cached" — a valid count is
+/// always > 0, so a device reporting 0 simply isn't memoized rather than
+/// poisoning the cache.
+///
+/// @param dev_id Device ID
+/// @return Multiprocessor (CU/SM) count
+inline int getMultiProcessorCount(int dev_id) {
+  static thread_local int cache[64] = {0};
+  if (dev_id >= 0 && dev_id < 64 && cache[dev_id] > 0) return cache[dev_id];
+  int count = 0;
+  FI_GPU_CALL(gpuDeviceGetAttribute(&count, gpuDevAttrMultiProcessorCount, dev_id));
+  if (dev_id >= 0 && dev_id < 64 && count > 0) cache[dev_id] = count;
+  return count;
+}
+
 inline int getMaxSharedMemPerMultiprocessor(int dev_id) {
   int max_smem_per_sm = 0;
 #if defined(PLATFORM_CUDA_DEVICE)

@@ -28,14 +28,16 @@ if IS_HIP:
   void {{ func_name }}(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
     int d = input.size(-1) / 2;
     int64_t num_tokens = input.numel() / input.size(-1);
+    if (num_tokens == 0) return;  // empty input → no-op (a 0-sized grid is an invalid launch)
 
     const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(out.device());
     auto stream = at::hip::getCurrentHIPStream();
     DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(input.scalar_type(), c_type, [&] {
       uint32_t vec_size = 16 / sizeof(c_type);
-      uint32_t block_size = std::max(1U, std::min(d / vec_size, 1024U));
-      dim3 gridDim(num_tokens);
-      dim3 blockDim(block_size);
+
+      dim3 gridDim, blockDim;
+      flashinfer::activation::act_and_mul_launch_dims(d, num_tokens, vec_size,
+                                                      out.get_device(), gridDim, blockDim);
 
       auto kernel = flashinfer::activation::act_and_mul_kernel<c_type, {{ act_func_name }}>;
 

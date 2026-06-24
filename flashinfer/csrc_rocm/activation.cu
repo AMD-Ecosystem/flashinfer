@@ -35,6 +35,7 @@ __device__ __forceinline__ float gelu_tanh(const float& val) {
 void silu_and_mul(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
   int d = input.size(-1) / 2;
   int64_t num_tokens = input.numel() / input.size(-1);
+  if (num_tokens == 0) return;  // empty input → no-op (a 0-sized grid is an invalid launch)
 
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(out.device());
   const hipStream_t stream = at::hip::getCurrentHIPStream();
@@ -42,8 +43,9 @@ void silu_and_mul(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
   DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(input.scalar_type(), c_type, [&] {
     uint32_t vec_size = 16 / sizeof(c_type);
 
-    uint64_t gridDim = num_tokens;
-    uint64_t blockDim = std::min(d / vec_size, 1024U);
+    dim3 gridDim, blockDim;
+    activation::act_and_mul_launch_dims(d, num_tokens, vec_size, out.get_device(), gridDim,
+                                        blockDim);
 
     activation::act_and_mul_kernel<c_type, silu><<<gridDim, blockDim, 0, stream>>>(
         static_cast<c_type*>(out.data_ptr()), static_cast<c_type*>(input.data_ptr()), d);
@@ -58,14 +60,16 @@ void silu_and_mul(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
 void gelu_tanh_and_mul(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
   int d = input.size(-1) / 2;
   int64_t num_tokens = input.numel() / input.size(-1);
+  if (num_tokens == 0) return;  // empty input → no-op (a 0-sized grid is an invalid launch)
 
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(out.device());
   const hipStream_t stream = at::hip::getCurrentHIPStream();
 
   DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(input.scalar_type(), c_type, [&] {
     uint32_t vec_size = 16 / sizeof(c_type);
-    uint64_t gridDim = num_tokens;
-    uint64_t blockDim = std::min(d / vec_size, 1024U);
+    dim3 gridDim, blockDim;
+    activation::act_and_mul_launch_dims(d, num_tokens, vec_size, out.get_device(), gridDim,
+                                        blockDim);
 
     activation::act_and_mul_kernel<c_type, gelu_tanh><<<gridDim, blockDim, 0, stream>>>(
         static_cast<c_type*>(out.data_ptr()), static_cast<c_type*>(input.data_ptr()), d);
@@ -80,14 +84,16 @@ void gelu_tanh_and_mul(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
 void gelu_and_mul(at::Tensor& out, at::Tensor& input, bool enable_pdl) {
   int d = input.size(-1) / 2;
   int64_t num_tokens = input.numel() / input.size(-1);
+  if (num_tokens == 0) return;  // empty input → no-op (a 0-sized grid is an invalid launch)
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(out.device());
   const hipStream_t stream = at::hip::getCurrentHIPStream();
 
   DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(input.scalar_type(), c_type, [&] {
     uint32_t vec_size = 16 / sizeof(c_type);
 
-    uint64_t gridDim = num_tokens;
-    uint64_t blockDim = std::min(d / vec_size, 1024U);
+    dim3 gridDim, blockDim;
+    activation::act_and_mul_launch_dims(d, num_tokens, vec_size, out.get_device(), gridDim,
+                                        blockDim);
 
     activation::act_and_mul_kernel<c_type, gelu><<<gridDim, blockDim, 0, stream>>>(
         static_cast<c_type*>(out.data_ptr()), static_cast<c_type*>(input.data_ptr()), d);
