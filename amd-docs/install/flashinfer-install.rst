@@ -158,13 +158,13 @@ Build from source
 --------------------------------------------------------------------------------------
 
 FlashInfer on ROCm can be run directly by setting up a Docker container from scratch.
-A Dockerfile is provided in the `https://github.com/ROCm/flashinfer/blob/amd-integration/.devcontainer/rocm/Dockerfile <https://github.com/ROCm/flashinfer/blob/amd-integration/.devcontainer/rocm/Dockerfile>`__ repository to help you get started.
+A Dockerfile is provided in the `https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/.devcontainer/rocm/Dockerfile <https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/.devcontainer/rocm/Dockerfile>`__ repository to help you get started.
 
-1. Clone the `https://github.com/ROCm/flashinfer <https://github.com/ROCm/flashinfer>`__ repository.
+1. Clone the `https://github.com/AMD-Ecosystem/flashinfer <https://github.com/AMD-Ecosystem/flashinfer>`__ repository.
 
    .. code-block:: bash
 
-      git clone https://github.com/ROCm/flashinfer.git
+      git clone https://github.com/AMD-Ecosystem/flashinfer.git
 
 2. Enter the directory and build the Dockerfile to create a Docker image.
 
