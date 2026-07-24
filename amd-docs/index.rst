@@ -52,6 +52,6 @@ The FlashInfer public repository is located at `https://github.com/AMD-Ecosystem
       * `API reference (upstream) <https://docs.flashinfer.ai/>`__
 
 To contribute to the documentation, refer to
-`Contributing to flashinfer <https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md>`__.
+`Contributing to FlashInfer <https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md>`__.
 
 You can find licensing information on the :doc:`Licensing <about/license>` page.
