@@ -26,7 +26,7 @@ subtrees:
   entries:
   - url: https://rocm.blogs.amd.com/artificial-intelligence/flashinfer/README.html
     title: ROCm FlashInfer blog
-  - url: https://github.com/ROCm/flashinfer/blob/amd-integration/CONTRIBUTING.md
+  - url: https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md
     title: Contribute to FlashInfer
   - file: about/license.rst
     title: License

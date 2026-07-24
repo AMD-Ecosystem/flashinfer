@@ -29,12 +29,12 @@ operators, with easy integration through PyTorch, and C++ APIs.
 
   The ROCm port of FlashInfer is under active development, and some features are not yet available. 
   For the most up-to-date feature support matrix, refer to the ``README`` in the 
-  `https://github.com/ROCm/flashinfer <https://github.com/ROCm/flashinfer>`__ repository.
+  `https://github.com/AMD-Ecosystem/flashinfer <https://github.com/AMD-Ecosystem/flashinfer>`__ repository.
 
-FlashInfer is part of the `ROCm-LLMExt toolkit
+FlashInfer is part of the `AMD LLM Extension toolkit
 <https://rocm.docs.amd.com/projects/rocm-llmext/en/docs-26.02/>`__.
 
-The FlashInfer public repository is located at `https://github.com/ROCm/flashinfer <https://github.com/ROCm/flashinfer>`__.
+The FlashInfer public repository is located at `https://github.com/AMD-Ecosystem/flashinfer <https://github.com/AMD-Ecosystem/flashinfer>`__.
 
 .. grid:: 2
   :gutter: 3
@@ -52,6 +52,6 @@ The FlashInfer public repository is located at `https://github.com/ROCm/flashinf
       * `API reference (upstream) <https://docs.flashinfer.ai/>`__
 
 To contribute to the documentation, refer to
-`Contributing to ROCm <https://rocm.docs.amd.com/en/latest/contribute/contributing.html>`_.
+`Contributing to flashinfer <https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md>`__.
 
 You can find licensing information on the :doc:`Licensing <about/license>` page.

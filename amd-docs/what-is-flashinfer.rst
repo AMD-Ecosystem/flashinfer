@@ -61,7 +61,7 @@ Kernel support matrix
 
   The ROCm port of FlashInfer is under active development, and some features are not yet available. 
   For the most up-to-date feature support matrix, refer to the ``README`` in the 
-  `https://github.com/ROCm/flashinfer <https://github.com/ROCm/flashinfer>`__ repository.
+  `https://github.com/AMD-Ecosystem/flashinfer <https://github.com/AMD-Ecosystem/flashinfer>`__ repository.
 
 .. list-table:: 
    :header-rows: 1

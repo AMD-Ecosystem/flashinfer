@@ -8,7 +8,7 @@
 Run a FlashInfer example
 ********************************************************************
 
-The examples folder in the `https://github.com/ROCm/flashinfer/tree/amd-integration/examples <https://github.com/ROCm/flashinfer/tree/amd-integration/examples>`__ repository has example code that you can run FlashInfer with.
+The examples folder in the `https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/examples <https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/examples>`__ repository has example code that you can run FlashInfer with.
 You can save the following code snippet to a Python script once you have FlashInfer installed and run the script to try it out.
 
 1. Save the following code snippet to a Python script named ``flashinfer_example.py``.
