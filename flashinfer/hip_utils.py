@@ -536,7 +536,7 @@ def check_torch_rocm_compatibility() -> None:
             "  1. Uninstall current PyTorch:\n"
             "     pip uninstall torch\n\n"
             "  2. Install PyTorch for ROCm:\n"
-            "     pip install torch==2.7.1 --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/\n\n"
+            "     pip install torch==2.7.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/\n\n"
             "See https://github.com/rocm/flashinfer for detailed installation instructions.\n"
             + "="
             * 70
@@ -559,11 +559,11 @@ def check_torch_rocm_compatibility() -> None:
                 f"  PyTorch ROCm version: {torch_rocm_major_minor}\n\n"
                 f"This may cause runtime errors or crashes.\n\n"
                 f"To fix, reinstall PyTorch for your ROCm version:\n"
-                f"  pip install torch==2.7.1 --index-url "
+                f"  pip install torch==2.7.1 -f "
                 f"https://repo.radeon.com/rocm/manylinux/rocm-rel-{system_rocm}/\n\n"
                 f"Or if using uv:\n"
                 f"  export FLASHINFER_ROCM_VERSION={system_rocm}\n"
-                f"  uv pip install torch==2.7.1 --index-url "
+                f"  uv pip install torch==2.7.1 -f "
                 f"https://repo.radeon.com/rocm/manylinux/rocm-rel-{system_rocm}/\n"
                 f"{'=' * 70}",
                 RuntimeWarning,
