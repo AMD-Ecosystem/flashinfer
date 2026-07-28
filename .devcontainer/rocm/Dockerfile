@@ -81,9 +81,12 @@ RUN \
     echo "micromamba activate ${MAMBA_ENV_NAME}" >> /home/$USERNAME/.bashrc
 
 # Create a new micromamba env and install needed packages for flashinfer development.
-# After installing torch, assert it is a ROCm/HIP build (torch.version.hip is not
-# None) so the build fails fast if -f/--find-links ever resolves a PyPI CPU/CUDA
-# wheel instead of the radeon ROCm wheel.
+# torch uses -f/--find-links (not --index-url) because the radeon repo is a flat
+# wheel listing, not a PEP 503 simple index — with --index-url pip requests the
+# per-package path (.../torch/), which 404s, and the install fails with "No
+# matching distribution found". After installing, assert torch is a ROCm/HIP build
+# (torch.version.hip is not None) so the build fails fast if -f ever resolves a
+# PyPI CPU/CUDA wheel instead of the radeon ROCm wheel.
 RUN /bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} gtest gmock bash-completion -c conda-forge && \
     /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir cmake ninja "scikit-build-core>=0.4.3" "setuptools-scm>=9.2" pre-commit numpy pytest pytest-cov pytest-xdist pytest-rerunfailures pybind11 ruff && \
     /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/ && \
