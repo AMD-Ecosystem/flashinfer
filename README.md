@@ -88,7 +88,7 @@ Install the matching ROCm-enabled PyTorch wheel from
 <https://repo.radeon.com>:
 
 ```bash
-pip install torch==2.9.1 --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
+pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
 ```
 
 Other versions may work but have not been tested. Replace `7.2` with the
@@ -141,11 +141,14 @@ pip install amd-flashinfer --index-url https://pypi.amd.com/simple/
 Install the matching ROCm-enabled torch package from <https://repo.radeon.com>:
 
 ```bash
-pip install torch==2.9.1 --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
+pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
 ```
 
-**NOTE:** Use `--index-url` (not `-f`) so pip cannot silently fall back
-to a CPU-only PyPI wheel.
+**NOTE:** The radeon repo is a flat wheel listing, not a PEP 503 index, so
+`--index-url` fails with "No matching distribution found" — use `-f`
+(`--find-links`). pip still prefers the ROCm wheel over a same-version PyPI
+wheel because its `+rocm<X.Y>` local version ranks higher. Confirm the result
+with `python -c "import torch; assert torch.version.hip, 'not a ROCm build'"`.
 
 ### Trying the Examples
 
