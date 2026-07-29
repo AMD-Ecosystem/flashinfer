@@ -87,6 +87,27 @@ local-only, the topic branch already exists — STOP and report rather than
 reset. It is always better to fail to raise a PR than to push to or PR from
 `amd-integration`.
 
+## Branch naming
+
+Topic branches are created off `origin/amd-integration` and named with **plain
+hyphenated words** describing the change:
+
+- ✅ `pr-workflow-push-safety`, `timing-torch-events`, `aiter-solution-generator`
+- ❌ **no `rocm/` prefix** — the entire fork is ROCm, so it's redundant noise.
+- ❌ **no plan-phase labels** (`p1`, `p2`, …) from `ROCM_PORT_PLAN.md` — name the
+  *change*, not the plan milestone.
+
+## CRITICAL: ask before pushing to remote (fail-closed)
+
+**Never `git push` (or `gh pr create`, which pushes) without first getting the
+user's explicit "yes" for that specific push.** It publishes to a shared repo.
+This applies to every push — the initial branch push, force-pushes after a
+rebase, and follow-up pushes addressing review comments; a prior "yes" does not
+authorize a later push. State exactly what will be pushed and where (branch →
+`AMD-Ecosystem/flashinfer`) and wait. Local-only work (commits, the quality
+gate, the local review) needs no confirmation — only the network push does. When
+in doubt, hold the push and ask.
+
 ## GitHub CLI
 
 `gh pr edit` fails with a "Projects (classic) is being deprecated" GraphQL error on this repo. Use the REST API instead:
@@ -179,6 +200,15 @@ Done = no unresolved Copilot threads remain, each carrying either a fix+SHA repl
 or a won't-fix rationale.
 
 ## PR Description
+
+- **Do not hard-wrap** the body to a fixed column. GitHub renders a single
+  newline inside a paragraph as a `<br>`, so column-wrapped prose shows up as
+  broken lines. Keep each paragraph/bullet on one line and use blank lines only
+  to separate blocks. (Mirrors the `## PR / issue body formatting` rule in
+  CLAUDE.md; note this is the opposite of how the repo's `.md`/`.py` source
+  files — including this skill — are wrapped.)
+- **Do not append a "Generated with Claude Code" footer** (or any other
+  tool-authored attribution) to the body, even if a harness default suggests it.
 
 **Body** — include sections that apply, skip the rest:
 
