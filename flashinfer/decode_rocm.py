@@ -394,6 +394,10 @@ _AITER_PA_V1_PARTITION_SIZE = 256
 # wrapper will be dispatched through the FA2 shadow plan (AITER PA v1 does not output LSE).
 _aiter_lse_fallback_warned: set[torch.device] = set()
 
+# One-time-per-device warning about AITER decode's capture-at-max-seq-len contract
+# under CUDA-graph capture (opt-in via explicit backend="aiter").
+_aiter_graph_capture_warned: set[torch.device] = set()
+
 
 def _aiter_pa_v1_resolve(
     *,
@@ -1125,10 +1129,13 @@ class BatchDecodeWithPagedKVCacheWrapper:
             kv_lens_arr_host = seq_lens.cpu()
 
         # Resolve auto → concrete backend. AITER decode requires use_tensor_cores=False
-        # (the AITER PA v1 kernel handles its own dispatch internally). CUDA-graph
-        # capture is excluded: AITER's launch grid is sized from per-plan scalars
-        # (max_kv_len, max_blocks_per_seq) that get baked into the captured graph
-        # and cannot be widened on replay without re-capturing.
+        # (the AITER PA v1 kernel handles its own dispatch internally). Under CUDA-graph
+        # capture, `auto` stays on fa2: fa2's graph path is capacity-based and correct
+        # regardless of capture-vs-replay sizes, whereas AITER's launch grid and .so
+        # variant are fixed at the shapes seen when the graph is captured and require
+        # capturing at the maximum sequence length. AITER decode under CUDA graph is
+        # therefore opt-in via an explicit backend="aiter" (see the capture-at-max
+        # warning below), not something `auto` selects silently.
         if self._backend == "auto":
             if self.use_tensor_cores or self.is_cuda_graph_enabled:
                 self._backend = "fa2"
@@ -1155,14 +1162,18 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     f"AITER decode backend requires pos_encoding_mode='NONE', "
                     f"got {pos_encoding_mode!r}"
                 )
-            if self.is_cuda_graph_enabled:
-                raise ValueError(
-                    "AITER decode backend is incompatible with CUDA-graph capture: "
-                    "the kernel's launch grid is sized from per-plan scalars "
-                    "(max_kv_len, max_blocks_per_seq) that are baked into the "
-                    "captured graph at capture time. Use backend='fa2' for "
-                    "CUDA-graph workflows, or backend='auto' which routes around "
-                    "this automatically."
+            if (
+                self.is_cuda_graph_enabled
+                and self.device not in _aiter_graph_capture_warned
+            ):
+                _aiter_graph_capture_warned.add(self.device)
+                logger.warning(
+                    "AITER decode under CUDA-graph capture: the launch grid and kernel "
+                    "variant are fixed at the shapes seen when the graph is captured "
+                    "(unlike fa2, whose graph path is capacity-based). Capture at your "
+                    "maximum sequence length — replays with sequences longer than "
+                    "captured will be incorrect. Use backend='fa2' if you need "
+                    "capture-order-independent CUDA-graph decode."
                 )
             self._max_kv_len = int(max(kv_lens_arr_host).item())
             # max blocks per seq across the batch — needed to size the dense block_tables.

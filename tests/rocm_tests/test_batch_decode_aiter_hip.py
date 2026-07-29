@@ -181,34 +181,10 @@ def test_batch_decode_aiter_rejects_invalid_config():
             kv_data_type=torch.float16,
         )
 
-    # CUDA-graph capture not supported with explicit backend="aiter".
-    indptr_buf = torch.empty(2, dtype=torch.int32, device=device)
-    indices_buf = torch.empty(8, dtype=torch.int32, device=device)
-    last_page_len_buf = torch.empty(1, dtype=torch.int32, device=device)
-    w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
-        workspace,
-        "NHD",
-        use_cuda_graph=True,
-        paged_kv_indptr_buffer=indptr_buf,
-        paged_kv_indices_buffer=indices_buf,
-        paged_kv_last_page_len_buffer=last_page_len_buf,
-        backend="aiter",
-    )
-    indptr_buf.copy_(indptr)
-    indices_buf[:1].copy_(indices)
-    last_page_len_buf.copy_(last_page_len)
-    with pytest.raises(ValueError, match="CUDA-graph"):
-        w.plan(
-            indptr_buf,
-            indices_buf[:1],
-            last_page_len_buf,
-            8,
-            8,
-            128,
-            16,
-            q_data_type=torch.float16,
-            kv_data_type=torch.float16,
-        )
+    # NOTE: CUDA-graph capture with backend="aiter" is now supported (the grid
+    # and .so variant are fixed at capture-time shapes; the kernel early-exits
+    # per-seq on context_lens). Positive coverage lives in
+    # test_batch_decode_aiter_cuda_graph_replay below.
 
 
 @requires_aiter
@@ -357,8 +333,10 @@ def test_batch_decode_aiter_return_lse_via_fa2(dtype, window_left):
 
 @requires_aiter
 def test_batch_decode_auto_routes_cuda_graph_to_fa2():
-    """backend='auto' with use_cuda_graph=True must route to fa2 (AITER doesn't
-    support graph capture)."""
+    """backend='auto' with use_cuda_graph=True routes to fa2. fa2's graph path is
+    capacity-based (correct regardless of capture-vs-replay sizes); AITER decode
+    under graph is opt-in via backend='aiter' (capture-at-max contract), so auto
+    does not select it silently."""
     device = torch.device("cuda:0")
     workspace = torch.zeros(8 * 1024 * 1024, dtype=torch.uint8, device=device)
     indptr_buf = torch.empty(2, dtype=torch.int32, device=device)
@@ -389,3 +367,108 @@ def test_batch_decode_auto_routes_cuda_graph_to_fa2():
         kv_data_type=torch.float16,
     )
     assert w._backend == "fa2"
+
+
+@requires_aiter
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_batch_decode_aiter_cuda_graph_replay(dtype):
+    """Opt-in AITER decode under CUDA graph (explicit backend='aiter'): capture
+    once at a maximum sequence length, then replay for a shorter sequence; the
+    result must match an eager AITER run (the kernel early-exits per-seq on
+    context_lens). Captures at cap_seq and replays shorter — the supported
+    capture-at-max usage."""
+    device = torch.device("cuda:0")
+    batch, page, num_qo, num_kv, hd = 4, 16, 8, 8, 128
+    cap_seq, replay_seq = 2048, 512
+    cap_pages = (cap_seq + page - 1) // page
+    total_pages = batch * cap_pages
+
+    kv = torch.randn(total_pages, 2, page, num_kv, hd, dtype=dtype, device=device)
+    q = torch.randn(batch, num_qo, hd, dtype=dtype, device=device)
+
+    def layout(seq_len):
+        npages = (seq_len + page - 1) // page
+        last = seq_len - (npages - 1) * page
+        indptr = torch.arange(batch + 1, dtype=torch.int32, device=device) * npages
+        # Each sequence keeps a stable reserved block of cap_pages in the fixed
+        # pool; a shorter seq_len just uses the first `npages` of its block. This
+        # models real paged-KV (stable per-seq page pool) and exercises the
+        # capture-at-max contract faithfully.
+        base = (torch.arange(batch, device=device) * cap_pages).view(-1, 1)
+        offs = torch.arange(npages, device=device).view(1, -1)
+        indices = (base + offs).reshape(-1).to(torch.int32)
+        last_page = torch.full((batch,), last, dtype=torch.int32, device=device)
+        return indptr, indices, last_page
+
+    ws = torch.zeros(64 * 1024 * 1024, dtype=torch.uint8, device=device)
+    indptr_buf = torch.empty(batch + 1, dtype=torch.int32, device=device)
+    indices_buf = torch.empty(total_pages, dtype=torch.int32, device=device)
+    last_page_buf = torch.empty(batch, dtype=torch.int32, device=device)
+    w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+        ws,
+        "NHD",
+        use_cuda_graph=True,
+        backend="aiter",
+        paged_kv_indptr_buffer=indptr_buf,
+        paged_kv_indices_buffer=indices_buf,
+        paged_kv_last_page_len_buffer=last_page_buf,
+    )
+    # plan + capture at capacity
+    ip, ix, lp = layout(cap_seq)
+    w.plan(
+        ip,
+        ix,
+        lp,
+        num_qo,
+        num_kv,
+        hd,
+        page,
+        pos_encoding_mode="NONE",
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+    assert w._backend == "aiter"
+    for _ in range(3):
+        w.run(q, kv)
+    torch.cuda.synchronize()
+    g = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(g):
+        out = w.run(q, kv)
+
+    # replay at a shorter sequence
+    q.copy_(torch.randn(batch, num_qo, hd, dtype=dtype, device=device))
+    ip, ix, lp = layout(replay_seq)
+    w.plan(
+        ip,
+        ix,
+        lp,
+        num_qo,
+        num_kv,
+        hd,
+        page,
+        pos_encoding_mode="NONE",
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+    g.replay()
+    torch.cuda.synchronize()
+
+    # eager AITER reference on identical inputs
+    ws2 = torch.zeros(64 * 1024 * 1024, dtype=torch.uint8, device=device)
+    ref_w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws2, "NHD", backend="aiter")
+    ip, ix, lp = layout(replay_seq)
+    ref_w.plan(
+        ip,
+        ix,
+        lp,
+        num_qo,
+        num_kv,
+        hd,
+        page,
+        pos_encoding_mode="NONE",
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+    ref = ref_w.run(q, kv)
+
+    torch.testing.assert_close(out, ref, rtol=1e-2, atol=1e-2)
