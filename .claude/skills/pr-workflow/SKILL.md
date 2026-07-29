@@ -1,26 +1,26 @@
 ---
 name: pr-workflow
-description: How to create and edit PRs on the ROCm/flashinfer GitHub repo (which publishes the amd-flashinfer package) — gh CLI quirks and the project's PR-description conventions.
+description: How to create and edit PRs on the AMD-Ecosystem/flashinfer GitHub repo (which publishes the amd-flashinfer package) — gh CLI quirks and the project's PR-description conventions.
 ---
 
-# PR Workflow (ROCm/flashinfer)
+# PR Workflow (AMD-Ecosystem/flashinfer)
 
-> The GitHub repo is `ROCm/flashinfer`; the Python package it publishes is
+> The GitHub repo is `AMD-Ecosystem/flashinfer`; the Python package it publishes is
 > `amd-flashinfer`. All `gh` commands below target the GitHub repo.
 
 ## CRITICAL: PR target safeguard (fail-closed)
 
-`ROCm/flashinfer` is a **GitHub fork** of `flashinfer-ai/flashinfer` (the true
+`AMD-Ecosystem/flashinfer` is a **GitHub fork** of `flashinfer-ai/flashinfer` (the true
 upstream). Because of this, `gh pr create` defaults the PR base to the
 fork-parent `flashinfer-ai/flashinfer` unless explicitly overridden. **A PR must
 NEVER be opened against `flashinfer-ai/flashinfer`.**
 
-All PRs go to **`ROCm/flashinfer`**, base branch **`amd-integration`**.
+All PRs go to **`AMD-Ecosystem/flashinfer`**, base branch **`amd-integration`**.
 
 **Before ANY `gh pr create`, run this pre-flight check and ABORT if it fails:**
 
 ```bash
-gh repo set-default --view   # MUST print exactly: ROCm/flashinfer
+gh repo set-default --view   # MUST print exactly: AMD-Ecosystem/flashinfer
 ```
 
 If it prints anything else (or errors), STOP — do not create the PR. Report the
@@ -29,7 +29,7 @@ mismatch to the user instead. Never guess the target.
 **Always pass the target and base explicitly** — never rely on gh defaults:
 
 ```bash
-gh pr create --repo ROCm/flashinfer --base amd-integration \
+gh pr create --repo AMD-Ecosystem/flashinfer --base amd-integration \
   --title "<title>" --body "$(cat /tmp/pr_body.md)"
 ```
 
@@ -41,8 +41,8 @@ better to fail to raise a PR and explain why than to raise one against upstream.
 These are local config (not checked in) and must be redone per clone:
 
 ```bash
-git remote -v                        # origin should be ROCm/flashinfer; there must be NO flashinfer-ai remote
-gh repo set-default ROCm/flashinfer  # pin gh base repo so it does not fall back to the fork parent
+git remote -v                        # origin should be AMD-Ecosystem/flashinfer; there must be NO flashinfer-ai remote
+gh repo set-default AMD-Ecosystem/flashinfer  # pin gh base repo so it does not fall back to the fork parent
 ```
 
 If a remote pointing at `flashinfer-ai/flashinfer` exists, remove it:
@@ -93,10 +93,10 @@ reset. It is always better to fail to raise a PR than to push to or PR from
 
 ```bash
 # Update PR description
-gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="<body>"
+gh api repos/AMD-Ecosystem/flashinfer/pulls/<number> --method PATCH --field body="<body>"
 
 # Or from a file
-gh api repos/ROCm/flashinfer/pulls/<number> --method PATCH --field body="$(cat /tmp/pr_body.md)"
+gh api repos/AMD-Ecosystem/flashinfer/pulls/<number> --method PATCH --field body="$(cat /tmp/pr_body.md)"
 ```
 
 Ask the user to confirm before running `git push` or `gh pr create` — these
@@ -159,14 +159,14 @@ not exposed via REST (replying to a comment is available over REST — see below
 # Bump `first:` if a PR may have more than 50 threads / 10 comments per thread —
 # this query is not exhaustive beyond those limits.
 gh api graphql -f query='
-{ repository(owner:"ROCm", name:"flashinfer") {
+{ repository(owner:"AMD-Ecosystem", name:"flashinfer") {
     pullRequest(number: <PR>) {
       reviewThreads(first: 50) { nodes {
         id isResolved
         comments(first: 10) { nodes { databaseId author { login } path body } } } } } } }'
 
 # Reply to a comment (use the databaseId from above)
-gh api repos/ROCm/flashinfer/pulls/<PR>/comments/<commentDatabaseId>/replies \
+gh api repos/AMD-Ecosystem/flashinfer/pulls/<PR>/comments/<commentDatabaseId>/replies \
   --method POST --field body="<reply>"
 
 # Resolve a thread (use the thread node id, e.g. PRRT_...)
