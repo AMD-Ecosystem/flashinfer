@@ -24,6 +24,15 @@ followed by `git reset --hard origin/amd-integration` to restore
 an abort condition too.
 Full procedure: `pr-workflow` skill.
 
+## PR / issue body formatting
+
+Do not hard-wrap the body to a fixed column. GitHub renders a single newline
+inside a paragraph as a `<br>`, so column-wrapped prose shows up as broken
+mid-sentence lines. Write each paragraph and each bullet as one line and let the
+browser soft-wrap; use blank lines only to separate paragraphs/list items. (Same
+for issue bodies and PR/issue comments — anything GitHub renders.) This is the
+opposite of the repo's `.md`/`.py` source files, which are wrapped normally.
+
 ## Essential Commands
 
 | Task | Command |
