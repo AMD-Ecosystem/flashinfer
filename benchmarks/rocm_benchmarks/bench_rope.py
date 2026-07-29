@@ -62,6 +62,7 @@ _NUM_KV_HEADS = 8
 _HEAD_SIZE = 128
 _ROTARY_DIM = 128
 _MAX_SEQ_LEN = 65536
+_ROPE_THETA = 1e4  # RoPE base; standard Llama-family value.
 _DTYPES = [(torch.float16, "f16"), (torch.bfloat16, "bf16")]
 _BACKENDS = ["native", "aiter"]
 # Both op modes: inplace rotates q/k in place; out-of-place returns fresh
@@ -75,14 +76,26 @@ _COS_SIN_CACHE: torch.Tensor | None = None
 
 
 def _shared_cos_sin_cache() -> torch.Tensor:
+    # A real RoPE cos||sin table (same construction as
+    # benchmarks/bench_rope.py / tests/test_helpers/rope_reference.py), not
+    # random values: entries are bounded in [-1, 1] and satisfy cos^2+sin^2=1,
+    # so rotations are norm-preserving. Random data would leave inplace runs to
+    # drift over repeated rotations and make the --accuracy numbers meaningless.
     # cos||sin cache is float32 on the HIP path (see rope_aiter.cu) and is
     # read-only, so a single ~32 MiB tensor is shared across all configs
     # rather than reallocated per config.
     global _COS_SIN_CACHE
     if _COS_SIN_CACHE is None:
-        _COS_SIN_CACHE = torch.randn(
-            _MAX_SEQ_LEN, _ROTARY_DIM, device="cuda", dtype=torch.float32
+        inv_freq = 1.0 / (
+            _ROPE_THETA
+            ** (
+                torch.arange(0, _ROTARY_DIM, 2, device="cuda", dtype=torch.float32)
+                / _ROTARY_DIM
+            )
         )
+        t = torch.arange(_MAX_SEQ_LEN, device="cuda", dtype=torch.float32)
+        freqs = torch.einsum("i,j -> ij", t, inv_freq)
+        _COS_SIN_CACHE = torch.cat((freqs.cos(), freqs.sin()), dim=-1)
     return _COS_SIN_CACHE
 
 
