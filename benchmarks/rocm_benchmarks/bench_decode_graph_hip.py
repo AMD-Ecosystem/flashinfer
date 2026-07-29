@@ -46,11 +46,19 @@ DEVICE = torch.device("cuda")
 
 
 def _layout_for(seq_len: int):
-    """Uniform per-seq kv_len=seq_len over the fixed page pool (identity page map)."""
+    """Uniform per-seq kv_len=seq_len over the fixed page pool.
+
+    Each sequence keeps a stable reserved block of CAP_PAGES_PER_SEQ pages; a
+    shorter seq_len uses only the first `npages` of its block. This mirrors a
+    real fixed-capacity paged-KV pool (stable per-seq page mapping) rather than
+    repacking pages when seq_len < CAP_SEQ.
+    """
     npages = (seq_len + PAGE - 1) // PAGE
     last = seq_len - (npages - 1) * PAGE
     indptr = torch.arange(BATCH + 1, dtype=torch.int32, device=DEVICE) * npages
-    indices = torch.arange(BATCH * npages, dtype=torch.int32, device=DEVICE)
+    base = (torch.arange(BATCH, device=DEVICE) * CAP_PAGES_PER_SEQ).view(-1, 1)
+    offs = torch.arange(npages, device=DEVICE).view(1, -1)
+    indices = (base + offs).reshape(-1).to(torch.int32)
     last_page = torch.full((BATCH,), last, dtype=torch.int32, device=DEVICE)
     return indptr, indices, last_page
 

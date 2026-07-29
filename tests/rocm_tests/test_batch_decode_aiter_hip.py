@@ -390,7 +390,13 @@ def test_batch_decode_aiter_cuda_graph_replay(dtype):
         npages = (seq_len + page - 1) // page
         last = seq_len - (npages - 1) * page
         indptr = torch.arange(batch + 1, dtype=torch.int32, device=device) * npages
-        indices = torch.arange(batch * npages, dtype=torch.int32, device=device)
+        # Each sequence keeps a stable reserved block of cap_pages in the fixed
+        # pool; a shorter seq_len just uses the first `npages` of its block. This
+        # models real paged-KV (stable per-seq page pool) and exercises the
+        # capture-at-max contract faithfully.
+        base = (torch.arange(batch, device=device) * cap_pages).view(-1, 1)
+        offs = torch.arange(npages, device=device).view(1, -1)
+        indices = (base + offs).reshape(-1).to(torch.int32)
         last_page = torch.full((batch,), last, dtype=torch.int32, device=device)
         return indptr, indices, last_page
 
