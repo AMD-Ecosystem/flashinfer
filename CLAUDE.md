@@ -24,36 +24,6 @@ followed by `git reset --hard origin/amd-integration` to restore
 an abort condition too.
 Full procedure: `pr-workflow` skill.
 
-## Branch naming
-
-Topic branches are created off `origin/amd-integration` and named with **plain
-hyphenated words** describing the change:
-
-- ✅ `pr-workflow-push-safety`, `timing-torch-events`, `aiter-solution-generator`
-- ❌ **no `rocm/` prefix** — the entire fork is ROCm, so it's redundant noise.
-- ❌ **no plan-phase labels** (`p1`, `p2`, …) from `ROCM_PORT_PLAN.md` — name the
-  *change*, not the plan milestone.
-
-## CRITICAL: ask before pushing to remote (fail-closed)
-
-**Never `git push` (or `gh pr create`, which pushes) without first getting the
-user's explicit "yes" for that specific push.** It publishes to a shared repo.
-This applies to every push — the initial branch push, force-pushes after a
-rebase, and follow-up pushes addressing review comments; a prior "yes" does not
-authorize a later push. State exactly what will be pushed and where (branch →
-`AMD-Ecosystem/flashinfer`) and wait. Local-only work (commits, the quality
-gate, the local review) needs no confirmation — only the network push does. When
-in doubt, hold the push and ask.
-
-## PR / issue body formatting
-
-Do not hard-wrap the body to a fixed column. GitHub renders a single newline
-inside a paragraph as a `<br>`, so column-wrapped prose shows up as broken
-mid-sentence lines. Write each paragraph and each bullet as one line and let the
-browser soft-wrap; use blank lines only to separate paragraphs/list items. (Same
-for issue bodies and PR/issue comments — anything GitHub renders.) This is the
-opposite of the repo's `.md`/`.py` source files, which are wrapped normally.
-
 ## Essential Commands
 
 | Task | Command |
