@@ -55,7 +55,7 @@ kernel for non-attention ops). **AITER** = ROCm AITER backend.
 | Kernel | HIP | AITER | `backend="auto"` resolves to | Notes |
 | :--- | :---: | :---: | :--- | :--- |
 | **Single decode attention** | ✅ `fa2` | — | HIP | MHA / GQA / MQA |
-| **Batch decode attention (paged)** | ✅ `fa2` | ✅ | **AITER** when `fp16/bf16` + `NHD` + `pos_encoding_mode="NONE"` + no CUDA-graph + `use_tensor_cores=False`; else **HIP** | MHA / GQA / MQA; **fp8 KV-cache (E4M3FNUZ)** on the HIP path; sliding-window on the AITER path; CUDA-graph auto-routes back to HIP |
+| **Batch decode attention (paged)** | ✅ `fa2` | ✅ | **AITER** when `fp16/bf16` + `NHD` + `pos_encoding_mode="NONE"` + no CUDA-graph + `use_tensor_cores=False`; else **HIP** | MHA / GQA / MQA; **fp8 KV-cache (E4M3FNUZ)** on the HIP path; sliding-window on the AITER path; CUDA-graph capture on the AITER path is **opt-in via `backend="aiter"`** (grid + `.so` fixed at capture-time shapes — capture at max seq len); `backend="auto"` uses HIP `fa2` under capture |
 | **Single prefill attention** | ✅ `fa2` | ✅ | **AITER** when `fp16/bf16` + `NHD` + no custom mask + equal Q/KV dtypes & head dims + `pos_encoding_mode="NONE"`; else **HIP** | MHA / GQA / MQA; fp8 WIP |
 | **Batch prefill attention (paged + ragged)** | ✅ `fa2` | ✅ | Same auto criteria as single prefill | MHA / GQA / MQA; fp8 WIP. AITER native page sizes: `{16, 1024}` (`{128, 256, 1024}` on `amd-aiter==0.1.10`); other sizes go through a gather on the AITER path |
 | **Cascade attention** | ✅ | — | HIP | Two-level shared-prefix attention; a fused single-kernel HIP variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1` |
@@ -354,9 +354,14 @@ Backend-specific exceptions to "auto picks AITER when supported":
 * `rmsnorm`: `backend="auto"` picks the AITER C++ path (CK `rmsnorm2d`) only
   for 2-D fp16/bf16 inputs whose weight dtype matches; 3-D inputs, fp32, or a
   mismatched weight dtype fall back to the HIP `native` kernel.
-* `batch_decode`: `use_cuda_graph=True` or `use_tensor_cores=True`
-  force `auto` back to `fa2` (AITER decode does not support either),
-  and `pos_encoding_mode != "NONE"` raises under `backend="aiter"`.
+* `batch_decode`: `use_cuda_graph=True` or `use_tensor_cores=True` force `auto`
+  back to `fa2`, and `pos_encoding_mode != "NONE"` raises under
+  `backend="aiter"`. CUDA-graph capture on the AITER decode path is available
+  via an explicit `backend="aiter"` (not `auto`): capture at your maximum
+  sequence length — the grid and `.so` variant are fixed at capture-time shapes
+  and the kernel early-exits per sequence, so replays *shorter* than captured
+  are correct but *longer* ones are not. fa2's graph path is capacity-based and
+  carries no such constraint.
 
 Unless you are using the prebuilt Docker image, install AITER separately
 via one of the options below.
@@ -396,7 +401,7 @@ you need any of them: `backend="fa2"` for attention wrappers, or
 * `q_dtype != kv_dtype` (mixed-precision Q/KV is unsupported)
 * `head_dim_qk != head_dim_vo` (e.g. DeepSeek-style MLA with 192/128 head dims)
 * `pos_encoding_mode != "NONE"` (AITER attention paths only support `"NONE"`)
-* batch decode: `use_cuda_graph=True` or `use_tensor_cores=True`
+* batch decode: `use_tensor_cores=True`
 * the `aiter` Python package is not importable
 
 **Features silently ignored on the AITER path** (kwargs are accepted by
