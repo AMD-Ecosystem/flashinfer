@@ -18,6 +18,7 @@ limitations under the License.
 import functools
 import logging
 import math
+import os
 import threading
 from importlib.metadata import PackageNotFoundError
 from types import SimpleNamespace
@@ -55,13 +56,35 @@ from .utils import (
 )
 
 
+# Newest amd-aiter release whose native paged-prefill coverage we have validated.
+# This is a *hint*, not a guarantee: serving stacks (SGLang, vLLM) install AITER
+# from a source commit rather than the released wheel, and those builds dispatch
+# differently. Anything above this version is treated as unverified and is
+# confirmed at plan() time by _aiter_native_paging_available().
+_AITER_LAST_VALIDATED = "0.1.10"
+
+
 @functools.cache
 def _aiter_native_page_sizes() -> frozenset:
+    """Page sizes AITER is *expected* to serve without a flat-gather.
+
+    Only a hint — the caller must confirm with _aiter_native_paging_available()
+    before relying on it. Every page size works via flat-gather regardless.
+    """
     try:
         from importlib.metadata import version
         from packaging.version import Version
 
-        if Version(version("amd-aiter")) >= Version("0.1.10"):
+        installed = Version(version("amd-aiter"))
+        if installed > Version(_AITER_LAST_VALIDATED):
+            logger.warning(
+                "amd-aiter %s is newer than the last version validated with this "
+                "FlashInfer build (%s); native paged-prefill support will be probed "
+                "at plan() time and may fall back to the slower flat-gather path.",
+                installed,
+                _AITER_LAST_VALIDATED,
+            )
+        if installed >= Version(_AITER_LAST_VALIDATED):
             return frozenset({128, 256, 1024})
         return frozenset({16, 1024})
     except (PackageNotFoundError, ValueError):
@@ -533,6 +556,54 @@ def _aiter_bootstrap_batch_prefill(
         return_lse=has_lse,
         kv_last_page_lens=kv_last_page_lens,
     )
+
+
+@functools.lru_cache(maxsize=None)
+def _aiter_native_paging_available(
+    dtype: torch.dtype,
+    has_logits_cap: bool,
+    causal: bool,
+    page_size: int,
+    head_dim: int,
+    device_idx: int,
+) -> bool:
+    """Probe whether AITER really dispatches a native paged kernel for this config.
+
+    _aiter_native_page_sizes() can only report what the *validated* amd-aiter
+    release supported. Serving stacks pin an AITER source commit instead, and such
+    a build can reject a page size the version predicate claims is native, e.g.
+    ``no matching kernel found. page_size=128, num_pages=1, dtype=bf16``. Rather
+    than trust the predicate, run the bootstrap — which launches the real kernel —
+    and treat a failure as "not available".
+
+    Falling back is always correct: the flat-gather path serves every page size.
+    It is not free, though — it materializes a contiguous copy of K and V on each
+    run() — so the fallback is warned about rather than taken silently. Set
+    FLASHINFER_AITER_STRICT=1 to re-raise instead of degrading.
+
+    Bootstraps both has_lse variants, since plan() cannot know which run() needs.
+    """
+    try:
+        for has_lse in (True, False):
+            _aiter_bootstrap_batch_prefill(
+                dtype, has_logits_cap, causal, has_lse, page_size, head_dim, device_idx
+            )
+    except Exception as e:
+        if os.environ.get("FLASHINFER_AITER_STRICT", "0") == "1":
+            raise
+        logger.warning(
+            "AITER has no native paged-prefill kernel for page_size=%d "
+            "(dtype=%s, causal=%s, logits_cap=%s): %s. Falling back to the "
+            "flat-gather path, which copies K/V per run(). Set "
+            "FLASHINFER_AITER_STRICT=1 to raise instead.",
+            page_size,
+            dtype,
+            causal,
+            has_logits_cap,
+            e,
+        )
+        return False
+    return True
 
 
 @functools.cache
@@ -2091,47 +2162,47 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._seq_lens_kv = seq_lens
         self._seq_lens_q = seq_lens_q if seq_lens_q is not None else seq_lens
 
-        # Bootstrap AITER's lazy JIT for native-paged variants so the C++ dlopen
-        # can find the compiled .so.  The flat-gather path is bootstrapped below.
-        if self._backend == "aiter" and page_size in _aiter_native_page_sizes():
+        # Decide native-paged vs flat-gather ONCE. run() dispatches on whether
+        # self._aiter_flat_gather_idx is set, so a single decision here is what
+        # keeps the bootstrapped .so and the kernel run() reaches in agreement.
+        # Bootstrapping AITER's lazy JIT is also the probe: it launches the real
+        # kernel, so a config the installed AITER cannot serve fails here, at
+        # plan() time, and degrades to flat-gather instead of killing run().
+        use_native_paging = False
+        if self._backend == "aiter":
             dev_idx = self.device.index if self.device.index is not None else 0
             has_logits = logits_soft_cap > 0
             with _aiter_bootstrap_lock:
-                # Bootstrap only the (causal, lse) variants that may actually be used.
-                # We don't know at plan() time whether run() will request lse, so compile
-                # both has_lse=True/False; but causal is fixed per plan() call.
-                for _lse_v in (True, False):
-                    _aiter_bootstrap_batch_prefill(
+                if page_size in _aiter_native_page_sizes():
+                    use_native_paging = _aiter_native_paging_available(
                         q_data_type,
                         has_logits,
                         causal,
-                        _lse_v,
                         page_size,
                         head_dim_qk,
                         dev_idx,
                     )
+                if not use_native_paging:
+                    # The flat-gather route dispatches through
+                    # get_aiter_mha_varlen_fwd_handle, whose .so variant is keyed on
+                    # (dtype, causal, has_lse, has_logits_cap).  AITER pre-ships only
+                    # a subset of that family, so bootstrap the rest here rather than
+                    # let the C++ dlopen fail inside run().  The helper compiles both
+                    # has_lse variants because plan() can't know which one run() will
+                    # request; causal is fixed per plan() call.
+                    _aiter_bootstrap_batch_ragged_prefill(
+                        q_data_type,
+                        has_logits,
+                        causal,
+                        head_dim_qk,
+                        dev_idx,
+                    )
 
-        # Pre-compute flat-KV gather indices for the AITER backend when the
-        # page size is not natively supported.  These are stored as GPU
-        # tensors so that the ``run()`` path (which may be inside a CUDA graph
-        # capture) can use them without any host-side operations.
-        if self._backend == "aiter" and page_size not in _aiter_native_page_sizes():
-            # The flat-gather route dispatches through get_aiter_mha_varlen_fwd_handle,
-            # whose .so variant is keyed on (dtype, causal, has_lse, has_logits_cap).
-            # AITER pre-ships only a subset of that family, so bootstrap the rest here
-            # rather than let the C++ dlopen fail inside run().  The helper compiles
-            # both has_lse variants because plan() can't know which one run() will
-            # request; causal is fixed per plan() call.
-            dev_idx = self.device.index if self.device.index is not None else 0
-            with _aiter_bootstrap_lock:
-                _aiter_bootstrap_batch_ragged_prefill(
-                    q_data_type,
-                    logits_soft_cap > 0,
-                    causal,
-                    head_dim_qk,
-                    dev_idx,
-                )
-
+        # Pre-compute flat-KV gather indices whenever AITER is not serving this
+        # page size natively.  These are stored as GPU tensors so that the
+        # ``run()`` path (which may be inside a CUDA graph capture) can use them
+        # without any host-side operations.
+        if self._backend == "aiter" and not use_native_paging:
             kv_indptr_h = paged_kv_indptr.cpu()
             kv_indices_h = paged_kv_indices.cpu()
             kv_lpl_h = paged_kv_last_page_len.cpu()

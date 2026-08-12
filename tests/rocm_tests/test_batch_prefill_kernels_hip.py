@@ -9,7 +9,11 @@ from jit_utils import gen_prefill_attention_modules
 import flashinfer
 from flashinfer.jit.core import logger
 from flashinfer.aiter_utils import is_aiter_supported
-from flashinfer.prefill_rocm import _aiter_ops_importable
+from flashinfer.prefill_rocm import (
+    _aiter_native_page_sizes,
+    _aiter_native_paging_available,
+    _aiter_ops_importable,
+)
 import logging
 
 logger.setLevel(logging.ERROR)
@@ -810,6 +814,106 @@ def test_batch_prefill_aiter_flat_gather_bf16(page_size, causal, return_lse):
     # bf16 tolerance: AITER and FA2 accumulate in a different order, which shows up as
     # occasional 1-ULP (0.0078) differences at this magnitude.
     torch.testing.assert_close(o, o_ref, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.parametrize("page_size", [128, 256])
+def test_batch_prefill_aiter_falls_back_when_native_paging_missing(
+    page_size, monkeypatch
+):
+    """A native page size AITER cannot actually serve must degrade to flat-gather.
+
+    _aiter_native_page_sizes() only reflects the validated amd-aiter release;
+    serving stacks build AITER from source and such a build can reject a page size
+    the predicate calls native ("no matching kernel found"). Simulate that by making
+    the bootstrap raise, and require plan() to fall back rather than propagate.
+    """
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    if page_size not in _aiter_native_page_sizes():
+        pytest.skip(f"page_size={page_size} is not native on this amd-aiter build")
+
+    def _reject(*args, **kwargs):
+        raise RuntimeError(
+            f"invalid argument for batch_prefill: no matching kernel found. "
+            f"page_size={page_size}, num_pages=1, dtype=bf16"
+        )
+
+    # The probe is cached, so clear it to keep this test independent of ordering.
+    _aiter_native_paging_available.cache_clear()
+    monkeypatch.setattr(
+        flashinfer.prefill_rocm, "_aiter_bootstrap_batch_prefill", _reject
+    )
+
+    batch_size, qo_len, kv_len = 2, 16, 256
+    num_qo_heads, num_kv_heads, head_dim = 8, 8, 128
+    dtype = torch.bfloat16
+
+    q = torch.randn(
+        batch_size * qo_len, num_qo_heads, head_dim, device=device, dtype=dtype
+    )
+    num_pages = (kv_len + page_size - 1) // page_size
+    total_pages = num_pages * batch_size
+    kv_data = torch.randn(
+        total_pages, 2, page_size, num_kv_heads, head_dim, device=device, dtype=dtype
+    )
+    qo_indptr = (
+        torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * qo_len
+    )
+    kv_indptr = (
+        torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * num_pages
+    )
+    kv_indices = torch.arange(0, total_pages, dtype=torch.int32, device=device)
+    kv_last_page_len = torch.full(
+        (batch_size,), (kv_len - 1) % page_size + 1, dtype=torch.int32, device=device
+    )
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+
+    try:
+        wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+            workspace, "NHD", backend="aiter"
+        )
+        wrapper.plan(
+            qo_indptr,
+            kv_indptr,
+            kv_indices,
+            kv_last_page_len,
+            num_qo_heads,
+            num_kv_heads,
+            head_dim,
+            page_size,
+            causal=True,
+            q_data_type=dtype,
+            kv_data_type=dtype,
+        )
+
+        # Degraded to flat-gather instead of raising out of plan().
+        assert wrapper._aiter_flat_gather_idx is not None, (
+            "plan() kept the native paged path despite the kernel being unavailable"
+        )
+
+        o = wrapper.run(q, kv_data)
+    finally:
+        _aiter_native_paging_available.cache_clear()
+
+    wrapper_ref = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="fa2"
+    )
+    wrapper_ref.plan(
+        qo_indptr,
+        kv_indptr,
+        kv_indices,
+        kv_last_page_len,
+        num_qo_heads,
+        num_kv_heads,
+        head_dim,
+        page_size,
+        causal=True,
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+    # The fallback must be correct, not merely non-crashing.
+    torch.testing.assert_close(o, wrapper_ref.run(q, kv_data), rtol=2e-2, atol=2e-2)
 
 
 if __name__ == "__main__":
