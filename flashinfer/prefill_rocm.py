@@ -457,8 +457,11 @@ def _aiter_bootstrap_batch_ragged_prefill(
 
     Same .so family as single-prefill (varlen group-mode), but we parameterize causal
     and logits-cap so we can cover non-shipped combos for any (causal, logits) the
-    user requests. AITER ships non-causal and no-logits variants pre-built; logits+causal
-    is the combo that triggers a lazy build.
+    user requests. AITER pre-ships only a subset of the
+    (dtype, causal, has_lse, has_logits_cap) family — which subset is not contractual
+    and varies by amd-aiter build — so any combination may need a lazy build, including
+    no-logits ones. On amd-aiter 0.1.10, for example, bf16 ships only nmask_lse and
+    mask_nlse, so both remaining nlogits arms are built here on first use.
 
     Used by both batch-prefill wrappers that reach this .so family: the ragged wrapper,
     and the paged wrapper's flat-gather path (page sizes outside
