@@ -376,11 +376,24 @@ python3 setup.py develop
 
 ### Install AITER wheel package
 
-Wheel packages are available from AMD's PyPI index: [pypi.amd.com/simple](https://pypi.amd.com/simple/).
+Wheel packages are published per ROCm release on AMD's PyPI index. `amd-aiter`
+is **not** on the top-level `pypi.amd.com/simple` index — use the ROCm-versioned
+channel:
 
 ```bash
-pip install amd-aiter --index-url https://pypi.amd.com/simple/
+pip install amd-aiter==0.1.10 --extra-index-url https://pypi.amd.com/rocm-7.1.1/simple
 ```
+
+Use `--extra-index-url`, not `--index-url`, so that AITER's own dependencies
+still resolve from PyPI.
+
+Pin `0.1.10`: it is the version this repo is built and tested against, and
+currently the only one published on that channel. FlashInfer links AITER's C++
+symbols by mangled name (`flashinfer/csrc_rocm/aiter_loader.cc`) and vendors its
+argument structs (`include/flashinfer/attention/aiter/`), so a different AITER
+build can fail at `dlsym` — or, if a struct layout changed, misinterpret kernel
+arguments silently. Both the CI image (`docker/Dockerfile.rocm_ci`) and the
+devcontainer install this exact version.
 
 ### Known Limitations
 
