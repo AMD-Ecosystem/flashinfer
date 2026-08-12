@@ -31,6 +31,14 @@ class CompilationContext:
     """Manages ROCm compilation targets with comprehensive validation."""
 
     COMMON_HIPCC_FLAGS = [
+        # torch >= 2.11 puts the whole c10::hip hipify-v2 compatibility namespace
+        # behind #ifdef USE_ROCM (c10/hip/HIPStream.h, "hipify v2 backward compat in
+        # external projects"). Generated kernels call c10::hip::getCurrentHIPStream(),
+        # so without this every JIT build fails with "no member named
+        # 'getCurrentHIPStream' in namespace 'c10::hip'". Harmless on torch <= 2.10,
+        # where the namespace is unguarded — which is why CI on older torch cannot
+        # catch this. Only .cu TUs reference c10::hip, so the hipcc flags suffice.
+        "-DUSE_ROCM",
         "-DFLASHINFER_ENABLE_HIP",
         "-DFLASHINFER_ENABLE_FP8",
         "-DFLASHINFER_ENABLE_FP8_E4M3",

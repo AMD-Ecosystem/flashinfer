@@ -9,11 +9,16 @@
 
 ## Changed
 
+- **Breaking:** AITER prefill now refuses an `amd-aiter` newer than the last validated release (currently `0.1.10`) instead of running it. FlashInfer calls AITER's prefill kernels via dlsym'd mangled symbols and a vendored argument struct, so a drifted ABI still links and then misreads its arguments — on `amd-aiter 0.1.19` this returned max-abs 3.1 against an SDPA reference while AITER's own Python entry point returned 2.3e-2 on identical inputs. `backend="aiter"` now raises with an actionable message; `backend="auto"` falls back to `fa2`. Override with `FLASHINFER_AITER_ALLOW_UNVALIDATED=1` if you have validated a newer AITER yourself. @demandal25
+- **Breaking:** `BatchPrefillWithPagedKVCacheWrapper` now raises `ValueError` for an unrecognized `backend` instead of warning and silently substituting `fa2`. Matches `BatchPrefillWithRaggedKVCacheWrapper`, which already raised. @demandal25
+- **Breaking (earlier in this release):** `flashinfer.aiter_utils.HAS_AITER` was replaced by `is_aiter_supported(device)`. `HAS_AITER` was a module-level constant evaluated at import; the function takes the device to query. Callers of `0.5.3+amd.1` must update. @demandal25
 - FA2 prefill on HIP: improve occupancy and throughput on CDNA3 via LDS-aware `CTA_TILE_Q` selection and shared-memory budget capping (#209) @diptorupd
 - Add `k128B_16Row` swizzle mode for prefill shared memory to reduce LDS bank conflicts on CDNA3 (#207) @diptorupd
 
 ## Fixed
 
+- JIT builds against PyTorch >= 2.11: add `-DUSE_ROCM` to the HIP compile flags. torch 2.11 moved the entire `c10::hip` hipify-v2 compatibility namespace behind `#ifdef USE_ROCM`, so every generated kernel failed with `no member named 'getCurrentHIPStream' in namespace 'c10::hip'`. Invisible on torch <= 2.10, where the namespace is unguarded. @demandal25
+- AITER batch-prefill codegen on ROCm 7.2.3: `batch_prefill_aiter_customize_config.jinja` spelled `__hip_bfloat16` / `__half` without including `<hip/hip_bf16.h>` / `<hip/hip_fp16.h>`, and is included before `pytorch_extension_utils.h`. ROCm 7.2.3 stopped providing those types transitively via `hip_runtime.h`, so bf16 AITER prefill failed to compile with `unknown type name '__hip_bfloat16'`. @demandal25
 - HIP FA2 on CDNA3: correct bfloat16 row-sum MFMA intrinsic selection and MFMA C/D row indexing for custom masks with GQA (#214) @subhajitdchow
 - Editable installs: ensure JIT sees current headers under `include/` with scikit-build-core redirect mode (symlink at install + `get_include_paths` fix) (#208) @diptorupd
 

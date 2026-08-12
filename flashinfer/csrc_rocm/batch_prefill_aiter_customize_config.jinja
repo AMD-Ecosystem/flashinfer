@@ -1,5 +1,16 @@
 #pragma once
 
+// __half and __hip_bfloat16 are spelled below, so include what defines them
+// rather than relying on the including .cu to have done it first. Every .cu
+// that pulls this in includes it *before* pytorch_extension_utils.h (which also
+// provides these), and ROCm 7.2.3 stopped supplying them transitively via
+// hip_runtime.h — so on that toolchain the generated config failed with
+// "unknown type name '__hip_bfloat16'; did you mean 'hip_bfloat16'?".
+// The other *_customize_config.jinja templates already open with their own
+// includes; this one was the exception.
+#include <hip/hip_bf16.h>
+#include <hip/hip_fp16.h>
+
 using DTypeQ  = {{ dtype_q }};
 using DTypeKV = {{ dtype_kv }};
 using DTypeO  = {{ dtype_o }};

@@ -65,6 +65,58 @@ _AITER_LAST_VALIDATED = "0.1.10"
 
 
 @functools.cache
+def _aiter_abi_validated() -> bool:
+    """Whether the installed amd-aiter matches the C++ ABI this build assumes.
+
+    FlashInfer calls AITER's prefill kernels by dlsym'ing mangled C++ symbols
+    (``flashinfer/csrc_rocm/aiter_loader.cc``) and passing a struct it vendors by
+    value (``include/flashinfer/attention/aiter/mha_fwd_args.h``). Neither is a
+    stable interface. Name mangling encodes only the *type name* of the argument
+    struct, not its fields — so an AITER build whose struct layout changed still
+    links, then misreads the arguments.
+
+    That is not hypothetical: on amd-aiter 0.1.19 this path returns max-abs 3.13
+    against an SDPA reference while AITER's own Python ``mha_varlen_fwd`` returns
+    2.3e-2 on identical inputs. Silent wrong attention output is worse than no
+    AITER, so refuse versions whose ABI we have not verified.
+
+    Escape hatch for anyone validating a newer AITER themselves:
+    FLASHINFER_AITER_ALLOW_UNVALIDATED=1.
+    """
+    if os.environ.get("FLASHINFER_AITER_ALLOW_UNVALIDATED", "0") == "1":
+        return True
+    try:
+        from importlib.metadata import version
+        from packaging.version import Version
+
+        return Version(version("amd-aiter")) <= Version(_AITER_LAST_VALIDATED)
+    except (PackageNotFoundError, ValueError):
+        # Version undeterminable — assume incompatible rather than risk bad math.
+        return False
+
+
+def _aiter_abi_error(installed: str) -> str:
+    return (
+        f"amd-aiter {installed} has not been validated against this FlashInfer build "
+        f"(last validated: {_AITER_LAST_VALIDATED}). FlashInfer calls AITER's prefill "
+        f"kernels through dlsym'd mangled symbols and a vendored argument struct, so a "
+        f"different AITER build can silently produce wrong results rather than fail — "
+        f"observed on 0.1.19, which returns max-abs 3.1 against an SDPA reference. "
+        f"Install amd-aiter=={_AITER_LAST_VALIDATED}, use backend='fa2', or set "
+        f"FLASHINFER_AITER_ALLOW_UNVALIDATED=1 if you have validated this AITER yourself."
+    )
+
+
+def _aiter_installed_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("amd-aiter")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+@functools.cache
 def _aiter_native_page_sizes() -> frozenset:
     """Page sizes AITER is *expected* to serve without a flat-gather.
 
@@ -328,6 +380,9 @@ def _require_aiter_runtime(device: torch.device) -> None:
             "  git clone --recursive https://github.com/ROCm/aiter.git\n"
             "  cd aiter && python3 setup.py develop"
         )
+    if not _aiter_abi_validated():
+        # Fail loudly: the alternative is silently wrong attention output.
+        raise RuntimeError(_aiter_abi_error(_aiter_installed_version()))
 
 
 _aiter_auto_warned: set[tuple[torch.device, str]] = set()
@@ -353,7 +408,14 @@ def _auto_select_prefill_backend(
         return "fa2"
 
     reason: Optional[str] = None
-    if kv_layout != "NHD":
+    if not _aiter_abi_validated():
+        reason = (
+            f"amd-aiter {_aiter_installed_version()} is newer than the last validated "
+            f"version ({_AITER_LAST_VALIDATED}); its C++ ABI may differ from the "
+            f"vendored one and produce wrong results (see "
+            f"FLASHINFER_AITER_ALLOW_UNVALIDATED)"
+        )
+    elif kv_layout != "NHD":
         reason = f"kv_layout={kv_layout!r} (AITER requires NHD)"
     elif has_custom_mask:
         reason = "custom mask (not supported by AITER)"
@@ -1723,10 +1785,13 @@ class BatchPrefillWithPagedKVCacheWrapper:
 
         self._kv_layout = kv_layout
         if backend not in ("fa2", "aiter", "auto"):
-            logger.warning(
-                f"{backend} backend not supported on ROCm. Selecting FA2 as the backend."
+            # Raise rather than silently substituting fa2: quietly running a
+            # different kernel than the caller asked for hides real problems and
+            # makes misbehaviour far harder to attribute. Matches
+            # BatchPrefillWithRaggedKVCacheWrapper, which already raises here.
+            raise ValueError(
+                f"backend must be one of 'fa2', 'aiter', 'auto'; got {backend!r}"
             )
-            backend = "fa2"
         elif backend == "aiter":
             _require_aiter_runtime(float_workspace_buffer.device)
 

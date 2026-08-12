@@ -4,12 +4,14 @@
 
 import pytest
 import torch
+import torch.nn.functional as F
 from jit_utils import gen_prefill_attention_modules
 
 import flashinfer
 from flashinfer.jit.core import logger
 from flashinfer.aiter_utils import is_aiter_supported
 from flashinfer.prefill_rocm import (
+    _aiter_abi_validated,
     _aiter_native_page_sizes,
     _aiter_native_paging_available,
     _aiter_ops_importable,
@@ -966,6 +968,83 @@ def test_batch_prefill_aiter_strict_mode_raises(monkeypatch):
             )
     finally:
         _aiter_native_paging_available.cache_clear()
+
+
+def _sdpa_causal_reference(q, k, v, num_qo_heads, num_kv_heads):
+    """Independent reference: torch SDPA in fp32 with an explicit causal mask.
+
+    Deliberately not fa2 or aiter — comparing the two backends only against each
+    other cannot tell you which one is right, which is how a correctness bug moved
+    from fa2 to the AITER path between releases without any test failing.
+    """
+    s = q.shape[0]
+    rep = num_qo_heads // num_kv_heads
+    i = torch.arange(s, device=q.device)
+    out = F.scaled_dot_product_attention(
+        q.transpose(0, 1).unsqueeze(0).float(),
+        k.repeat_interleave(rep, 1).transpose(0, 1).unsqueeze(0).float(),
+        v.repeat_interleave(rep, 1).transpose(0, 1).unsqueeze(0).float(),
+        attn_mask=(i[None, :] <= i[:, None])[None, :, :],
+    )
+    return out.squeeze(0).transpose(0, 1)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("page_size", [1, 16])
+@pytest.mark.parametrize("backend", ["fa2", "aiter"])
+def test_batch_prefill_paged_matches_sdpa(dtype, page_size, backend):
+    """Both prefill backends must match an SDPA reference, not merely each other.
+
+    Guards the regression reported against 0.5.3+amd.2: fa2 paged prefill returned
+    max-abs ~3.5 vs SDPA on +amd.1, and the AITER path returned ~3.1 on an
+    unvalidated amd-aiter. Either failure is invisible to a backend-vs-backend
+    comparison if both routes are wrong, or if only the healthy one is exercised.
+    """
+    device = torch.device("cuda:0")
+    if backend == "aiter":
+        if not is_aiter_supported(device) or not _aiter_ops_importable():
+            pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+        if not _aiter_abi_validated():
+            pytest.skip("installed amd-aiter is not ABI-validated for this build")
+
+    num_qo_heads, num_kv_heads, head_dim, seq_len = 32, 8, 128, 128
+    torch.manual_seed(0)
+    q = torch.randn(seq_len, num_qo_heads, head_dim, dtype=dtype, device=device)
+    k = torch.randn(seq_len, num_kv_heads, head_dim, dtype=dtype, device=device)
+    v = torch.randn(seq_len, num_kv_heads, head_dim, dtype=dtype, device=device)
+    ref = _sdpa_causal_reference(q, k, v, num_qo_heads, num_kv_heads).to(dtype)
+
+    num_pages = seq_len // page_size
+    kv_data = torch.zeros(
+        num_pages, 2, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
+    )
+    for t in range(seq_len):
+        kv_data[t // page_size, 0, t % page_size] = k[t]
+        kv_data[t // page_size, 1, t % page_size] = v[t]
+
+    t32 = lambda x: torch.tensor(x, dtype=torch.int32, device=device)  # noqa: E731
+    workspace = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=device)
+    wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend=backend
+    )
+    wrapper.plan(
+        t32([0, seq_len]),
+        t32([0, num_pages]),
+        t32(list(range(num_pages))),
+        t32([page_size]),
+        num_qo_heads,
+        num_kv_heads,
+        head_dim,
+        page_size,
+        causal=True,
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+    o = wrapper.run(q, kv_data)
+
+    # Generous vs SDPA-in-fp32: this catches "wrong kernel / wrong args" (error ~1e0),
+    # not last-ulp accumulation differences.
+    torch.testing.assert_close(o.float(), ref.float(), rtol=5e-2, atol=5e-2)
 
 
 if __name__ == "__main__":
