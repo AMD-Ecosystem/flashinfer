@@ -724,7 +724,8 @@ def test_batch_prefill_auto_selects_aiter(page_size, causal, return_lse):
 def test_batch_prefill_aiter_flat_gather_bf16(page_size, causal, return_lse):
     """Non-native page sizes take AITER's flat-gather route, which must bootstrap its .so.
 
-    The mha_varlen_fwd_*.so variant is keyed on (dtype, causal, has_lse, logits_cap) and
+    The mha_varlen_fwd_*.so variant is keyed on (dtype, causal, has_lse, has_logits_cap)
+    — whether a logits soft cap is enabled, not its value — and
     AITER pre-ships only a subset, so an un-bootstrapped combo fails at run() with
     "AITER .so not found". bf16 is covered here because it is SGLang's serving dtype and
     is a distinct .so family from the fp16 cases above.
