@@ -57,7 +57,7 @@ kernel for non-attention ops). **AITER** = ROCm AITER backend.
 | **Single decode attention** | ✅ `fa2` | — | HIP | MHA / GQA / MQA |
 | **Batch decode attention (paged)** | ✅ `fa2` | ✅ | **AITER** when `fp16/bf16` + `NHD` + `pos_encoding_mode="NONE"` + no CUDA-graph + `use_tensor_cores=False`; else **HIP** | MHA / GQA / MQA; **fp8 KV-cache (E4M3FNUZ)** on the HIP path; sliding-window on the AITER path; CUDA-graph capture on the AITER path is **opt-in via `backend="aiter"`** (grid + `.so` fixed at capture-time shapes — capture at max seq len); `backend="auto"` uses HIP `fa2` under capture |
 | **Single prefill attention** | ✅ `fa2` | ✅ | **AITER** when `fp16/bf16` + `NHD` + no custom mask + equal Q/KV dtypes & head dims + `pos_encoding_mode="NONE"`; else **HIP** | MHA / GQA / MQA; fp8 WIP |
-| **Batch prefill attention (paged + ragged)** | ✅ `fa2` | ✅ | Same auto criteria as single prefill | MHA / GQA / MQA; fp8 WIP. AITER native page sizes: `{16, 1024}` (`{128, 256, 1024}` on `amd-aiter==0.1.10`); other sizes go through a gather on the AITER path |
+| **Batch prefill attention (paged + ragged)** | ✅ `fa2` | ✅ | Same auto criteria as single prefill | MHA / GQA / MQA; fp8 WIP. AITER native page sizes: `{16, 1024}` (`{128, 256, 1024}` on `amd-aiter >= 0.1.10`); other sizes — and any "native" size the installed AITER turns out not to serve — go through a gather on the AITER path |
 | **Cascade attention** | ✅ | — | HIP | Two-level shared-prefix attention; a fused single-kernel HIP variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1` |
 | **MLA (Multi-Latent Attention)** | — | ✅ | **AITER** (no HIP fallback) | DeepSeek-style 192/128 head-dim split; bf16 + `page_size=1`; `backend="auto"` (default) resolves to `"aiter"` |
 | **POD attention** | ✅ `fa2` | — | HIP | MHA / GQA / MQA; single + batch variants (`PODWithPagedKVCacheWrapper`, `BatchPODWithPagedKVCacheWrapper`); JIT-only (excluded from AOT, same as upstream CUDA) |
@@ -422,9 +422,14 @@ wrong results):
 **Other notes:**
 
 * Batch prefill: AITER's CK FMHA kernels natively support page sizes
-  `{16, 1024}` (or `{128, 256, 1024}` on `amd-aiter==0.1.10`). Other page
+  `{16, 1024}` (or `{128, 256, 1024}` on `amd-aiter >= 0.1.10`). Other page
   sizes still work but go through an extra GPU gather to flatten paged KV
-  before the AITER call.
+  before the AITER call. That list is a starting point, not a guarantee —
+  `plan()` confirms it by building the kernel, and a page size the installed
+  AITER cannot actually serve also falls back to the gather, with a warning
+  naming the reason. Builds installed from an AITER source commit (as SGLang
+  and vLLM do) are the usual case where a "native" page size is rejected. Set
+  `FLASHINFER_AITER_STRICT=1` to raise instead of falling back.
 * Ragged (non-paged) batch prefill via AITER is supported through
   `BatchPrefillWithRaggedKVCacheWrapper`. The wrapper auto-routes to
   AITER under `backend="auto"` when the standard AITER compatibility
@@ -443,6 +448,7 @@ documented in [CLAUDE.md](CLAUDE.md).
 | :--- | :--- | :--- |
 | `FLASHINFER_USE_TORCH_CUSTOM_OPS` | `0` | Set to `1` **before** importing `flashinfer` to wrap kernels in `torch.library.custom_op` so `torch.compile` / Dynamo can trace them. Requires PyTorch ≥ 2.4. Adds a small per-call dispatch overhead. |
 | `FLASHINFER_HIP_FUSED_CASCADE` | `0` | Set to `1` to use a fused single-kernel HIP cascade attention path instead of the default two-level merge-based path. Experimental on ROCm. |
+| `FLASHINFER_AITER_STRICT` | `0` | Set to `1` to raise instead of degrading when AITER cannot serve a page size natively. By default batch prefill falls back to the slower flat-gather path (with a warning); set this in CI to catch AITER kernel-coverage regressions rather than absorb them as a slowdown. |
 | `FLASHINFER_LOGGING_LEVEL` | `INFO` | Logger verbosity (e.g. `DEBUG`, `INFO`, `WARNING`). Affects AITER auto-fallback warnings and JIT build messages. |
 | `FLASHINFER_DISABLE_JIT` | unset | Set to any non-empty value to skip JIT compilation. Useful when running an AOT-built wheel and you want to fail loudly on missing kernels rather than trigger a build. |
 | `ROCM_PATH` / `ROCM_HOME` | `/opt/rocm` | Used by `flashinfer.hip_utils` to locate the ROCm install. Override only for non-standard ROCm layouts. |

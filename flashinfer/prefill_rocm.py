@@ -56,11 +56,11 @@ from .utils import (
 )
 
 
-# Newest amd-aiter release whose native paged-prefill coverage we have validated.
-# This is a *hint*, not a guarantee: serving stacks (SGLang, vLLM) install AITER
-# from a source commit rather than the released wheel, and those builds dispatch
-# differently. Anything above this version is treated as unverified and is
-# confirmed at plan() time by _aiter_native_paging_available().
+# Two independent versions — do not merge them. The first is the release that
+# widened native paged-prefill to {128, 256, 1024}; changing it changes which page
+# sizes we try. The second is the newest release we have actually validated against;
+# bumping it must not silently move the support boundary.
+_AITER_NATIVE_PAGING_SINCE = "0.1.10"
 _AITER_LAST_VALIDATED = "0.1.10"
 
 
@@ -77,14 +77,16 @@ def _aiter_native_page_sizes() -> frozenset:
 
         installed = Version(version("amd-aiter"))
         if installed > Version(_AITER_LAST_VALIDATED):
-            logger.warning(
-                "amd-aiter %s is newer than the last version validated with this "
-                "FlashInfer build (%s); native paged-prefill support will be probed "
-                "at plan() time and may fall back to the slower flat-gather path.",
+            # Debug, not a warning: this fires for every build newer than the pin,
+            # which is the common case going forward, and it is speculative — the
+            # probe warns with the real error if support is actually missing.
+            logger.debug(
+                "amd-aiter %s is newer than the last validated version (%s); "
+                "native paged-prefill support will be probed at plan() time.",
                 installed,
                 _AITER_LAST_VALIDATED,
             )
-        if installed >= Version(_AITER_LAST_VALIDATED):
+        if installed >= Version(_AITER_NATIVE_PAGING_SINCE):
             return frozenset({128, 256, 1024})
         return frozenset({16, 1024})
     except (PackageNotFoundError, ValueError):
@@ -576,18 +578,36 @@ def _aiter_native_paging_available(
     than trust the predicate, run the bootstrap — which launches the real kernel —
     and treat a failure as "not available".
 
+    The bootstrap is more than a proxy for what run() does: it is what *produces*
+    the mha_batch_prefill_*.so that the C++ path later dlopens. If it cannot build,
+    the native path definitionally cannot work — forcing it anyway just trades this
+    error for ``AITER .so not found`` inside run().
+
     Falling back is always correct: the flat-gather path serves every page size.
     It is not free, though — it materializes a contiguous copy of K and V on each
     run() — so the fallback is warned about rather than taken silently. Set
     FLASHINFER_AITER_STRICT=1 to re-raise instead of degrading.
 
     Bootstraps both has_lse variants, since plan() cannot know which run() needs.
+    This is a separate cached function rather than a try/except inlined into plan()
+    because functools.lru_cache does not memoize exceptions: inlining would re-launch
+    a known-failing kernel, and re-warn, on every plan() call.
     """
+    # Drain any pending async error from earlier work *outside* the try, so it is
+    # not mistaken for an AITER capability failure and cached as "unsupported".
+    torch.cuda.synchronize(device_idx)
     try:
         for has_lse in (True, False):
             _aiter_bootstrap_batch_prefill(
                 dtype, has_logits_cap, causal, has_lse, page_size, head_dim, device_idx
             )
+        # HIP launches are async, so a device-side failure would otherwise land
+        # somewhere unrelated and leave us wrongly committed to the native path.
+        torch.cuda.synchronize(device_idx)
+    except torch.cuda.OutOfMemoryError:
+        # Transient and unrelated to kernel availability — never cache it as
+        # "unsupported", or one OOM would downgrade this config for the process.
+        raise
     except Exception as e:
         if os.environ.get("FLASHINFER_AITER_STRICT", "0") == "1":
             raise

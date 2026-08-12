@@ -916,6 +916,58 @@ def test_batch_prefill_aiter_falls_back_when_native_paging_missing(
     torch.testing.assert_close(o, wrapper_ref.run(q, kv_data), rtol=2e-2, atol=2e-2)
 
 
+def test_batch_prefill_aiter_strict_mode_raises(monkeypatch):
+    """FLASHINFER_AITER_STRICT=1 must surface the AITER failure instead of degrading."""
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    page_size = 128
+    if page_size not in _aiter_native_page_sizes():
+        pytest.skip(f"page_size={page_size} is not native on this amd-aiter build")
+
+    def _reject(*args, **kwargs):
+        raise RuntimeError("no matching kernel found. page_size=128")
+
+    _aiter_native_paging_available.cache_clear()
+    monkeypatch.setattr(
+        flashinfer.prefill_rocm, "_aiter_bootstrap_batch_prefill", _reject
+    )
+    monkeypatch.setenv("FLASHINFER_AITER_STRICT", "1")
+
+    batch_size, qo_len, kv_len = 1, 16, 128
+    num_qo_heads, num_kv_heads, head_dim = 8, 8, 128
+    qo_indptr = (
+        torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * qo_len
+    )
+    kv_indptr = torch.arange(0, batch_size + 1, dtype=torch.int32, device=device)
+    kv_indices = torch.arange(0, batch_size, dtype=torch.int32, device=device)
+    kv_last_page_len = torch.full(
+        (batch_size,), (kv_len - 1) % page_size + 1, dtype=torch.int32, device=device
+    )
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.int8, device=device)
+
+    wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="aiter"
+    )
+    try:
+        with pytest.raises(RuntimeError, match="no matching kernel found"):
+            wrapper.plan(
+                qo_indptr,
+                kv_indptr,
+                kv_indices,
+                kv_last_page_len,
+                num_qo_heads,
+                num_kv_heads,
+                head_dim,
+                page_size,
+                causal=True,
+                q_data_type=torch.bfloat16,
+                kv_data_type=torch.bfloat16,
+            )
+    finally:
+        _aiter_native_paging_available.cache_clear()
+
+
 if __name__ == "__main__":
     test_batch_prefill_with_paged_kv_cache(
         12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", True, 0.0, False, True, "fa2"
