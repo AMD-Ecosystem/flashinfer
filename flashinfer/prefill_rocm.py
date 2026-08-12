@@ -453,12 +453,20 @@ def _aiter_bootstrap_batch_ragged_prefill(
     head_dim: int,
     device_idx: int,
 ) -> None:
-    """Trigger AITER's lazy JIT for mha_varlen_fwd_*.so variants used by ragged prefill.
+    """Trigger AITER's lazy JIT for mha_varlen_fwd_*.so variants used by batch prefill.
 
     Same .so family as single-prefill (varlen group-mode), but we parameterize causal
     and logits-cap so we can cover non-shipped combos for any (causal, logits) the
-    user requests. AITER ships non-causal and no-logits variants pre-built; logits+causal
-    is the combo that triggers a lazy build.
+    user requests. AITER pre-ships only a subset of the
+    (dtype, causal, has_lse, has_logits_cap) family — which subset is not contractual
+    and varies by amd-aiter build — so any combination may need a lazy build, including
+    no-logits ones. On amd-aiter 0.1.10, for example, bf16 ships only nmask_lse and
+    mask_nlse, so both remaining nlogits arms are built here on first use.
+
+    Used by both batch-prefill wrappers that reach this .so family: the ragged wrapper,
+    and the paged wrapper's flat-gather path (page sizes outside
+    ``_aiter_native_page_sizes()``). Both loop over return_lse here because the .so is
+    also split on lse, and plan() cannot know which run() will request.
     """
     device = torch.device("cuda", device_idx)
     q = torch.zeros(2, 2, head_dim, dtype=dtype, device=device)
@@ -2084,7 +2092,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._seq_lens_q = seq_lens_q if seq_lens_q is not None else seq_lens
 
         # Bootstrap AITER's lazy JIT for native-paged variants so the C++ dlopen
-        # can find the compiled .so.  Flat-gather path uses pre-built mha_varlen_fwd_*.so.
+        # can find the compiled .so.  The flat-gather path is bootstrapped below.
         if self._backend == "aiter" and page_size in _aiter_native_page_sizes():
             dev_idx = self.device.index if self.device.index is not None else 0
             has_logits = logits_soft_cap > 0
@@ -2108,6 +2116,22 @@ class BatchPrefillWithPagedKVCacheWrapper:
         # tensors so that the ``run()`` path (which may be inside a CUDA graph
         # capture) can use them without any host-side operations.
         if self._backend == "aiter" and page_size not in _aiter_native_page_sizes():
+            # The flat-gather route dispatches through get_aiter_mha_varlen_fwd_handle,
+            # whose .so variant is keyed on (dtype, causal, has_lse, has_logits_cap).
+            # AITER pre-ships only a subset of that family, so bootstrap the rest here
+            # rather than let the C++ dlopen fail inside run().  The helper compiles
+            # both has_lse variants because plan() can't know which one run() will
+            # request; causal is fixed per plan() call.
+            dev_idx = self.device.index if self.device.index is not None else 0
+            with _aiter_bootstrap_lock:
+                _aiter_bootstrap_batch_ragged_prefill(
+                    q_data_type,
+                    logits_soft_cap > 0,
+                    causal,
+                    head_dim_qk,
+                    dev_idx,
+                )
+
             kv_indptr_h = paged_kv_indptr.cpu()
             kv_indices_h = paged_kv_indices.cpu()
             kv_lpl_h = paged_kv_last_page_len.cpu()

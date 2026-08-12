@@ -718,6 +718,100 @@ def test_batch_prefill_auto_selects_aiter(page_size, causal, return_lse):
     torch.testing.assert_close(o_auto, o_ref, rtol=1e-3, atol=1e-3)
 
 
+@pytest.mark.parametrize("page_size", [1, 5])
+@pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.parametrize("return_lse", [False, True])
+def test_batch_prefill_aiter_flat_gather_bf16(page_size, causal, return_lse):
+    """Non-native page sizes take AITER's flat-gather route, which must bootstrap its .so.
+
+    The mha_varlen_fwd_*.so variant is keyed on (dtype, causal, has_lse, has_logits_cap)
+    — whether a logits soft cap is enabled, not its value — and
+    AITER pre-ships only a subset, so an un-bootstrapped combo fails at run() with
+    "AITER .so not found". bf16 is covered here because it is SGLang's serving dtype and
+    is a distinct .so family from the fp16 cases above.
+    """
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+
+    batch_size, qo_len, kv_len = 4, 16, 128
+    num_qo_heads, num_kv_heads, head_dim = 8, 8, 128
+    dtype = torch.bfloat16
+
+    q = torch.randn(
+        batch_size * qo_len, num_qo_heads, head_dim, device=device, dtype=dtype
+    )
+    num_pages = (kv_len + page_size - 1) // page_size
+    total_pages = num_pages * batch_size
+    kv_data = torch.randn(
+        total_pages, 2, page_size, num_kv_heads, head_dim, device=device, dtype=dtype
+    )
+
+    qo_indptr = (
+        torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * qo_len
+    )
+    kv_indptr = (
+        torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * num_pages
+    )
+    kv_indices = torch.arange(0, total_pages, dtype=torch.int32, device=device)
+    kv_last_page_len = torch.full(
+        (batch_size,), (kv_len - 1) % page_size + 1, dtype=torch.int32, device=device
+    )
+
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+
+    wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="aiter"
+    )
+    wrapper.plan(
+        qo_indptr,
+        kv_indptr,
+        kv_indices,
+        kv_last_page_len,
+        num_qo_heads,
+        num_kv_heads,
+        head_dim,
+        page_size,
+        causal=causal,
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+
+    # Guard the branch under test: a native page size would take the paged kernel instead.
+    assert wrapper._aiter_flat_gather_idx is not None, (
+        f"page_size={page_size} did not take the AITER flat-gather path"
+    )
+
+    wrapper_ref = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="fa2"
+    )
+    wrapper_ref.plan(
+        qo_indptr,
+        kv_indptr,
+        kv_indices,
+        kv_last_page_len,
+        num_qo_heads,
+        num_kv_heads,
+        head_dim,
+        page_size,
+        causal=causal,
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+
+    if return_lse:
+        o, lse = wrapper.run(q, kv_data, return_lse=True)
+        o_ref, lse_ref = wrapper_ref.run(q, kv_data, return_lse=True)
+        torch.testing.assert_close(lse, lse_ref, rtol=1e-2, atol=1e-2)
+    else:
+        o = wrapper.run(q, kv_data)
+        o_ref = wrapper_ref.run(q, kv_data)
+
+    # bf16 tolerance: AITER and FA2 accumulate in a different order, which shows up as
+    # occasional 1-ULP (0.0078) differences at this magnitude.
+    torch.testing.assert_close(o, o_ref, rtol=2e-2, atol=2e-2)
+
+
 if __name__ == "__main__":
     test_batch_prefill_with_paged_kv_cache(
         12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", True, 0.0, False, True, "fa2"
