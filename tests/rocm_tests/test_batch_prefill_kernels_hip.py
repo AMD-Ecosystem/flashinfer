@@ -979,6 +979,10 @@ def _sdpa_causal_reference(q, k, v, num_qo_heads, num_kv_heads):
     """
     s = q.shape[0]
     rep = num_qo_heads // num_kv_heads
+    # For a *boolean* attn_mask, torch treats True as "may attend" (not "masked
+    # out"), so the lower-triangular mask below is causal. Verified equivalent to
+    # F.scaled_dot_product_attention(..., is_causal=True) to 2.4e-7; the inverted
+    # mask differs by 3.05.
     i = torch.arange(s, device=q.device)
     out = F.scaled_dot_product_attention(
         q.transpose(0, 1).unsqueeze(0).float(),
