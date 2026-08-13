@@ -75,7 +75,7 @@ def _aiter_abi_validated() -> bool:
     struct, not its fields — so an AITER build whose struct layout changed still
     links, then misreads the arguments.
 
-    That is not hypothetical: on amd-aiter 0.1.19 this path returns max-abs 3.13
+    That is not hypothetical: on amd-aiter 0.1.19 this path returns max-abs ~3.1
     against an SDPA reference while AITER's own Python ``mha_varlen_fwd`` returns
     2.3e-2 on identical inputs. Silent wrong attention output is worse than no
     AITER, so refuse versions whose ABI we have not verified.
@@ -101,7 +101,7 @@ def _aiter_abi_error(installed: str) -> str:
         f"(last validated: {_AITER_LAST_VALIDATED}). FlashInfer calls AITER's prefill "
         f"kernels through dlsym'd mangled symbols and a vendored argument struct, so a "
         f"different AITER build can silently produce wrong results rather than fail — "
-        f"observed on 0.1.19, which returns max-abs 3.1 against an SDPA reference. "
+        f"observed on 0.1.19, which returns max-abs ~3.1 against an SDPA reference. "
         f"Install amd-aiter=={_AITER_LAST_VALIDATED}, use backend='fa2', or set "
         f"FLASHINFER_AITER_ALLOW_UNVALIDATED=1 if you have validated this AITER yourself."
     )
@@ -114,6 +114,28 @@ def _aiter_installed_version() -> str:
         return version("amd-aiter")
     except PackageNotFoundError:
         return "unknown"
+
+
+def _aiter_abi_reason() -> str:
+    """Why the installed AITER's ABI is not trusted, phrased for the actual case.
+
+    A source install (``python3 setup.py develop``, as the README describes) can
+    leave AITER importable with no distribution metadata, so the version reads
+    "unknown". Saying that is "newer than the last validated version" would be
+    misleading — it is unverifiable, which is a different thing.
+    """
+    installed = _aiter_installed_version()
+    if installed == "unknown":
+        return (
+            "the installed amd-aiter version could not be determined (no distribution "
+            "metadata), so its C++ ABI cannot be checked against the vendored one and "
+            "may produce wrong results (see FLASHINFER_AITER_ALLOW_UNVALIDATED)"
+        )
+    return (
+        f"amd-aiter {installed} is newer than the last validated version "
+        f"({_AITER_LAST_VALIDATED}); its C++ ABI may differ from the vendored one "
+        f"and produce wrong results (see FLASHINFER_AITER_ALLOW_UNVALIDATED)"
+    )
 
 
 @functools.cache
@@ -413,12 +435,7 @@ def _auto_select_prefill_backend(
     # version" would be actively misleading. The not-installed case is handled by
     # the _aiter_ops_importable() check below, which has its own message.
     if _aiter_ops_importable() and not _aiter_abi_validated():
-        reason = (
-            f"amd-aiter {_aiter_installed_version()} is newer than the last validated "
-            f"version ({_AITER_LAST_VALIDATED}); its C++ ABI may differ from the "
-            f"vendored one and produce wrong results (see "
-            f"FLASHINFER_AITER_ALLOW_UNVALIDATED)"
-        )
+        reason = _aiter_abi_reason()
     elif kv_layout != "NHD":
         reason = f"kv_layout={kv_layout!r} (AITER requires NHD)"
     elif has_custom_mask:
