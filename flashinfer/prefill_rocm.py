@@ -408,7 +408,11 @@ def _auto_select_prefill_backend(
         return "fa2"
 
     reason: Optional[str] = None
-    if not _aiter_abi_validated():
+    # Gate on importability first: with no amd-aiter installed the version lookup
+    # yields "unknown", and reporting that as "newer than the last validated
+    # version" would be actively misleading. The not-installed case is handled by
+    # the _aiter_ops_importable() check below, which has its own message.
+    if _aiter_ops_importable() and not _aiter_abi_validated():
         reason = (
             f"amd-aiter {_aiter_installed_version()} is newer than the last validated "
             f"version ({_AITER_LAST_VALIDATED}); its C++ ABI may differ from the "
