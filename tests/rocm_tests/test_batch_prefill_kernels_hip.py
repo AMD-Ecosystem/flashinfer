@@ -970,6 +970,42 @@ def test_batch_prefill_aiter_strict_mode_raises(monkeypatch):
         _aiter_native_paging_available.cache_clear()
 
 
+def test_batch_prefill_aiter_unvalidated_abi_is_refused(monkeypatch):
+    """An AITER whose ABI we have not validated must be refused, not run.
+
+    FlashInfer calls AITER's prefill kernels via dlsym'd mangled symbols and a
+    vendored argument struct, so a drifted build still links and then silently
+    returns wrong results (observed on amd-aiter 0.1.19). CI runs a validated
+    AITER, so this failure mode is only reachable under monkeypatch.
+    """
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+
+    monkeypatch.setattr(flashinfer.prefill_rocm, "_aiter_abi_validated", lambda: False)
+    workspace = torch.empty(64 * 1024 * 1024, dtype=torch.uint8, device=device)
+
+    # Explicit backend="aiter" must raise, and say why.
+    with pytest.raises(RuntimeError, match="has not been validated"):
+        flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+            workspace, "NHD", backend="aiter"
+        )
+
+    # auto must degrade to fa2 rather than raise.
+    assert (
+        flashinfer.prefill_rocm._auto_select_prefill_backend(
+            device,
+            dtype_q=torch.bfloat16,
+            dtype_kv=torch.bfloat16,
+            kv_layout="NHD",
+            has_custom_mask=False,
+            head_dim_qk=128,
+            head_dim_vo=128,
+        )
+        == "fa2"
+    )
+
+
 def _sdpa_causal_reference(q, k, v, num_qo_heads, num_kv_heads):
     """Independent reference: torch SDPA in fp32 with an explicit causal mask.
 
