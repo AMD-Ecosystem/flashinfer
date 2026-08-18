@@ -130,9 +130,16 @@ Two gitignored, generated files must be recreated or the JIT will not build:
 
 ```bash
 cd tmp/worktrees/<branch-name>
-ln -sfn ../include flashinfer/include        # MUST be relative
+rm -rf flashinfer/include                    # -f alone will not clear a real dir
+ln -s ../include flashinfer/include          # MUST be relative
 cp <main-checkout>/flashinfer/_version.py flashinfer/_version.py
 ```
+
+Clear the path first. `-f` replaces a dangling or stale *symlink*, but against
+a real directory `ln` silently creates `flashinfer/include/include` **inside**
+it and exits 0 — leaving a broken tree with no error to go on. Deleting
+`flashinfer/include` is safe: it is gitignored and generated, and the real
+headers live in `include/` at the repo root.
 
 - `flashinfer/include` — `get_include_paths.get_include()` returns
   `<pkg>/include`, and the JIT passes that through `.resolve()` into
@@ -145,8 +152,8 @@ cp <main-checkout>/flashinfer/_version.py flashinfer/_version.py
     (e.g. `-> /fi/include`) → `.resolve()` follows it to `-isystem /fi/include`,
     which does not exist on the host or under a different mount.
 
-  Create it **relative** (`ln -sfn ../include flashinfer/include`) so it
-  resolves to `<worktree>/include` wherever the tree is mounted.
+  Create it **relative** so it resolves to `<worktree>/include` wherever the
+  tree is mounted.
 - `flashinfer/_version.py` — setuptools-scm generated. Without it,
   `import flashinfer` fails with `ModuleNotFoundError: No module named
   'flashinfer._version'`.

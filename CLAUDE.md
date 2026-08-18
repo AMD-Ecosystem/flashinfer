@@ -35,9 +35,11 @@ stale-binary failures.
 git worktree add -b <branch-name> tmp/worktrees/<branch-name> origin/amd-integration
 ```
 
-A fresh worktree is source-only: recreate `flashinfer/include` (as a **relative**
-symlink, `ln -sfn ../include flashinfer/include`) and copy `flashinfer/_version.py`
-from the main checkout, or the JIT will not build. Details: `pr-workflow` skill.
+A fresh worktree is source-only: recreate `flashinfer/include` as a **relative**
+symlink (`rm -rf flashinfer/include && ln -s ../include flashinfer/include` — the
+`rm` matters, since `ln -f` will not clear a real directory) and copy
+`flashinfer/_version.py` from the main checkout, or the JIT will not build.
+Details: `pr-workflow` skill.
 
 ## Essential Commands
 
