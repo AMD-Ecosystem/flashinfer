@@ -116,7 +116,8 @@ it never appears as a diff against upstream. One run covers the whole clone,
 worktrees included:
 
 ```bash
-printf '/tmp/\n' >> "$(git rev-parse --git-common-dir)/info/exclude"
+ex="$(git rev-parse --git-common-dir)/info/exclude"
+grep -qxF '/tmp/' "$ex" || printf '/tmp/\n' >> "$ex"
 ```
 
 Use `--git-common-dir`, not a literal `.git/info/exclude`: inside a linked
@@ -134,11 +135,18 @@ cp <main-checkout>/flashinfer/_version.py flashinfer/_version.py
 ```
 
 - `flashinfer/include` — `get_include_paths.get_include()` returns
-  `<pkg>/include`. Without the symlink the JIT emits `-isystem /include` and
-  every compile fails with `'flashinfer/attention/aiter/batch_prefill.cuh' file
-  not found`. Create it **relative**: the main checkout's copy may be an
-  absolute symlink into a container mount point (e.g. `-> /fi/include`), which
-  does not resolve on the host or under a different mount.
+  `<pkg>/include`, and the JIT passes that through `.resolve()` into
+  `-isystem`. Both failure modes emit a well-formed flag pointing at a
+  directory that isn't there, so the compile fails with
+  `'flashinfer/attention/aiter/batch_prefill.cuh' file not found` rather than
+  anything naming the include path:
+  - missing entirely → `-isystem <pkg>/include`, a path that does not exist.
+  - copied as an **absolute** symlink into a container mount point
+    (e.g. `-> /fi/include`) → `.resolve()` follows it to `-isystem /fi/include`,
+    which does not exist on the host or under a different mount.
+
+  Create it **relative** (`ln -sfn ../include flashinfer/include`) so it
+  resolves to `<worktree>/include` wherever the tree is mounted.
 - `flashinfer/_version.py` — setuptools-scm generated. Without it,
   `import flashinfer` fails with `ModuleNotFoundError: No module named
   'flashinfer._version'`.
