@@ -259,6 +259,32 @@ always run this loop before considering the PR done:
      resolve the thread.
    Either way the thread ends resolved with a written rationale.
 
+**Keep replies short** — a verdict, a one-line reason, and the SHA. Reserve a
+code block for comments you are *declining*, where the evidence is the argument.
+
+### Suppressed comments have no thread
+
+Copilot folds some findings into a collapsed **"Suppressed comments (N)"**
+section of the review body. These are not review threads: there is no replies
+endpoint and nothing to resolve, so the loop above cannot close them and they
+are easy to miss entirely.
+
+They are also **not cumulative** — each review body lists only its own. Sweep
+every review, not just the latest:
+
+```bash
+gh api repos/AMD-Ecosystem/flashinfer/pulls/<PR>/reviews --paginate \
+  --jq '.[] | select(.user.login=="copilot-pull-request-reviewer[bot]")
+        | "\(.id) \(.submitted_at) \(.body)"'
+```
+
+Handle them like any other comment, then record the disposition in **one**
+top-level comment per review — `gh api repos/AMD-Ecosystem/flashinfer/issues/<PR>/comments`.
+Without it the fixes land silently and a reviewer cannot tell they were read.
+
+Each push triggers a fresh review, so repeat until a review comes back with no
+new comments *and* no suppressed block.
+
 List threads with their resolved status, and resolve them, via GraphQL. GraphQL
 is required because thread resolution and the thread-level `isResolved` flag are
 not exposed via REST (replying to a comment is available over REST — see below):
