@@ -25,6 +25,8 @@ import shutil
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
+from filelock import FileLock
+
 from ..arch_caps import normalize_arch
 from . import env as jit_env
 from .core import logger
@@ -199,13 +201,26 @@ def refresh_aiter_jitspec(spec):
     nothing changed and rewrites exactly when the link line moves; ninja then
     relinks on its own.
 
+    Only the JIT path is touched. An AOT-prebuilt module is loaded straight from
+    ``aot_path`` and a ``FLASHINFER_DISABLE_JIT`` run raises before ninja is
+    consulted, so in both cases the manifest has no reader and rewriting it would
+    be pure filesystem noise.
+
+    The write takes ``spec.lock_path`` -- the same lock ``JitSpec.build()`` holds
+    while ninja runs -- because ``write_if_different`` truncates in place. Without
+    it a concurrent builder (``pytest -n auto`` shares one JIT cache across
+    processes) could have the manifest emptied under it mid-read.
+
     Args:
         spec: The freshly created :class:`~flashinfer.jit.core.JitSpec`.
 
     Returns:
         The same spec, for use as ``return refresh_aiter_jitspec(gen_jit_spec(...))``.
     """
-    spec.write_ninja()
+    if spec.is_aot or os.environ.get("FLASHINFER_DISABLE_JIT"):
+        return spec
+    with FileLock(spec.lock_path, thread_local=False):
+        spec.write_ninja()
     return spec
 
 
