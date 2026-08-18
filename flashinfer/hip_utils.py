@@ -390,21 +390,25 @@ def get_available_gpu_count() -> int:
     return torch.cuda.device_count()
 
 
-@functools.cache
-def get_supported_device_indices() -> tuple:
+def rocminfo_gpu_agents() -> tuple:
     """
-    Return the indices of AMD GPUs whose architecture is supported by FlashInfer.
+    Return ``(arch, marketing_name)`` for each GPU agent rocminfo reports.
 
-    Uses rocminfo (subprocess) rather than torch.cuda so this function is safe
-    to call before the HIP runtime is initialized (e.g. before HIP_VISIBLE_DEVICES
-    is set in xdist workers).  rocminfo enumerates GPU agents in the same order as
-    the HIP runtime, so the Nth GPU agent = HIP device index N.
+    Uses rocminfo (subprocess) rather than torch.cuda so this is safe to call
+    before the HIP runtime is initialized (e.g. before HIP_VISIBLE_DEVICES is set
+    in xdist workers).  rocminfo enumerates GPU agents in the same order as the
+    HIP runtime, so entry N corresponds to HIP device index N.
 
-    The result is cached so rocminfo is invoked at most once per process.
+    ``arch`` is normalized ("gfx942"); ``marketing_name`` is rocminfo's
+    "Marketing Name" (e.g. "AMD Instinct MI350X") or "" when absent. CPU agents
+    also carry a Marketing Name, so agents are filtered on ``Device Type: GPU``.
+
+    Not cached: the caller decides.  ``get_supported_device_indices`` caches its
+    own result, and one-shot consumers pay a single subprocess.
 
     Returns:
-        tuple[int, ...]: Device indices of supported GPUs. Empty tuple if none
-                         found or rocminfo is unavailable.
+        tuple[tuple[str, str], ...]: One (arch, marketing_name) pair per GPU
+                                     agent. Empty if rocminfo is unavailable.
     """
     import re
     import subprocess
@@ -418,35 +422,51 @@ def get_supported_device_indices() -> tuple:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return ()
 
-    supported = []
-    gpu_index = 0
-    current_name = None
-    current_is_gpu = False
+    agents = []
+    name = marketing = None
+    is_gpu = False
 
     def _commit():
-        nonlocal gpu_index
-        if current_is_gpu:
+        if is_gpu:
             # rocminfo's agent-level "Name:" is normally bare ("gfx942"), but
-            # normalize defensively: an unstripped qualifier here would drop
-            # every GPU from the supported list, and callers would silently
-            # fall back to the default architecture.
-            if normalize_arch(current_name or "") in FLASHINFER_SUPPORTED_ROCM_ARCHS:
-                supported.append(gpu_index)
-            gpu_index += 1
+            # normalize defensively: an unstripped qualifier would drop every
+            # GPU from the supported list, and callers would silently fall back
+            # to the default architecture.
+            agents.append((normalize_arch(name or ""), marketing or ""))
 
     for line in result.stdout.splitlines():
         s = line.strip()
         if re.match(r"^Agent \d+", s):
             _commit()
-            current_name = None
-            current_is_gpu = False
-        elif s.startswith("Name:") and current_name is None:
-            current_name = s.split(":", 1)[1].strip()
+            name = marketing = None
+            is_gpu = False
+        elif s.startswith("Name:") and name is None:
+            name = s.split(":", 1)[1].strip()
+        elif s.startswith("Marketing Name:") and marketing is None:
+            marketing = s.split(":", 1)[1].strip()
         elif s.startswith("Device Type:") and "GPU" in s:
-            current_is_gpu = True
+            is_gpu = True
     _commit()  # process last agent
 
-    return tuple(supported)
+    return tuple(agents)
+
+
+@functools.cache
+def get_supported_device_indices() -> tuple:
+    """
+    Return the indices of AMD GPUs whose architecture is supported by FlashInfer.
+
+    The result is cached so rocminfo is invoked at most once per process.
+
+    Returns:
+        tuple[int, ...]: Device indices of supported GPUs. Empty tuple if none
+                         found or rocminfo is unavailable.
+    """
+    return tuple(
+        index
+        for index, (arch, _) in enumerate(rocminfo_gpu_agents())
+        if arch in FLASHINFER_SUPPORTED_ROCM_ARCHS
+    )
 
 
 # A "primary" CPX sibling reports the full physical card capacity; the other
