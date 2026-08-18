@@ -138,6 +138,14 @@ class TestArchAndSku:
     def test_no_agents_at_all(self, resolve):
         assert resolve(()) == ("unknown", "unknown")
 
+    @pytest.mark.parametrize("degenerate", ["", "   ", ":"])
+    def test_unusable_torch_arch_falls_back_to_rocminfo(self, resolve, degenerate):
+        """normalize_arch returns "" for degenerate input rather than raising,
+        and "" is not _UNKNOWN -- so an unfolded empty arch would skip the
+        rocminfo fallback and print a blank arch in the header."""
+        agents = (("gfx942", "AMD Instinct MI300X"),)
+        assert resolve(agents, torch_arch=degenerate) == ("gfx942", "MI300X")
+
 
 def test_header_line_survives_every_probe_failing(rocm_conftest, monkeypatch):
     """A descriptive header must never be the reason a test session dies."""

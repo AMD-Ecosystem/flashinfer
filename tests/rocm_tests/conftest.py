@@ -106,7 +106,12 @@ def _arch_and_sku() -> tuple:
         import torch
 
         if torch.cuda.device_count():
-            arch = normalize_arch(torch.cuda.get_device_properties(0).gcnArchName)
+            # normalize_arch returns "" for degenerate input rather than
+            # raising. Fold that back into _UNKNOWN, or the rocminfo fallback
+            # below is skipped and the header prints a blank arch.
+            arch = normalize_arch(torch.cuda.get_device_properties(0).gcnArchName) or (
+                _UNKNOWN
+            )
     except Exception:
         pass
 
