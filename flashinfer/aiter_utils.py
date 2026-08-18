@@ -6,6 +6,7 @@ import functools
 
 import torch
 
+from .arch_caps import normalize_arch
 from .hip_utils import FLASHINFER_SUPPORTED_ROCM_ARCHS
 
 
@@ -15,7 +16,7 @@ def is_aiter_supported(device: torch.device) -> bool:
     if torch.version.hip is None:
         return False
     try:
-        arch = torch.cuda.get_device_properties(device).gcnArchName.split(":")[0]
+        arch = normalize_arch(torch.cuda.get_device_properties(device).gcnArchName)
     except Exception:
         return False
     return arch in FLASHINFER_SUPPORTED_ROCM_ARCHS

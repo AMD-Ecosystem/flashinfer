@@ -11,6 +11,7 @@ from typing import Optional, Tuple, Union
 import torch
 
 from .aiter_utils import is_aiter_supported
+from .arch_caps import normalize_arch
 
 
 @functools.cache
@@ -63,7 +64,7 @@ def _kv_lens_to_last_page_len_cpu(
 def _require_aiter_mla(device: torch.device) -> None:
     if not is_aiter_supported(device):
         try:
-            arch = torch.cuda.get_device_properties(device).gcnArchName.split(":")[0]
+            arch = normalize_arch(torch.cuda.get_device_properties(device).gcnArchName)
         except Exception:
             arch = "unknown"
         raise RuntimeError(f"AITER MLA requires a gfx942/gfx950 GPU; got '{arch}'.")

@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 import torch
 from .aiter_utils import is_aiter_supported
+from .arch_caps import normalize_arch
 from .jit.core import logger
 from .jit import (
     gen_batch_prefill_module,
@@ -312,7 +313,7 @@ def _require_aiter_runtime(device: torch.device) -> None:
     if not is_aiter_supported(device):
         try:
             arch = (
-                torch.cuda.get_device_properties(device).gcnArchName.split(":")[0]
+                normalize_arch(torch.cuda.get_device_properties(device).gcnArchName)
                 if torch.version.hip
                 else "non-ROCm"
             )
