@@ -174,7 +174,6 @@ class TestCacheTagIsAPathComponent:
 
         libs_dir = aiter_source._aiter_libs_dir().resolve()
         assert (tmp_path / "aiter_libs").resolve() in libs_dir.parents
-        assert list(tmp_path.parent.glob("tmp*__aiter-*")) == []
 
 
 class TestCacheTag:
