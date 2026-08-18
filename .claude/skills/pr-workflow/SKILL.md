@@ -94,8 +94,8 @@ Leave the main checkout parked on `amd-integration`. Never switch the main
 checkout to a topic branch.
 
 ```bash
-git worktree add -b <branch> tmp/worktrees/<branch> origin/amd-integration  # new branch
-git worktree add tmp/worktrees/<branch> <branch>                            # existing branch
+mkdir -p tmp/worktrees && git worktree add -b <branch-name> tmp/worktrees/<branch-name> origin/amd-integration  # new branch
+mkdir -p tmp/worktrees && git worktree add tmp/worktrees/<branch-name> <branch-name>                            # existing branch
 ```
 
 Why this is the rule and not a preference:
