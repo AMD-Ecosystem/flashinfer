@@ -139,7 +139,7 @@ Two gitignored, generated files must be recreated or the JIT will not build:
 cd tmp/worktrees/<branch-name>
 rm -rf flashinfer/include                    # -f alone will not clear a real dir
 ln -s ../include flashinfer/include          # MUST be relative
-cp <main-checkout>/flashinfer/_version.py flashinfer/_version.py
+cp <main-checkout>/flashinfer/_version.py flashinfer/_version.py   # see below if absent
 ```
 
 Clear the path first. `-f` replaces a dangling or stale *symlink*, but against
@@ -163,7 +163,12 @@ headers live in `include/` at the repo root.
   tree is mounted.
 - `flashinfer/_version.py` — setuptools-scm generated. Without it,
   `import flashinfer` fails with `ModuleNotFoundError: No module named
-  'flashinfer._version'`.
+  'flashinfer._version'`. If the `cp` fails because the source file is not
+  there either, the main checkout has never been built: setuptools-scm only
+  emits it during an install or build (`write_to` in `pyproject.toml`), so run
+  `python -m pip install --no-build-isolation -ve.` there first. Don't reach
+  for the `setuptools_scm` CLI — it is a build dependency and is generally not
+  present in the environment you're running from.
 
 Build artifacts and editable installs stay in the main checkout. If you need to
 run tests against worktree code, bind-mount the **worktree** path into the

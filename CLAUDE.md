@@ -39,6 +39,7 @@ A fresh worktree is source-only: recreate `flashinfer/include` as a **relative**
 symlink (`rm -rf flashinfer/include && ln -s ../include flashinfer/include` — the
 `rm` matters, since `ln -f` will not clear a real directory) and copy
 `flashinfer/_version.py` from the main checkout, or the JIT will not build.
+`_version.py` only exists there once that checkout has been installed or built.
 Details: `pr-workflow` skill.
 
 ## Essential Commands
