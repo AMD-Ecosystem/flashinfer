@@ -32,7 +32,7 @@ it owns the editable install and build artifacts, and switching it produces
 stale-binary failures.
 
 ```bash
-mkdir -p tmp/worktrees && git worktree add -b <branch-name> tmp/worktrees/<branch-name> origin/amd-integration
+git worktree add -b <branch-name> tmp/worktrees/<branch-name> origin/amd-integration
 ```
 
 A fresh worktree is source-only: recreate `flashinfer/include` (as a **relative**

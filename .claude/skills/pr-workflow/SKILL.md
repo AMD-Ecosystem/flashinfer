@@ -94,9 +94,12 @@ Leave the main checkout parked on `amd-integration`. Never switch the main
 checkout to a topic branch.
 
 ```bash
-mkdir -p tmp/worktrees && git worktree add -b <branch-name> tmp/worktrees/<branch-name> origin/amd-integration  # new branch
-mkdir -p tmp/worktrees && git worktree add tmp/worktrees/<branch-name> <branch-name>                            # existing branch
+git worktree add -b <branch-name> tmp/worktrees/<branch-name> origin/amd-integration  # new branch
+git worktree add tmp/worktrees/<branch-name> <branch-name>                            # existing branch
 ```
+
+`git worktree add` creates the leading `tmp/worktrees/` directories itself, so
+no `mkdir -p` is needed on a fresh clone.
 
 Why this is the rule and not a preference:
 
@@ -109,18 +112,23 @@ Why this is the rule and not a preference:
   recovery above safe.
 
 Exclude the worktree root **per-clone** rather than in a tracked ignore file, so
-it never appears as a diff against upstream:
+it never appears as a diff against upstream. One run covers the whole clone,
+worktrees included:
 
 ```bash
-printf '/tmp/\n' >> .git/info/exclude
+printf '/tmp/\n' >> "$(git rev-parse --git-common-dir)/info/exclude"
 ```
+
+Use `--git-common-dir`, not a literal `.git/info/exclude`: inside a linked
+worktree `.git` is a *file* pointing at the real git dir, so the literal path
+fails with `not a directory`.
 
 ### A fresh worktree is source-only
 
 Two gitignored, generated files must be recreated or the JIT will not build:
 
 ```bash
-cd tmp/worktrees/<branch>
+cd tmp/worktrees/<branch-name>
 ln -sfn ../include flashinfer/include        # MUST be relative
 cp <main-checkout>/flashinfer/_version.py flashinfer/_version.py
 ```
