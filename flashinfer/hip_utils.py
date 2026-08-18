@@ -4,6 +4,11 @@
 
 import functools
 
+# arch_caps imports nothing (in particular, not torch), so importing it here
+# keeps this module safe to import before the HIP runtime starts -- which
+# tests/conftest.py relies on to set HIP_VISIBLE_DEVICES first.
+from .arch_caps import normalize_arch
+
 # AMDGPU archs supported by amd-flashinfer
 FLASHINFER_SUPPORTED_ROCM_ARCHS = ["gfx942", "gfx950"]
 
@@ -421,7 +426,11 @@ def get_supported_device_indices() -> tuple:
     def _commit():
         nonlocal gpu_index
         if current_is_gpu:
-            if current_name in FLASHINFER_SUPPORTED_ROCM_ARCHS:
+            # rocminfo's agent-level "Name:" is normally bare ("gfx942"), but
+            # normalize defensively: an unstripped qualifier here would drop
+            # every GPU from the supported list, and callers would silently
+            # fall back to the default architecture.
+            if normalize_arch(current_name or "") in FLASHINFER_SUPPORTED_ROCM_ARCHS:
                 supported.append(gpu_index)
             gpu_index += 1
 
