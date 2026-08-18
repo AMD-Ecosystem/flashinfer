@@ -23,6 +23,7 @@ import os
 import torch
 
 from . import hip_utils
+from .arch_caps import normalize_arch
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ class CompilationContext:
             indices = hip_utils.get_supported_device_indices()
             if indices:
                 archs = {
-                    torch.cuda.get_device_properties(i).gcnArchName.split(":")[0]
+                    normalize_arch(torch.cuda.get_device_properties(i).gcnArchName)
                     for i in indices
                 }
                 return ",".join(sorted(archs))
