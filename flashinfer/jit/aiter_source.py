@@ -29,7 +29,7 @@ from filelock import FileLock
 
 from ..arch_caps import normalize_arch
 from . import env as jit_env
-from .core import logger
+from .core import JitSpec, logger
 
 
 _DEFAULT_BUILD_ARCH = "gfx942"
@@ -182,7 +182,7 @@ def _aiter_libs_dir() -> Path:
     return d
 
 
-def refresh_aiter_jitspec(spec):
+def refresh_aiter_jitspec(spec: JitSpec) -> JitSpec:
     """Regenerate ``build.ninja`` so a changed AITER library path takes effect.
 
     The AITER shim libs live outside the JIT tree, under
