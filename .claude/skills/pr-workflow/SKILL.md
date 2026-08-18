@@ -87,6 +87,59 @@ local-only, the topic branch already exists — STOP and report rather than
 reset. It is always better to fail to raise a PR than to push to or PR from
 `amd-integration`.
 
+## CRITICAL: do branch work in a git worktree, never in the main checkout
+
+**Always** do branch work in a worktree under `tmp/worktrees/<branch-name>`.
+Leave the main checkout parked on `amd-integration`. Never switch the main
+checkout to a topic branch.
+
+```bash
+git worktree add -b <branch> tmp/worktrees/<branch> origin/amd-integration  # new branch
+git worktree add tmp/worktrees/<branch> <branch>                            # existing branch
+```
+
+Why this is the rule and not a preference:
+
+- The main checkout holds the editable install, `~/.cache/flashinfer` build
+  artifacts, and compiled extensions. Switching it between branches invalidates
+  them and produces confusing stale-binary failures.
+- Multiple PRs are usually in flight at once. Worktrees keep them physically
+  separate, so an unrelated in-progress edit cannot leak into a PR.
+- `amd-integration` staying pristine is what makes the `git reset --hard`
+  recovery above safe.
+
+Exclude the worktree root **per-clone** rather than in a tracked ignore file, so
+it never appears as a diff against upstream:
+
+```bash
+printf '/tmp/\n' >> .git/info/exclude
+```
+
+### A fresh worktree is source-only
+
+Two gitignored, generated files must be recreated or the JIT will not build:
+
+```bash
+cd tmp/worktrees/<branch>
+ln -sfn ../include flashinfer/include        # MUST be relative
+cp <main-checkout>/flashinfer/_version.py flashinfer/_version.py
+```
+
+- `flashinfer/include` — `get_include_paths.get_include()` returns
+  `<pkg>/include`. Without the symlink the JIT emits `-isystem /include` and
+  every compile fails with `'flashinfer/attention/aiter/batch_prefill.cuh' file
+  not found`. Create it **relative**: the main checkout's copy may be an
+  absolute symlink into a container mount point (e.g. `-> /fi/include`), which
+  does not resolve on the host or under a different mount.
+- `flashinfer/_version.py` — setuptools-scm generated. Without it,
+  `import flashinfer` fails with `ModuleNotFoundError: No module named
+  'flashinfer._version'`.
+
+Build artifacts and editable installs stay in the main checkout. If you need to
+run tests against worktree code, bind-mount the **worktree** path into the
+container and point `PYTHONPATH` at the mount — then confirm
+`flashinfer.__file__` resolves there before trusting any result.
+
 ## Branch naming
 
 Topic branches are created off `origin/amd-integration` and named with **plain

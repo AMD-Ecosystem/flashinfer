@@ -24,6 +24,21 @@ followed by `git reset --hard origin/amd-integration` to restore
 an abort condition too.
 Full procedure: `pr-workflow` skill.
 
+## CRITICAL: work in a git worktree
+
+Do branch work in a worktree at `tmp/worktrees/<branch-name>` and leave the main
+checkout on `amd-integration`. Never switch the main checkout to a topic branch —
+it owns the editable install and build artifacts, and switching it produces
+stale-binary failures.
+
+```bash
+git worktree add -b <branch> tmp/worktrees/<branch> origin/amd-integration
+```
+
+A fresh worktree is source-only: recreate `flashinfer/include` (as a **relative**
+symlink, `ln -sfn ../include flashinfer/include`) and copy `flashinfer/_version.py`
+from the main checkout, or the JIT will not build. Details: `pr-workflow` skill.
+
 ## Essential Commands
 
 | Task | Command |
