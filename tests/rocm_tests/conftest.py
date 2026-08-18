@@ -93,6 +93,13 @@ def _arch_and_sku() -> tuple:
     "AMD Radeon Graphics" -- so the SKU has to come from rocminfo's
     "Marketing Name". The two are matched on architecture so that a mixed-arch
     host can never attribute one card's SKU to another card's architecture.
+
+    Within one architecture the agents must also agree on the board. rocminfo
+    ignores HIP_VISIBLE_DEVICES -- it reports every physical agent whatever this
+    session was pinned to -- so on a host mixing boards that share an
+    architecture (MI300X and MI325X are both gfx942) there is nothing to tell us
+    which one we got. Naming either would be a guess wearing the clothes of an
+    answer, so disagreement reports ``unknown``.
     """
     arch = _UNKNOWN
     try:
@@ -107,13 +114,15 @@ def _arch_and_sku() -> tuple:
     if arch == _UNKNOWN:
         arch = next((a for a, _ in agents if a), _UNKNOWN)
 
-    marketing = next((m for a, m in agents if m and a == arch), "")
-    match = _SKU_RE.search(marketing)
-    # Only report a name we can actually resolve to a SKU. Some environments --
-    # this repo's own ROCm container among them -- return the generic
-    # "AMD Radeon Graphics" for an Instinct part, and echoing that would read
-    # like an answer rather than a failure to identify the board.
-    return arch, (match.group(0) if match else _UNKNOWN)
+    # Only report a name we can actually resolve to a SKU, and only when it is
+    # the sole candidate. Some environments -- this repo's own ROCm container
+    # among them -- return the generic "AMD Radeon Graphics" for an Instinct
+    # part, which leaves the set empty; a same-arch mix leaves it ambiguous.
+    # Either way, echoing something would read like an answer rather than a
+    # failure to identify the board.
+    matches = (_SKU_RE.search(m) for a, m in agents if a == arch)
+    skus = {m.group(0) for m in matches if m}
+    return arch, (skus.pop() if len(skus) == 1 else _UNKNOWN)
 
 
 def _header_line() -> str:
