@@ -110,6 +110,23 @@ class TestResolveBuildArch:
         device_arch(None)
         assert aiter_source.resolve_aiter_build_arch() == "gfx950"
 
+    @pytest.mark.parametrize("env", [":", ":sramecc+", ":,gfx942", "gfx942,:", ",,"])
+    def test_qualifier_only_tokens_never_become_the_arch(
+        self, monkeypatch, device_arch, env
+    ):
+        """A token that is all qualifier is non-empty as written but normalizes
+        to '', so filtering the raw token is not enough.
+
+        Left unfiltered it is returned verbatim -- ':,gfx942' on a gfx950 host
+        resolved to '' and tagged the cache directory '__aiter-<version>'. The
+        upstream arch validation warns about such a token and drops it rather
+        than raising, so it does reach this resolver.
+        """
+        monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", env)
+        device_arch("gfx950")
+        assert "" not in aiter_source._env_arch_list()
+        assert aiter_source.resolve_aiter_build_arch() in ("gfx942", "gfx950")
+
 
 class TestCacheTag:
     @pytest.mark.parametrize("arch", ["gfx942", "gfx950"])

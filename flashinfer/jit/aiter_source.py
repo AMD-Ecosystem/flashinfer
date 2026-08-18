@@ -33,11 +33,18 @@ _DEFAULT_BUILD_ARCH = "gfx942"
 
 
 def _env_arch_list() -> List[str]:
-    """FLASHINFER_ROCM_ARCH_LIST as a normalized list, accepting ',' or ';'."""
+    """FLASHINFER_ROCM_ARCH_LIST as a normalized list, accepting ',' or ';'.
+
+    Tokens are dropped *after* normalization, not before. A token that is all
+    qualifier and no architecture (``":sramecc+"``, or a bare ``":"``) is
+    non-empty as written but normalizes to ``""``, which would otherwise become
+    the build architecture and name a cache directory ``__aiter-<version>``.
+    """
     import re
 
     raw = os.environ.get("FLASHINFER_ROCM_ARCH_LIST", "")
-    return [normalize_arch(a) for a in re.split(r"[;,]", raw) if a.strip()]
+    archs = (normalize_arch(a) for a in re.split(r"[;,]", raw))
+    return [a for a in archs if a]
 
 
 def _detected_device_arch() -> Optional[str]:
