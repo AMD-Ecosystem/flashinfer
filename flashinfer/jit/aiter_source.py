@@ -180,6 +180,35 @@ def _aiter_libs_dir() -> Path:
     return d
 
 
+def refresh_aiter_jitspec(spec):
+    """Regenerate ``build.ninja`` so a changed AITER library path takes effect.
+
+    The AITER shim libs live outside the JIT tree, under
+    ``aiter_libs/<arch>__aiter-<version>/``, and reach the module only as an
+    ``-L``/``-rpath`` on the link line. ``JitSpec.build()`` writes ``build.ninja``
+    only when it is missing, so once a module has been built the recorded link
+    line is never revisited -- the module keeps loading whichever AITER lib it
+    was first built against, even after the resolved architecture changes.
+
+    That is not a stale-build annoyance: the ``.so`` retains a RUNPATH into the
+    old directory, so a module cached under ``.../gfx950/`` can go on loading a
+    gfx942 library and **segfault**, and clearing ``FLASHINFER_ROCM_ARCH_LIST``
+    or setting it correctly does not fix it. Only deleting the cache does.
+
+    ``write_ninja`` funnels through ``write_if_different``, so this is free when
+    nothing changed and rewrites exactly when the link line moves; ninja then
+    relinks on its own.
+
+    Args:
+        spec: The freshly created :class:`~flashinfer.jit.core.JitSpec`.
+
+    Returns:
+        The same spec, for use as ``return refresh_aiter_jitspec(gen_jit_spec(...))``.
+    """
+    spec.write_ninja()
+    return spec
+
+
 @functools.lru_cache(maxsize=1)
 def _aiter_csrc_include_dir() -> Path:
     """The aiter_meta C++ public header dir (rmsnorm.h / activation.h / rope.h)."""

@@ -29,15 +29,17 @@ def gen_rope_module() -> JitSpec:
 
 
 def gen_rope_aiter_module() -> JitSpec:
-    from .aiter_source import aiter_jitspec_flags
+    from .aiter_source import aiter_jitspec_flags, refresh_aiter_jitspec
 
     extra_include_paths, extra_ldflags = aiter_jitspec_flags("module_rope_pos_fwd")
-    return gen_jit_spec(
-        "rope_aiter",
-        [
-            jit_env.FLASHINFER_CSRC_DIR / "rope_aiter.cu",
-            jit_env.FLASHINFER_CSRC_DIR / "rope_aiter_jit_pybind.cu",
-        ],
-        extra_include_paths=extra_include_paths,
-        extra_ldflags=extra_ldflags,
+    return refresh_aiter_jitspec(
+        gen_jit_spec(
+            "rope_aiter",
+            [
+                jit_env.FLASHINFER_CSRC_DIR / "rope_aiter.cu",
+                jit_env.FLASHINFER_CSRC_DIR / "rope_aiter_jit_pybind.cu",
+            ],
+            extra_include_paths=extra_include_paths,
+            extra_ldflags=extra_ldflags,
+        )
     )
