@@ -20,6 +20,7 @@ hands back the include/link flags for ``gen_jit_spec``.
 
 import functools
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
@@ -31,20 +32,47 @@ from .core import logger
 
 _DEFAULT_BUILD_ARCH = "gfx942"
 
+# An architecture name and nothing else: "gfx942", "gfx950", "gfx90a". Anchored
+# so a token that merely starts with "gfx" cannot smuggle in a path separator.
+_ARCH_RE = re.compile(r"^gfx[0-9a-f]+$")
+
 
 def _env_arch_list() -> List[str]:
     """FLASHINFER_ROCM_ARCH_LIST as a normalized list, accepting ',' or ';'.
 
-    Tokens are dropped *after* normalization, not before. A token that is all
-    qualifier and no architecture (``":sramecc+"``, or a bare ``":"``) is
-    non-empty as written but normalizes to ``""``, which would otherwise become
-    the build architecture and name a cache directory ``__aiter-<version>``.
-    """
-    import re
+    Tokens are checked *after* normalization, and anything that is not an
+    architecture name is dropped with a warning. Two reachable reasons, both of
+    which end up naming a directory:
 
+    - A token that is all qualifier and no architecture (``":sramecc+"``, or a
+      bare ``":"``) is non-empty as written but normalizes to ``""``, which
+      would become the build architecture and name a cache directory
+      ``__aiter-<version>``.
+    - An arbitrary string reaches that same directory name, so ``"../../tmp"``
+      escapes the cache root once the tag is joined onto it.
+
+    ``validate_rocm_arch`` already rejects such a token for the main JIT, but it
+    only *warns and excludes* unless every entry is bad -- so in a mixed list the
+    bad entry survives to here.
+
+    Empty tokens are dropped silently: a trailing separator is benign, not a typo
+    worth reporting.
+    """
     raw = os.environ.get("FLASHINFER_ROCM_ARCH_LIST", "")
-    archs = (normalize_arch(a) for a in re.split(r"[;,]", raw))
-    return [a for a in archs if a]
+    archs = []
+    for token in re.split(r"[;,]", raw):
+        arch = normalize_arch(token)
+        if not arch:
+            continue
+        if not _ARCH_RE.match(arch):
+            logger.warning(
+                "Ignoring %r in FLASHINFER_ROCM_ARCH_LIST: not a GPU architecture "
+                "name (expected e.g. 'gfx942').",
+                token,
+            )
+            continue
+        archs.append(arch)
+    return archs
 
 
 def _detected_device_arch() -> Optional[str]:
@@ -122,6 +150,18 @@ def _aiter_cache_tag() -> str:
     Keyed on the *resolved* architecture -- the one actually compiled for -- so
     the tag cannot disagree with the contents of the directory it names."""
     arch = resolve_aiter_build_arch()
+    # The tag is joined onto the cache root to create a directory, so
+    # "filesystem-safe" above has to be enforced, not just asserted in prose.
+    # _env_arch_list already rejects anything that is not an architecture name;
+    # this keeps the guarantee true for the other two sources of `arch` (the
+    # device probe and the default) and for any future caller. Loud rather than
+    # silently sanitized: an arch that needs rewriting means the resolver is
+    # wrong, and a quietly renamed cache directory would hide that.
+    if not arch or arch != Path(arch).name or arch.startswith("."):
+        raise ValueError(
+            f"refusing to build a cache directory name from architecture "
+            f"{arch!r}: not a single safe path component"
+        )
     try:
         import importlib.metadata as _md
 

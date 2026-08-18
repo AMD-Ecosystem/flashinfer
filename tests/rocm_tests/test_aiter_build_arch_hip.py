@@ -16,10 +16,12 @@ from flashinfer.jit import aiter_source
 
 @pytest.fixture(autouse=True)
 def _clear_resolver_cache():
-    """resolve_aiter_build_arch is lru_cached; each case needs a clean slate."""
-    aiter_source.resolve_aiter_build_arch.cache_clear()
+    """These are lru_cached; each case needs a clean slate."""
+    for fn in (aiter_source.resolve_aiter_build_arch, aiter_source._aiter_libs_dir):
+        fn.cache_clear()
     yield
-    aiter_source.resolve_aiter_build_arch.cache_clear()
+    for fn in (aiter_source.resolve_aiter_build_arch, aiter_source._aiter_libs_dir):
+        fn.cache_clear()
 
 
 @pytest.fixture
@@ -126,6 +128,53 @@ class TestResolveBuildArch:
         device_arch("gfx950")
         assert "" not in aiter_source._env_arch_list()
         assert aiter_source.resolve_aiter_build_arch() in ("gfx942", "gfx950")
+
+    @pytest.mark.parametrize(
+        "env", ["../../tmp", "..", "garbage", "../../tmp,gfx942", "gfx942,/etc"]
+    )
+    def test_non_architecture_tokens_are_dropped(
+        self, monkeypatch, device_arch, env, warnings_logged
+    ):
+        """The resolved arch names a cache directory, so an arbitrary string
+        escapes the cache root: '../../tmp,gfx942' created
+        ``<cache>/aiter_libs/../../tmp/pwned__aiter-0.1.10``.
+
+        Upstream validate_rocm_arch warns and excludes such a token but only
+        raises when *every* entry is bad, so a mixed list still reached here.
+        """
+        monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", env)
+        device_arch("gfx950")
+        assert all(a.startswith("gfx") for a in aiter_source._env_arch_list())
+        assert aiter_source.resolve_aiter_build_arch() in ("gfx942", "gfx950")
+        assert any("not a GPU architecture" in w for w in warnings_logged)
+
+
+class TestCacheTagIsAPathComponent:
+    """The tag is joined onto the cache root, so it must stay one component."""
+
+    @pytest.mark.parametrize("arch", ["../../tmp", "..", "a/b", ""])
+    def test_unsafe_resolved_arch_is_refused(self, monkeypatch, arch):
+        """Defense in depth for the resolver's other two sources -- the device
+        probe and the default -- and for future callers. Loud, not sanitized:
+        a silently renamed cache directory would hide the resolver bug."""
+        monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: arch)
+        with pytest.raises(ValueError, match="safe path component"):
+            aiter_source._aiter_cache_tag()
+
+    def test_libs_dir_stays_under_the_cache_root(
+        self, monkeypatch, device_arch, tmp_path
+    ):
+        """End to end: the traversal that this guards against created a real
+        directory outside the cache root before the fix."""
+        from flashinfer.jit import env as jit_env
+
+        monkeypatch.setattr(jit_env, "FLASHINFER_CACHE_DIR", tmp_path)
+        monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "../../tmp,gfx942")
+        device_arch("gfx950")
+
+        libs_dir = aiter_source._aiter_libs_dir().resolve()
+        assert (tmp_path / "aiter_libs").resolve() in libs_dir.parents
+        assert list(tmp_path.parent.glob("tmp*__aiter-*")) == []
 
 
 class TestCacheTag:
