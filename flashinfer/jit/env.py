@@ -23,6 +23,7 @@ import os
 import pathlib
 import re
 
+from ..arch_caps import normalize_arch
 from ..device_utils import IS_CUDA, IS_HIP
 
 
@@ -210,11 +211,13 @@ elif IS_HIP:
 
             props = torch.cuda.get_device_properties(torch.cuda.current_device())
             gcn_arch = props.gcnArchName
-            # Extract gfx arch (e.g., "gfx942:sramecc+:xnack-" -> "gfx942")
-            match = re.match(r"(gfx\d+)", gcn_arch)
-            if match:
-                arch = match.group(1)
-            else:
+            # Extract gfx arch (e.g., "gfx942:sramecc+:xnack-" -> "gfx942").
+            # The `gfx\d` guard only checks that this *looks* like an
+            # architecture name before trusting it; the value itself comes from
+            # normalize_arch, which keeps letter suffixes ("gfx90a") that the
+            # previous `(gfx\d+)` capture silently truncated to "gfx90".
+            arch = normalize_arch(gcn_arch)
+            if not re.match(r"gfx\d", arch):
                 from torch.utils.cpp_extension import _get_rocm_arch_flags
 
                 flags = _get_rocm_arch_flags()
