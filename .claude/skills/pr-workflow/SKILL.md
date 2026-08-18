@@ -87,6 +87,94 @@ local-only, the topic branch already exists — STOP and report rather than
 reset. It is always better to fail to raise a PR than to push to or PR from
 `amd-integration`.
 
+## CRITICAL: do branch work in a git worktree, never in the main checkout
+
+**Always** do branch work in a worktree under `tmp/worktrees/<branch-name>`.
+Leave the main checkout parked on `amd-integration`. Never switch the main
+checkout to a topic branch.
+
+```bash
+git worktree add -b <branch-name> tmp/worktrees/<branch-name> origin/amd-integration  # new branch
+git worktree add tmp/worktrees/<branch-name> <branch-name>                            # existing branch
+```
+
+`git worktree add` creates the leading `tmp/worktrees/` directories itself, so
+no `mkdir -p` is needed on a fresh clone.
+
+Why this is the rule and not a preference:
+
+- The main checkout owns the editable install and the in-tree compiled
+  extensions. Switching it between branches invalidates them and produces
+  confusing stale-binary failures.
+- Multiple PRs are usually in flight at once. Worktrees keep them physically
+  separate, so an unrelated in-progress edit cannot leak into a PR.
+- `amd-integration` staying pristine is what makes the `git reset --hard`
+  recovery above safe.
+
+The JIT cache is the one thing worktrees do **not** isolate. It lives outside
+the repo at `$HOME/.cache/flashinfer/<version>/<arch>` (rooted at
+`FLASHINFER_WORKSPACE_BASE` if set) and is keyed by version and arch only — no
+branch or checkout path — so every worktree shares one cache. Clear it with
+`rm -rf ~/.cache/flashinfer/`, or point `FLASHINFER_WORKSPACE_BASE` somewhere
+per-branch, when comparing kernel changes across branches.
+
+Exclude the worktree root **per-clone** rather than in a tracked ignore file, so
+it never appears as a diff against upstream. One run covers the whole clone,
+worktrees included:
+
+```bash
+ex="$(git rev-parse --git-common-dir)/info/exclude"
+grep -qxF '/tmp/' "$ex" || printf '/tmp/\n' >> "$ex"
+```
+
+Use `--git-common-dir`, not a literal `.git/info/exclude`: inside a linked
+worktree `.git` is a *file* pointing at the real git dir, so the literal path
+fails with `not a directory`.
+
+### A fresh worktree is source-only
+
+Two gitignored, generated files must be recreated or the JIT will not build:
+
+```bash
+cd tmp/worktrees/<branch-name>
+rm -rf flashinfer/include                    # -f alone will not clear a real dir
+ln -s ../include flashinfer/include          # MUST be relative
+cp <main-checkout>/flashinfer/_version.py flashinfer/_version.py   # see below if absent
+```
+
+Clear the path first. `-f` replaces a dangling or stale *symlink*, but against
+a real directory `ln` silently creates `flashinfer/include/include` **inside**
+it and exits 0 — leaving a broken tree with no error to go on. Deleting
+`flashinfer/include` is safe: it is gitignored and generated, and the real
+headers live in `include/` at the repo root.
+
+- `flashinfer/include` — `get_include_paths.get_include()` returns
+  `<pkg>/include`, and the JIT passes that through `.resolve()` into
+  `-isystem`. Both failure modes emit a well-formed flag pointing at a
+  directory that isn't there, so the compile fails with
+  `'flashinfer/attention/aiter/batch_prefill.cuh' file not found` rather than
+  anything naming the include path:
+  - missing entirely → `-isystem <pkg>/include`, a path that does not exist.
+  - copied as an **absolute** symlink into a container mount point
+    (e.g. `-> /fi/include`) → `.resolve()` follows it to `-isystem /fi/include`,
+    which does not exist on the host or under a different mount.
+
+  Create it **relative** so it resolves to `<worktree>/include` wherever the
+  tree is mounted.
+- `flashinfer/_version.py` — setuptools-scm generated. Without it,
+  `import flashinfer` fails with `ModuleNotFoundError: No module named
+  'flashinfer._version'`. If the `cp` fails because the source file is not
+  there either, the main checkout has never been built: setuptools-scm only
+  emits it during an install or build (`write_to` in `pyproject.toml`), so run
+  `python -m pip install --no-build-isolation -ve.` there first. Don't reach
+  for the `setuptools_scm` CLI — it is a build dependency and is generally not
+  present in the environment you're running from.
+
+Build artifacts and editable installs stay in the main checkout. If you need to
+run tests against worktree code, bind-mount the **worktree** path into the
+container and point `PYTHONPATH` at the mount — then confirm
+`flashinfer.__file__` resolves there before trusting any result.
+
 ## Branch naming
 
 Topic branches are created off `origin/amd-integration` and named with **plain
@@ -170,6 +258,32 @@ always run this loop before considering the PR done:
    - *Won't fix* → reply with the reason you decided not to address it, then
      resolve the thread.
    Either way the thread ends resolved with a written rationale.
+
+**Keep replies short** — a verdict, a one-line reason, and the SHA. Reserve a
+code block for comments you are *declining*, where the evidence is the argument.
+
+### Suppressed comments have no thread
+
+Copilot folds some findings into a collapsed **"Suppressed comments (N)"**
+section of the review body. These are not review threads: there is no replies
+endpoint and nothing to resolve, so the loop above cannot close them and they
+are easy to miss entirely.
+
+They are also **not cumulative** — each review body lists only its own. Sweep
+every review, not just the latest:
+
+```bash
+gh api repos/AMD-Ecosystem/flashinfer/pulls/<PR>/reviews --paginate \
+  --jq '.[] | select(.user.login=="copilot-pull-request-reviewer[bot]")
+        | "\(.id) \(.submitted_at) \(.body)"'
+```
+
+Handle them like any other comment, then record the disposition in **one**
+top-level comment per review — `gh api repos/AMD-Ecosystem/flashinfer/issues/<PR>/comments`.
+Without it the fixes land silently and a reviewer cannot tell they were read.
+
+Each push triggers a fresh review, so repeat until a review comes back with no
+new comments *and* no suppressed block.
 
 List threads with their resolved status, and resolve them, via GraphQL. GraphQL
 is required because thread resolution and the thread-level `isResolved` flag are
