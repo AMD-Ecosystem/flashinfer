@@ -78,7 +78,11 @@ def _devices() -> str:
     visible = os.environ.get("HIP_VISIBLE_DEVICES", "").strip()
     if visible:
         return visible
-    return ",".join(str(i) for i in get_physical_card_device_indices())
+    indices = get_physical_card_device_indices()
+    # "none", not the "unknown" _probe would otherwise supply for an empty
+    # string: no supported GPU is a determinate answer, and a run on a host
+    # without one should not be mistaken for a run whose probe broke.
+    return ",".join(str(i) for i in indices) if indices else "none"
 
 
 def _arch_and_sku() -> tuple:
