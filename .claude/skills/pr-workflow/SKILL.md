@@ -103,13 +103,20 @@ no `mkdir -p` is needed on a fresh clone.
 
 Why this is the rule and not a preference:
 
-- The main checkout holds the editable install, `~/.cache/flashinfer` build
-  artifacts, and compiled extensions. Switching it between branches invalidates
-  them and produces confusing stale-binary failures.
+- The main checkout owns the editable install and the in-tree compiled
+  extensions. Switching it between branches invalidates them and produces
+  confusing stale-binary failures.
 - Multiple PRs are usually in flight at once. Worktrees keep them physically
   separate, so an unrelated in-progress edit cannot leak into a PR.
 - `amd-integration` staying pristine is what makes the `git reset --hard`
   recovery above safe.
+
+The JIT cache is the one thing worktrees do **not** isolate. It lives outside
+the repo at `$HOME/.cache/flashinfer/<version>/<arch>` (rooted at
+`FLASHINFER_WORKSPACE_BASE` if set) and is keyed by version and arch only — no
+branch or checkout path — so every worktree shares one cache. Clear it with
+`rm -rf ~/.cache/flashinfer/`, or point `FLASHINFER_WORKSPACE_BASE` somewhere
+per-branch, when comparing kernel changes across branches.
 
 Exclude the worktree root **per-clone** rather than in a tracked ignore file, so
 it never appears as a diff against upstream. One run covers the whole clone,
