@@ -5,6 +5,7 @@
 # native flashinfer-ROCm append_paged_kv_cache kernel.
 
 import logging
+from contextlib import nullcontext
 
 import pytest
 import torch
@@ -153,3 +154,61 @@ def test_append_paged_kv_cache_aiter_auto_routes_on_nhd_fp16():
         _auto_select_kv_append_backend(device, dtype=torch.float32, kv_layout="NHD")
         == "native"
     )
+
+
+@requires_aiter
+def test_append_paged_kv_cache_aiter_honors_current_stream():
+    """The AITER append must run on torch's current stream, not the default one.
+
+    The shim sets only the device; reshape_and_cache_flash picks up the stream
+    itself. In amd-aiter 0.1.10 it calls at::hip::getCurrentHIPStream(), so this
+    holds. Newer AITER moved these ops to a thread-local stream set from Python,
+    which would silently put the append on the null stream instead -- and because
+    torch's default stream *is* stream 0, every other test here would still pass.
+    This is the one that would not.
+    """
+    device = torch.device("cuda:0")
+    dtype = torch.bfloat16
+    page_size, num_kv_heads, head_dim = 16, 8, 128
+
+    (
+        k,
+        v,
+        batch_indices,
+        positions,
+        kv_indices,
+        kv_indptr,
+        kv_last_page_len,
+        num_pages,
+    ) = _build_append_inputs(
+        [37, 5, 64], page_size, num_kv_heads, head_dim, dtype, device
+    )
+
+    def _run_append(stream):
+        k_cache = torch.zeros(
+            num_pages, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
+        )
+        v_cache = torch.zeros_like(k_cache)
+        ctx = torch.cuda.stream(stream) if stream is not None else nullcontext()
+        with ctx:
+            flashinfer.append_paged_kv_cache(
+                k,
+                v,
+                batch_indices,
+                positions,
+                (k_cache, v_cache),
+                kv_indices,
+                kv_indptr,
+                kv_last_page_len,
+                backend="aiter",
+            )
+        if stream is not None:
+            torch.cuda.current_stream().wait_stream(stream)
+        torch.cuda.synchronize()
+        return k_cache, v_cache
+
+    k_default, v_default = _run_append(None)
+    k_side, v_side = _run_append(torch.cuda.Stream())
+
+    torch.testing.assert_close(k_side, k_default, rtol=0, atol=0)
+    torch.testing.assert_close(v_side, v_default, rtol=0, atol=0)

@@ -33,10 +33,10 @@ if IS_HIP:
     from .arch_caps import capability_available
 
     @functools.cache
-    def _aiter_cache_module():
-        from aiter.ops import cache as aiter_cache
+    def get_page_aiter_module():
+        from .jit.page import gen_page_aiter_module
 
-        return aiter_cache
+        return gen_page_aiter_module().build_and_load()
 
     @functools.cache
     def _aiter_unit_scale(device: torch.device) -> torch.Tensor:
@@ -55,10 +55,6 @@ if IS_HIP:
             return "native"
         if dtype not in (torch.float16, torch.bfloat16):
             return "native"
-        try:
-            _aiter_cache_module()
-        except Exception:
-            return "native"
         return "aiter"
 
     def _aiter_append_paged_kv_cache(
@@ -71,24 +67,22 @@ if IS_HIP:
         kv_indices: torch.Tensor,
         kv_indptr: torch.Tensor,
     ) -> None:
-        """Route append to AITER reshape_and_cache_flash. Cache layout: [num_pages, page_size, num_kv_heads, head_dim] (NHD)."""
-        page_size = paged_k_cache.size(1)
-        batch_idx_l = batch_indices.long()
-        positions_l = positions.long()
-        page_within = positions_l // page_size
-        offset_in_page = positions_l - page_within * page_size
-        global_page = kv_indices.long().index_select(
-            0, kv_indptr.long()[batch_idx_l] + page_within
-        )
-        slot_mapping = global_page * page_size + offset_in_page
+        """Route append to AITER reshape_and_cache_flash via the compiled shim.
+
+        Cache layout: ``[num_pages, page_size, num_kv_heads, head_dim]`` (NHD).
+        The shim derives AITER's absolute slot indices from FlashInfer's
+        ``(batch_indices, positions)`` + page table in a single kernel.
+        """
         unit = _aiter_unit_scale(paged_k_cache.device)
-        _aiter_cache_module().reshape_and_cache_flash(
+        get_page_aiter_module().append_paged_kv_cache_aiter(
             append_key,
             append_value,
+            batch_indices,
+            positions,
             paged_k_cache,
             paged_v_cache,
-            slot_mapping,
-            "auto",
+            kv_indices,
+            kv_indptr,
             unit,
             unit,
         )
@@ -481,6 +475,12 @@ def append_paged_kv_cache(
             else backend
         )
         if _backend == "aiter":
+            if backend == "aiter":
+                # Explicit opt-in: surface a clear ValueError rather than an
+                # ImportError from the JIT loader, matching norm/rope/activation.
+                from .aiter_utils import require_aiter
+
+                require_aiter(paged_k_cache.device, "append_paged_kv_cache")
             _aiter_append_paged_kv_cache(
                 append_key,
                 append_value,
