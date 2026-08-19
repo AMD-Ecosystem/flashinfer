@@ -494,3 +494,67 @@ def test_mla_warns_only_for_separate_kv_allocations():
     separate = _run(ckv_cache, kpe_cache)
     assert len(separate) == 1
     assert "adjacent halves" in str(separate[0].message)
+
+
+@requires_aiter
+@pytest.mark.parametrize("index_device", ["cuda", "cpu", "mixed"])
+def test_mla_plan_accepts_host_and_mixed_device_indices(index_device):
+    """plan() batches its index tensors into one host copy; placement must not matter.
+
+    The batched path uses torch.cat, which rejects tensors on different devices,
+    so the mixed case exercises the per-tensor fallback.
+    """
+    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+
+    device = torch.device("cuda:0")
+    dtype = torch.bfloat16
+    page_size, num_heads, ckv_dim, kpe_dim = 1, 16, 512, 64
+    kv_lens = [1, 64, 127, 32]
+    batch_size = len(kv_lens)
+
+    ckv_cache, kpe_cache, kv_indptr, kv_indices, _ = _build_paged_kv(
+        batch_size, kv_lens, page_size, ckv_dim, kpe_dim, dtype, device
+    )
+    combined = torch.cat([ckv_cache, kpe_cache], dim=-1).contiguous()
+    split_ckv, split_kpe = combined.split([ckv_dim, kpe_dim], dim=-1)
+
+    qo_indptr = torch.arange(batch_size + 1, dtype=torch.int32, device=device)
+    kv_len_tensor = torch.tensor(kv_lens, dtype=torch.int32, device=device)
+
+    if index_device == "cpu":
+        qo_indptr = qo_indptr.cpu()
+        kv_indptr = kv_indptr.cpu()
+        kv_len_tensor = kv_len_tensor.cpu()
+    elif index_device == "mixed":
+        # qo on host, the rest on device -> torch.cat would raise; fallback path.
+        qo_indptr = qo_indptr.cpu()
+        kv_len_tensor = kv_len_tensor.cpu()
+
+    wrapper = BatchMLAPagedAttentionWrapper(
+        torch.empty(8 * 1024 * 1024, dtype=torch.uint8, device=device)
+    )
+    wrapper.plan(
+        qo_indptr,
+        kv_indptr,
+        kv_indices,
+        kv_len_tensor,
+        num_heads,
+        ckv_dim,
+        kpe_dim,
+        page_size,
+        False,
+        1.0 / math.sqrt(ckv_dim + kpe_dim),
+        dtype,
+        dtype,
+    )
+    assert wrapper._max_seqlen_q == 1
+    assert wrapper._kv_last_page_len.device.type == "cuda"
+    assert torch.equal(
+        wrapper._kv_last_page_len,
+        torch.ones(batch_size, dtype=torch.int32, device=device),
+    )
+
+    q_nope = torch.randn(batch_size, num_heads, ckv_dim, dtype=dtype, device=device)
+    q_pe = torch.randn(batch_size, num_heads, kpe_dim, dtype=dtype, device=device)
+    out = wrapper.run(q_nope, q_pe, split_ckv, split_kpe)
+    assert torch.isfinite(out).all()

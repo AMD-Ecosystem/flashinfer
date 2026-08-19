@@ -68,6 +68,32 @@ def _combined_kv_view(
     )
 
 
+def _gather_plan_inputs_on_host(
+    qo_indptr: torch.Tensor, kv_indptr: torch.Tensor, kv_len_arr: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Fetch the three index tensors :meth:`plan` needs host-side in one transfer.
+
+    ``plan`` reads ``kv_indptr``/``kv_len_arr`` to derive last-page lengths and
+    ``qo_indptr`` to derive ``max_seqlen_q``.  Doing those as separate copies costs
+    a device→host sync each, and a sync is ~70 us on gfx942 regardless of payload —
+    these tensors are only ``batch+1`` int32 elements, so the round-trip count is
+    the whole cost.  Concatenating first makes it one.
+
+    Inputs already on the host stay there (the copy is a no-op, no sync at all).
+    Mixed-device inputs fall back to per-tensor copies, since ``torch.cat`` rejects
+    them.
+    """
+    if qo_indptr.device == kv_indptr.device == kv_len_arr.device:
+        host = torch.cat([qo_indptr, kv_indptr, kv_len_arr]).to("cpu")
+        n_qo, n_kv = qo_indptr.numel(), kv_indptr.numel()
+        return host[:n_qo], host[n_qo : n_qo + n_kv], host[n_qo + n_kv :]
+    return (
+        qo_indptr.to("cpu"),
+        kv_indptr.to("cpu"),
+        kv_len_arr.to("cpu"),
+    )
+
+
 def _kv_lens_to_last_page_len_cpu(
     kv_indptr_cpu: torch.Tensor, kv_lens_cpu: torch.Tensor, page_size: int
 ) -> torch.Tensor:
@@ -273,11 +299,16 @@ class BatchMLAPagedAttentionWrapper:
         self._qo_indptr = qo_indptr.to(self.device, non_blocking=True)
         self._kv_indptr = kv_indptr.to(self.device, non_blocking=True)
         self._kv_indices = kv_indices.to(self.device, non_blocking=True)
-        last_cpu = _kv_lens_to_last_page_len_cpu(kv_indptr, kv_len_arr, page_size)
+        qo_host, kv_indptr_host, kv_lens_host = _gather_plan_inputs_on_host(
+            qo_indptr, kv_indptr, kv_len_arr
+        )
+        last_cpu = _kv_lens_to_last_page_len_cpu(
+            kv_indptr_host, kv_lens_host, page_size
+        )
         self._kv_last_page_len = last_cpu.to(self.device, non_blocking=True)
         self._sm_scale = sm_scale
-        qo_lens = qo_indptr[1:] - qo_indptr[:-1]
-        self._max_seqlen_q = int(qo_lens.max().item()) if len(qo_lens) > 0 else 1
+        qo_lens = qo_host[1:] - qo_host[:-1]
+        self._max_seqlen_q = int(qo_lens.max()) if qo_lens.numel() > 0 else 1
 
     def run(
         self,
