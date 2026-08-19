@@ -6,6 +6,7 @@
 # and routes through aiter.mla.mla_decode_fwd / mla_prefill_fwd.
 
 import functools
+import warnings
 from typing import Optional, Tuple, Union
 
 import torch
@@ -18,6 +19,53 @@ def _aiter_mla():
     import aiter.mla as _m
 
     return _m
+
+
+def _combined_kv_view(
+    ckv_cache: torch.Tensor, kpe_cache: torch.Tensor
+) -> Optional[torch.Tensor]:
+    """AITER's ``[num_pages, page_size, 1, ckv+kpe]`` buffer as a zero-copy view.
+
+    AITER reads a single combined buffer, so :meth:`run` otherwise has to
+    concatenate ``ckv_cache`` and ``kpe_cache`` on every call. That copy covers the
+    *entire allocated page pool*, not just the live pages, so its cost tracks cache
+    capacity rather than the working set.
+
+    Callers that keep the two halves adjacent in one allocation can skip it
+    entirely — which is what production already does (vLLM's
+    ``kv_c_and_k_pe_cache``, SGLang's ``K_Buffer``, both sliced with
+    ``torch.split``). Returns the view when ``ckv_cache`` and ``kpe_cache`` are
+    exactly the two halves of one contiguous ``[num_pages, page_size, ckv+kpe]``
+    buffer, and ``None`` otherwise.
+    """
+    if ckv_cache.dtype != kpe_cache.dtype:
+        return None
+    if ckv_cache.dim() != 3 or kpe_cache.dim() != 3:
+        return None
+    if ckv_cache.shape[:2] != kpe_cache.shape[:2]:
+        return None
+    if ckv_cache.device != kpe_cache.device:
+        return None
+    if ckv_cache.untyped_storage().data_ptr() != kpe_cache.untyped_storage().data_ptr():
+        return None
+
+    num_pages, page_size, head_dim_ckv = ckv_cache.shape
+    width = head_dim_ckv + kpe_cache.shape[2]
+    # kpe must begin exactly where ckv ends, and both must be column slices of one
+    # contiguous [num_pages, page_size, width] buffer. Anything else (padding
+    # between pages, a transposed layout, separate allocations) fails these and
+    # falls back to the copy.
+    if kpe_cache.storage_offset() != ckv_cache.storage_offset() + head_dim_ckv:
+        return None
+    expected_stride = (page_size * width, width, 1)
+    if ckv_cache.stride() != expected_stride or kpe_cache.stride() != expected_stride:
+        return None
+
+    return ckv_cache.as_strided(
+        (num_pages, page_size, 1, width),
+        (page_size * width, width, width, 1),
+        ckv_cache.storage_offset(),
+    )
 
 
 def _kv_lens_to_last_page_len_cpu(
@@ -91,9 +139,19 @@ class BatchMLAPagedAttentionWrapper:
         ``kv_buffer[num_pages, page_size, 1, head_dim_ckv + head_dim_kpe]``
 
     This wrapper accepts the FlashInfer-style separate ``(ckv_cache, kpe_cache)``
-    tuple and concatenates them at run time.  For zero-copy, pre-allocate a single
-    buffer of shape ``[num_pages, page_size, 1, head_dim_ckv + head_dim_kpe]`` and
-    pass it as both arguments (sliced).
+    pair.  **Allocate them as one buffer** — AITER reads a single combined tensor,
+    so two separate allocations force a concatenation on every :meth:`run`, and
+    that copy spans the whole allocated page pool rather than the live pages::
+
+        cache = torch.empty(
+            num_pages, page_size, head_dim_ckv + head_dim_kpe, dtype=..., device=...
+        )
+        ckv_cache, kpe_cache = cache.split([head_dim_ckv, head_dim_kpe], dim=-1)
+
+    :meth:`run` detects that layout and passes a view, copying nothing.  This is
+    how vLLM (``kv_c_and_k_pe_cache``) and SGLang (``K_Buffer``) already store MLA
+    caches, so those callers get the fast path unchanged.  Separate allocations
+    still work but warn once.
 
     Parameters
     ----------
@@ -243,6 +301,10 @@ class BatchMLAPagedAttentionWrapper:
             ``[num_pages, page_size, head_dim_ckv]``.
         kpe_cache : torch.Tensor
             Rope-key cache, shape ``[num_pages, page_size, head_dim_kpe]``.
+            When ``ckv_cache`` and ``kpe_cache`` are adjacent halves of one
+            ``[num_pages, page_size, head_dim_ckv + head_dim_kpe]`` allocation
+            (see the class docstring) they are passed to AITER as a view;
+            otherwise they are concatenated on every call, which warns once.
         out : Optional[torch.Tensor]
             Pre-allocated output, shape ``[total_q, num_heads, head_dim_ckv]``.
         return_lse : bool
@@ -269,9 +331,22 @@ class BatchMLAPagedAttentionWrapper:
             )
 
         q = torch.cat([q_nope, q_pe], dim=-1)
-        # kpe_cache is concatenated each call; pre-allocate a combined [pages, size, 1, ckv+kpe]
-        # buffer and pass sliced views to avoid this copy on hot paths.
-        kv_buffer = torch.cat([ckv_cache.unsqueeze(2), kpe_cache.unsqueeze(2)], dim=-1)
+        kv_buffer = _combined_kv_view(ckv_cache, kpe_cache)
+        if kv_buffer is None:
+            warnings.warn(
+                "MLA: ckv_cache and kpe_cache are not adjacent halves of a single "
+                "allocation, so run() must concatenate them on every call. That "
+                "copy covers the whole allocated page pool, not just the live "
+                "pages, so it scales with cache capacity. Allocate one "
+                "[num_pages, page_size, head_dim_ckv + head_dim_kpe] buffer and "
+                "pass torch.split(buf, [head_dim_ckv, head_dim_kpe], dim=-1) to "
+                "run() for the zero-copy path.",
+                UserWarning,
+                stacklevel=2,
+            )
+            kv_buffer = torch.cat(
+                [ckv_cache.unsqueeze(2), kpe_cache.unsqueeze(2)], dim=-1
+            )
 
         if self._max_seqlen_q == 1:
             _aiter_mla().mla_decode_fwd(

@@ -5,6 +5,7 @@
 # Reference: pure-PyTorch paged MLA attention.
 
 import math
+import warnings
 
 import pytest
 import torch
@@ -341,3 +342,155 @@ def test_mla_backend_rejects_unsupported():
     ws = torch.empty(1, dtype=torch.float32, device=device)
     with pytest.raises(ValueError, match="aiter.*auto"):
         BatchMLAPagedAttentionWrapper(ws, backend="fa2")
+
+
+def test_combined_kv_view_detects_split_buffer():
+    """_combined_kv_view returns a zero-copy view for adjacent halves, else None.
+
+    Pure pointer/stride logic, so CPU tensors exercise it exactly as GPU ones do
+    and no AITER install is needed.
+    """
+    from flashinfer.mla_rocm import _combined_kv_view
+
+    ckv_dim, kpe_dim = 512, 64
+    width = ckv_dim + kpe_dim
+
+    # The layout production uses: one buffer, split along the last dim.
+    cache = torch.empty(8, 4, width, dtype=torch.bfloat16)
+    ckv, kpe = cache.split([ckv_dim, kpe_dim], dim=-1)
+    view = _combined_kv_view(ckv, kpe)
+    assert view is not None
+    assert view.shape == (8, 4, 1, width)
+    assert view.is_contiguous()
+    # A view, not a copy: same storage, no allocation.
+    assert view.data_ptr() == cache.data_ptr()
+    assert view.untyped_storage().data_ptr() == cache.untyped_storage().data_ptr()
+
+    # A layer-indexed cache still yields adjacent halves.
+    layered = torch.empty(3, 8, 4, width, dtype=torch.bfloat16)
+    lckv, lkpe = layered[1].split([ckv_dim, kpe_dim], dim=-1)
+    assert _combined_kv_view(lckv, lkpe) is not None
+
+    # Everything else must fall back rather than alias the wrong memory.
+    sep_ckv = torch.empty(8, 4, ckv_dim, dtype=torch.bfloat16)
+    sep_kpe = torch.empty(8, 4, kpe_dim, dtype=torch.bfloat16)
+    assert _combined_kv_view(sep_ckv, sep_kpe) is None, "separate allocations"
+    assert _combined_kv_view(kpe, ckv) is None, "halves in the wrong order"
+
+    padded = torch.empty(8, 4, width + 8, dtype=torch.bfloat16)
+    assert (
+        _combined_kv_view(padded[..., :ckv_dim], padded[..., ckv_dim:width]) is None
+    ), "padding between rows"
+
+    assert _combined_kv_view(ckv, kpe.to(torch.float16)) is None, "mismatched dtypes"
+
+
+@requires_aiter
+@pytest.mark.parametrize("kv_lens", [[64], [1, 64, 127, 32]])
+def test_mla_combined_kv_buffer_matches_separate(kv_lens):
+    """The zero-copy path and the concatenating fallback agree bitwise.
+
+    Same bytes reach the kernel either way, so this is exact equality, not a
+    tolerance check.
+    """
+    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+
+    device = torch.device("cuda:0")
+    dtype = torch.bfloat16
+    page_size, num_heads, ckv_dim, kpe_dim = 1, 16, 512, 64
+    batch_size = len(kv_lens)
+    sm_scale = 1.0 / math.sqrt(ckv_dim + kpe_dim)
+
+    ckv_cache, kpe_cache, kv_indptr, kv_indices, _ = _build_paged_kv(
+        batch_size, kv_lens, page_size, ckv_dim, kpe_dim, dtype, device
+    )
+    kv_len_tensor = torch.tensor(kv_lens, dtype=torch.int32, device=device)
+
+    # Same values in the combined layout, so any difference is the code path.
+    combined = torch.cat([ckv_cache, kpe_cache], dim=-1).contiguous()
+    split_ckv, split_kpe = combined.split([ckv_dim, kpe_dim], dim=-1)
+
+    torch.manual_seed(42)
+    q_nope = torch.randn(batch_size, num_heads, ckv_dim, dtype=dtype, device=device)
+    q_pe = torch.randn(batch_size, num_heads, kpe_dim, dtype=dtype, device=device)
+    qo_indptr = torch.arange(batch_size + 1, dtype=torch.int32, device=device)
+
+    results = []
+    for ckv, kpe in ((split_ckv, split_kpe), (ckv_cache, kpe_cache)):
+        wrapper = BatchMLAPagedAttentionWrapper(
+            torch.empty(8 * 1024 * 1024, dtype=torch.uint8, device=device)
+        )
+        wrapper.plan(
+            qo_indptr,
+            kv_indptr,
+            kv_indices,
+            kv_len_tensor,
+            num_heads,
+            ckv_dim,
+            kpe_dim,
+            page_size,
+            False,
+            sm_scale,
+            dtype,
+            dtype,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            results.append(wrapper.run(q_nope, q_pe, ckv, kpe).clone())
+
+    assert torch.equal(results[0], results[1])
+    assert torch.isfinite(results[0]).all()
+
+
+@requires_aiter
+def test_mla_warns_only_for_separate_kv_allocations():
+    """Separate ckv/kpe allocations warn; the combined layout stays silent.
+
+    The warning is the only signal a caller gets that every decode step is
+    copying the whole page pool, so it must not fire on the good path.
+    """
+    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+
+    device = torch.device("cuda:0")
+    dtype = torch.bfloat16
+    page_size, num_heads, ckv_dim, kpe_dim = 1, 16, 512, 64
+    kv_lens = [64]
+    batch_size = len(kv_lens)
+
+    ckv_cache, kpe_cache, kv_indptr, kv_indices, _ = _build_paged_kv(
+        batch_size, kv_lens, page_size, ckv_dim, kpe_dim, dtype, device
+    )
+    combined = torch.cat([ckv_cache, kpe_cache], dim=-1).contiguous()
+    split_ckv, split_kpe = combined.split([ckv_dim, kpe_dim], dim=-1)
+
+    q_nope = torch.randn(batch_size, num_heads, ckv_dim, dtype=dtype, device=device)
+    q_pe = torch.randn(batch_size, num_heads, kpe_dim, dtype=dtype, device=device)
+
+    def _run(ckv, kpe):
+        wrapper = BatchMLAPagedAttentionWrapper(
+            torch.empty(8 * 1024 * 1024, dtype=torch.uint8, device=device)
+        )
+        wrapper.plan(
+            torch.arange(batch_size + 1, dtype=torch.int32, device=device),
+            kv_indptr,
+            kv_indices,
+            torch.tensor(kv_lens, dtype=torch.int32, device=device),
+            num_heads,
+            ckv_dim,
+            kpe_dim,
+            page_size,
+            False,
+            1.0 / math.sqrt(ckv_dim + kpe_dim),
+            dtype,
+            dtype,
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            wrapper.run(q_nope, q_pe, ckv, kpe)
+        return [w for w in caught if issubclass(w.category, UserWarning)]
+
+    assert _run(split_ckv, split_kpe) == [], "combined layout must not warn"
+
+    separate = _run(ckv_cache, kpe_cache)
+    assert len(separate) == 1
+    assert "adjacent halves" in str(separate[0].message)
