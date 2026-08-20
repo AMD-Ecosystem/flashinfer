@@ -6,7 +6,7 @@ kernel library to AMD Instinct GPUs — currently
 [CDNA3](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/white-papers/amd-cdna-3-white-paper.pdf)
 (gfx942 — MI300X / MI325X) and
 [CDNA4](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/white-papers/amd-cdna-4-architecture-whitepaper.pdf)
-(gfx950 — MI355X). It ships in-tree HIP ports of the attention,
+(gfx950 — MI350X / MI355X). It ships in-tree HIP ports of the attention,
 KV-cache, RoPE, normalization, sampling, and logits-processor kernels,
 and transparently dispatches a subset of attention paths to AMD's
 [AITER](https://github.com/ROCm/aiter) backend when its compatibility
@@ -78,7 +78,58 @@ HIP is documented in [Known Limitations](#known-limitations) below.
 
 ## GPU, ROCm, and PyTorch Support
 
-**Supported GPUs:** gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI355X).
+**Supported GPUs:** gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI350X, MI355X).
+
+### Per-architecture support matrix
+
+The two architectures are not interchangeable for every op. The table below is
+generated from [`flashinfer/arch_caps.py`](flashinfer/arch_caps.py), which is
+what `backend="auto"` actually consults at runtime — so it cannot drift from
+the routing decisions the library makes. Do not edit it by hand; run
+`python3 scripts/gen_arch_support_matrix.py`.
+
+<!-- BEGIN GENERATED: arch support matrix -- scripts/gen_arch_support_matrix.py -->
+
+| Op | Backend | gfx942 (CDNA3) | gfx950 (CDNA4) |
+| :--- | :--- | :---: | :---: |
+| `batch_decode` | `aiter` | ✅ | ✅ |
+| `single_prefill` | `aiter` | ✅ | ✅ |
+| `batch_prefill` | `aiter` | ✅ | ⚠️[^kb1] |
+| `mla` | `aiter` | ✅ | ✅ |
+| `rope` | `aiter` | ✅ | ✅ |
+| `append_paged_kv_cache` | `aiter` | ✅ | ✅ |
+| `rmsnorm` | `aiter` | ✅ | ✅ |
+| `fused_add_rmsnorm` | `aiter` | ✅ | ✅ |
+| `silu_and_mul` | `aiter` | ✅ | ✅ |
+| `single_decode` | `hip` | ◻️ | ◻️ |
+| `batch_decode` | `hip` | ◻️ | ◻️ |
+| `single_prefill` | `hip` | ◻️ | ◻️ |
+| `batch_prefill` | `hip` | ◻️ | ◻️ |
+| `cascade` | `hip` | ◻️ | ◻️ |
+| `pod` | `hip` | ◻️ | ◻️ |
+| `rope` | `hip` | ◻️ | ◻️ |
+| `append_paged_kv_cache` | `hip` | ◻️ | ◻️ |
+| `rmsnorm` | `hip` | ◻️ | ◻️ |
+| `fused_add_rmsnorm` | `hip` | ◻️ | ◻️ |
+| `layernorm` | `hip` | ◻️ | ◻️ |
+| `sampling` | `hip` | ◻️ | ◻️ |
+| `logits_processor` | `hip` | ◻️ | ◻️ |
+| `silu_and_mul` | `hip` | ◻️ | ◻️ |
+| `quantization` | `hip` | ◻️ | ◻️ |
+
+* ✅ **validated** — a suite was run on that board, and the evidence is recorded below.
+* ◻️ **declared** — supported, but no per-op measurement has been recorded on that architecture.
+* ⚠️ **broken on some toolchains** — usable, but not on every ROCm/AITER version; see the footnote.
+* ❌ **not available** on that architecture.
+
+[^kb1]: `batch_prefill/aiter` on gfx950, ROCm [7.2, 7.3): ROCm 7.2.x miscompiles AITER's causal batch-prefill kernel on gfx950: causal=True with logits_soft_cap=0.0 returns wrong numbers (not an error), 97.6% of elements off. Use ROCm 7.1, or backend='fa2'. Override with `FLASHINFER_ARCH_ALLOW_KNOWN_BAD=1` if you have validated it yourself. <https://github.com/ROCm/aiter/blob/main/op_tests/test_batch_prefill.py>
+
+Measured on:
+
+* `gfx942` — MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-19
+* `gfx950` — MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-19
+
+<!-- END GENERATED: arch support matrix -->
 
 **Supported ROCm versions:** 7.0.2, 7.1.1, 7.2.
 
