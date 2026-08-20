@@ -1,0 +1,44 @@
+# Hardware-less conformance check for the per-op/per-arch capability table.
+#
+# Every other ROCm test in this repo needs an MI300X/MI355X and a ROCm toolchain,
+# so nothing in tests/rocm_tests/ runs on a pull request today. The capability
+# table is the one piece that can: it is pure data plus routing logic, and its
+# suite is written to load flashinfer/arch_caps.py and flashinfer/hip_utils.py
+# directly rather than importing the package (flashinfer/__init__.py raises on a
+# CPU-only torch build). pytest is the only dependency.
+#
+# What this protects: a row added for one architecture but not the other, a
+# gate whose op name no longer matches any call site, a known-bad window that
+# stops matching the version it was written for, or a module-scope `import torch`
+# creeping into the pre-HIP_VISIBLE_DEVICES path. All of those are currently
+# caught only by someone remembering to run the GPU suite.
+name: arch-caps conformance
+
+on:
+  pull_request:
+  push:
+    branches: [amd-integration]
+
+permissions: read-all
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pytest
+        run: python -m pip install --upgrade pip pytest
+
+      # --noconftest: tests/conftest.py and tests/rocm_tests/conftest.py both
+      # import torch and flashinfer at module scope, so collecting under
+      # tests/rocm_tests/ would fail here long before this file is reached. The
+      # suite defines its own fixtures and needs nothing from either conftest;
+      # test_suite_loads_without_torch is what keeps that true.
+      - name: Capability-table conformance (no GPU, no torch)
+        run: pytest --noconftest tests/rocm_tests/test_arch_caps_hip.py
