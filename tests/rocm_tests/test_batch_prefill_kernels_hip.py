@@ -19,6 +19,24 @@ import logging
 logger.setLevel(logging.ERROR)
 
 
+def _skip_if_prefill_gated(device):
+    """Skip when the capability table gates AITER batch prefill on this toolchain.
+
+    A test that asks for ``backend="aiter"`` explicitly gets an
+    ``ArchCapabilityError`` out of the wrapper constructor once the gate applies
+    -- currently gfx950 on ROCm 7.2.x, where the causal kernel is miscompiled.
+    That is the gate doing its job, so a test comparing AITER output against a
+    reference has nothing left to prove and should stand down.
+
+    Use this for tests that assert *numbers*. Tests that only assert plumbing can
+    set ``FLASHINFER_ARCH_ALLOW_KNOWN_BAD=1`` instead and keep their coverage.
+    """
+    from flashinfer.arch_caps import capability_available, capability_reason
+
+    if not capability_available(device, "batch_prefill", "aiter"):
+        pytest.skip(capability_reason(device, "batch_prefill", "aiter"))
+
+
 @pytest.fixture(autouse=True, scope="module")
 def warmup_jit():
     flashinfer.jit.build_jit_specs(
@@ -77,6 +95,8 @@ def test_batch_prefill_with_paged_kv_cache(
         not is_aiter_supported(torch.device("cuda:0")) or not _aiter_ops_importable()
     ):
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    if backend == "aiter":
+        _skip_if_prefill_gated(torch.device("cuda:0"))
 
     if backend == "aiter" and (causal or kv_layout != "NHD"):
         pytest.skip("Not testing for aiter backend with causal or kv_layout != NHD")
@@ -331,6 +351,8 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
         not is_aiter_supported(torch.device("cuda:0")) or not _aiter_ops_importable()
     ):
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    if backend == "aiter":
+        _skip_if_prefill_gated(torch.device("cuda:0"))
 
     if backend == "aiter" and (causal or kv_layout != "NHD"):
         pytest.skip("Not testing for aiter backend with causal")
@@ -567,10 +589,13 @@ def test_batch_prefill_with_ragged_kv_cache(
 ):
     if qo_len > kv_len and causal:
         pytest.skip("qo_len > kv_len and causal is not supported")
-    if backend == "aiter" and (
-        not is_aiter_supported(torch.device("cuda:0")) or not _aiter_ops_importable()
-    ):
-        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    if backend == "aiter":
+        if (
+            not is_aiter_supported(torch.device("cuda:0"))
+            or not _aiter_ops_importable()
+        ):
+            pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+        _skip_if_prefill_gated(torch.device("cuda:0"))
     kv_layout = "NHD"
     q = torch.randn(
         batch_size * qo_len,
@@ -749,6 +774,7 @@ def test_batch_prefill_aiter_flat_gather_bf16(page_size, causal, return_lse):
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
 
     batch_size, qo_len, kv_len = 4, 16, 128
     num_qo_heads, num_kv_heads, head_dim = 8, 8, 128
@@ -844,6 +870,9 @@ def test_batch_prefill_aiter_falls_back_when_native_paging_missing(
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
     if page_size not in _aiter_native_page_sizes():
         pytest.skip(f"page_size={page_size} is not native on this amd-aiter build")
+    # Ends in an assert_close against fa2 with causal=True, so it is a numerics
+    # test despite being named for the fallback.
+    _skip_if_prefill_gated(device)
 
     def _reject(*args, **kwargs):
         raise RuntimeError(
@@ -930,6 +959,10 @@ def test_batch_prefill_aiter_falls_back_when_native_paging_missing(
 
 def test_batch_prefill_aiter_strict_mode_raises(monkeypatch):
     """FLASHINFER_AITER_STRICT=1 must surface the AITER failure instead of degrading."""
+    # Asserts plumbing and compares no numbers, so the ROCm 7.2 gfx950 causal
+    # miscompile cannot affect the outcome. Opt past the capability gate rather
+    # than skip and lose the coverage on the one architecture we can run.
+    monkeypatch.setenv("FLASHINFER_ARCH_ALLOW_KNOWN_BAD", "1")
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
