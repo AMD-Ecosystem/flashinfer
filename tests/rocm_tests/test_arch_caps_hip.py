@@ -141,6 +141,24 @@ class TestTableWellFormed:
             extra = set(cap.archs) - set(FLASHINFER_SUPPORTED_ROCM_ARCHS)
             assert not extra, f"{cap.op}/{cap.backend} declares unknown {extra}"
 
+    def test_table_is_immutable(self):
+        """``frozen=True`` only stops fields being rebound -- a plain dict in
+        ``archs`` would still let any importer edit the global table in place and
+        silently change what every later caller is allowed to route."""
+        cap = arch_caps.CAPABILITIES[0]
+        arch = next(iter(cap.archs))
+        with pytest.raises(TypeError):
+            cap.archs[arch] = None
+        with pytest.raises(TypeError):
+            del cap.archs[arch]
+
+    def test_immutability_does_not_depend_on_the_construction_helper(self):
+        """The coercion lives on ``Capability`` rather than on ``_archs`` so a
+        row built any other way is protected too."""
+        cap = arch_caps.Capability("op", "hip", {"gfx942": arch_caps._OK_942})
+        with pytest.raises(TypeError):
+            cap.archs["gfx950"] = arch_caps._OK_950
+
     def test_known_bad_rows_explain_themselves(self):
         """A gate with no detail is unactionable for whoever hits it."""
         for cap in arch_caps.CAPABILITIES:
@@ -184,21 +202,21 @@ class TestGating:
         for cap in arch_caps.CAPABILITIES:
             if cap.backend != backend:
                 continue
-            assert arch_caps.capability_available(cap.op, cap.backend, None), (
+            assert arch_caps.capability_available(None, cap.op, cap.backend), (
                 f"{cap.op}/{cap.backend} unexpectedly gated on {arch}"
             )
 
     def test_undeclared_arch_is_refused(self, as_arch):
         """An arch nobody declared grants nothing, even for a real op."""
         as_arch("gfx90a")
-        assert not arch_caps.capability_available("rmsnorm", "aiter", None)
+        assert not arch_caps.capability_available(None, "rmsnorm", "aiter")
         with pytest.raises(arch_caps.ArchCapabilityError, match="gfx90a"):
-            arch_caps.require_capability("rmsnorm", "aiter", None)
+            arch_caps.require_capability(None, "rmsnorm", "aiter")
 
     def test_unknown_op_is_refused(self, as_arch):
         as_arch("gfx950")
         with pytest.raises(arch_caps.ArchCapabilityError, match="not declared"):
-            arch_caps.require_capability("no_such_op", "aiter", None)
+            arch_caps.require_capability(None, "no_such_op", "aiter")
 
 
 class TestRocm72CausalPrefill:
@@ -208,40 +226,75 @@ class TestRocm72CausalPrefill:
     def test_gated_on_gfx950_under_rocm_72(self, as_arch, as_toolchain):
         as_arch("gfx950")
         as_toolchain("7.2.0")
-        assert not arch_caps.capability_available("batch_prefill", "aiter", None)
+        assert not arch_caps.capability_available(None, "batch_prefill", "aiter")
         with pytest.raises(arch_caps.ArchCapabilityError, match="known-broken"):
-            arch_caps.require_capability("batch_prefill", "aiter", None)
+            arch_caps.require_capability(None, "batch_prefill", "aiter")
 
     def test_still_gated_on_the_latest_affected_patch(self, as_arch, as_toolchain):
         as_arch("gfx950")
         as_toolchain("7.2.4")
-        assert not arch_caps.capability_available("batch_prefill", "aiter", None)
+        assert not arch_caps.capability_available(None, "batch_prefill", "aiter")
 
     def test_open_on_gfx950_under_rocm_71(self, as_arch, as_toolchain):
         """Measured clean: max_abs_err 0.000250, 12/12 parametrizations pass."""
         as_arch("gfx950")
         as_toolchain("7.1")
-        assert arch_caps.capability_available("batch_prefill", "aiter", None)
+        assert arch_caps.capability_available(None, "batch_prefill", "aiter")
 
     def test_gfx942_unaffected_on_the_same_toolchain(self, as_arch, as_toolchain):
         """This is the whole point of keying on arch as well as version."""
         as_arch("gfx942")
         as_toolchain("7.2.0")
-        assert arch_caps.capability_available("batch_prefill", "aiter", None)
+        assert arch_caps.capability_available(None, "batch_prefill", "aiter")
 
     def test_hip_fallback_stays_open_where_aiter_is_gated(self, as_arch, as_toolchain):
         """The gate is only useful if `auto` has somewhere correct to fall back
         to -- fa2 was measured correct on the same hardware (2.6e-4)."""
         as_arch("gfx950")
         as_toolchain("7.2.0")
-        assert arch_caps.capability_available("batch_prefill", "hip", None)
+        assert arch_caps.capability_available(None, "batch_prefill", "hip")
 
     def test_escape_hatch_opts_in_to_danger(self, as_arch, as_toolchain, monkeypatch):
         """Opt in to the broken path, never opt in to safety."""
         as_arch("gfx950")
         as_toolchain("7.2.0")
         monkeypatch.setenv("FLASHINFER_ARCH_ALLOW_KNOWN_BAD", "1")
-        assert arch_caps.capability_available("batch_prefill", "aiter", None)
+        assert arch_caps.capability_available(None, "batch_prefill", "aiter")
+
+
+class TestVersionProbeIsCheap:
+    """Version detection shells out (``amd-smi``, ``dpkg``, ``hipconfig``, each
+    with a timeout). A per-routing-decision query must not pay that repeatedly."""
+
+    def test_rows_without_a_window_never_probe(self, as_arch, monkeypatch):
+        """23 of 24 rows have no ``known_bad``, so the probe is skipped outright
+        rather than merely being fast the second time."""
+        calls = []
+
+        def counted():
+            calls.append(1)
+            return ("7.2.0", "0.1.10")
+
+        monkeypatch.setattr(arch_caps, "_live_versions", counted)
+        as_arch("gfx950")
+        assert arch_caps.capability_available(None, "rmsnorm", "aiter")
+        assert calls == []
+
+        # ...but a row that does carry a window still consults it.
+        assert not arch_caps.capability_available(None, "batch_prefill", "aiter")
+        assert calls == [1]
+
+    def test_detection_runs_once_per_process(self):
+        """Guards the ``lru_cache``: without it every gated query would re-run
+        the subprocess probes."""
+        arch_caps._live_versions.cache_clear()
+        try:
+            first = arch_caps._live_versions()
+            second = arch_caps._live_versions()
+            assert first == second
+            assert arch_caps._live_versions.cache_info().misses == 1
+        finally:
+            arch_caps._live_versions.cache_clear()
 
 
 class TestArchCapabilityError:

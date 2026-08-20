@@ -23,6 +23,8 @@ which owns *whether the AITER package is importable*.
 import os
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import lru_cache
+from types import MappingProxyType
 from typing import Mapping, Optional, Tuple
 
 __all__ = [
@@ -174,10 +176,26 @@ class ArchSupport:
 
 @dataclass(frozen=True)
 class Capability:
+    """One ``(op, backend)`` row of the table.
+
+    ``frozen=True`` only stops the *fields* being rebound; a plain dict in
+    ``archs`` would still let a caller edit the global table in place
+    (``CAPABILITIES[0].archs["gfx942"] = ...``). ``__post_init__`` wraps it in a
+    :class:`~types.MappingProxyType` so the whole structure is read-only:
+    ``ArchSupport`` and ``KnownBad`` are frozen with tuple fields, so nothing
+    below this point is mutable either.
+
+    The coercion lives here rather than in the construction helper so it holds
+    for every row however it was built.
+    """
+
     op: str
     backend: str
     archs: Mapping[str, ArchSupport] = field(default_factory=dict)
     note: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "archs", MappingProxyType(dict(self.archs)))
 
 
 # --------------------------------------------------------------------------
@@ -222,7 +240,8 @@ _ROCM72_CAUSAL_PREFILL = KnownBad(
 )
 
 
-def _aiter(gfx942: ArchSupport, gfx950: ArchSupport) -> Mapping[str, ArchSupport]:
+def _archs(gfx942: ArchSupport, gfx950: ArchSupport) -> Mapping[str, ArchSupport]:
+    """Positional shorthand for the two architectures every row must declare."""
     return {"gfx942": gfx942, "gfx950": gfx950}
 
 
@@ -236,12 +255,12 @@ _HIP_950 = ArchSupport(Support.SUPPORTED)
 
 CAPABILITIES: Tuple[Capability, ...] = (
     # --- AITER backends: measured on both architectures --------------------
-    Capability("batch_decode", "aiter", _aiter(_OK_942, _OK_950)),
-    Capability("single_prefill", "aiter", _aiter(_OK_942, _OK_950)),
+    Capability("batch_decode", "aiter", _archs(_OK_942, _OK_950)),
+    Capability("single_prefill", "aiter", _archs(_OK_942, _OK_950)),
     Capability(
         "batch_prefill",
         "aiter",
-        _aiter(
+        _archs(
             _OK_942,
             ArchSupport(
                 Support.SUPPORTED,
@@ -251,35 +270,43 @@ CAPABILITIES: Tuple[Capability, ...] = (
             ),
         ),
     ),
-    Capability("mla", "aiter", _aiter(_OK_942, _OK_950)),
-    Capability("rope", "aiter", _aiter(_OK_942, _OK_950)),
-    Capability("append_paged_kv_cache", "aiter", _aiter(_OK_942, _OK_950)),
-    Capability("rmsnorm", "aiter", _aiter(_OK_942, _OK_950)),
-    Capability("fused_add_rmsnorm", "aiter", _aiter(_OK_942, _OK_950)),
-    Capability("activation", "aiter", _aiter(_OK_942, _OK_950)),
+    Capability("mla", "aiter", _archs(_OK_942, _OK_950)),
+    Capability("rope", "aiter", _archs(_OK_942, _OK_950)),
+    Capability("append_paged_kv_cache", "aiter", _archs(_OK_942, _OK_950)),
+    Capability("rmsnorm", "aiter", _archs(_OK_942, _OK_950)),
+    Capability("fused_add_rmsnorm", "aiter", _archs(_OK_942, _OK_950)),
+    Capability("activation", "aiter", _archs(_OK_942, _OK_950)),
     # --- HIP backends: declared; per-op evidence not yet recorded ----------
-    Capability("single_decode", "hip", _aiter(_HIP_942, _HIP_950)),
-    Capability("batch_decode", "hip", _aiter(_HIP_942, _HIP_950)),
-    Capability("single_prefill", "hip", _aiter(_HIP_942, _HIP_950)),
-    Capability("batch_prefill", "hip", _aiter(_HIP_942, _HIP_950)),
-    Capability("cascade", "hip", _aiter(_HIP_942, _HIP_950)),
-    Capability("pod", "hip", _aiter(_HIP_942, _HIP_950)),
-    Capability("rope", "hip", _aiter(_HIP_942, _HIP_950)),
-    Capability("append_paged_kv_cache", "hip", _aiter(_HIP_942, _HIP_950)),
-    Capability("rmsnorm", "hip", _aiter(_HIP_942, _HIP_950)),
-    Capability("fused_add_rmsnorm", "hip", _aiter(_HIP_942, _HIP_950)),
-    Capability("layernorm", "hip", _aiter(_HIP_942, _HIP_950)),
-    Capability("sampling", "hip", _aiter(_HIP_942, _HIP_950)),
-    Capability("logits_processor", "hip", _aiter(_HIP_942, _HIP_950)),
-    Capability("activation", "hip", _aiter(_HIP_942, _HIP_950)),
-    Capability("quantization", "hip", _aiter(_HIP_942, _HIP_950)),
+    Capability("single_decode", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("batch_decode", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("single_prefill", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("batch_prefill", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("cascade", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("pod", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("rope", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("append_paged_kv_cache", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("rmsnorm", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("fused_add_rmsnorm", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("layernorm", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("sampling", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("logits_processor", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("activation", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("quantization", "hip", _archs(_HIP_942, _HIP_950)),
 )
 
 _BY_KEY = {(c.op, c.backend): c for c in CAPABILITIES}
 
 
+@lru_cache(maxsize=1)
 def _live_versions() -> Tuple[Optional[str], Optional[str]]:
-    """``(rocm_version, aiter_version)``, either ``None`` when undetectable."""
+    """``(rocm_version, aiter_version)``, either ``None`` when undetectable.
+
+    Cached for the process lifetime because it is not cheap:
+    ``get_system_rocm_version`` walks up to four detection methods, three of
+    which shell out (``amd-smi``, ``dpkg``, ``hipconfig``) with timeouts. Neither
+    version can change under a running process, so probing once is sufficient
+    even though ``_blocking_reason`` may be called per routing decision.
+    """
     rocm = aiter = None
     try:
         import contextlib
@@ -322,6 +349,10 @@ def _blocking_reason(op: str, backend: str, arch: str) -> Optional[str]:
         )
     if entry.support is Support.UNSUPPORTED:
         return f"{backend} {op} is not supported on {arch}"
+    if not entry.known_bad:
+        # The common case: 23 of 24 rows have no window, so they never pay for
+        # version detection at all.
+        return None
 
     rocm, aiter = _live_versions()
     for bad in entry.known_bad:
@@ -338,20 +369,24 @@ def _blocking_reason(op: str, backend: str, arch: str) -> Optional[str]:
     return None
 
 
-def capability_available(op: str, backend: str, device) -> bool:
+def capability_available(device, op: str, backend: str) -> bool:
     """Whether ``auto`` may route ``op`` to ``backend`` on ``device``.
 
-    Mirrors ``aiter_utils.is_aiter_available`` so it slots underneath the
-    existing selectors without changing their shape.
+    ``device`` leads to match the gating helpers this is meant to replace
+    (``aiter_utils.is_aiter_available(device)``,
+    ``aiter_utils.require_aiter(device, op)``), so migrating a call site is
+    appending ``backend`` rather than reordering. ``op`` and ``backend`` are both
+    ``str``, so an argument-order slip between them would be silent -- keeping
+    the shared prefix identical is what stops one happening.
     """
     return _blocking_reason(op, backend, _device_arch(device)) is None
 
 
-def require_capability(op: str, backend: str, device) -> None:
+def require_capability(device, op: str, backend: str) -> None:
     """Raise :class:`ArchCapabilityError` if ``backend`` cannot serve ``op`` here.
 
-    Mirrors ``aiter_utils.require_aiter`` -- same ``(device, op)`` information,
-    one exception type instead of three.
+    Mirrors ``aiter_utils.require_aiter(device, op)`` -- same information plus
+    the backend, one exception type instead of three.
     """
     reason = _blocking_reason(op, backend, _device_arch(device))
     if reason is not None:
