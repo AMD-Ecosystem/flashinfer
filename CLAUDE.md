@@ -86,19 +86,46 @@ count to avoid HSA/HIPBLAS flakiness under concurrent load. The `slow` marker
 gates 1M-trial sampling and 4 GB tensor tests — exclude with `-m "not slow"`
 for fast iteration.
 
-**AITER is a separate install**: The AITER backend (used by prefill attention
-on gfx942) is not bundled. Install from source:
+**AITER is a separate install, and the version matters**: The AITER backend
+(used by prefill attention on gfx942) is not bundled. Install the pinned wheel:
 
 ```bash
-git clone --recursive https://github.com/ROCm/aiter.git
-cd aiter && python3 setup.py develop
+pip install amd-aiter==0.1.10 --extra-index-url https://pypi.amd.com/rocm-7.1.1/simple
+```
+
+`0.1.10` is what this repo is built and tested against —
+`prefill_rocm.py` records it as `_AITER_LAST_VALIDATED`, and the README's
+[Install AITER wheel package](README.md#install-aiter-wheel-package) section
+explains the index choice. Note `amd-aiter` is **not** on the top-level
+`pypi.amd.com/simple` index, and it must be `--extra-index-url` rather than
+`--index-url` so AITER's own dependencies still resolve from PyPI.
+
+**Only cp310 and cp312 wheels exist** on that channel (verified 2026-08-20).
+On any other interpreter — 3.11, 3.13, 3.14 — the command fails with
+`No matching distribution found`, and there is no pinned-version fallback:
+public PyPI tops out at a stale `0.1.7.post2.dev18`, and the nightlies index
+only carries `>= 0.1.16`. Use CPython 3.12 unless you are prepared to run an
+unvalidated AITER.
+
+A source build (`git clone --recursive https://github.com/ROCm/aiter.git &&
+cd aiter && python3 setup.py develop`) tracks master, which is **many releases
+ahead of the pin with a different C ABI** — symbols the shim expects are
+renamed, hidden rather than `extern "C"`, or absent. Nothing stops you running
+one, but treat it as untested here.
+
+That gap is a trap when working on the C++ shim: read the **installed** tree,
+never a source checkout, before designing against an AITER symbol.
+
+```bash
+nm -D --defined-only -C <site-packages>/aiter/jit/module_<x>.so | grep '<fn>('
+sed -n '/<fn>/,/;/p' <site-packages>/aiter_meta/csrc/include/<hdr>.h
 ```
 
 Check availability in code: `from flashinfer.aiter_utils import is_aiter_supported`
 
 ## Arch ↔ codename
 
-MI300X / MI325X = gfx942 = CDNA3; MI355X = gfx950 = CDNA4.
+MI300X / MI325X = gfx942 = CDNA3; MI350X / MI355X = gfx950 = CDNA4.
 
 External tuning references (CK, AITER, HipKittens) live in the
 `benchmark-kernel` skill; PR/`gh` workflow details live in the `pr-workflow`
