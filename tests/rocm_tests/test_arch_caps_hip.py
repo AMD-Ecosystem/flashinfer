@@ -306,6 +306,46 @@ class TestGating:
         reason = arch_caps.capability_reason(None, "silu_and_mul", "aiter")
         assert "gfx942" in reason and "gfx950" in reason
 
+    @pytest.mark.parametrize(
+        "op,suggested",
+        [
+            # prefill and decode reject 'native' outright -- they take 'fa2'.
+            ("batch_prefill", "fa2"),
+            ("single_prefill", "fa2"),
+            ("batch_decode", "fa2"),
+            ("rope", "native"),
+            ("rmsnorm", "native"),
+            ("silu_and_mul", "native"),
+            ("append_paged_kv_cache", "native"),
+        ],
+    )
+    def test_suggested_fallback_is_one_the_op_accepts(self, as_arch, op, suggested):
+        """The advice has to be followable. A blanket "use backend='native'"
+        would hand prefill and decode users a string their own validation
+        rejects with "Unknown backend", trading one error for a worse one."""
+        as_arch("unknown")
+        reason = arch_caps.capability_reason(None, op, "aiter")
+        assert f"backend={suggested!r}" in reason
+
+    def test_no_fallback_is_suggested_when_none_exists(self, as_arch):
+        """mla accepts only 'auto'/'aiter' (mla_rocm.py:112), so naming any
+        alternative would be a dead end. Say nothing rather than something
+        wrong."""
+        as_arch("unknown")
+        reason = arch_caps.capability_reason(None, "mla", "aiter")
+        assert "gfx942" in reason
+        assert "backend=" not in reason
+
+    def test_declared_fallbacks_are_real_backend_strings(self):
+        """Guards against a typo in the table turning into advice that cannot
+        work. 'auto' is excluded deliberately: suggesting it as the escape from
+        a gate that 'auto' itself already applied would be circular."""
+        for cap in arch_caps.CAPABILITIES:
+            if cap.fallback:
+                assert cap.fallback in {"native", "fa2"}, (
+                    f"{cap.op}/{cap.backend} suggests unknown backend {cap.fallback!r}"
+                )
+
 
 class TestRocm72CausalPrefill:
     """The one measured defect: gfx950 + ROCm 7.2.x miscompiles AITER causal
