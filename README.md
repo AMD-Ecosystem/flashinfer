@@ -6,7 +6,7 @@ kernel library to AMD Instinct GPUs — currently
 [CDNA3](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/white-papers/amd-cdna-3-white-paper.pdf)
 (gfx942 — MI300X / MI325X) and
 [CDNA4](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/white-papers/amd-cdna-4-architecture-whitepaper.pdf)
-(gfx950 — MI355X). It ships in-tree HIP ports of the attention,
+(gfx950 — MI350X / MI355X). It ships in-tree HIP ports of the attention,
 KV-cache, RoPE, normalization, sampling, and logits-processor kernels,
 and transparently dispatches a subset of attention paths to AMD's
 [AITER](https://github.com/ROCm/aiter) backend when its compatibility
@@ -78,7 +78,7 @@ HIP is documented in [Known Limitations](#known-limitations) below.
 
 ## GPU, ROCm, and PyTorch Support
 
-**Supported GPUs:** gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI355X).
+**Supported GPUs:** gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI350X, MI355X).
 
 ### Per-architecture support matrix
 

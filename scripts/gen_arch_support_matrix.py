@@ -72,7 +72,19 @@ def _load_arch_caps():
     sys.modules[pkg_name] = package
 
     qualified = f"{pkg_name}.arch_caps"
-    spec = importlib.util.spec_from_file_location(qualified, PKG_DIR / "arch_caps.py")
+    source = PKG_DIR / "arch_caps.py"
+    # Two separate failures, both of which otherwise surface inside a pre-commit
+    # hook as a traceback that does not say which file was being loaded:
+    #   - the file is missing or unreadable. spec_from_file_location happily
+    #     returns a spec for a path that does not exist, so this has to be
+    #     checked here rather than inferred from the spec.
+    #   - the spec or its loader is None, which is what happens if the module is
+    #     ever renamed to something importlib has no source loader for.
+    if not source.is_file():
+        raise SystemExit(f"cannot read the capability table at {source}")
+    spec = importlib.util.spec_from_file_location(qualified, source)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"no Python source loader for {source}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[qualified] = module
     spec.loader.exec_module(module)
@@ -109,7 +121,12 @@ def _window(bad) -> str:
 
 
 def _cell(entry, footnote_ids: dict[int, int]) -> str:
-    if entry is None or entry.support is not entry.support.SUPPORTED:
+    # `type(...)` reaches the Support enum itself. Reading the member off another
+    # member (entry.support.SUPPORTED) resolves to the same object today, but
+    # only because enums still allow that lookup -- it has been on and off the
+    # deprecation list, and it reads as though SUPPORTED were an attribute of
+    # the value rather than a sibling member.
+    if entry is None or entry.support is not type(entry.support).SUPPORTED:
         return UNSUPPORTED
     if entry.known_bad:
         refs = "".join(f"[^kb{footnote_ids[id(bad)]}]" for bad in entry.known_bad)
@@ -206,7 +223,10 @@ def main() -> int:
     parser.add_argument("files", nargs="*", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
-    current = README.read_text()
+    # The rendered block contains emoji, so the encoding cannot be left to the
+    # locale: a pre-commit run under LC_ALL=C would raise UnicodeDecodeError
+    # here and UnicodeEncodeError on the write below.
+    current = README.read_text(encoding="utf-8")
     updated = splice(current, render(_load_arch_caps()))
 
     if args.check:
@@ -234,7 +254,7 @@ def main() -> int:
         return 0
 
     if current != updated:
-        README.write_text(updated)
+        README.write_text(updated, encoding="utf-8")
         print(f"updated {README.relative_to(REPO_ROOT)}")
     else:
         print(f"{README.relative_to(REPO_ROOT)} already up to date")
