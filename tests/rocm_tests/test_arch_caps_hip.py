@@ -12,11 +12,13 @@ we can.
 import pathlib
 import subprocess
 import sys
+import types
 
 import pytest
 
 from flashinfer import arch_caps
 from flashinfer.arch_caps import normalize_arch
+from flashinfer.hip_utils import FLASHINFER_SUPPORTED_ROCM_ARCHS
 
 
 class TestNormalizeArch:
@@ -82,3 +84,286 @@ assert "torch" not in sys.modules, "arch_caps.py imported torch"
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
     )
     assert result.returncode == 0, result.stderr
+
+
+# --------------------------------------------------------------------------
+# Capability table
+#
+# Everything below is GPU-free by construction: the arch is monkeypatched.
+# That is the point -- it lets the architecture we cannot physically reach be
+# tested on whichever one we happen to have. Historically that meant simulating
+# gfx950 on a CDNA3 box; today it is the reverse.
+# --------------------------------------------------------------------------
+
+# Derived, not hard-coded: adding an arch to the allowlist must automatically
+# start exercising it in the routing tests below, not merely in the
+# declaration check. hip_utils is torch-free at module scope, and this file
+# already imports the package, so hoisting the import costs nothing.
+SUPPORTED_ARCHS = tuple(FLASHINFER_SUPPORTED_ROCM_ARCHS)
+
+
+@pytest.fixture
+def as_arch(monkeypatch):
+    """Pretend the running device is a given architecture."""
+
+    def _set(arch):
+        monkeypatch.setattr(arch_caps, "_device_arch", lambda _device=None: arch)
+
+    return _set
+
+
+@pytest.fixture
+def as_toolchain(monkeypatch):
+    """Pretend a given (rocm, aiter) pair is installed."""
+
+    def _set(rocm, aiter="0.1.10"):
+        monkeypatch.setattr(arch_caps, "_live_versions", lambda: (rocm, aiter))
+
+    return _set
+
+
+class TestTableWellFormed:
+    def test_keys_are_unique(self):
+        keys = [(c.op, c.backend) for c in arch_caps.CAPABILITIES]
+        assert len(keys) == len(set(keys)), "duplicate (op, backend) row"
+
+    def test_duplicate_rows_are_refused_at_index_time(self):
+        """A dict comprehension would let the later of two contradictory rows
+        win silently. Raising means a duplicate cannot reach a routing decision
+        even if it somehow reaches an interpreter without this suite."""
+        rows = (
+            arch_caps.Capability("rmsnorm", "aiter", {"gfx942": arch_caps._OK_942}),
+            arch_caps.Capability("rmsnorm", "aiter", {"gfx942": arch_caps._OK_950}),
+        )
+        with pytest.raises(ValueError, match="duplicate capability row"):
+            arch_caps._index(rows)
+
+    def test_all_lists_every_public_name(self):
+        """A public name absent from ``__all__`` is invisible to ``import *``
+        and to doc tooling. ``Capability`` was, even though ``CAPABILITIES`` is
+        exported and every element of it is one."""
+        defined_here = {
+            name
+            for name, obj in vars(arch_caps).items()
+            if not name.startswith("_")
+            and not isinstance(obj, types.ModuleType)
+            # Classes and functions carry __module__; module-level constants
+            # do not, so admit those by their naming convention.
+            and (
+                getattr(obj, "__module__", None) == arch_caps.__name__ or name.isupper()
+            )
+        }
+        assert defined_here == set(arch_caps.__all__)
+
+    def test_backends_are_known(self):
+        assert {c.backend for c in arch_caps.CAPABILITIES} == {"aiter", "hip"}
+
+    def test_every_supported_arch_declared_in_every_row(self):
+        """The guard rail: adding an arch to FLASHINFER_SUPPORTED_ROCM_ARCHS
+        must fail here until each op declares it, rather than silently
+        inheriting support."""
+        for cap in arch_caps.CAPABILITIES:
+            missing = set(FLASHINFER_SUPPORTED_ROCM_ARCHS) - set(cap.archs)
+            assert not missing, f"{cap.op}/{cap.backend} does not declare {missing}"
+
+    def test_no_arch_keys_outside_the_supported_list(self):
+        for cap in arch_caps.CAPABILITIES:
+            extra = set(cap.archs) - set(FLASHINFER_SUPPORTED_ROCM_ARCHS)
+            assert not extra, f"{cap.op}/{cap.backend} declares unknown {extra}"
+
+    def test_table_is_immutable(self):
+        """``frozen=True`` only stops fields being rebound -- a plain dict in
+        ``archs`` would still let any importer edit the global table in place and
+        silently change what every later caller is allowed to route."""
+        cap = arch_caps.CAPABILITIES[0]
+        arch = next(iter(cap.archs))
+        with pytest.raises(TypeError):
+            cap.archs[arch] = None
+        with pytest.raises(TypeError):
+            del cap.archs[arch]
+
+    def test_immutability_does_not_depend_on_the_construction_helper(self):
+        """The coercion lives on ``Capability`` rather than on ``_archs`` so a
+        row built any other way is protected too."""
+        cap = arch_caps.Capability("op", "hip", {"gfx942": arch_caps._OK_942})
+        with pytest.raises(TypeError):
+            cap.archs["gfx950"] = arch_caps._OK_950
+
+    def test_known_bad_rows_explain_themselves(self):
+        """A gate with no detail is unactionable for whoever hits it."""
+        for cap in arch_caps.CAPABILITIES:
+            for arch, entry in cap.archs.items():
+                for bad in entry.known_bad:
+                    assert bad.detail, f"{cap.op}/{cap.backend}/{arch}: empty detail"
+
+
+class TestVersionWindow:
+    @pytest.mark.parametrize(
+        "rocm,expected",
+        [
+            ("7.1", False),
+            ("7.1.1", False),
+            ("7.2", True),
+            ("7.2.0", True),
+            ("7.2.4", True),  # measured: bit-identical failure to 7.2.0
+            ("7.3", False),
+            ("7.14", False),  # (7,14) > (7,3): a later release, not 7.1.4
+        ],
+    )
+    def test_rocm_window_is_half_open(self, rocm, expected):
+        bad = arch_caps.KnownBad(rocm_min="7.2", rocm_max="7.3")
+        assert bad.matches(rocm, None) is expected
+
+    @pytest.mark.parametrize(
+        "low,high,reported,expected",
+        [
+            # "7.2" and "7.2.0" name the same release, so the window must not
+            # care which form the machine reports. Raw tuple comparison makes
+            # (7, 2) < (7, 2, 0), which would drop the gate for the first row.
+            ("7.2.0", "7.3.0", "7.2", True),
+            ("7.2", "7.3", "7.2.0", True),
+            ("7.2.0", "7.3.0", "7.2.0", True),
+            # Padding must not blur the exclusive upper bound.
+            ("7.2.0", "7.3", "7.3.0", False),
+            ("7.2.0", "7.3.0", "7.3", False),
+            # ...nor the inclusive lower one.
+            ("7.2.0", "7.3.0", "7.1", False),
+        ],
+    )
+    def test_absent_components_are_zero_not_lower(self, low, high, reported, expected):
+        """`get_system_rocm_version_from_hipconfig` matches
+        ``\\d+\\.\\d+(?:\\.\\d+)?`` -- the patch component is optional, and on
+        TheRock builds that is the only detection method consulted, so a bare
+        "7.2" is a state we can actually be handed."""
+        bad = arch_caps.KnownBad(rocm_min=low, rocm_max=high)
+        assert bad.matches(reported, None) is expected
+
+    def test_unknown_version_does_not_match(self):
+        """Refusing to route because a version could not be read would break
+        machines that are probably fine."""
+        bad = arch_caps.KnownBad(rocm_min="7.2", rocm_max="7.3")
+        assert bad.matches(None, None) is False
+
+
+class TestGating:
+    @pytest.mark.parametrize("arch", SUPPORTED_ARCHS)
+    @pytest.mark.parametrize("backend", ["aiter", "hip"])
+    def test_declared_rows_are_routable_on_a_clean_toolchain(
+        self, as_arch, as_toolchain, arch, backend
+    ):
+        as_arch(arch)
+        as_toolchain("7.1")  # outside every known_bad window
+        for cap in arch_caps.CAPABILITIES:
+            if cap.backend != backend:
+                continue
+            assert arch_caps.capability_available(None, cap.op, cap.backend), (
+                f"{cap.op}/{cap.backend} unexpectedly gated on {arch}"
+            )
+
+    def test_undeclared_arch_is_refused(self, as_arch):
+        """An arch nobody declared grants nothing, even for a real op."""
+        as_arch("gfx90a")
+        assert not arch_caps.capability_available(None, "rmsnorm", "aiter")
+        with pytest.raises(arch_caps.ArchCapabilityError, match="gfx90a"):
+            arch_caps.require_capability(None, "rmsnorm", "aiter")
+
+    def test_unknown_op_is_refused(self, as_arch):
+        as_arch("gfx950")
+        with pytest.raises(arch_caps.ArchCapabilityError, match="not declared"):
+            arch_caps.require_capability(None, "no_such_op", "aiter")
+
+
+class TestRocm72CausalPrefill:
+    """The one measured defect: gfx950 + ROCm 7.2.x miscompiles AITER causal
+    batch prefill. gfx942 is fine on the same toolchain."""
+
+    def test_gated_on_gfx950_under_rocm_72(self, as_arch, as_toolchain):
+        as_arch("gfx950")
+        as_toolchain("7.2.0")
+        assert not arch_caps.capability_available(None, "batch_prefill", "aiter")
+        with pytest.raises(arch_caps.ArchCapabilityError, match="known-broken"):
+            arch_caps.require_capability(None, "batch_prefill", "aiter")
+
+    def test_still_gated_on_the_latest_affected_patch(self, as_arch, as_toolchain):
+        as_arch("gfx950")
+        as_toolchain("7.2.4")
+        assert not arch_caps.capability_available(None, "batch_prefill", "aiter")
+
+    def test_open_on_gfx950_under_rocm_71(self, as_arch, as_toolchain):
+        """Measured clean: max_abs_err 0.000250, 12/12 parametrizations pass."""
+        as_arch("gfx950")
+        as_toolchain("7.1")
+        assert arch_caps.capability_available(None, "batch_prefill", "aiter")
+
+    def test_gfx942_unaffected_on_the_same_toolchain(self, as_arch, as_toolchain):
+        """This is the whole point of keying on arch as well as version."""
+        as_arch("gfx942")
+        as_toolchain("7.2.0")
+        assert arch_caps.capability_available(None, "batch_prefill", "aiter")
+
+    def test_hip_fallback_stays_open_where_aiter_is_gated(self, as_arch, as_toolchain):
+        """The gate is only useful if `auto` has somewhere correct to fall back
+        to -- fa2 was measured correct on the same hardware (2.6e-4)."""
+        as_arch("gfx950")
+        as_toolchain("7.2.0")
+        assert arch_caps.capability_available(None, "batch_prefill", "hip")
+
+    def test_escape_hatch_opts_in_to_danger(self, as_arch, as_toolchain, monkeypatch):
+        """Opt in to the broken path, never opt in to safety."""
+        as_arch("gfx950")
+        as_toolchain("7.2.0")
+        monkeypatch.setenv("FLASHINFER_ARCH_ALLOW_KNOWN_BAD", "1")
+        assert arch_caps.capability_available(None, "batch_prefill", "aiter")
+
+
+class TestVersionProbeIsCheap:
+    """Version detection shells out (``amd-smi``, ``dpkg``, ``hipconfig``, each
+    with a timeout). A per-routing-decision query must not pay that repeatedly."""
+
+    def test_rows_without_a_window_never_probe(self, as_arch, monkeypatch):
+        """23 of 24 rows have no ``known_bad``, so the probe is skipped outright
+        rather than merely being fast the second time."""
+        calls = []
+
+        def counted():
+            calls.append(1)
+            return ("7.2.0", "0.1.10")
+
+        monkeypatch.setattr(arch_caps, "_live_versions", counted)
+        as_arch("gfx950")
+        assert arch_caps.capability_available(None, "rmsnorm", "aiter")
+        assert calls == []
+
+        # ...but a row that does carry a window still consults it.
+        assert not arch_caps.capability_available(None, "batch_prefill", "aiter")
+        assert calls == [1]
+
+    def test_detection_runs_once_per_process(self):
+        """Guards the ``lru_cache``: without it every gated query would re-run
+        the subprocess probes."""
+        arch_caps._live_versions.cache_clear()
+        try:
+            first = arch_caps._live_versions()
+            second = arch_caps._live_versions()
+            assert first == second
+            assert arch_caps._live_versions.cache_info().misses == 1
+        finally:
+            arch_caps._live_versions.cache_clear()
+
+
+class TestArchCapabilityError:
+    def test_satisfies_every_existing_catcher(self):
+        """Routing three divergent exception types through one class only works
+        if the old ones still catch it.
+
+        ValueError: test_activation_aiter_hip.py:67 asserts on it.
+        RuntimeError: test_batch_prefill_bf16_custom_mask_hip.py:157 catches it.
+        """
+        err = arch_caps.ArchCapabilityError("boom")
+        assert isinstance(err, ValueError)
+        assert isinstance(err, RuntimeError)
+
+    def test_is_not_an_import_error(self):
+        """A missing aiter package is a different condition and keeps its own
+        exception type."""
+        assert not isinstance(arch_caps.ArchCapabilityError("x"), ImportError)
