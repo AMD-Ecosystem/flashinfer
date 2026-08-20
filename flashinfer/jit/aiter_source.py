@@ -25,9 +25,11 @@ import shutil
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
+from filelock import FileLock
+
 from ..arch_caps import normalize_arch
 from . import env as jit_env
-from .core import logger
+from .core import JitSpec, logger
 
 
 _DEFAULT_BUILD_ARCH = "gfx942"
@@ -178,6 +180,48 @@ def _aiter_libs_dir() -> Path:
     d = jit_env.FLASHINFER_CACHE_DIR / "aiter_libs" / _aiter_cache_tag()
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def refresh_aiter_jitspec(spec: JitSpec) -> JitSpec:
+    """Regenerate ``build.ninja`` so a changed AITER library path takes effect.
+
+    The AITER shim libs live outside the JIT tree, under
+    ``aiter_libs/<arch>__aiter-<version>/``, and reach the module only as an
+    ``-L``/``-rpath`` on the link line. ``JitSpec.build()`` writes ``build.ninja``
+    only when it is missing, so once a module has been built the recorded link
+    line is never revisited -- the module keeps loading whichever AITER lib it
+    was first built against, even after the resolved architecture changes.
+
+    That is not a stale-build annoyance: the ``.so`` retains a RUNPATH into the
+    old directory, so a module cached under ``.../gfx950/`` can go on loading a
+    gfx942 library and **segfault**, and clearing ``FLASHINFER_ROCM_ARCH_LIST``
+    or setting it correctly does not fix it. Only deleting the cache does.
+
+    ``write_ninja`` funnels through ``write_if_different``, so this is free when
+    nothing changed and rewrites exactly when the link line moves; ninja then
+    relinks on its own.
+
+    Only the JIT path is touched. An AOT-prebuilt module is loaded straight from
+    ``aot_path`` and a ``FLASHINFER_DISABLE_JIT`` run raises before ninja is
+    consulted, so in both cases the manifest has no reader and rewriting it would
+    be pure filesystem noise.
+
+    The write takes ``spec.lock_path`` -- the same lock ``JitSpec.build()`` holds
+    while ninja runs -- because ``write_if_different`` truncates in place. Without
+    it a concurrent builder (``pytest -n auto`` shares one JIT cache across
+    processes) could have the manifest emptied under it mid-read.
+
+    Args:
+        spec: The freshly created :class:`~flashinfer.jit.core.JitSpec`.
+
+    Returns:
+        The same spec, for use as ``return refresh_aiter_jitspec(gen_jit_spec(...))``.
+    """
+    if spec.is_aot or os.environ.get("FLASHINFER_DISABLE_JIT"):
+        return spec
+    with FileLock(spec.lock_path, thread_local=False):
+        spec.write_ninja()
+    return spec
 
 
 @functools.lru_cache(maxsize=1)
