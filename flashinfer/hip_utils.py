@@ -3,14 +3,75 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import functools
+import logging
 
 # arch_caps imports nothing (in particular, not torch), so importing it here
 # keeps this module safe to import before the HIP runtime starts -- which
 # tests/conftest.py relies on to set HIP_VISIBLE_DEVICES first.
 from .arch_caps import normalize_arch
 
+logger = logging.getLogger(__name__)
+
 # AMDGPU archs supported by amd-flashinfer
 FLASHINFER_SUPPORTED_ROCM_ARCHS = ["gfx942", "gfx950"]
+
+
+def resolve_target_archs(arch_list: str = None) -> str:
+    """Return the architectures to build for, as a comma-separated string.
+
+    The single answer to "what are we compiling for". Resolution order:
+
+    1. ``arch_list``, when a caller passes one explicitly.
+    2. ``FLASHINFER_ROCM_ARCH_LIST``.
+    3. The architectures of the supported GPUs actually present.
+    4. Every architecture FlashInfer supports, with a warning.
+
+    Step 4 replaces a hard-coded ``"gfx942"`` that three call sites reached
+    independently. On a CDNA4 host that literal was not a conservative default
+    but a wrong answer: ``validate_flashinfer_rocm_arch(arch_list=None)``
+    returned ``{"gfx942"}`` on a gfx950 device while ``CompilationContext``
+    compiled for gfx950, so the check that exists to catch "your PyTorch was not
+    built for this architecture" was validating an architecture nobody was
+    building for. Vacuous on a PyTorch carrying both; a spurious hard failure on
+    an arch-specific build that carries only gfx950.
+
+    Building for everything we support is the honest fallback when we cannot
+    tell: slower and fatter, but correct on whichever card the result lands on,
+    which a guess is not. It is warned so a GPU-less build host is told to set
+    the variable rather than silently paying for it.
+
+    Detection uses rocminfo rather than ``torch.cuda`` so this stays callable
+    before the HIP runtime starts, and keeps this module importable without
+    torch -- see ``tests/rocm_tests/test_arch_caps_hip.py``.
+    """
+    import os
+
+    if arch_list:
+        return arch_list
+
+    from_env = os.environ.get("FLASHINFER_ROCM_ARCH_LIST")
+    if from_env:
+        return from_env
+
+    detected = sorted(
+        {
+            arch
+            for arch, _ in rocminfo_gpu_agents()
+            if arch in FLASHINFER_SUPPORTED_ROCM_ARCHS
+        }
+    )
+    if detected:
+        return ",".join(detected)
+
+    fallback = ",".join(FLASHINFER_SUPPORTED_ROCM_ARCHS)
+    logger.warning(
+        "No supported AMD GPU detected and FLASHINFER_ROCM_ARCH_LIST is unset; "
+        "building for every supported architecture (%s). This is slower than "
+        "targeting one. Set FLASHINFER_ROCM_ARCH_LIST to the architecture you "
+        "are building for.",
+        fallback,
+    )
+    return fallback
 
 
 def get_rocm_home():
@@ -190,7 +251,7 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
 
     Args:
         arch_list: Comma-separated list of architectures (e.g., "gfx942,gfx90a").
-                   If None, reads from FLASHINFER_ROCM_ARCH_LIST env var or defaults to "gfx942"
+                   If None, resolved by :func:`resolve_target_archs`.
         verbose: Whether to print validation messages
 
     Returns:
@@ -199,7 +260,6 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
     Raises:
         RuntimeError: If ROCm not found or architectures not supported
     """
-    import os
 
     # ROCm compatibility matrix: version -> supported gfx architectures
     # Refer: https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html
@@ -234,7 +294,7 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
 
     # Get architecture list from parameter, env var, or default
     if arch_list is None:
-        arch_list = os.environ.get("FLASHINFER_ROCM_ARCH_LIST", "gfx942")
+        arch_list = resolve_target_archs()
 
     # Validate system has ROCm installed
     system_rocm_version = get_system_rocm_version()
@@ -315,11 +375,10 @@ def validate_flashinfer_rocm_arch(
     Raises:
         RuntimeError: If any validation step fails with clear error message
     """
-    import os
 
     # Get architecture list from parameter, env var, or default
     if arch_list is None:
-        arch_list = os.environ.get("FLASHINFER_ROCM_ARCH_LIST", "gfx942")
+        arch_list = resolve_target_archs()
 
     # Step 1: Validate against system ROCm version (reuse existing logic)
     validated_arch_list = validate_rocm_arch(arch_list=arch_list, verbose=verbose)

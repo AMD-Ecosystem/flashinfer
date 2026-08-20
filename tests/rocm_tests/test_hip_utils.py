@@ -23,6 +23,7 @@ from flashinfer.hip_utils import (
     get_supported_device_indices,
     get_system_rocm_version_from_hipconfig,
     is_therock_build,
+    resolve_target_archs,
     validate_flashinfer_rocm_arch,
     validate_rocm_arch,
 )
@@ -137,7 +138,87 @@ class TestGetSystemRocmVersionFromHipconfig:
             assert get_system_rocm_version_from_hipconfig() is None
 
 
-# validate_rocm_arch
+# resolve_target_archs
+class TestResolveTargetArchs:
+    """The single resolver every build path now consults.
+
+    Before it existed, three call sites answered "what are we building for"
+    independently and could disagree: on a gfx950 host,
+    ``validate_flashinfer_rocm_arch(arch_list=None)`` returned ``{"gfx942"}``
+    while ``CompilationContext`` emitted ``--offload-arch=gfx950``.
+    """
+
+    def _agents(self, *archs):
+        return patch(
+            "flashinfer.hip_utils.rocminfo_gpu_agents",
+            return_value=tuple((arch, "") for arch in archs),
+        )
+
+    def test_explicit_argument_wins(self, monkeypatch):
+        monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "gfx950")
+        with self._agents("gfx950"):
+            assert resolve_target_archs("gfx942") == "gfx942"
+
+    def test_env_var_beats_detection(self, monkeypatch):
+        """An explicit request is honoured even when it is not what is plugged in
+        -- cross-compiling for the other architecture must stay possible."""
+        monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "gfx942")
+        with self._agents("gfx950"):
+            assert resolve_target_archs() == "gfx942"
+
+    def test_detects_the_running_device(self, monkeypatch):
+        monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+        with self._agents("gfx950"):
+            assert resolve_target_archs() == "gfx950"
+
+    def test_detects_every_distinct_supported_arch(self, monkeypatch):
+        monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+        with self._agents("gfx942", "gfx950", "gfx942"):
+            assert resolve_target_archs() == "gfx942,gfx950"
+
+    def test_ignores_unsupported_agents(self, monkeypatch):
+        """An integrated GPU alongside the dGPU must not widen the target set."""
+        monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+        with self._agents("gfx1035", "gfx950"):
+            assert resolve_target_archs() == "gfx950"
+
+    def test_no_device_builds_for_everything_supported(self, monkeypatch, caplog):
+        """A GPU-less build host gets a fat build, not a guess.
+
+        Picking one architecture here is what produced a silently gfx942-only
+        artifact on a machine that could not confirm anything. Building for all
+        supported architectures is slower but correct wherever it lands, and the
+        warning tells the operator how to make it cheaper.
+        """
+        monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+        with self._agents(), caplog.at_level("WARNING"):
+            assert resolve_target_archs() == ",".join(FLASHINFER_SUPPORTED_ROCM_ARCHS)
+        assert "FLASHINFER_ROCM_ARCH_LIST" in caplog.text
+
+    def test_agrees_with_the_compilation_context(self, monkeypatch):
+        """The property the whole change exists for: the validator and the thing
+        that emits --offload-arch must not disagree."""
+        monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+        from flashinfer.compilation_context_hip import CompilationContext
+
+        with (
+            self._agents("gfx950"),
+            patch("flashinfer.hip_utils.get_system_rocm_version", return_value="7.1.0"),
+        ):
+            _, validated = validate_flashinfer_rocm_arch(
+                arch_list=None, torch_cpp_ext_module=_FakeCppExt(), verbose=False
+            )
+            assert validated == CompilationContext().TARGET_ROCM_ARCHS
+
+
+class _FakeCppExt:
+    """Stands in for torch.utils.cpp_extension: claims both archs are built in."""
+
+    @staticmethod
+    def _get_rocm_arch_flags():
+        return [f"--offload-arch={a}" for a in FLASHINFER_SUPPORTED_ROCM_ARCHS]
+
+
 class TestValidateRocmArch:
     def _patch_rocm_version(self, version):
         return patch(
@@ -188,10 +269,24 @@ class TestValidateRocmArch:
         with self._patch_rocm_version("7.1.0"):
             assert validate_rocm_arch(arch_list=None) == "gfx942"
 
-    def test_defaults_to_gfx942_when_no_env_and_no_arg(self, monkeypatch):
+    def test_falls_back_to_the_running_device_not_a_hard_coded_arch(self, monkeypatch):
+        """With no argument and no env var, follow the hardware.
+
+        This used to assert ``== "gfx942"``, encoding the literal that made
+        ``validate_flashinfer_rocm_arch(arch_list=None)`` answer ``gfx942`` on a
+        gfx950 device while CompilationContext compiled for gfx950. A test that
+        pins a wrong constant is how the constant survives, so it is now pinned
+        to the detected architecture instead.
+        """
         monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
-        with self._patch_rocm_version("7.1.0"):
-            assert validate_rocm_arch(arch_list=None) == "gfx942"
+        with (
+            self._patch_rocm_version("7.1.0"),
+            patch(
+                "flashinfer.hip_utils.rocminfo_gpu_agents",
+                return_value=(("gfx950", "AMD Instinct MI350X"),),
+            ),
+        ):
+            assert validate_rocm_arch(arch_list=None) == "gfx950"
 
     def test_verbose_prints_message(self, capsys):
         with self._patch_rocm_version("7.1.0"):
