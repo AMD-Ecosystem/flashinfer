@@ -12,6 +12,7 @@ we can.
 import pathlib
 import subprocess
 import sys
+import types
 
 import pytest
 
@@ -137,6 +138,23 @@ class TestTableWellFormed:
         with pytest.raises(ValueError, match="duplicate capability row"):
             arch_caps._index(rows)
 
+    def test_all_lists_every_public_name(self):
+        """A public name absent from ``__all__`` is invisible to ``import *``
+        and to doc tooling. ``Capability`` was, even though ``CAPABILITIES`` is
+        exported and every element of it is one."""
+        defined_here = {
+            name
+            for name, obj in vars(arch_caps).items()
+            if not name.startswith("_")
+            and not isinstance(obj, types.ModuleType)
+            # Classes and functions carry __module__; module-level constants
+            # do not, so admit those by their naming convention.
+            and (
+                getattr(obj, "__module__", None) == arch_caps.__name__ or name.isupper()
+            )
+        }
+        assert defined_here == set(arch_caps.__all__)
+
     def test_backends_are_known(self):
         assert {c.backend for c in arch_caps.CAPABILITIES} == {"aiter", "hip"}
 
@@ -195,6 +213,30 @@ class TestVersionWindow:
     def test_rocm_window_is_half_open(self, rocm, expected):
         bad = arch_caps.KnownBad(rocm_min="7.2", rocm_max="7.3")
         assert bad.matches(rocm, None) is expected
+
+    @pytest.mark.parametrize(
+        "low,high,reported,expected",
+        [
+            # "7.2" and "7.2.0" name the same release, so the window must not
+            # care which form the machine reports. Raw tuple comparison makes
+            # (7, 2) < (7, 2, 0), which would drop the gate for the first row.
+            ("7.2.0", "7.3.0", "7.2", True),
+            ("7.2", "7.3", "7.2.0", True),
+            ("7.2.0", "7.3.0", "7.2.0", True),
+            # Padding must not blur the exclusive upper bound.
+            ("7.2.0", "7.3", "7.3.0", False),
+            ("7.2.0", "7.3.0", "7.3", False),
+            # ...nor the inclusive lower one.
+            ("7.2.0", "7.3.0", "7.1", False),
+        ],
+    )
+    def test_absent_components_are_zero_not_lower(self, low, high, reported, expected):
+        """`get_system_rocm_version_from_hipconfig` matches
+        ``\\d+\\.\\d+(?:\\.\\d+)?`` -- the patch component is optional, and on
+        TheRock builds that is the only detection method consulted, so a bare
+        "7.2" is a state we can actually be handed."""
+        bad = arch_caps.KnownBad(rocm_min=low, rocm_max=high)
+        assert bad.matches(reported, None) is expected
 
     def test_unknown_version_does_not_match(self):
         """Refusing to route because a version could not be read would break

@@ -31,6 +31,7 @@ __all__ = [
     "ArchCapabilityError",
     "ArchSupport",
     "CAPABILITIES",
+    "Capability",
     "KnownBad",
     "Support",
     "capability_available",
@@ -116,6 +117,27 @@ def _version_tuple(text: str) -> Tuple[int, ...]:
     return tuple(parts)
 
 
+def _compare(left: str, right: str) -> int:
+    """Three-way compare two version strings, zero-padding absent components.
+
+    ``"7.2"`` and ``"7.2.0"`` name the same release and must compare equal.
+    Comparing raw tuples would make ``(7, 2) < (7, 2, 0)``, so a window written
+    as ``rocm_min="7.2.0"`` would silently fail to gate a machine reporting
+    ``"7.2"`` -- a reachable state, not a hypothetical:
+    ``hip_utils.get_system_rocm_version_from_hipconfig`` matches
+    ``\\d+\\.\\d+(?:\\.\\d+)?``, so the patch component is optional, and on
+    TheRock builds it is the *only* detection method consulted.
+
+    The current table writes ``rocm_min="7.2"`` and is unaffected either way;
+    this keeps the next window from having to know about the quirk.
+    """
+    a, b = _version_tuple(left), _version_tuple(right)
+    width = max(len(a), len(b))
+    a += (0,) * (width - len(a))
+    b += (0,) * (width - len(b))
+    return (a > b) - (a < b)
+
+
 @dataclass(frozen=True)
 class KnownBad:
     """A toolchain window in which an otherwise-supported op is broken.
@@ -151,10 +173,9 @@ class KnownBad:
                 continue
             if value is None:
                 return False
-            v = _version_tuple(value)
-            if low is not None and v < _version_tuple(low):
+            if low is not None and _compare(value, low) < 0:
                 return False
-            if high is not None and v >= _version_tuple(high):
+            if high is not None and _compare(value, high) >= 0:
                 return False
         return True
 
