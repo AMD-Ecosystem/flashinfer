@@ -166,6 +166,57 @@ class TestResolveTargetArchs:
         with self._agents("gfx950"):
             assert resolve_target_archs() == "gfx942"
 
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            # Qualifiers: what torch's gcnArchName looks like, so an operator
+            # copying from `rocminfo` or a torch error message pastes this shape.
+            ("gfx950:sramecc+:xnack-", "gfx950"),
+            # ';' is documented for this same variable by jit/aiter_source.py.
+            # The two consumers must not disagree about their own env var.
+            ("gfx942;gfx950", "gfx942,gfx950"),
+            ("gfx942; gfx950", "gfx942,gfx950"),
+            # Empty tokens would otherwise reach the validators as "" and be
+            # reported as an unsupported architecture.
+            ("gfx942,,gfx950", "gfx942,gfx950"),
+            ("gfx942, gfx950 ", "gfx942,gfx950"),
+            # Duplicates collapse; first occurrence sets the order, which is what
+            # lands on the hipcc command line.
+            ("gfx950,gfx942,gfx950", "gfx950,gfx942"),
+            # Already canonical input must round-trip untouched.
+            ("gfx942,gfx950", "gfx942,gfx950"),
+        ],
+    )
+    def test_env_var_is_canonicalized(self, monkeypatch, raw, expected):
+        """The validators split on ',' only and match tokens verbatim, so an
+        unnormalized value is a hard failure, not an untidiness: "gfx942;gfx950"
+        arrives as one token, matches nothing, and validate_flashinfer_rocm_arch
+        raises "does not support any of the requested ROCm architectures"."""
+        monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", raw)
+        with self._agents("gfx950"):
+            assert resolve_target_archs() == expected
+
+    def test_explicit_argument_is_canonicalized(self, monkeypatch):
+        monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+        with self._agents("gfx950"):
+            assert resolve_target_archs("gfx942:xnack-;gfx950") == "gfx942,gfx950"
+
+    def test_unknown_archs_survive_normalization(self, monkeypatch):
+        """Only syntax is normalized. Dropping an unrecognized arch here would
+        turn the validators' clear error into a build that quietly targets less
+        than was asked for."""
+        monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "gfx900:xnack-;gfx942")
+        with self._agents("gfx950"):
+            assert resolve_target_archs() == "gfx900,gfx942"
+
+    @pytest.mark.parametrize("raw", [";;", "  ", ",", " ; , "])
+    def test_a_value_that_normalizes_away_falls_through(self, monkeypatch, raw):
+        """Returning "" would reach the validators as a single empty token and
+        fail as an unsupported architecture; detection is the better answer."""
+        monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", raw)
+        with self._agents("gfx950"):
+            assert resolve_target_archs() == "gfx950"
+
     def test_detects_the_running_device(self, monkeypatch):
         monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
         with self._agents("gfx950"):
@@ -199,11 +250,26 @@ class TestResolveTargetArchs:
         """The property the whole change exists for: the validator and the thing
         that emits --offload-arch must not disagree."""
         monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+        import torch.utils.cpp_extension as torch_cpp_ext
+
         from flashinfer.compilation_context_hip import CompilationContext
 
+        # Both sides must see the same PyTorch. CompilationContext imports the
+        # real torch.utils.cpp_extension and validates against it, while the
+        # direct call below is handed _FakeCppExt -- so without this patch the
+        # assertion depends on the installed wheel. The wheel here is a fat build
+        # advertising gfx950, which is why that went unnoticed; an arch-specific
+        # build (gfx942-only) would make CompilationContext() raise "PyTorch does
+        # not support the following architectures" and fail this test for a
+        # reason that has nothing to do with resolver agreement.
         with (
             self._agents("gfx950"),
             patch("flashinfer.hip_utils.get_system_rocm_version", return_value="7.1.0"),
+            patch.object(
+                torch_cpp_ext,
+                "_get_rocm_arch_flags",
+                _FakeCppExt._get_rocm_arch_flags,
+            ),
         ):
             _, validated = validate_flashinfer_rocm_arch(
                 arch_list=None, torch_cpp_ext_module=_FakeCppExt(), verbose=False

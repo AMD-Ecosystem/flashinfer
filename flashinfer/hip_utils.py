@@ -16,6 +16,34 @@ logger = logging.getLogger(__name__)
 FLASHINFER_SUPPORTED_ROCM_ARCHS = ["gfx942", "gfx950"]
 
 
+def _canonical_arch_list(raw: str) -> str:
+    """``"gfx950:sramecc+; gfx942,,gfx942"`` -> ``"gfx950,gfx942"``.
+
+    Caller- and environment-supplied lists arrive in whatever shape the operator
+    typed. The validators below split on ``","`` only and compare tokens against
+    :data:`FLASHINFER_SUPPORTED_ROCM_ARCHS` verbatim, so an unnormalized value is
+    not merely untidy -- ``"gfx942;gfx950"`` becomes the single token
+    ``"gfx942;gfx950"``, matches nothing, and
+    :func:`validate_flashinfer_rocm_arch` raises "FlashInfer does not support any
+    of the requested ROCm architectures". ``";"`` is worth accepting because
+    ``jit/aiter_source.py`` already documents it for this same variable, and the
+    two must not disagree about their own env var.
+
+    Only *syntax* is normalized. Unknown architectures are passed through so the
+    validators can report them; silently dropping one here would turn a clear
+    error into a build that quietly targets less than was asked for.
+
+    Order is preserved (first occurrence wins) rather than sorted: it is the
+    caller's stated preference, and it is what ends up on the hipcc command line.
+    """
+    seen = []
+    for token in raw.replace(";", ",").split(","):
+        arch = normalize_arch(token)
+        if arch and arch not in seen:
+            seen.append(arch)
+    return ",".join(seen)
+
+
 def resolve_target_archs(arch_list: str = None) -> str:
     """Return the architectures to build for, as a comma-separated string.
 
@@ -46,12 +74,20 @@ def resolve_target_archs(arch_list: str = None) -> str:
     """
     import os
 
+    # Canonicalize the two operator-supplied paths. A value that normalizes away
+    # entirely (";;", whitespace) falls through to detection rather than
+    # returning "", which would otherwise reach the validators as a single empty
+    # token and fail as an unsupported architecture.
     if arch_list:
-        return arch_list
+        canonical = _canonical_arch_list(arch_list)
+        if canonical:
+            return canonical
 
     from_env = os.environ.get("FLASHINFER_ROCM_ARCH_LIST")
     if from_env:
-        return from_env
+        canonical = _canonical_arch_list(from_env)
+        if canonical:
+            return canonical
 
     detected = sorted(
         {
