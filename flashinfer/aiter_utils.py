@@ -47,6 +47,15 @@ def is_aiter_available(device: torch.device, op: str) -> bool:
     native kernel (rather than raising at build time) when the AITER package is not
     installed or not importable. Explicit ``backend="aiter"`` still surfaces a clear
     error via :func:`require_aiter`.
+
+    Args:
+        device: The device the op would run on.
+        op: The capability-table op name, e.g. ``"rmsnorm"``. Required, and it
+            changes the answer: support is per ``(op, arch)``, so one op can be
+            gated on a toolchain where another is fine -- AITER batch prefill is
+            gated on gfx950 under ROCm 7.2.x while every other op stays open.
+            The name must match a row in :data:`flashinfer.arch_caps.CAPABILITIES`
+            or the lookup treats it as undeclared and returns False.
     """
     return capability_available(device, op, "aiter") and _aiter_importable()
 

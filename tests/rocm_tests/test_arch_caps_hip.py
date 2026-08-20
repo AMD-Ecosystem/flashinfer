@@ -202,14 +202,32 @@ class TestTableWellFormed:
         import re
 
         pkg = pathlib.Path(arch_caps.__file__).parent
+        # Both the aiter_utils wrappers and the capability API they delegate to:
+        # mla_rocm and page.py call require_capability / capability_available
+        # directly, and those op strings drift just as easily. All five take the
+        # op second, so one alternation covers them.
         pattern = re.compile(
-            r'(?:require_aiter|is_aiter_available)\([^,()]*(?:\([^()]*\))?[^,()]*,\s*"([a-z_]+)"'
+            r"(?:require_aiter|is_aiter_available|require_capability"
+            r'|capability_available|capability_reason)\([^,()]*(?:\([^()]*\))?[^,()]*,\s*"([a-z_]+)"'
         )
         used = set()
-        for src in pkg.glob("*.py"):
+        for src in pkg.rglob("*.py"):  # subpackages too, not just the top level
             used |= set(pattern.findall(src.read_text()))
 
+        # Coverage is not total, and pretending otherwise would be worse than
+        # the gap: prefill_rocm and decode_rocm pass `op` as a variable, so no
+        # literal-matching scan can see batch_prefill / batch_decode /
+        # single_prefill. Those are reached by the runtime tests instead.
         assert used, "scan found no op names; the pattern has rotted"
+        # These two are reached *only* through require_capability /
+        # capability_available (mla_rocm.py, page.py), never through the
+        # aiter_utils wrappers. Their presence is what proves the alternation
+        # still covers the capability API directly; drop it and the scan
+        # silently narrows back to the wrappers while still passing.
+        assert {"mla", "append_paged_kv_cache"} <= used, (
+            "scan no longer sees ops called through the capability API: "
+            f"{sorted({'mla', 'append_paged_kv_cache'} - used)}"
+        )
         declared = {c.op for c in arch_caps.CAPABILITIES if c.backend == "aiter"}
         assert used <= declared, (
             f"ops passed by the library but absent from the table: "
