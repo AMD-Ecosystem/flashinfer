@@ -30,7 +30,7 @@ from .utils import (
 )
 
 if IS_HIP:
-    from .aiter_utils import is_aiter_supported
+    from .arch_caps import capability_available
 
     @functools.cache
     def _aiter_cache_module():
@@ -49,7 +49,7 @@ if IS_HIP:
         kv_layout: str,
     ) -> str:
         """Return 'aiter' when GPU + dtype + layout meet AITER's reshape_and_cache_flash constraints."""
-        if not is_aiter_supported(device):
+        if not capability_available(device, "append_paged_kv_cache", "aiter"):
             return "native"
         if kv_layout != "NHD":
             return "native"

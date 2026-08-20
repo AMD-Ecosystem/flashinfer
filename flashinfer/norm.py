@@ -53,7 +53,7 @@ if IS_HIP:
             input.ndim == 2
             and input.dtype in (torch.float16, torch.bfloat16)
             and weight.dtype == input.dtype
-            and is_aiter_available(input.device)
+            and is_aiter_available(input.device, "rmsnorm")
         ):
             return "aiter"
         return "native"
@@ -65,7 +65,11 @@ if IS_HIP:
         # a later performance pass.)
         from .aiter_utils import is_aiter_available
 
-        return "aiter" if is_aiter_available(input.device) else "native"
+        return (
+            "aiter"
+            if is_aiter_available(input.device, "fused_add_rmsnorm")
+            else "native"
+        )
 
 
 def rmsnorm(

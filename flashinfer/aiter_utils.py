@@ -6,7 +6,7 @@ import functools
 
 import torch
 
-from .arch_caps import normalize_arch
+from .arch_caps import capability_available, normalize_arch, require_capability
 from .hip_utils import FLASHINFER_SUPPORTED_ROCM_ARCHS
 
 
@@ -40,29 +40,40 @@ def _aiter_importable() -> bool:
     return True
 
 
-def is_aiter_available(device: torch.device) -> bool:
+def is_aiter_available(device: torch.device, op: str) -> bool:
     """Return True when ``backend="auto"`` may route to AITER for ``device``.
 
     Combines the arch check with an import probe so ``auto`` falls back to the
     native kernel (rather than raising at build time) when the AITER package is not
     installed or not importable. Explicit ``backend="aiter"`` still surfaces a clear
     error via :func:`require_aiter`.
+
+    Args:
+        device: The device the op would run on.
+        op: The capability-table op name, e.g. ``"rmsnorm"``. Required, and it
+            changes the answer: support is per ``(op, arch)``, so one op can be
+            gated on a toolchain where another is fine -- AITER batch prefill is
+            gated on gfx950 under ROCm 7.2.x while every other op stays open.
+            The name must match a row in :data:`flashinfer.arch_caps.CAPABILITIES`
+            or the lookup treats it as undeclared and returns False.
     """
-    return is_aiter_supported(device) and _aiter_importable()
+    return capability_available(device, op, "aiter") and _aiter_importable()
 
 
 def require_aiter(device: torch.device, op: str) -> None:
     """Validate the explicit ``backend="aiter"`` opt-in, raising a clear error.
 
-    Surfaces a ``ValueError`` (rather than a raw ``ImportError`` from the JIT module
-    loader) when the device is unsupported or the AITER package is missing/broken,
-    matching the public-API docs that say this mode "requires the aiter package".
+    The architecture half is delegated to the capability table, so this op can be
+    gated on more than "is the arch in the allowlist" -- e.g. a toolchain in which
+    the kernel is known to be miscompiled. ``ArchCapabilityError`` subclasses
+    ``ValueError``, so the previous contract is unchanged for callers.
+
+    The package check stays here: a missing ``aiter`` is a different condition
+    from an unusable architecture, and it keeps raising a ``ValueError`` rather
+    than a raw ``ImportError`` from the JIT loader, matching the public-API docs
+    that say this mode "requires the aiter package".
     """
-    if not is_aiter_supported(device):
-        raise ValueError(
-            f"AITER {op} requires an AMD gfx942/gfx950 device; got {device}. "
-            "Use backend='native' instead."
-        )
+    require_capability(device, op, "aiter")
     if not _aiter_importable():
         raise ValueError(
             f"backend='aiter' for {op} requires the aiter package, which is not "
