@@ -224,9 +224,14 @@ def compile_and_package_modules(
     from .compilation_context_hip import CompilationContext
     from .hip_utils import resolve_target_archs
 
+    # Validate before publishing, so a failed build leaves the environment as it
+    # found it. CompilationContext() re-resolves through the same function and
+    # the inputs cannot change in between, so it validates exactly the list
+    # published below -- the order costs nothing and stops a raise here from
+    # leaving FLASHINFER_ROCM_ARCH_LIST set for whatever runs next in-process.
     rocm_arch_list = resolve_target_archs()
-    os.environ["FLASHINFER_ROCM_ARCH_LIST"] = rocm_arch_list
     CompilationContext()  # validates the resolved list, raising on a bad one
+    os.environ["FLASHINFER_ROCM_ARCH_LIST"] = rocm_arch_list
     if verbose:
         print(f"Target ROCm architectures: {rocm_arch_list}")
 

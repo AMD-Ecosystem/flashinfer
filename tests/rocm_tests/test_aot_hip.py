@@ -11,6 +11,7 @@ Tests the flashinfer.aot_hip module to ensure:
 3. .so files are created and can be loaded
 """
 
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -137,6 +138,53 @@ def test_compile_and_package_minimal():
         # Cleanup
         shutil.rmtree(build_dir, ignore_errors=True)
         shutil.rmtree(out_dir, ignore_errors=True)
+
+
+def test_failed_validation_leaves_the_environment_alone(monkeypatch):
+    """A raise mid-build must not leave FLASHINFER_ROCM_ARCH_LIST behind.
+
+    compile_and_package_modules publishes the resolved list into the process
+    environment on purpose -- the AITER shim reads it from there
+    (jit/aiter_source.py) and an AOT build has no other channel to reach it.
+    That side effect outlives the call, so it must only happen once the list is
+    known good; otherwise a build that dies on an unsupported ROCm version
+    silently repoints whatever runs next in the same process.
+
+    The variable starts *unset* and resolution comes from detection, so the
+    published value differs from the starting state. Seeding it with the value
+    the resolver would return makes the write a no-op and the test vacuous --
+    it then passes with the bug present.
+    """
+    import flashinfer.aot_hip as aot_hip
+
+    monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+    monkeypatch.setattr(
+        "flashinfer.hip_utils.rocminfo_gpu_agents",
+        lambda: (("gfx950", ""),),
+    )
+
+    class _Boom:
+        def __init__(self):
+            raise RuntimeError("ROCm version 0.0 is not recognized")
+
+    monkeypatch.setattr("flashinfer.compilation_context_hip.CompilationContext", _Boom)
+
+    with pytest.raises(RuntimeError, match="not recognized"):
+        aot_hip.compile_and_package_modules(
+            out_dir=None,
+            build_dir=Path(tempfile.mkdtemp()),
+            project_root=Path(__file__).parent.parent,
+            config={
+                "fa2_head_dim": [(128, 128)],
+                "f16_dtype": [torch.float16],
+                "use_sliding_window": [False],
+                "use_logits_soft_cap": [False],
+            },
+            verbose=False,
+            skip_prebuilt=True,
+        )
+
+    assert "FLASHINFER_ROCM_ARCH_LIST" not in os.environ
 
 
 def test_module_naming_convention():
