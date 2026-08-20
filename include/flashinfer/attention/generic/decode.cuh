@@ -664,14 +664,20 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
     // gpu_iface/dispatch.cuh - DISPATCH_COMPUTE_CAP_DECODE_NUM_STAGES_SMEM macro
     constexpr uint32_t NUM_STAGES_SMEM = 2U;
 
-    // AMD CDNA3 LDS is 64KB per CU, shared across wavefronts
     const uint32_t smem_size =
         2U * NUM_STAGES_SMEM * bdy * tile_size_per_bdx * bdz * HEAD_DIM * sizeof(DTypeKV) +
         2U * bdy * bdz * sizeof(float);
 
-    if (smem_size > 65536U) {
+    // Query the device rather than assuming CDNA3's 64 KB: CDNA4 reports 160 KB
+    // per block, so a hard-coded 65536 rejects configurations gfx950 can run.
+    int dev_id = 0;
+    FI_GPU_CALL(gpuGetDevice(&dev_id));
+    const uint32_t max_smem_per_block = static_cast<uint32_t>(getMaxSharedMemPerBlock(dev_id));
+
+    if (smem_size > max_smem_per_block) {
       std::ostringstream err_msg;
-      err_msg << "Shared memory size " << smem_size << " exceeds CDNA3 limit of 64KB";
+      err_msg << "Shared memory size " << smem_size << " exceeds the device limit of "
+              << max_smem_per_block << " bytes";
       FLASHINFER_ERROR(err_msg.str());
     }
 
@@ -692,8 +698,6 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
       // Use partition-kv kernel with AMD-specific tuning
       int num_blocks_per_sm = 0;
       int num_sm = 0;
-      int dev_id = 0;
-      FI_GPU_CALL(gpuGetDevice(&dev_id));
       FI_GPU_CALL(gpuDeviceGetAttribute(&num_sm, gpuDevAttrMultiProcessorCount, dev_id));
       FI_GPU_CALL(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel,
                                                                num_threads, smem_size));
