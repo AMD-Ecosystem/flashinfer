@@ -17,6 +17,7 @@ import pytest
 
 from flashinfer import arch_caps
 from flashinfer.arch_caps import normalize_arch
+from flashinfer.hip_utils import FLASHINFER_SUPPORTED_ROCM_ARCHS
 
 
 class TestNormalizeArch:
@@ -93,7 +94,11 @@ assert "torch" not in sys.modules, "arch_caps.py imported torch"
 # gfx950 on a CDNA3 box; today it is the reverse.
 # --------------------------------------------------------------------------
 
-SUPPORTED_ARCHS = ("gfx942", "gfx950")
+# Derived, not hard-coded: adding an arch to the allowlist must automatically
+# start exercising it in the routing tests below, not merely in the
+# declaration check. hip_utils is torch-free at module scope, and this file
+# already imports the package, so hoisting the import costs nothing.
+SUPPORTED_ARCHS = tuple(FLASHINFER_SUPPORTED_ROCM_ARCHS)
 
 
 @pytest.fixture
@@ -121,6 +126,17 @@ class TestTableWellFormed:
         keys = [(c.op, c.backend) for c in arch_caps.CAPABILITIES]
         assert len(keys) == len(set(keys)), "duplicate (op, backend) row"
 
+    def test_duplicate_rows_are_refused_at_index_time(self):
+        """A dict comprehension would let the later of two contradictory rows
+        win silently. Raising means a duplicate cannot reach a routing decision
+        even if it somehow reaches an interpreter without this suite."""
+        rows = (
+            arch_caps.Capability("rmsnorm", "aiter", {"gfx942": arch_caps._OK_942}),
+            arch_caps.Capability("rmsnorm", "aiter", {"gfx942": arch_caps._OK_950}),
+        )
+        with pytest.raises(ValueError, match="duplicate capability row"):
+            arch_caps._index(rows)
+
     def test_backends_are_known(self):
         assert {c.backend for c in arch_caps.CAPABILITIES} == {"aiter", "hip"}
 
@@ -128,15 +144,11 @@ class TestTableWellFormed:
         """The guard rail: adding an arch to FLASHINFER_SUPPORTED_ROCM_ARCHS
         must fail here until each op declares it, rather than silently
         inheriting support."""
-        from flashinfer.hip_utils import FLASHINFER_SUPPORTED_ROCM_ARCHS
-
         for cap in arch_caps.CAPABILITIES:
             missing = set(FLASHINFER_SUPPORTED_ROCM_ARCHS) - set(cap.archs)
             assert not missing, f"{cap.op}/{cap.backend} does not declare {missing}"
 
     def test_no_arch_keys_outside_the_supported_list(self):
-        from flashinfer.hip_utils import FLASHINFER_SUPPORTED_ROCM_ARCHS
-
         for cap in arch_caps.CAPABILITIES:
             extra = set(cap.archs) - set(FLASHINFER_SUPPORTED_ROCM_ARCHS)
             assert not extra, f"{cap.op}/{cap.backend} declares unknown {extra}"

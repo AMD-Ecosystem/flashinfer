@@ -294,7 +294,25 @@ CAPABILITIES: Tuple[Capability, ...] = (
     Capability("quantization", "hip", _archs(_HIP_942, _HIP_950)),
 )
 
-_BY_KEY = {(c.op, c.backend): c for c in CAPABILITIES}
+
+def _index(caps: Tuple[Capability, ...]) -> Mapping[Tuple[str, str], Capability]:
+    """Index rows by ``(op, backend)``, refusing duplicates.
+
+    A dict comprehension lets the later of two contradictory rows win silently,
+    which is exactly the unearned claim this table exists to remove.
+    ``test_keys_are_unique`` covers it, but raising at import puts the error next
+    to the edit that caused it instead of in a later CI run.
+    """
+    index = {}
+    for cap in caps:
+        key = (cap.op, cap.backend)
+        if key in index:
+            raise ValueError(f"duplicate capability row for {key} in CAPABILITIES")
+        index[key] = cap
+    return MappingProxyType(index)
+
+
+_BY_KEY = _index(CAPABILITIES)
 
 
 @lru_cache(maxsize=1)
