@@ -189,6 +189,33 @@ class TestTableWellFormed:
         with pytest.raises(TypeError):
             cap.archs["gfx950"] = arch_caps._OK_950
 
+    def test_every_op_the_library_asks_for_is_declared(self):
+        """The table is only useful if its row names match what callers pass.
+
+        ``require_capability`` raises for an unknown op, so a mismatch turns
+        into a hard failure at the call site -- which is how the first version
+        of this table was caught declaring "activation" while
+        ``activation.py`` passes "silu_and_mul". Scan the source so that drift
+        fails here, cheaply and without a GPU, instead of in whichever op
+        happens to be exercised first.
+        """
+        import re
+
+        pkg = pathlib.Path(arch_caps.__file__).parent
+        pattern = re.compile(
+            r'(?:require_aiter|is_aiter_available)\([^,()]*(?:\([^()]*\))?[^,()]*,\s*"([a-z_]+)"'
+        )
+        used = set()
+        for src in pkg.glob("*.py"):
+            used |= set(pattern.findall(src.read_text()))
+
+        assert used, "scan found no op names; the pattern has rotted"
+        declared = {c.op for c in arch_caps.CAPABILITIES if c.backend == "aiter"}
+        assert used <= declared, (
+            f"ops passed by the library but absent from the table: "
+            f"{sorted(used - declared)}"
+        )
+
     def test_known_bad_rows_explain_themselves(self):
         """A gate with no detail is unactionable for whoever hits it."""
         for cap in arch_caps.CAPABILITIES:
@@ -269,8 +296,15 @@ class TestGating:
 
     def test_unknown_op_is_refused(self, as_arch):
         as_arch("gfx950")
-        with pytest.raises(arch_caps.ArchCapabilityError, match="not declared"):
+        with pytest.raises(arch_caps.ArchCapabilityError, match="not a declared"):
             arch_caps.require_capability(None, "no_such_op", "aiter")
+
+    def test_undeclared_arch_message_names_the_ones_that_work(self, as_arch):
+        """A CPU tensor is the common way to land here, and "not declared for
+        unknown" would be accurate but useless."""
+        as_arch("unknown")
+        reason = arch_caps.capability_reason(None, "silu_and_mul", "aiter")
+        assert "gfx942" in reason and "gfx950" in reason
 
 
 class TestRocm72CausalPrefill:

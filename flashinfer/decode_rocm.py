@@ -1149,6 +1149,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     head_dim_qk=head_dim,
                     head_dim_vo=head_dim,
                     pos_encoding_mode=pos_encoding_mode,
+                    # Decode borrows the prefill selector, but it is a distinct
+                    # capability row -- the gates are not the same op.
+                    op="batch_decode",
                 )
         if self._backend == "aiter":
             if self.use_tensor_cores:

@@ -130,7 +130,7 @@ def _run_fn(op_mode, positions, query, key, cos_sin_cache, backend):
 
 @torch.inference_mode()
 def _make_configs(op_modes: list[str]) -> list[KernelConfig]:
-    aiter_ok = is_aiter_available(torch.device("cuda"))
+    aiter_ok = is_aiter_available(torch.device("cuda"), "rope")
     if not aiter_ok:
         print(
             "[bench_rope] AITER unavailable on this device; benchmarking native only."
@@ -177,7 +177,7 @@ def _make_configs(op_modes: list[str]) -> list[KernelConfig]:
 def _accuracy() -> None:
     """Print max abs error of AITER vs the native kernel (the auto policy's
     precision axis): bf16 sits near the tolerance edge, fp16 is comfortably safe."""
-    if not is_aiter_available(torch.device("cuda")):
+    if not is_aiter_available(torch.device("cuda"), "rope"):
         print("[bench_rope] AITER unavailable; cannot run accuracy comparison.")
         return
     print(f"{'dtype':>6s} {'nnz':>7s} {'max_abs_err':>14s}")

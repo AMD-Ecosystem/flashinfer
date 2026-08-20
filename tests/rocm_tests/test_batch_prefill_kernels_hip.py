@@ -691,7 +691,19 @@ def test_batch_prefill_auto_selects_aiter(page_size, causal, return_lse):
         causal=causal,
     )
 
-    # Verify auto resolved to aiter
+    # `auto` resolves to aiter only where the capability table allows it. On a
+    # gated toolchain -- ROCm 7.2.x on gfx950 miscompiles this kernel -- the
+    # correct behaviour is to steer away from AITER, so assert that instead and
+    # skip the numeric comparison, which would otherwise be fa2 against fa2.
+    from flashinfer.arch_caps import capability_available, capability_reason
+
+    if not capability_available(device, "batch_prefill", "aiter"):
+        assert wrapper_auto._backend != "aiter", (
+            "capability table gates AITER batch prefill here, but auto still "
+            f"chose it: {capability_reason(device, 'batch_prefill', 'aiter')}"
+        )
+        pytest.skip(capability_reason(device, "batch_prefill", "aiter"))
+
     assert wrapper_auto._backend == "aiter", (
         f"Expected backend='aiter' on gfx942/gfx950, got '{wrapper_auto._backend}'"
     )

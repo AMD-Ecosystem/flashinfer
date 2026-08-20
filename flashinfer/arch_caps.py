@@ -35,6 +35,7 @@ __all__ = [
     "KnownBad",
     "Support",
     "capability_available",
+    "capability_reason",
     "normalize_arch",
     "require_capability",
 ]
@@ -296,7 +297,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
     Capability("append_paged_kv_cache", "aiter", _archs(_OK_942, _OK_950)),
     Capability("rmsnorm", "aiter", _archs(_OK_942, _OK_950)),
     Capability("fused_add_rmsnorm", "aiter", _archs(_OK_942, _OK_950)),
-    Capability("activation", "aiter", _archs(_OK_942, _OK_950)),
+    Capability("silu_and_mul", "aiter", _archs(_OK_942, _OK_950)),
     # --- HIP backends: declared; per-op evidence not yet recorded ----------
     Capability("single_decode", "hip", _archs(_HIP_942, _HIP_950)),
     Capability("batch_decode", "hip", _archs(_HIP_942, _HIP_950)),
@@ -311,7 +312,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
     Capability("layernorm", "hip", _archs(_HIP_942, _HIP_950)),
     Capability("sampling", "hip", _archs(_HIP_942, _HIP_950)),
     Capability("logits_processor", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("activation", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("silu_and_mul", "hip", _archs(_HIP_942, _HIP_950)),
     Capability("quantization", "hip", _archs(_HIP_942, _HIP_950)),
 )
 
@@ -383,8 +384,16 @@ def _blocking_reason(op: str, backend: str, arch: str) -> Optional[str]:
     """
     entry = _lookup(op, backend, arch)
     if entry is None:
+        cap = _BY_KEY.get((op, backend))
+        if cap is None:
+            return f"{backend} {op} is not a declared capability"
+        # Name the architectures that would work. The common way to land here is
+        # a CPU tensor or a non-ROCm device, where "not declared for unknown"
+        # would be accurate and useless.
+        supported = "/".join(sorted(cap.archs))
         return (
-            f"{backend} {op} is not declared for {arch} (see flashinfer/arch_caps.py)"
+            f"{backend} {op} requires an AMD {supported} device; got {arch!r}. "
+            f"Use backend='native' instead"
         )
     if entry.support is Support.UNSUPPORTED:
         return f"{backend} {op} is not supported on {arch}"
@@ -406,6 +415,18 @@ def _blocking_reason(op: str, backend: str, arch: str) -> Optional[str]:
                 f"{link}. Set FLASHINFER_ARCH_ALLOW_KNOWN_BAD=1 to run anyway"
             )
     return None
+
+
+def capability_reason(device, op: str, backend: str) -> Optional[str]:
+    """Why ``backend`` cannot serve ``op`` on ``device``, or ``None`` if it can.
+
+    The ``auto`` selectors already build a human-readable ``reason`` string per
+    unmet constraint and warn once per ``(device, reason)``. Returning the reason
+    rather than a bare bool lets a capability gate slot into that machinery as
+    one more reason, so a user whose batch prefill silently dropped to ``fa2``
+    can find out why.
+    """
+    return _blocking_reason(op, backend, _device_arch(device))
 
 
 def capability_available(device, op: str, backend: str) -> bool:
