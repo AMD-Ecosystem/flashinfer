@@ -6,9 +6,12 @@
 
 Deliberately GPU-free: every assertion here holds on any machine, so this file
 protects the architectures we cannot physically test against as well as the one
-we can.
+we can. It is also *dependency*-free -- see the loader below -- which is what
+lets it run as a hardware-less CI job on every pull request
+(``.github/workflows/arch-caps-conformance.yml``).
 """
 
+import importlib.util
 import pathlib
 import subprocess
 import sys
@@ -16,9 +19,55 @@ import types
 
 import pytest
 
-from flashinfer import arch_caps
-from flashinfer.arch_caps import normalize_arch
-from flashinfer.hip_utils import FLASHINFER_SUPPORTED_ROCM_ARCHS
+# --------------------------------------------------------------------------
+# Load the modules under test without importing the `flashinfer` package.
+#
+# flashinfer/__init__.py ends in `raise RuntimeError("FlashInfer requires either
+# CUDA or ROCm/HIP backend. Detected CPU-only PyTorch installation.")`, so
+# `from flashinfer import arch_caps` needs a GPU-capable torch build even though
+# nothing in this file touches a GPU or a tensor. Loading the two modules
+# directly keeps the suite runnable with nothing installed but pytest.
+#
+# That is not merely a convenience. Both modules are torch-free at module scope
+# *by contract* -- hip_utils sits on the pre-HIP_VISIBLE_DEVICES path in
+# tests/conftest.py, and arch_caps is imported by hip_utils -- and this loader
+# makes the contract structural: if either grows a module-scope `import torch`,
+# the conformance job stops being installable rather than quietly regressing.
+#
+# They reference each other relatively (hip_utils:10 at module scope,
+# arch_caps:354 inside _live_versions), so they are registered under a synthetic
+# package. Two unrelated top-level modules would leave those imports unresolvable
+# and silently degrade _live_versions to its except-branch.
+# --------------------------------------------------------------------------
+
+_PKG_NAME = "_arch_caps_conformance"
+_PKG_DIR = pathlib.Path(__file__).resolve().parents[2] / "flashinfer"
+
+
+def _load_without_package_init(*module_names):
+    """Import ``flashinfer.<name>`` modules without running the package __init__."""
+    package = types.ModuleType(_PKG_NAME)
+    package.__path__ = [str(_PKG_DIR)]
+    sys.modules[_PKG_NAME] = package
+
+    loaded = []
+    for name in module_names:
+        qualified = f"{_PKG_NAME}.{name}"
+        spec = importlib.util.spec_from_file_location(
+            qualified, _PKG_DIR / f"{name}.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        # Register before exec so a relative import back into this synthetic
+        # package resolves rather than re-executing the module.
+        sys.modules[qualified] = module
+        spec.loader.exec_module(module)
+        loaded.append(module)
+    return loaded
+
+
+arch_caps, hip_utils = _load_without_package_init("arch_caps", "hip_utils")
+normalize_arch = arch_caps.normalize_arch
+FLASHINFER_SUPPORTED_ROCM_ARCHS = hip_utils.FLASHINFER_SUPPORTED_ROCM_ARCHS
 
 
 class TestNormalizeArch:
@@ -56,29 +105,32 @@ class TestNormalizeArch:
         assert normalize_arch(raw) == ""
 
 
-def test_module_does_not_import_torch():
-    """arch_caps.py must not import torch.
+def test_suite_loads_without_torch():
+    """Neither arch_caps nor hip_utils may import torch at module scope.
 
-    hip_utils imports this module at module scope, and hip_utils is imported
-    early -- tests/conftest.py uses it to choose a GPU *before* pinning
-    HIP_VISIBLE_DEVICES. Keeping this module torch-free is what lets it sit on
-    that path without dragging torch into it.
+    hip_utils sits on a path that must not touch torch: tests/conftest.py calls
+    it to choose a GPU *before* pinning HIP_VISIBLE_DEVICES, which is why it
+    probes with rocminfo rather than torch.cuda. arch_caps is imported by
+    hip_utils at module scope, so it inherits the same constraint.
 
-    The module is loaded directly from its file rather than as
-    ``flashinfer.arch_caps``, because importing anything from the package runs
-    flashinfer/__init__.py, which pulls in torch via device_utils. Going through
-    the package would therefore prove nothing about this module. Run in a
-    subprocess so the result does not depend on what this session imported.
+    Asserting it against *this file's* loader rather than against arch_caps
+    alone covers both modules at once and pins the exact precondition the
+    hardware-less CI job depends on: if this fails, that job cannot run.
+
+    Executed in a subprocess so the verdict does not depend on what the calling
+    pytest session happened to import first -- under the full ROCm suite, torch
+    is long since loaded by the time this runs.
     """
-    module_path = pathlib.Path(arch_caps.__file__).resolve()
     code = f"""
 import importlib.util, sys
 assert "torch" not in sys.modules, "torch preloaded; test would be meaningless"
-spec = importlib.util.spec_from_file_location("_arch_caps_isolated", r"{module_path}")
+spec = importlib.util.spec_from_file_location("_suite", r"{pathlib.Path(__file__).resolve()}")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 assert mod.normalize_arch("gfx950:sramecc+:xnack-") == "gfx950"
-assert "torch" not in sys.modules, "arch_caps.py imported torch"
+assert mod.FLASHINFER_SUPPORTED_ROCM_ARCHS, "hip_utils constant did not load"
+assert mod.arch_caps.CAPABILITIES, "capability table did not load"
+assert "torch" not in sys.modules, "arch_caps or hip_utils imported torch"
 """
     result = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
@@ -97,8 +149,8 @@ assert "torch" not in sys.modules, "arch_caps.py imported torch"
 
 # Derived, not hard-coded: adding an arch to the allowlist must automatically
 # start exercising it in the routing tests below, not merely in the
-# declaration check. hip_utils is torch-free at module scope, and this file
-# already imports the package, so hoisting the import costs nothing.
+# declaration check. Reading the real constant is what makes that automatic,
+# and it is why the loader above bothers with hip_utils at all.
 SUPPORTED_ARCHS = tuple(FLASHINFER_SUPPORTED_ROCM_ARCHS)
 
 
