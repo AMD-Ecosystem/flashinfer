@@ -241,6 +241,51 @@ class TestTableWellFormed:
         with pytest.raises(TypeError):
             cap.archs["gfx950"] = arch_caps._OK_950
 
+    def test_every_op_the_library_asks_for_is_declared(self):
+        """The table is only useful if its row names match what callers pass.
+
+        ``require_capability`` raises for an unknown op, so a mismatch turns
+        into a hard failure at the call site -- which is how the first version
+        of this table was caught declaring "activation" while
+        ``activation.py`` passes "silu_and_mul". Scan the source so that drift
+        fails here, cheaply and without a GPU, instead of in whichever op
+        happens to be exercised first.
+        """
+        import re
+
+        pkg = pathlib.Path(arch_caps.__file__).parent
+        # Both the aiter_utils wrappers and the capability API they delegate to:
+        # mla_rocm and page.py call require_capability / capability_available
+        # directly, and those op strings drift just as easily. All five take the
+        # op second, so one alternation covers them.
+        pattern = re.compile(
+            r"(?:require_aiter|is_aiter_available|require_capability"
+            r'|capability_available|capability_reason)\([^,()]*(?:\([^()]*\))?[^,()]*,\s*"([a-z_]+)"'
+        )
+        used = set()
+        for src in pkg.rglob("*.py"):  # subpackages too, not just the top level
+            used |= set(pattern.findall(src.read_text()))
+
+        # Coverage is not total, and pretending otherwise would be worse than
+        # the gap: prefill_rocm and decode_rocm pass `op` as a variable, so no
+        # literal-matching scan can see batch_prefill / batch_decode /
+        # single_prefill. Those are reached by the runtime tests instead.
+        assert used, "scan found no op names; the pattern has rotted"
+        # These two are reached *only* through require_capability /
+        # capability_available (mla_rocm.py, page.py), never through the
+        # aiter_utils wrappers. Their presence is what proves the alternation
+        # still covers the capability API directly; drop it and the scan
+        # silently narrows back to the wrappers while still passing.
+        assert {"mla", "append_paged_kv_cache"} <= used, (
+            "scan no longer sees ops called through the capability API: "
+            f"{sorted({'mla', 'append_paged_kv_cache'} - used)}"
+        )
+        declared = {c.op for c in arch_caps.CAPABILITIES if c.backend == "aiter"}
+        assert used <= declared, (
+            f"ops passed by the library but absent from the table: "
+            f"{sorted(used - declared)}"
+        )
+
     def test_known_bad_rows_explain_themselves(self):
         """A gate with no detail is unactionable for whoever hits it."""
         for cap in arch_caps.CAPABILITIES:
@@ -321,8 +366,55 @@ class TestGating:
 
     def test_unknown_op_is_refused(self, as_arch):
         as_arch("gfx950")
-        with pytest.raises(arch_caps.ArchCapabilityError, match="not declared"):
+        with pytest.raises(arch_caps.ArchCapabilityError, match="not a declared"):
             arch_caps.require_capability(None, "no_such_op", "aiter")
+
+    def test_undeclared_arch_message_names_the_ones_that_work(self, as_arch):
+        """A CPU tensor is the common way to land here, and "not declared for
+        unknown" would be accurate but useless."""
+        as_arch("unknown")
+        reason = arch_caps.capability_reason(None, "silu_and_mul", "aiter")
+        assert "gfx942" in reason and "gfx950" in reason
+
+    @pytest.mark.parametrize(
+        "op,suggested",
+        [
+            # prefill and decode reject 'native' outright -- they take 'fa2'.
+            ("batch_prefill", "fa2"),
+            ("single_prefill", "fa2"),
+            ("batch_decode", "fa2"),
+            ("rope", "native"),
+            ("rmsnorm", "native"),
+            ("silu_and_mul", "native"),
+            ("append_paged_kv_cache", "native"),
+        ],
+    )
+    def test_suggested_fallback_is_one_the_op_accepts(self, as_arch, op, suggested):
+        """The advice has to be followable. A blanket "use backend='native'"
+        would hand prefill and decode users a string their own validation
+        rejects with "Unknown backend", trading one error for a worse one."""
+        as_arch("unknown")
+        reason = arch_caps.capability_reason(None, op, "aiter")
+        assert f"backend={suggested!r}" in reason
+
+    def test_no_fallback_is_suggested_when_none_exists(self, as_arch):
+        """mla accepts only 'auto'/'aiter' (mla_rocm.py:112), so naming any
+        alternative would be a dead end. Say nothing rather than something
+        wrong."""
+        as_arch("unknown")
+        reason = arch_caps.capability_reason(None, "mla", "aiter")
+        assert "gfx942" in reason
+        assert "backend=" not in reason
+
+    def test_declared_fallbacks_are_real_backend_strings(self):
+        """Guards against a typo in the table turning into advice that cannot
+        work. 'auto' is excluded deliberately: suggesting it as the escape from
+        a gate that 'auto' itself already applied would be circular."""
+        for cap in arch_caps.CAPABILITIES:
+            if cap.fallback:
+                assert cap.fallback in {"native", "fa2"}, (
+                    f"{cap.op}/{cap.backend} suggests unknown backend {cap.fallback!r}"
+                )
 
 
 class TestRocm72CausalPrefill:

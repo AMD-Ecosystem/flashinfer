@@ -25,8 +25,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 import torch
-from .aiter_utils import is_aiter_supported
-from .arch_caps import normalize_arch
+from .arch_caps import capability_reason, require_capability
 from .jit.core import logger
 from .jit import (
     gen_batch_prefill_module,
@@ -308,20 +307,15 @@ def _aiter_ops_importable() -> bool:
         return False
 
 
-def _require_aiter_runtime(device: torch.device) -> None:
-    """Raise a clear error when AITER is requested on an unsupported GPU or without the package."""
-    if not is_aiter_supported(device):
-        try:
-            arch = (
-                normalize_arch(torch.cuda.get_device_properties(device).gcnArchName)
-                if torch.version.hip
-                else "non-ROCm"
-            )
-        except Exception:
-            arch = "unknown"
-        raise RuntimeError(
-            f"The 'aiter' backend requires a gfx942/gfx950 GPU; got '{arch}'."
-        )
+def _require_aiter_runtime(device: torch.device, op: str = "batch_prefill") -> None:
+    """Raise a clear error when AITER is requested on an unsupported GPU or without the package.
+
+    ``op`` selects the capability row, so a gate that applies to batch prefill
+    (such as the ROCm 7.2 causal miscompile on gfx950) does not also block single
+    prefill. ``ArchCapabilityError`` subclasses ``RuntimeError``, so the previous
+    contract is unchanged for callers.
+    """
+    require_capability(device, op, "aiter")
     if not _aiter_ops_importable():
         raise ImportError(
             "The 'aiter' package is required for the AITER backend. "
@@ -344,30 +338,39 @@ def _auto_select_prefill_backend(
     head_dim_qk: int,
     head_dim_vo: int,
     pos_encoding_mode: str = "NONE",
+    op: str = "batch_prefill",
 ) -> str:
     """Return 'aiter' when the GPU and call parameters satisfy AITER's constraints; else 'fa2'.
 
     On gfx942/gfx950, checks NHD layout, no custom mask, fp16/bf16, equal dtypes and head dims.
     Falls back to 'fa2' with a one-time warning for each distinct skip reason.
-    """
-    if not is_aiter_supported(device):
-        return "fa2"
 
-    reason: Optional[str] = None
-    if kv_layout != "NHD":
-        reason = f"kv_layout={kv_layout!r} (AITER requires NHD)"
-    elif has_custom_mask:
-        reason = "custom mask (not supported by AITER)"
-    elif dtype_q not in (torch.float16, torch.bfloat16):
-        reason = f"dtype={dtype_q} (AITER requires fp16/bf16)"
-    elif dtype_q != dtype_kv:
-        reason = (
-            f"dtype_q={dtype_q} != dtype_kv={dtype_kv} (AITER requires equal dtypes)"
-        )
-    elif head_dim_qk != head_dim_vo:
-        reason = f"head_dim_qk={head_dim_qk} != head_dim_vo={head_dim_vo} (AITER requires equal head dims)"
-    elif pos_encoding_mode != "NONE":
-        reason = f"pos_encoding_mode={pos_encoding_mode!r} (AITER only supports NONE)"
+    ``op`` selects the capability row. It matters because the gates are not
+    uniform across ops: the ROCm 7.2 causal miscompile on gfx950 applies to batch
+    prefill only, so checking a single shared "is AITER supported here" would
+    either under- or over-block.
+    """
+    # The capability gate is just one more reason, so an architecture or
+    # toolchain that cannot serve this op warns once and falls back like any
+    # other unmet constraint. Previously an unsupported architecture returned
+    # "fa2" silently, which on CDNA4 would mean a user quietly losing the AITER
+    # path with nothing to explain it.
+    reason: Optional[str] = capability_reason(device, op, "aiter")
+    if reason is None:
+        if kv_layout != "NHD":
+            reason = f"kv_layout={kv_layout!r} (AITER requires NHD)"
+        elif has_custom_mask:
+            reason = "custom mask (not supported by AITER)"
+        elif dtype_q not in (torch.float16, torch.bfloat16):
+            reason = f"dtype={dtype_q} (AITER requires fp16/bf16)"
+        elif dtype_q != dtype_kv:
+            reason = f"dtype_q={dtype_q} != dtype_kv={dtype_kv} (AITER requires equal dtypes)"
+        elif head_dim_qk != head_dim_vo:
+            reason = f"head_dim_qk={head_dim_qk} != head_dim_vo={head_dim_vo} (AITER requires equal head dims)"
+        elif pos_encoding_mode != "NONE":
+            reason = (
+                f"pos_encoding_mode={pos_encoding_mode!r} (AITER only supports NONE)"
+            )
 
     if reason is not None:
         key = (device, reason)
@@ -1437,10 +1440,11 @@ def single_prefill_with_kv_cache(
             head_dim_qk=q.shape[-1],
             head_dim_vo=v.shape[-1],
             pos_encoding_mode=pos_encoding_mode,
+            op="single_prefill",
         )
 
     if backend == "aiter":
-        _require_aiter_runtime(q.device)
+        _require_aiter_runtime(q.device, "single_prefill")
         if pos_encoding_mode != "NONE":
             raise ValueError(
                 f"AITER backend does not support pos_encoding_mode={pos_encoding_mode!r}; "
@@ -1729,7 +1733,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
             )
             backend = "fa2"
         elif backend == "aiter":
-            _require_aiter_runtime(float_workspace_buffer.device)
+            _require_aiter_runtime(float_workspace_buffer.device, "batch_prefill")
 
         self._float_workspace_buffer = float_workspace_buffer
         self._workspace_size = (
@@ -2119,6 +2123,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     head_dim_qk=head_dim_qk,
                     head_dim_vo=head_dim_vo,
                     pos_encoding_mode=pos_encoding_mode,
+                    op="batch_prefill",
                 )
             if self._backend == "aiter" and pos_encoding_mode != "NONE":
                 raise ValueError(
@@ -2788,7 +2793,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                 f"backend must be one of 'fa2', 'aiter', 'auto'; got {backend!r}"
             )
         if backend == "aiter":
-            _require_aiter_runtime(float_workspace_buffer.device)
+            _require_aiter_runtime(float_workspace_buffer.device, "batch_prefill")
         self._kv_layout = kv_layout
         self._float_workspace_buffer = float_workspace_buffer
         self.device = float_workspace_buffer.device
@@ -3077,6 +3082,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                     head_dim_qk=head_dim_qk,
                     head_dim_vo=head_dim_vo,
                     pos_encoding_mode=pos_encoding_mode,
+                    op="batch_prefill",
                 )
             if self._backend == "aiter" and pos_encoding_mode != "NONE":
                 raise ValueError(

@@ -35,6 +35,7 @@ __all__ = [
     "KnownBad",
     "Support",
     "capability_available",
+    "capability_reason",
     "normalize_arch",
     "require_capability",
 ]
@@ -214,6 +215,13 @@ class Capability:
     backend: str
     archs: Mapping[str, ArchSupport] = field(default_factory=dict)
     note: str = ""
+    # The public ``backend=`` string to suggest when this row is unavailable.
+    # Declared per row because it is not derivable: the table keys backends as
+    # "aiter"/"hip", but the user-facing argument spells the HIP path "native"
+    # for rope/norm/activation/page-append and "fa2" for prefill and decode.
+    # Empty means no alternative exists -- ``mla`` accepts only 'auto'/'aiter',
+    # so suggesting anything there would send the user into a ValueError.
+    fallback: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "archs", MappingProxyType(dict(self.archs)))
@@ -276,8 +284,8 @@ _HIP_950 = ArchSupport(Support.SUPPORTED)
 
 CAPABILITIES: Tuple[Capability, ...] = (
     # --- AITER backends: measured on both architectures --------------------
-    Capability("batch_decode", "aiter", _archs(_OK_942, _OK_950)),
-    Capability("single_prefill", "aiter", _archs(_OK_942, _OK_950)),
+    Capability("batch_decode", "aiter", _archs(_OK_942, _OK_950), fallback="fa2"),
+    Capability("single_prefill", "aiter", _archs(_OK_942, _OK_950), fallback="fa2"),
     Capability(
         "batch_prefill",
         "aiter",
@@ -290,13 +298,18 @@ CAPABILITIES: Tuple[Capability, ...] = (
                 known_bad=(_ROCM72_CAUSAL_PREFILL,),
             ),
         ),
+        fallback="fa2",
     ),
-    Capability("mla", "aiter", _archs(_OK_942, _OK_950)),
-    Capability("rope", "aiter", _archs(_OK_942, _OK_950)),
-    Capability("append_paged_kv_cache", "aiter", _archs(_OK_942, _OK_950)),
-    Capability("rmsnorm", "aiter", _archs(_OK_942, _OK_950)),
-    Capability("fused_add_rmsnorm", "aiter", _archs(_OK_942, _OK_950)),
-    Capability("activation", "aiter", _archs(_OK_942, _OK_950)),
+    Capability("mla", "aiter", _archs(_OK_942, _OK_950)),  # no alternative backend
+    Capability("rope", "aiter", _archs(_OK_942, _OK_950), fallback="native"),
+    Capability(
+        "append_paged_kv_cache", "aiter", _archs(_OK_942, _OK_950), fallback="native"
+    ),
+    Capability("rmsnorm", "aiter", _archs(_OK_942, _OK_950), fallback="native"),
+    Capability(
+        "fused_add_rmsnorm", "aiter", _archs(_OK_942, _OK_950), fallback="native"
+    ),
+    Capability("silu_and_mul", "aiter", _archs(_OK_942, _OK_950), fallback="native"),
     # --- HIP backends: declared; per-op evidence not yet recorded ----------
     Capability("single_decode", "hip", _archs(_HIP_942, _HIP_950)),
     Capability("batch_decode", "hip", _archs(_HIP_942, _HIP_950)),
@@ -311,7 +324,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
     Capability("layernorm", "hip", _archs(_HIP_942, _HIP_950)),
     Capability("sampling", "hip", _archs(_HIP_942, _HIP_950)),
     Capability("logits_processor", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("activation", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability("silu_and_mul", "hip", _archs(_HIP_942, _HIP_950)),
     Capability("quantization", "hip", _archs(_HIP_942, _HIP_950)),
 )
 
@@ -383,9 +396,21 @@ def _blocking_reason(op: str, backend: str, arch: str) -> Optional[str]:
     """
     entry = _lookup(op, backend, arch)
     if entry is None:
-        return (
-            f"{backend} {op} is not declared for {arch} (see flashinfer/arch_caps.py)"
-        )
+        cap = _BY_KEY.get((op, backend))
+        if cap is None:
+            return f"{backend} {op} is not a declared capability"
+        # Name the architectures that would work. The common way to land here is
+        # a CPU tensor or a non-ROCm device, where "not declared for unknown"
+        # would be accurate and useless.
+        supported = "/".join(sorted(cap.archs))
+        msg = f"{backend} {op} requires an AMD {supported} device; got {arch!r}"
+        # Only suggest a fallback the op actually accepts. A blanket
+        # "use backend='native'" is wrong for prefill and decode (they take
+        # 'fa2') and impossible for mla, which accepts only 'auto'/'aiter' --
+        # following it would trade this error for an "Unknown backend" one.
+        if cap.fallback:
+            msg += f". Use backend={cap.fallback!r} instead"
+        return msg
     if entry.support is Support.UNSUPPORTED:
         return f"{backend} {op} is not supported on {arch}"
     if not entry.known_bad:
@@ -408,15 +433,27 @@ def _blocking_reason(op: str, backend: str, arch: str) -> Optional[str]:
     return None
 
 
+def capability_reason(device, op: str, backend: str) -> Optional[str]:
+    """Why ``backend`` cannot serve ``op`` on ``device``, or ``None`` if it can.
+
+    The ``auto`` selectors already build a human-readable ``reason`` string per
+    unmet constraint and warn once per ``(device, reason)``. Returning the reason
+    rather than a bare bool lets a capability gate slot into that machinery as
+    one more reason, so a user whose batch prefill silently dropped to ``fa2``
+    can find out why.
+    """
+    return _blocking_reason(op, backend, _device_arch(device))
+
+
 def capability_available(device, op: str, backend: str) -> bool:
     """Whether ``auto`` may route ``op`` to ``backend`` on ``device``.
 
-    ``device`` leads to match the gating helpers this is meant to replace
-    (``aiter_utils.is_aiter_available(device)``,
-    ``aiter_utils.require_aiter(device, op)``), so migrating a call site is
-    appending ``backend`` rather than reordering. ``op`` and ``backend`` are both
-    ``str``, so an argument-order slip between them would be silent -- keeping
-    the shared prefix identical is what stops one happening.
+    ``device`` leads to match the gating helpers this backs
+    (``aiter_utils.is_aiter_available(device, op)``,
+    ``aiter_utils.require_aiter(device, op)``), so those delegate by appending
+    ``backend`` rather than reordering. ``op`` and ``backend`` are both ``str``,
+    so an argument-order slip between them would be silent -- keeping the shared
+    prefix identical is what stops one happening.
     """
     return _blocking_reason(op, backend, _device_arch(device)) is None
 
