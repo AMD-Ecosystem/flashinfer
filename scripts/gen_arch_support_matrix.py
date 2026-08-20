@@ -32,6 +32,7 @@ each has to stand alone in an environment where the other may not be importable.
 from __future__ import annotations
 
 import argparse
+import difflib
 import importlib.util
 import pathlib
 import sys
@@ -210,13 +211,25 @@ def main() -> int:
 
     if args.check:
         if current != updated:
+            # Show the diff. "Out of date" alone leaves whoever hit this
+            # guessing, and the answer is not always an arch_caps.py edit --
+            # another formatter rewriting the generated block looks identical
+            # from the outside.
+            diff = difflib.unified_diff(
+                current.splitlines(keepends=True),
+                updated.splitlines(keepends=True),
+                fromfile="README.md (committed)",
+                tofile="README.md (generated)",
+                n=1,
+            )
             print(
                 "README.md arch support matrix is out of date with "
                 "flashinfer/arch_caps.py.\n"
                 "Regenerate it with:\n"
-                "    python3 scripts/gen_arch_support_matrix.py",
+                "    python3 scripts/gen_arch_support_matrix.py\n",
                 file=sys.stderr,
             )
+            sys.stderr.writelines(diff)
             return 1
         return 0
 
