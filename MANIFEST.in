@@ -26,6 +26,10 @@ recursive-include licenses *.txt
 # self-sufficient regardless of setuptools' package-data-in-sdist behavior.
 recursive-include flashinfer/csrc_rocm *.cu *.cc *.h *.jinja
 
+# setuptools-scm's file finder adds every git-tracked file to the sdist, so
+# development and CI machinery has to be pruned explicitly or it ships in the
+# release tarball. This list carries over the exclusions that
+# [tool.scikit-build.sdist].exclude used to provide.
 prune tests
 prune docs
 prune benchmarks
@@ -34,3 +38,13 @@ prune 3rdparty
 prune ci
 prune docker
 prune scripts
+prune .github
+prune .devcontainer
+prune profiler
+prune rocm_profiler
+exclude Jenkinsfile
+exclude CHANGELOG.md
+exclude .clang-format
+exclude .gitignore
+exclude .gitmodules
+exclude .pre-commit-config.yaml

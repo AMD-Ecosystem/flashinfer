@@ -12,12 +12,15 @@ Why that matters: ``flashinfer/get_include_paths.py`` resolves headers as
 in ``flashinfer/jit/env.py`` and ends up as the ``-I`` flag on every HIP JIT
 compile. Without it, nothing builds at *runtime*, not just at build time.
 
-Two materialization modes, and the difference is load-bearing:
+Three materialization modes, and the differences are load-bearing:
 
 - editable -> a relative symlink, so edits under ``include/`` are picked up with
   no rebuild (and it matches the manual worktree setup documented in CLAUDE.md).
-- wheel / sdist -> a real recursive copy, because a symlink is not followed into
-  a wheel and would ship a dangling link.
+- wheel -> a real recursive copy, because a symlink is not followed into a wheel
+  and would ship a dangling link.
+- sdist -> cleared. The tarball carries the source layout (top-level
+  ``include/``, via MANIFEST.in) and a wheel built from it re-creates the copy;
+  see ``_prepare_for_sdist``.
 
 The header filter mirrors what the retired CMake ``install(DIRECTORY ...)`` rule
 did, so wheel contents do not change with this backend swap.
