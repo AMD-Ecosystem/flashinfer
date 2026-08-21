@@ -48,53 +48,39 @@ dev = [
 ]
 
 [build-system]
+# In-tree backend (see build_backend.py): plain setuptools plus one step that
+# materializes flashinfer/include. torch and numpy are deliberately absent —
+# nothing is compiled at build time, so they were never build requirements.
 requires = [
-    "scikit-build-core>=0.4.3",
-    "torch >= 2.7",
-    "numpy",
-    "setuptools-scm >=9.2"
+    "setuptools>=80",
+    "setuptools-scm>=9.2",
+    "packaging>=24",
+    "wheel"
 ]
-build-backend = "scikit_build_core.build"
+build-backend = "build_backend"
+backend-path = ["."]
 
-[tool.scikit-build]
-cmake.build-type = "Release"
-editable.rebuild = true
-build.verbose = true
-logging.level = "INFO"
-build-dir = "_skbuild"
-experimental = true
-metadata.version.provider = "scikit_build_core.metadata.setuptools_scm"
-wheel.license-files = ["LICENSE"]
-wheel.packages = ["flashinfer"]
-wheel.py-api = "py3"
+[tool.setuptools]
+license-files = ["LICENSE"]
 
-[tool.scikit-build.sdist]
-cmake = false
-exclude = [
-    ".clang-format",
-    ".devcontainer",
-    ".github",
-    ".gitignore",
-    ".gitmodules",
-    ".pre-commit-config.yaml",
-    "examples",
-    "profiler",
-    "benchmarks",
-    "docker",
-    "scripts",
-    "tests",
-    "docs",
-    "3rdparty/spdlog/**/*",
-    "3rdparty/cutlass/**/*",
-    "ci",
-    "Jenkinsfile",
-    "format.sh",
-    "custom_backend.py",
-    "version.txt",
-    "CHANGELOG.md",
-]
-include = [
-    "flashinfer/_version.py"
+[tool.setuptools.packages.find]
+include = ["flashinfer*"]
+
+[tool.setuptools.package-data]
+# scikit-build-core's `wheel.packages = ["flashinfer"]` swept these in
+# implicitly; setuptools requires them to be named. Both matter at runtime:
+# get_csrc_dir() resolves flashinfer/csrc_rocm and get_include() resolves
+# flashinfer/include, so dropping either ships a wheel whose JIT cannot compile.
+# flashinfer/include itself is produced by build_backend.py, not by git.
+flashinfer = [
+    "py.typed",
+    "csrc_rocm/**/*.cu",
+    "csrc_rocm/**/*.cc",
+    "csrc_rocm/**/*.h",
+    "csrc_rocm/**/*.jinja",
+    "include/**/*.cuh",
+    "include/**/*.h",
+    "include/**/*.hpp",
 ]
 
 [tool.setuptools_scm]

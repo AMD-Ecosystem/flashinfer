@@ -88,7 +88,7 @@ RUN \
 # (torch.version.hip is not None) so the build fails fast if -f ever resolves a
 # PyPI CPU/CUDA wheel instead of the radeon ROCm wheel.
 RUN /bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} gtest gmock bash-completion -c conda-forge && \
-    /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir cmake ninja "scikit-build-core>=0.4.3" "setuptools-scm>=9.2" pre-commit numpy pytest pytest-cov pytest-xdist pytest-rerunfailures pybind11 ruff && \
+    /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir ninja "setuptools>=80" "setuptools-scm>=9.2" pre-commit numpy pytest pytest-cov pytest-xdist pytest-rerunfailures pybind11 ruff && \
     /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/ && \
     /bin/micromamba run -n ${MAMBA_ENV_NAME} python -c "import torch, sys; hip = torch.version.hip; print(f'torch {torch.__version__} (hip={hip})'); sys.exit('ERROR: installed torch has no ROCm/HIP build (hip is None)' if hip is None else 0)" && \
     /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install amd_aiter==${AITER_VERSION} --extra-index-url https://pypi.amd.com/rocm-${AITER_ROCM_VERSION}/simple

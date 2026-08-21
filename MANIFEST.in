@@ -1,0 +1,36 @@
+# Source distribution contents.
+#
+# setuptools only ships Python packages and declared package-data by default, so
+# anything outside flashinfer/ has to be named here.
+#
+# include/ is the source header tree. It is NOT under flashinfer/, and the
+# generated flashinfer/include copy is deliberately absent from the sdist (see
+# _prepare_for_sdist in build_backend.py) — building a wheel from this sdist
+# re-creates it. Without this graft that wheel build would have no headers.
+graft include
+
+# The PEP 517 backend itself: pyproject.toml sets backend-path = ["."], so a
+# build from this sdist imports it.
+include build_backend.py
+
+# setuptools-scm cannot derive a version outside a git checkout, so the
+# generated version module has to travel with the tarball.
+include flashinfer/_version.py
+
+include LICENSE
+include NOTICE
+include README.md
+recursive-include licenses *.txt
+
+# csrc_rocm is declared as package-data, but graft it explicitly so the sdist is
+# self-sufficient regardless of setuptools' package-data-in-sdist behavior.
+recursive-include flashinfer/csrc_rocm *.cu *.cc *.h *.jinja
+
+prune tests
+prune docs
+prune benchmarks
+prune examples
+prune 3rdparty
+prune ci
+prune docker
+prune scripts
