@@ -212,3 +212,166 @@ def test_append_paged_kv_cache_aiter_honors_current_stream():
 
     torch.testing.assert_close(k_side, k_default, rtol=0, atol=0)
     torch.testing.assert_close(v_side, v_default, rtol=0, atol=0)
+
+
+@requires_aiter
+def test_append_auto_never_raises_when_aiter_shim_unavailable(monkeypatch):
+    """backend='auto' must fall back to native, not raise, if the shim won't build.
+
+    The shim links AITER's C++ symbols, so it can fail for reasons an import probe
+    cannot see (no hipcc, unwritable cache, AITER signature drift). 'auto' is the
+    default for every caller, including ones that never opted into AITER.
+    """
+    from flashinfer import page as page_mod
+
+    device = torch.device("cuda:0")
+    dtype = torch.bfloat16
+    page_size, num_kv_heads, head_dim = 16, 8, 128
+
+    (
+        k,
+        v,
+        batch_indices,
+        positions,
+        kv_indices,
+        kv_indptr,
+        kv_last_page_len,
+        num_pages,
+    ) = _build_append_inputs([12, 3], page_size, num_kv_heads, head_dim, dtype, device)
+
+    def _boom():
+        raise RuntimeError("simulated AITER build/link failure")
+
+    monkeypatch.setattr(page_mod, "get_page_aiter_module", _boom)
+    page_mod._try_get_page_aiter_module.cache_clear()
+    try:
+        assert (
+            page_mod._auto_select_kv_append_backend(
+                device, dtype=dtype, kv_layout="NHD"
+            )
+            == "native"
+        )
+
+        k_cache = torch.zeros(
+            num_pages, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
+        )
+        v_cache = torch.zeros_like(k_cache)
+        # Must complete via the native kernel rather than propagating the error.
+        flashinfer.append_paged_kv_cache(
+            k,
+            v,
+            batch_indices,
+            positions,
+            (k_cache, v_cache),
+            kv_indices,
+            kv_indptr,
+            kv_last_page_len,
+            backend="auto",
+        )
+        assert torch.isfinite(k_cache).all()
+    finally:
+        # Don't leave the cached None behind for the rest of the session.
+        page_mod._try_get_page_aiter_module.cache_clear()
+
+
+@requires_aiter
+@pytest.mark.parametrize(
+    "kv_layout,dtype", [("HND", torch.bfloat16), ("NHD", torch.float32)]
+)
+def test_append_explicit_aiter_rejects_unsupported_layout_and_dtype(kv_layout, dtype):
+    """Explicit backend='aiter' must enforce the gates 'auto' applies.
+
+    The shim reads page_size from paged_k_cache.size(1), which is num_kv_heads
+    under HND — so an unchecked HND cache would scatter every token to the wrong
+    slot with no error at all.
+    """
+    device = torch.device("cuda:0")
+    page_size, num_kv_heads, head_dim = 16, 8, 128
+    (
+        k,
+        v,
+        batch_indices,
+        positions,
+        kv_indices,
+        kv_indptr,
+        kv_last_page_len,
+        num_pages,
+    ) = _build_append_inputs([5], page_size, num_kv_heads, head_dim, dtype, device)
+
+    if kv_layout == "HND":
+        shape = (num_pages, num_kv_heads, page_size, head_dim)
+    else:
+        shape = (num_pages, page_size, num_kv_heads, head_dim)
+    k_cache = torch.zeros(*shape, dtype=dtype, device=device)
+    v_cache = torch.zeros_like(k_cache)
+
+    with pytest.raises(ValueError, match="NHD|float16"):
+        flashinfer.append_paged_kv_cache(
+            k,
+            v,
+            batch_indices,
+            positions,
+            (k_cache, v_cache),
+            kv_indices,
+            kv_indptr,
+            kv_last_page_len,
+            kv_layout=kv_layout,
+            backend="aiter",
+        )
+
+
+@requires_aiter
+def test_append_aiter_shim_rejects_mismatched_device_and_length():
+    """The shim dereferences index tensors as raw device pointers, so it must check.
+
+    A host-resident kv_indptr (the page table is often built on the CPU) would
+    otherwise be dereferenced from device code.
+    """
+    device = torch.device("cuda:0")
+    dtype = torch.bfloat16
+    page_size, num_kv_heads, head_dim = 16, 8, 128
+    (
+        k,
+        v,
+        batch_indices,
+        positions,
+        kv_indices,
+        kv_indptr,
+        kv_last_page_len,
+        num_pages,
+    ) = _build_append_inputs([9], page_size, num_kv_heads, head_dim, dtype, device)
+    k_cache = torch.zeros(
+        num_pages, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
+    )
+    v_cache = torch.zeros_like(k_cache)
+    mod = flashinfer.page.get_page_aiter_module()
+    unit = flashinfer.page._aiter_unit_scale(device)
+
+    with pytest.raises(RuntimeError, match="same device"):
+        mod.append_paged_kv_cache_aiter(
+            k,
+            v,
+            batch_indices,
+            positions,
+            k_cache,
+            v_cache,
+            kv_indices,
+            kv_indptr.cpu(),
+            unit,
+            unit,
+        )
+
+    # batch_indices longer than append_key would read past the end of append_key.
+    with pytest.raises(RuntimeError, match="append_key.size"):
+        mod.append_paged_kv_cache_aiter(
+            k,
+            v,
+            torch.cat([batch_indices, batch_indices[:1]]),
+            torch.cat([positions, positions[:1]]),
+            k_cache,
+            v_cache,
+            kv_indices,
+            kv_indptr,
+            unit,
+            unit,
+        )

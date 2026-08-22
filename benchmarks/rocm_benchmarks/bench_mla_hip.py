@@ -15,20 +15,21 @@ limitations under the License.
 
 DeepSeek MLA decode benchmark (AITER backend), with cost attribution.
 
-Baseline for the "MLA on CDNA3" work item. `BatchMLAPagedAttentionWrapper.run()`
-currently does `torch.cat([ckv.unsqueeze(2), kpe.unsqueeze(2)], -1)` on *every*
-call (flashinfer/mla_rocm.py:274), which is O(KV-cache size) per decoded token.
-Production stacks do not do this: vLLM keeps one combined `kv_c_and_k_pe_cache`
-(576 = 512 kv_lora_rank + 64 qk_rope_head_dim) written by `concat_and_cache_mla`,
-and SGLang keeps a single `K_Buffer`. This bench measures the gap before any fix.
+Written for the "MLA on CDNA3" work item. `BatchMLAPagedAttentionWrapper.run()`
+used to concatenate `ckv_cache` and `kpe_cache` on *every* call, which is O(KV-cache
+size) per decoded token — the copy spans the whole allocated page pool, not the live
+pages. Production stacks do not do this: vLLM keeps one combined
+`kv_c_and_k_pe_cache` (576 = 512 kv_lora_rank + 64 qk_rope_head_dim) and SGLang keeps
+a single `K_Buffer`. `run()` now takes a zero-copy view of that layout; `--separate`
+reproduces the old two-allocation behaviour so the gap stays measurable.
 
 Four modes, so the baseline is attributable rather than a single opaque number:
 
-  attn  — wrapper.run(...): the whole current decode path, cat included.
-  cat   — the two torch.cat calls alone, so `attn - cat` estimates the kernel time
-          a combined-buffer API would leave behind.
-  plan  — wrapper.plan(...): isolates the four `.item()` host syncs in
-          _kv_lens_to_last_page_len_cpu (flashinfer/mla_rocm.py:40,41,50,51-54).
+  attn  — wrapper.run(...): the whole decode path end to end.
+  cat   — the two torch.cat calls alone, so `attn - cat` under --separate
+          estimates the kernel time a combined-buffer layout leaves behind.
+  plan  — wrapper.plan(...): isolates the host round-trips it performs to derive
+          last-page lengths and max_seqlen_q.
   pool  — run() vs KV *pool* size at a fixed active set. The cat covers the whole
           allocated pool, not the live pages, so a sweep that sizes the pool to
           batch*kv_len (as attn/cat above do) measures the best case. This mode

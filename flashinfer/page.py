@@ -31,6 +31,7 @@ from .utils import (
 
 if IS_HIP:
     from .arch_caps import capability_available
+    from .jit.core import logger as _jit_logger
 
     @functools.cache
     def get_page_aiter_module():
@@ -39,8 +40,43 @@ if IS_HIP:
         return gen_page_aiter_module().build_and_load()
 
     @functools.cache
+    def _try_get_page_aiter_module():
+        """``get_page_aiter_module()`` or ``None``, caching the failure.
+
+        The shim links AITER's C++ symbols, so loading it can fail for reasons an
+        import probe cannot see: no hipcc, an unwritable cache dir, or an AITER
+        whose ``reshape_and_cache_flash`` signature no longer matches the forward
+        declaration. ``backend="auto"`` must never raise, so it routes through
+        here and falls back to the native kernel.
+
+        Caching the ``None`` matters: ``functools.cache`` does not memoize
+        exceptions, so a raising getter would retry the whole AITER rebuild on
+        every call.
+        """
+        try:
+            return get_page_aiter_module()
+        except Exception as exc:  # noqa: BLE001 - any build/link failure falls back
+            _jit_logger.warning(
+                "AITER paged-KV append unavailable (%s: %s); falling back to the "
+                "native HIP kernel. Pass backend='aiter' to see the full error.",
+                type(exc).__name__,
+                exc,
+            )
+            return None
+
+    @functools.cache
     def _aiter_unit_scale(device: torch.device) -> torch.Tensor:
         return torch.ones(1, dtype=torch.float32, device=device)
+
+    def _aiter_kv_append_supported(*, dtype: torch.dtype, kv_layout: str) -> bool:
+        """Shape/dtype constraints of AITER's reshape_and_cache_flash.
+
+        Shared by the ``auto`` selector and the explicit ``backend="aiter"`` opt-in
+        so the two cannot drift: the shim reads ``page_size`` from
+        ``paged_k_cache.size(1)``, which is ``num_kv_heads`` under HND, so a wrong
+        layout silently writes every token to the wrong slot.
+        """
+        return kv_layout == "NHD" and dtype in (torch.float16, torch.bfloat16)
 
     def _auto_select_kv_append_backend(
         device: torch.device,
@@ -51,9 +87,9 @@ if IS_HIP:
         """Return 'aiter' when GPU + dtype + layout meet AITER's reshape_and_cache_flash constraints."""
         if not capability_available(device, "append_paged_kv_cache", "aiter"):
             return "native"
-        if kv_layout != "NHD":
+        if not _aiter_kv_append_supported(dtype=dtype, kv_layout=kv_layout):
             return "native"
-        if dtype not in (torch.float16, torch.bfloat16):
+        if _try_get_page_aiter_module() is None:
             return "native"
         return "aiter"
 
@@ -476,11 +512,22 @@ def append_paged_kv_cache(
         )
         if _backend == "aiter":
             if backend == "aiter":
-                # Explicit opt-in: surface a clear ValueError rather than an
-                # ImportError from the JIT loader, matching norm/rope/activation.
+                # Explicit opt-in skips _auto_select_kv_append_backend, so re-check
+                # its constraints here. Without this the shim would read page_size
+                # from size(1) -- num_kv_heads under HND -- and scatter every token
+                # to the wrong slot with no error.
                 from .aiter_utils import require_aiter
 
                 require_aiter(paged_k_cache.device, "append_paged_kv_cache")
+                if not _aiter_kv_append_supported(
+                    dtype=paged_k_cache.dtype, kv_layout=kv_layout
+                ):
+                    raise ValueError(
+                        f"backend='aiter' for append_paged_kv_cache requires "
+                        f"kv_layout='NHD' and a float16/bfloat16 cache; got "
+                        f"kv_layout={kv_layout!r} and dtype={paged_k_cache.dtype}. "
+                        f"Use backend='native'."
+                    )
             _aiter_append_paged_kv_cache(
                 append_key,
                 append_value,

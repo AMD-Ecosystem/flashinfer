@@ -558,3 +558,71 @@ def test_mla_plan_accepts_host_and_mixed_device_indices(index_device):
     q_pe = torch.randn(batch_size, num_heads, kpe_dim, dtype=dtype, device=device)
     out = wrapper.run(q_nope, q_pe, split_ckv, split_kpe)
     assert torch.isfinite(out).all()
+
+
+@requires_aiter
+def test_mla_run_rejects_4d_caches_with_actionable_error():
+    """4-D ckv/kpe must raise, not warn that an adjacent buffer is non-adjacent.
+
+    An earlier docstring told callers to allocate
+    [num_pages, page_size, 1, ckv+kpe] and pass 4-D slices. That shape never
+    worked (the fallback unsqueezed it to 5-D, which AITER rejects), so the error
+    has to name the 3-D form rather than blame the caller's allocation.
+    """
+    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+
+    device = torch.device("cuda:0")
+    dtype = torch.bfloat16
+    num_heads, ckv_dim, kpe_dim, page_size = 16, 512, 64, 1
+    kv_lens = [8]
+    batch_size = len(kv_lens)
+
+    _, _, kv_indptr, kv_indices, _ = _build_paged_kv(
+        batch_size, kv_lens, page_size, ckv_dim, kpe_dim, dtype, device
+    )
+    num_pages = int(kv_indices.numel()) + 2
+    combined = torch.zeros(
+        num_pages, page_size, 1, ckv_dim + kpe_dim, dtype=dtype, device=device
+    )
+    ckv_4d, kpe_4d = combined.split([ckv_dim, kpe_dim], dim=-1)
+
+    wrapper = BatchMLAPagedAttentionWrapper(
+        torch.empty(8 * 1024 * 1024, dtype=torch.uint8, device=device)
+    )
+    wrapper.plan(
+        torch.arange(batch_size + 1, dtype=torch.int32, device=device),
+        kv_indptr,
+        kv_indices,
+        torch.tensor(kv_lens, dtype=torch.int32, device=device),
+        num_heads,
+        ckv_dim,
+        kpe_dim,
+        page_size,
+        False,
+        1.0 / math.sqrt(ckv_dim + kpe_dim),
+        dtype,
+        dtype,
+    )
+    q_nope = torch.randn(batch_size, num_heads, ckv_dim, dtype=dtype, device=device)
+    q_pe = torch.randn(batch_size, num_heads, kpe_dim, dtype=dtype, device=device)
+
+    with pytest.raises(ValueError, match="must be 3-D"):
+        wrapper.run(q_nope, q_pe, ckv_4d, kpe_4d)
+
+
+def test_gather_plan_inputs_passes_through_host_tensors():
+    """Host-resident inputs must not be concatenated — there is no sync to save.
+
+    Batching exists to collapse device->host round-trips; on CPU inputs a cat is
+    pure added allocation, which the previous docstring wrongly called a no-op.
+    """
+    from flashinfer.mla_rocm import _gather_plan_inputs_on_host
+
+    qo = torch.arange(5, dtype=torch.int32)
+    kvp = torch.arange(5, dtype=torch.int32) * 4
+    kvl = torch.full((4,), 4, dtype=torch.int32)
+
+    qo_h, kvp_h, kvl_h = _gather_plan_inputs_on_host(qo, kvp, kvl)
+
+    # Same objects, i.e. no copy was made at all.
+    assert qo_h is qo and kvp_h is kvp and kvl_h is kvl

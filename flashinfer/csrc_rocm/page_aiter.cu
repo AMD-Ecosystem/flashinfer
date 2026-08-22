@@ -70,6 +70,24 @@ void append_paged_kv_cache_aiter(at::Tensor append_key, at::Tensor append_value,
   TORCH_CHECK(batch_indices.numel() == positions.numel(),
               "batch_indices and positions must have the same length, got ", batch_indices.numel(),
               " vs ", positions.numel());
+  // AITER indexes append_key/append_value by slot_mapping position, so a shorter
+  // append tensor is read past its end. csrc_rocm/page.cu checks the same.
+  TORCH_CHECK(batch_indices.numel() == append_key.size(0),
+              "batch_indices length must equal append_key.size(0), got ", batch_indices.numel(),
+              " vs ", append_key.size(0));
+  TORCH_CHECK(append_key.size(0) == append_value.size(0),
+              "append_key and append_value must have the same length, got ", append_key.size(0),
+              " vs ", append_value.size(0));
+
+  // The kernel dereferences these as raw device pointers, so a tensor on the wrong
+  // device faults (or, with peer access, silently yields wrong indices) instead of
+  // erroring. The torch ops this shim replaced raised a device-mismatch error.
+  const at::Device device = paged_k_cache.device();
+  TORCH_CHECK(batch_indices.device() == device && positions.device() == device &&
+                  kv_indices.device() == device && kv_indptr.device() == device &&
+                  append_key.device() == device && append_value.device() == device &&
+                  paged_v_cache.device() == device,
+              "all tensors must be on the same device as paged_k_cache (", device, ")");
 
   const int64_t nnz = batch_indices.numel();
   const int64_t page_size = paged_k_cache.size(1);
@@ -94,6 +112,11 @@ void append_paged_kv_cache_aiter(at::Tensor append_key, at::Tensor append_value,
                        batch_indices_c.data_ptr<int32_t>(), positions_c.data_ptr<int32_t>(),
                        kv_indices_c.data_ptr<int32_t>(), kv_indptr_c.data_ptr<int32_t>(),
                        slot_mapping.data_ptr<int64_t>(), nnz, static_cast<int32_t>(page_size));
+    // Without this, a launch failure leaves slot_mapping uninitialized and the
+    // scatter below writes the append into garbage slots, silently.
+    const hipError_t err = hipGetLastError();
+    TORCH_CHECK(err == hipSuccess,
+                "build_slot_mapping_kernel launch failed: ", hipGetErrorString(err));
   }
 
   // "auto" selects the no-quantization path, for which the scales are ignored;

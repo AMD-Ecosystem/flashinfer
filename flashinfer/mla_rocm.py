@@ -79,19 +79,19 @@ def _gather_plan_inputs_on_host(
     these tensors are only ``batch+1`` int32 elements, so the round-trip count is
     the whole cost.  Concatenating first makes it one.
 
-    Inputs already on the host stay there (the copy is a no-op, no sync at all).
-    Mixed-device inputs fall back to per-tensor copies, since ``torch.cat`` rejects
-    them.
+    Batching only helps when there is a sync to save, so inputs that are already
+    on the host are passed through untouched — concatenating them would add a real
+    CPU allocation and copy for no benefit. Mixed-device inputs also fall back to
+    per-tensor copies, since ``torch.cat`` rejects them.
     """
-    if qo_indptr.device == kv_indptr.device == kv_len_arr.device:
-        host = torch.cat([qo_indptr, kv_indptr, kv_len_arr]).to("cpu")
-        n_qo, n_kv = qo_indptr.numel(), kv_indptr.numel()
-        return host[:n_qo], host[n_qo : n_qo + n_kv], host[n_qo + n_kv :]
-    return (
-        qo_indptr.to("cpu"),
-        kv_indptr.to("cpu"),
-        kv_len_arr.to("cpu"),
-    )
+    tensors = (qo_indptr, kv_indptr, kv_len_arr)
+    if any(t.device.type == "cpu" for t in tensors) or not (
+        qo_indptr.device == kv_indptr.device == kv_len_arr.device
+    ):
+        return tuple(t.to("cpu") for t in tensors)  # type: ignore[return-value]
+    host = torch.cat(list(tensors)).to("cpu")
+    n_qo, n_kv = qo_indptr.numel(), kv_indptr.numel()
+    return host[:n_qo], host[n_qo : n_qo + n_kv], host[n_qo + n_kv :]
 
 
 def _kv_lens_to_last_page_len_cpu(
@@ -362,6 +362,20 @@ class BatchMLAPagedAttentionWrapper:
             )
 
         q = torch.cat([q_nope, q_pe], dim=-1)
+        # An earlier version of this docstring told callers to allocate
+        # [num_pages, page_size, 1, ckv+kpe] and pass 4-D slices. That shape never
+        # worked -- the fallback below would unsqueeze it to 5-D, which AITER
+        # rejects -- so say so plainly instead of warning that a genuinely adjacent
+        # buffer is not adjacent.
+        if ckv_cache.dim() != 3 or kpe_cache.dim() != 3:
+            raise ValueError(
+                f"ckv_cache and kpe_cache must be 3-D "
+                f"[num_pages, page_size, head_dim]; got {ckv_cache.dim()}-D and "
+                f"{kpe_cache.dim()}-D. If you allocated a combined "
+                f"[num_pages, page_size, 1, head_dim_ckv + head_dim_kpe] buffer, "
+                f"drop the size-1 axis and split the 3-D form instead: "
+                f"cache.split([head_dim_ckv, head_dim_kpe], dim=-1)."
+            )
         kv_buffer = _combined_kv_view(ckv_cache, kpe_cache)
         if kv_buffer is None:
             warnings.warn(
