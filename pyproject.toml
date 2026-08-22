@@ -63,7 +63,9 @@ build-backend = "build_backend"
 backend-path = ["."]
 
 [tool.setuptools.packages.find]
-include = ["flashinfer*"]
+# Anchored, not "flashinfer*": that glob also matched the sibling
+# flashinfer-cubin/ and flashinfer-jit-cache/ project roots and shipped them.
+include = ["flashinfer", "flashinfer.*"]
 
 [tool.setuptools.package-data]
 # scikit-build-core's `wheel.packages = ["flashinfer"]` swept these in
