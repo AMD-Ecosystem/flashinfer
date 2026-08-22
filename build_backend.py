@@ -9,7 +9,7 @@ managing ``flashinfer/include``, materialized from the top-level ``include/``.
 
 Why that matters: ``flashinfer/get_include_paths.py`` resolves headers as
 ``Path(__file__).parent / "include"``, which becomes ``FLASHINFER_INCLUDE_DIR``
-in ``flashinfer/jit/env.py`` and ends up as the ``-I`` flag on every HIP JIT
+in ``flashinfer/jit/env.py`` and is passed as ``-isystem`` on every HIP JIT
 compile. Without it, nothing builds at *runtime*, not just at build time.
 
 Three materialization modes, and the differences are load-bearing:
