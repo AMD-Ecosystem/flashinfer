@@ -16,6 +16,38 @@ logger = logging.getLogger(__name__)
 FLASHINFER_SUPPORTED_ROCM_ARCHS = ["gfx942", "gfx950"]
 
 
+# The architecture assumed when nothing else can be determined. Must stay equal
+# to ``jit/aiter_source.py``'s ``_DEFAULT_BUILD_ARCH``: the two are consulted
+# independently on a GPU-less host, and a shim built for one architecture beside
+# kernels built for another faults at run time.
+_GPULESS_FALLBACK_ARCH = "gfx942"
+
+
+@functools.cache
+def _detected_supported_archs() -> tuple:
+    """Supported architectures rocminfo reports, cached for the process.
+
+    ``rocminfo_gpu_agents`` is deliberately uncached -- "the caller decides" --
+    and this caller is a hot one: ``CompilationContext`` is constructed from five
+    places and each construction resolves the target list. The code this replaces
+    reached rocminfo through the cached ``get_supported_device_indices``, so
+    calling the uncached probe directly would re-run the subprocess (with its
+    timeout) on every construction. Hardware cannot change under a running
+    process, so caching costs nothing in fidelity.
+
+    Tests that patch ``rocminfo_gpu_agents`` must call ``cache_clear()``.
+    """
+    return tuple(
+        sorted(
+            {
+                arch
+                for arch, _ in rocminfo_gpu_agents()
+                if arch in FLASHINFER_SUPPORTED_ROCM_ARCHS
+            }
+        )
+    )
+
+
 def _canonical_arch_list(raw: str) -> str:
     """``"gfx950:sramecc+; gfx942,,gfx942"`` -> ``"gfx950,gfx942"``.
 
@@ -52,21 +84,18 @@ def resolve_target_archs(arch_list: str = None) -> str:
     1. ``arch_list``, when a caller passes one explicitly.
     2. ``FLASHINFER_ROCM_ARCH_LIST``.
     3. The architectures of the supported GPUs actually present.
-    4. Every architecture FlashInfer supports, with a warning.
+    4. ``gfx942``, warned -- the pre-existing default, kept deliberately (see
+       the comment at the fallback).
 
-    Step 4 replaces a hard-coded ``"gfx942"`` that three call sites reached
-    independently. On a CDNA4 host that literal was not a conservative default
-    but a wrong answer: ``validate_flashinfer_rocm_arch(arch_list=None)``
+    The bug this fixes is that steps 1-3 were open-coded three times and
+    disagreed. On a CDNA4 host, ``validate_flashinfer_rocm_arch(arch_list=None)``
     returned ``{"gfx942"}`` on a gfx950 device while ``CompilationContext``
-    compiled for gfx950, so the check that exists to catch "your PyTorch was not
-    built for this architecture" was validating an architecture nobody was
+    compiled for gfx950 -- so the check that exists to catch "your PyTorch was
+    not built for this architecture" was validating an architecture nobody was
     building for. Vacuous on a PyTorch carrying both; a spurious hard failure on
-    an arch-specific build that carries only gfx950.
-
-    Building for everything we support is the honest fallback when we cannot
-    tell: slower and fatter, but correct on whichever card the result lands on,
-    which a guess is not. It is warned so a GPU-less build host is told to set
-    the variable rather than silently paying for it.
+    an arch-specific build that carries only gfx950. gfx942 was the one
+    architecture where the hard-coded literal happened to be right, which is why
+    CDNA3 never noticed.
 
     Detection uses rocminfo rather than ``torch.cuda`` so this stays callable
     before the HIP runtime starts, and keeps this module importable without
@@ -89,25 +118,35 @@ def resolve_target_archs(arch_list: str = None) -> str:
         if canonical:
             return canonical
 
-    detected = sorted(
-        {
-            arch
-            for arch, _ in rocminfo_gpu_agents()
-            if arch in FLASHINFER_SUPPORTED_ROCM_ARCHS
-        }
-    )
+    detected = _detected_supported_archs()
     if detected:
         return ",".join(detected)
 
-    fallback = ",".join(FLASHINFER_SUPPORTED_ROCM_ARCHS)
+    # Deliberately the *existing* default, not "every architecture we support".
+    #
+    # A fat list looks like the safer answer here and is not. `aot_hip` publishes
+    # this value into FLASHINFER_ROCM_ARCH_LIST, and `resolve_aiter_build_arch()`
+    # returns `env_archs[0]` when no device is visible -- so "gfx942,gfx950"
+    # ships gfx950 HIP kernels beside a gfx942-only AITER shim, which faults on a
+    # gfx950 card. Today both sides independently fall back to gfx942 and
+    # therefore agree; widening one of them alone is a regression.
+    #
+    # This keeps that agreement while fixing the bug this function exists for --
+    # the *disagreement* between the validator and the compiler on a host where a
+    # GPU is visible. Whether a GPU-less host should instead raise, build fat, or
+    # teach the shim to follow the list is a real question with its own blast
+    # radius (it breaks build hosts that work today), and belongs in its own
+    # change.
     logger.warning(
         "No supported AMD GPU detected and FLASHINFER_ROCM_ARCH_LIST is unset; "
-        "building for every supported architecture (%s). This is slower than "
-        "targeting one. Set FLASHINFER_ROCM_ARCH_LIST to the architecture you "
-        "are building for.",
-        fallback,
+        "falling back to %s. Set FLASHINFER_ROCM_ARCH_LIST to the architecture "
+        "you are building for -- otherwise the result will not run on %s.",
+        _GPULESS_FALLBACK_ARCH,
+        ", ".join(
+            a for a in FLASHINFER_SUPPORTED_ROCM_ARCHS if a != _GPULESS_FALLBACK_ARCH
+        ),
     )
-    return fallback
+    return _GPULESS_FALLBACK_ARCH
 
 
 def get_rocm_home():

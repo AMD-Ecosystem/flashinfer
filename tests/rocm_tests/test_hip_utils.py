@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from flashinfer import hip_utils
 from flashinfer.hip_utils import (
     FLASHINFER_SUPPORTED_ROCM_ARCHS,
     check_torch_rocm_compatibility,
@@ -148,6 +149,16 @@ class TestResolveTargetArchs:
     while ``CompilationContext`` emitted ``--offload-arch=gfx950``.
     """
 
+    @pytest.fixture(autouse=True)
+    def _clear_detection_cache(self):
+        """Detection is cached per process, so a patched rocminfo would otherwise
+        be shadowed by whatever the previous test (or the real hardware) put
+        there. Clearing on both sides keeps these tests order-independent and
+        stops them leaking a fake into the rest of the session."""
+        hip_utils._detected_supported_archs.cache_clear()
+        yield
+        hip_utils._detected_supported_archs.cache_clear()
+
     def _agents(self, *archs):
         return patch(
             "flashinfer.hip_utils.rocminfo_gpu_agents",
@@ -233,18 +244,39 @@ class TestResolveTargetArchs:
         with self._agents("gfx1035", "gfx950"):
             assert resolve_target_archs() == "gfx950"
 
-    def test_no_device_builds_for_everything_supported(self, monkeypatch, caplog):
-        """A GPU-less build host gets a fat build, not a guess.
+    def test_no_device_keeps_the_existing_default_and_warns(self, monkeypatch, caplog):
+        """A GPU-less host keeps today's answer, loudly.
 
-        Picking one architecture here is what produced a silently gfx942-only
-        artifact on a machine that could not confirm anything. Building for all
-        supported architectures is slower but correct wherever it lands, and the
-        warning tells the operator how to make it cheaper.
+        Widening this to every supported architecture was tried and reverted: it
+        desynchronizes the AITER shim, which takes exactly one architecture and
+        picks ``env_archs[0]`` when no device is visible, so a fat list ships
+        gfx950 kernels beside a gfx942-only shim. Making the GPU-less default
+        *correct* rather than merely consistent is a separate change.
         """
         monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
         with self._agents(), caplog.at_level("WARNING"):
-            assert resolve_target_archs() == ",".join(FLASHINFER_SUPPORTED_ROCM_ARCHS)
+            assert resolve_target_archs() == "gfx942"
         assert "FLASHINFER_ROCM_ARCH_LIST" in caplog.text
+
+    def test_gpuless_fallback_matches_the_aiter_shim_default(self):
+        """The two are resolved independently on a GPU-less host; if they ever
+        diverge, the shim is built for a different architecture than the kernels
+        it ships beside and faults at run time."""
+        from flashinfer.jit.aiter_source import _DEFAULT_BUILD_ARCH
+
+        assert hip_utils._GPULESS_FALLBACK_ARCH == _DEFAULT_BUILD_ARCH
+
+    def test_detection_is_cached_per_process(self):
+        """Restores a cache the refactor dropped: the previous implementation
+        reached rocminfo through the cached ``get_supported_device_indices``,
+        while ``rocminfo_gpu_agents`` is uncached by design."""
+        with patch(
+            "flashinfer.hip_utils.rocminfo_gpu_agents",
+            return_value=(("gfx950", ""),),
+        ) as probe:
+            hip_utils._detected_supported_archs()
+            hip_utils._detected_supported_archs()
+        assert probe.call_count == 1
 
     def test_agrees_with_the_compilation_context(self, monkeypatch):
         """The property the whole change exists for: the validator and the thing
