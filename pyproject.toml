@@ -9,6 +9,12 @@ description = "Fast Attention Algorithms for LLM Inference on ROCm"
 requires-python = ">=3.10"
 readme = "README.md"
 license = "Apache-2.0"
+# PEP 639 key, not `[tool.setuptools] license-files`, which setuptools>=77
+# deprecates. Listing licenses/*.txt here is tempting but breaks the wheel:
+# under `python -m build` setuptools writes the License-File metadata for them
+# and then does not copy the files, so the archive contradicts its own METADATA
+# (pip wheel gets it right; the CI image uses python -m build).
+license-files = ["LICENSE", "NOTICE"]
 authors = [
     {name = "AMD, Inc."}
 ]
@@ -51,17 +57,16 @@ dev = [
 # In-tree backend (see build_backend.py): plain setuptools plus one step that
 # materializes flashinfer/include. torch and numpy are deliberately absent —
 # nothing is compiled at build time, so they were never build requirements.
+# `wheel` is absent for a sharper reason: setuptools has provided bdist_wheel
+# itself since 70.1, and `python -m build --no-isolation` (docker/Dockerfile.rocm_ci)
+# hard-fails on any requirement that is merely listed and not installed.
 requires = [
     "setuptools>=80",
     "setuptools-scm>=9.2",
-    "packaging>=24",
-    "wheel"
+    "packaging>=24"
 ]
 build-backend = "build_backend"
 backend-path = ["."]
-
-[tool.setuptools]
-license-files = ["LICENSE"]
 
 [tool.setuptools.packages.find]
 include = ["flashinfer*"]

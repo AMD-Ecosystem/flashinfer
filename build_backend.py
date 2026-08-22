@@ -22,6 +22,9 @@ Three materialization modes, and the differences are load-bearing:
   ``include/``, via MANIFEST.in) and a wheel built from it re-creates the copy;
   see ``_prepare_for_sdist``.
 
+The wheel and sdist hooks run *in the checkout*, so they restore an editable
+symlink they found on the way in — see ``_preserving_editable_link``.
+
 The header filter mirrors what the retired CMake ``install(DIRECTORY ...)`` rule
 did, so wheel contents do not change with this backend swap.
 
@@ -30,7 +33,9 @@ Versioning is handled entirely by setuptools-scm via ``[tool.setuptools_scm]``
 implement the upstream ``version.txt`` / ``_build_meta.py`` scheme.
 """
 
+import os
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
 
 from setuptools import build_meta as _orig
@@ -98,6 +103,25 @@ def _prepare_for_sdist() -> None:
     _clear(_pkg_include)
 
 
+@contextmanager
+def _preserving_editable_link():
+    """Put an editable symlink back after a wheel or sdist hook replaces it.
+
+    pip builds a local directory in place, so ``pip wheel .`` in a checkout that
+    already has an editable install would otherwise swap its live symlink for a
+    frozen copy — later edits under ``include/`` would silently stop being seen.
+    Only a symlink is restored; a real copy left by an earlier wheel build is
+    gitignored and harmless.
+    """
+    prior = os.readlink(_pkg_include) if _pkg_include.is_symlink() else None
+    try:
+        yield
+    finally:
+        if prior is not None:
+            _clear(_pkg_include)
+            _pkg_include.symlink_to(prior, target_is_directory=True)
+
+
 # --------------------------------------------------------------- PEP 517 hooks
 
 
@@ -114,8 +138,11 @@ def get_requires_for_build_editable(config_settings=None):
 
 
 def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
-    _prepare_for_wheel()
-    return _orig.prepare_metadata_for_build_wheel(metadata_directory, config_settings)
+    with _preserving_editable_link():
+        _prepare_for_wheel()
+        return _orig.prepare_metadata_for_build_wheel(
+            metadata_directory, config_settings
+        )
 
 
 def prepare_metadata_for_build_editable(metadata_directory, config_settings=None):
@@ -126,13 +153,15 @@ def prepare_metadata_for_build_editable(metadata_directory, config_settings=None
 
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
-    _prepare_for_wheel()
-    return _orig.build_wheel(wheel_directory, config_settings, metadata_directory)
+    with _preserving_editable_link():
+        _prepare_for_wheel()
+        return _orig.build_wheel(wheel_directory, config_settings, metadata_directory)
 
 
 def build_sdist(sdist_directory, config_settings=None):
-    _prepare_for_sdist()
-    return _orig.build_sdist(sdist_directory, config_settings)
+    with _preserving_editable_link():
+        _prepare_for_sdist()
+        return _orig.build_sdist(sdist_directory, config_settings)
 
 
 def build_editable(wheel_directory, config_settings=None, metadata_directory=None):
