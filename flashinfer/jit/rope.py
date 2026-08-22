@@ -31,7 +31,15 @@ def gen_rope_module() -> JitSpec:
 def gen_rope_aiter_module() -> JitSpec:
     from .aiter_source import aiter_jitspec_flags, refresh_aiter_jitspec
 
-    extra_include_paths, extra_ldflags = aiter_jitspec_flags("module_rope_pos_fwd")
+    # AITER split the monolithic rope module by variant. Through 0.1.10 the whole
+    # forward path lived in "module_rope_pos_fwd"; from 0.1.16 that name is not
+    # registered at all, and the entry point this shim calls
+    # (rope_cached_positions_2c_fwd_impl) is built by the 2c cached-positions
+    # module. Asking for the old name does not error usefully -- AITER hands back
+    # an empty source list and the JIT dies on `assert len(sources) > 0`.
+    extra_include_paths, extra_ldflags = aiter_jitspec_flags(
+        "module_rope_2c_cached_positions_fwd"
+    )
     return refresh_aiter_jitspec(
         gen_jit_spec(
             "rope_aiter",

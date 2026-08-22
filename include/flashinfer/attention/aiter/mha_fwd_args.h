@@ -54,6 +54,9 @@ struct mha_fwd_args {
   const void* seqlen_k_ptr = nullptr;
   const void* cu_seqlen_q_ptr = nullptr;
   const void* cu_seqlen_k_ptr = nullptr;
+  // Added in 0.1.16 — inserted *before* sink_ptr, so every later field shifts.
+  const void* block_scale_seqstart_q_ptr = nullptr;
+  const void* block_scale_seqstart_k_ptr = nullptr;
   const void* sink_ptr = nullptr;
 
   // Dimensions (ck_tile::index_t = int32_t)
@@ -84,6 +87,10 @@ struct mha_fwd_args {
   int32_t nhead_stride_randval = 0;
   int32_t nhead_stride_lse = 0;
   int32_t nhead_stride_o;
+  // Added in 0.1.16.
+  int32_t nhead_stride_q_descale = 0;
+  int32_t nhead_stride_k_descale = 0;
+  int32_t nhead_stride_v_descale = 0;
 
   int32_t batch_stride_q = 0;
   int32_t batch_stride_k = 0;
@@ -92,6 +99,10 @@ struct mha_fwd_args {
   int32_t batch_stride_randval = 0;
   int32_t batch_stride_lse = 0;
   int32_t batch_stride_o = 0;
+  // Added in 0.1.16.
+  int32_t batch_stride_q_descale = 0;
+  int32_t batch_stride_k_descale = 0;
+  int32_t batch_stride_v_descale = 0;
 
   int32_t window_size_left = -1;
   int32_t window_size_right = -1;
@@ -104,6 +115,10 @@ struct mha_fwd_args {
 
   // Dropout seed/offset (first variant = {0,0} when dropout disabled)
   std::variant<std::pair<uint64_t, uint64_t>, std::pair<const void*, const void*>> drop_seed_offset;
+
+  // Added in 0.1.16, at the tail of the struct.
+  int32_t block_scale_size_q = 0;
+  int32_t block_scale_size_kv = 0;
 };
 
 }  // namespace aiter

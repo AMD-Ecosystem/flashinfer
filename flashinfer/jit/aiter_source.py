@@ -23,6 +23,7 @@ and a CK GEMM module), and a module may be built in a *specialized* form -- see
 """
 
 import functools
+import inspect
 import os
 import re
 import shutil
@@ -392,20 +393,30 @@ def _build_aiter_lib(
             md_name,
             os.environ["GPU_ARCHS"],
         )
-        build_module(
-            md_name=md_name,
-            srcs=a["srcs"],
-            flags_extra_cc=a["flags_extra_cc"],
-            flags_extra_hip=flags_extra_hip,
-            blob_gen_cmd=blob_gen_cmd,
-            extra_include=a["extra_include"],
-            extra_ldflags=a["extra_ldflags"],
-            verbose=os.environ.get("FLASHINFER_JIT_VERBOSE", "0") == "1",
-            is_python_module=a["is_python_module"],
-            is_standalone=a["is_standalone"],
-            torch_exclude=a["torch_exclude"],
-            hipify=a.get("hipify", False),
-        )
+        kwargs = {
+            "md_name": md_name,
+            "srcs": a["srcs"],
+            "flags_extra_cc": a["flags_extra_cc"],
+            "flags_extra_hip": flags_extra_hip,
+            "blob_gen_cmd": blob_gen_cmd,
+            "extra_include": a["extra_include"],
+            "extra_ldflags": a["extra_ldflags"],
+            "verbose": os.environ.get("FLASHINFER_JIT_VERBOSE", "0") == "1",
+            "is_python_module": a["is_python_module"],
+            "is_standalone": a["is_standalone"],
+            "torch_exclude": a["torch_exclude"],
+            "hipify": a.get("hipify", False),
+            # Added after 0.1.10; required (no default) from 0.1.16 on, where it
+            # selects third-party sources AITER clones per build (CK,
+            # HipKittens). get_args_of_build supplies the right value.
+            "third_party": a.get("third_party"),
+        }
+        # AITER's build_module signature moves between releases, so pass only what
+        # the installed one accepts: 0.1.10 has no `third_party` and would raise
+        # TypeError on it, while 0.1.16+ makes it a required positional. Filtering
+        # here keeps a single code path working across both.
+        accepted = inspect.signature(build_module).parameters
+        build_module(**{k: v for k, v in kwargs.items() if k in accepted})
 
         # AITER decides the output dir from a module-level `bd_dir` global that is
         # frozen at import time, so the .so does not reliably land in
