@@ -64,6 +64,16 @@ void append_paged_kv_cache_aiter(at::Tensor append_key, at::Tensor append_value,
   TORCH_CHECK(paged_k_cache.dim() == 4,
               "paged_k_cache must be [num_pages, page_size, num_kv_heads, head_dim] (NHD), got ",
               paged_k_cache.dim(), " dims");
+  // Both caches are written through slot indices derived from paged_k_cache's
+  // page_size, so a differently-shaped value cache is scattered out of bounds.
+  // The dtype must match too: strides are counted in elements, so a narrower
+  // v-cache has identical strides and slips past AITER's own stride check while
+  // the kernel writes wider elements into it.
+  TORCH_CHECK(paged_v_cache.sizes() == paged_k_cache.sizes() &&
+                  paged_v_cache.scalar_type() == paged_k_cache.scalar_type(),
+              "paged_k_cache and paged_v_cache must have the same shape and dtype, got ",
+              paged_k_cache.sizes(), " ", paged_k_cache.scalar_type(), " vs ",
+              paged_v_cache.sizes(), " ", paged_v_cache.scalar_type());
   TORCH_CHECK(batch_indices.scalar_type() == at::kInt && positions.scalar_type() == at::kInt &&
                   kv_indices.scalar_type() == at::kInt && kv_indptr.scalar_type() == at::kInt,
               "batch_indices/positions/kv_indices/kv_indptr must be int32");

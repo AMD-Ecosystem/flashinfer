@@ -216,12 +216,18 @@ def test_append_paged_kv_cache_aiter_honors_current_stream():
 
 
 @requires_aiter
-def test_append_auto_never_raises_when_aiter_shim_unavailable(monkeypatch):
-    """backend='auto' must fall back to native, not raise, if the shim won't build.
+def test_append_auto_falls_back_when_aiter_shim_fails_to_build(monkeypatch):
+    """backend='auto' falls back to native when the shim cannot be built.
 
     The shim links AITER's C++ symbols, so it can fail for reasons an import probe
     cannot see (no hipcc, unwritable cache, AITER signature drift). 'auto' is the
     default for every caller, including ones that never opted into AITER.
+
+    One deliberate carve-out: MissingJITCacheError is re-raised, not swallowed. It
+    fires only under FLASHINFER_DISABLE_JIT, which README.md documents as failing
+    loudly on missing kernels. Do not "fix" that re-raise to satisfy this test --
+    this test simulates a build failure with a plain RuntimeError and would pass
+    either way.
     """
     from flashinfer import page as page_mod
 
@@ -268,8 +274,9 @@ def test_append_auto_never_raises_when_aiter_shim_unavailable(monkeypatch):
         raise RuntimeError("simulated AITER build/link failure")
 
     monkeypatch.setattr(page_mod, "get_page_aiter_module", _boom)
-    # Snapshot rather than blanket-clear: on a host where the shim genuinely
-    # cannot build, a legitimate cached None is worth keeping.
+    # The finally below clears again so the simulated None never leaks. On a host
+    # where the shim genuinely cannot build, that discards a legitimate cached
+    # None and costs one extra failed build attempt in this worker.
     page_mod._try_get_page_aiter_module.cache_clear()
     try:
         assert (
@@ -375,6 +382,32 @@ def test_append_aiter_shim_rejects_mismatched_device_and_length():
             v_cache,
             kv_indices,
             kv_indptr.cpu(),
+            unit,
+            unit,
+        )
+
+    # Both caches are written through slot indices derived from paged_k_cache's
+    # page_size, so a shorter value cache is scattered out of bounds. Note the
+    # mismatch has to preserve stride(0) — AITER has its own stride(0) equality
+    # check, so e.g. a doubled head_dim would be caught there and this test would
+    # pass with our guard removed. Fewer pages is the case only we catch.
+    with pytest.raises(RuntimeError, match="paged_k_cache and paged_v_cache"):
+        mod.append_paged_kv_cache_aiter(
+            k,
+            v,
+            batch_indices,
+            positions,
+            k_cache,
+            torch.zeros(
+                num_pages - 1,
+                page_size,
+                num_kv_heads,
+                head_dim,
+                dtype=dtype,
+                device=device,
+            ),
+            kv_indices,
+            kv_indptr,
             unit,
             unit,
         )

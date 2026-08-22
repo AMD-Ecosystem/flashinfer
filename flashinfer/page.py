@@ -46,17 +46,19 @@ if IS_HIP:
         The shim links AITER's C++ symbols, so loading it can fail for reasons an
         import probe cannot see: no hipcc, an unwritable cache dir, or an AITER
         whose ``reshape_and_cache_flash`` signature no longer matches the forward
-        declaration. ``backend="auto"`` must never raise, so it routes through
-        here and falls back to the native kernel.
+        declaration. ``backend="auto"`` should not raise on those, so it routes
+        through here and falls back to the native kernel.
 
         Caching the ``None`` matters: ``functools.cache`` does not memoize
         exceptions, so a raising getter would retry the whole AITER rebuild on
         every call.
 
-        ``MissingJITCacheError`` is deliberately *not* caught: it is the sentinel
-        for "JIT disabled and this module is absent from the prebuilt cache",
-        which ``tests/conftest.py`` turns into a skip and records so the module
-        gets added to the cache. Swallowing it would hide that.
+        ``MissingJITCacheError`` is the one exception, and is re-raised. It fires
+        only under ``FLASHINFER_DISABLE_JIT``, which ``README.md`` documents as
+        "fail loudly on missing kernels rather than trigger a build" — swallowing
+        it would silently defeat the flag a user set precisely to catch a
+        jit-cache packaging gap. It is also what ``tests/conftest.py`` turns into
+        a skip while recording the module for the cache build.
         """
         from .jit import MissingJITCacheError
 
