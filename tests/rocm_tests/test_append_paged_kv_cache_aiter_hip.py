@@ -346,11 +346,12 @@ def test_append_explicit_aiter_rejects_unsupported_layout_and_dtype(
 
 
 @requires_aiter
-def test_append_aiter_shim_rejects_mismatched_device_and_length():
-    """The shim dereferences index tensors as raw device pointers, so it must check.
+def test_append_aiter_shim_rejects_mismatched_device_shape_dtype_and_length():
+    """The shim is a directly-callable torch op, so it validates its own arguments.
 
     A host-resident kv_indptr (the page table is often built on the CPU) would
-    otherwise be dereferenced from device code.
+    otherwise be dereferenced from device code, and a dtype mismatch reinterprets
+    memory rather than erroring.
     """
     device = torch.device("cuda:0")
     dtype = torch.bfloat16
@@ -406,6 +407,39 @@ def test_append_aiter_shim_rejects_mismatched_device_and_length():
                 dtype=dtype,
                 device=device,
             ),
+            kv_indices,
+            kv_indptr,
+            unit,
+            unit,
+        )
+
+    # Strides are counted in elements, so a narrower v-cache has the identical
+    # stride tuple and slips past AITER's stride(0) check while the kernel writes
+    # wider elements into it.
+    with pytest.raises(RuntimeError, match="paged_k_cache and paged_v_cache"):
+        mod.append_paged_kv_cache_aiter(
+            k,
+            v,
+            batch_indices,
+            positions,
+            k_cache,
+            v_cache.to(torch.float16),
+            kv_indices,
+            kv_indptr,
+            unit,
+            unit,
+        )
+
+    # AITER dispatches on the source dtype, so a wider append_key writes past the
+    # end of the cache. The Python gate only inspects paged_k_cache.
+    with pytest.raises(RuntimeError, match="append_key/append_value"):
+        mod.append_paged_kv_cache_aiter(
+            k.to(torch.float32),
+            v.to(torch.float32),
+            batch_indices,
+            positions,
+            k_cache,
+            v_cache,
             kv_indices,
             kv_indptr,
             unit,

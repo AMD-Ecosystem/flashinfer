@@ -99,6 +99,15 @@ void append_paged_kv_cache_aiter(at::Tensor append_key, at::Tensor append_value,
   TORCH_CHECK(append_key.size(2) == paged_k_cache.size(3),
               "append_key.size(2) must equal head_dim, got ", append_key.size(2), " vs ",
               paged_k_cache.size(3));
+  // AITER dispatches reshape_and_cache_flash on the *source* dtype and casts the
+  // cache pointer to it, so a wider append_key writes past the end of a narrower
+  // cache. The Python backend gate only inspects paged_k_cache, and csrc_rocm's
+  // native kernel dispatches on the cache instead, so neither catches this.
+  TORCH_CHECK(append_key.scalar_type() == paged_k_cache.scalar_type() &&
+                  append_value.scalar_type() == paged_k_cache.scalar_type(),
+              "append_key/append_value must have the same dtype as the caches, got ",
+              append_key.scalar_type(), " and ", append_value.scalar_type(), " vs ",
+              paged_k_cache.scalar_type());
 
   // The kernel dereferences these as raw device pointers, so a tensor on the wrong
   // device faults (or, with peer access, silently yields wrong indices) instead of
