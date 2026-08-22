@@ -2,10 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Postconditions for the in-tree PEP 517 backend's ``flashinfer/include`` handling.
 
-Pure filesystem logic — no torch, no GPU. Guards the regressions in
-``_restoring_pkg_include``: a wheel or sdist build must never leave a header
-copy in the checkout, because ``get_include()`` would resolve it later and
-shadow edits under ``include/``.
+Guards the regressions in ``_restoring_pkg_include``: a wheel or sdist build
+must never leave a header copy in the checkout, because ``get_include()`` would
+resolve it later and shadow edits under ``include/``.
+
+The assertions are filesystem-only and need no GPU, but collection still pulls
+in the suite's torch-importing conftest — there is no CPU-only lane to put this
+in, and ``tests/rocm_tests`` is the only directory ``testpaths`` covers.
 """
 
 import importlib.util
@@ -112,7 +115,10 @@ def test_editable_symlink_is_relative(backend):
 
 def test_find_patterns_exclude_sibling_projects():
     """``flashinfer*`` also matched flashinfer-cubin/ and shipped it in the wheel."""
-    tomllib = pytest.importorskip("tomllib")
+    try:
+        import tomllib  # Python >= 3.11
+    except ImportError:
+        tomllib = pytest.importorskip("tomli")  # requires-python allows 3.10
     cfg = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
     patterns = cfg["tool"]["setuptools"]["packages"]["find"]["include"]
     from fnmatch import fnmatch
