@@ -93,6 +93,10 @@ if IS_HIP:
             return "native"
         return "aiter"
 
+    @register_custom_op(
+        "flashinfer::append_paged_kv_cache_aiter",
+        mutates_args=("paged_k_cache", "paged_v_cache"),
+    )
     def _aiter_append_paged_kv_cache(
         append_key: torch.Tensor,
         append_value: torch.Tensor,
@@ -108,6 +112,11 @@ if IS_HIP:
         Cache layout: ``[num_pages, page_size, num_kv_heads, head_dim]`` (NHD).
         The shim derives AITER's absolute slot indices from FlashInfer's
         ``(batch_indices, positions)`` + page table in a single kernel.
+
+        Registered as a custom op with the fake below, like the native kernel.
+        Without it, Dynamo puts the TORCH_LIBRARY_FRAGMENT-registered shim into
+        the FX graph and fake-runs it, and the shim's ``numel()``/``size()`` calls
+        raise "Cannot call numel() on tensor with symbolic sizes/strides".
         """
         unit = _aiter_unit_scale(paged_k_cache.device)
         get_page_aiter_module().append_paged_kv_cache_aiter(
@@ -122,6 +131,19 @@ if IS_HIP:
             unit,
             unit,
         )
+
+    @register_fake_op("flashinfer::append_paged_kv_cache_aiter")
+    def _fake_aiter_append_paged_kv_cache(
+        append_key: torch.Tensor,
+        append_value: torch.Tensor,
+        batch_indices: torch.Tensor,
+        positions: torch.Tensor,
+        paged_k_cache: torch.Tensor,
+        paged_v_cache: torch.Tensor,
+        kv_indices: torch.Tensor,
+        kv_indptr: torch.Tensor,
+    ) -> None:
+        pass
 
 
 @functools.cache
