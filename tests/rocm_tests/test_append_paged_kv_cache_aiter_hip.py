@@ -5,6 +5,7 @@
 # native flashinfer-ROCm append_paged_kv_cache kernel.
 
 import logging
+import re
 from contextlib import nullcontext
 
 import pytest
@@ -239,10 +240,36 @@ def test_append_auto_never_raises_when_aiter_shim_unavailable(monkeypatch):
         num_pages,
     ) = _build_append_inputs([12, 3], page_size, num_kv_heads, head_dim, dtype, device)
 
+    def _append(cache_pair, backend):
+        flashinfer.append_paged_kv_cache(
+            k,
+            v,
+            batch_indices,
+            positions,
+            cache_pair,
+            kv_indices,
+            kv_indptr,
+            kv_last_page_len,
+            backend=backend,
+        )
+
+    def _zeros():
+        c = torch.zeros(
+            num_pages, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
+        )
+        return c, torch.zeros_like(c)
+
+    # Reference, taken before the shim is broken.
+    k_ref, v_ref = _zeros()
+    _append((k_ref, v_ref), "native")
+    assert (k_ref != 0).any(), "reference append wrote nothing"
+
     def _boom():
         raise RuntimeError("simulated AITER build/link failure")
 
     monkeypatch.setattr(page_mod, "get_page_aiter_module", _boom)
+    # Snapshot rather than blanket-clear: on a host where the shim genuinely
+    # cannot build, a legitimate cached None is worth keeping.
     page_mod._try_get_page_aiter_module.cache_clear()
     try:
         assert (
@@ -251,34 +278,25 @@ def test_append_auto_never_raises_when_aiter_shim_unavailable(monkeypatch):
             )
             == "native"
         )
-
-        k_cache = torch.zeros(
-            num_pages, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
-        )
-        v_cache = torch.zeros_like(k_cache)
-        # Must complete via the native kernel rather than propagating the error.
-        flashinfer.append_paged_kv_cache(
-            k,
-            v,
-            batch_indices,
-            positions,
-            (k_cache, v_cache),
-            kv_indices,
-            kv_indptr,
-            kv_last_page_len,
-            backend="auto",
-        )
-        assert torch.isfinite(k_cache).all()
+        k_cache, v_cache = _zeros()
+        _append((k_cache, v_cache), "auto")  # must not raise
     finally:
-        # Don't leave the cached None behind for the rest of the session.
         page_mod._try_get_page_aiter_module.cache_clear()
+
+    # Assert the fallback actually appended; isfinite() on a zero cache would
+    # pass even if it silently no-oped.
+    torch.testing.assert_close(k_cache, k_ref, rtol=0, atol=0)
+    torch.testing.assert_close(v_cache, v_ref, rtol=0, atol=0)
 
 
 @requires_aiter
 @pytest.mark.parametrize(
-    "kv_layout,dtype", [("HND", torch.bfloat16), ("NHD", torch.float32)]
+    "kv_layout,dtype,expected",
+    [("HND", torch.bfloat16, "HND"), ("NHD", torch.float32, "float32")],
 )
-def test_append_explicit_aiter_rejects_unsupported_layout_and_dtype(kv_layout, dtype):
+def test_append_explicit_aiter_rejects_unsupported_layout_and_dtype(
+    kv_layout, dtype, expected
+):
     """Explicit backend='aiter' must enforce the gates 'auto' applies.
 
     The shim reads page_size from paged_k_cache.size(1), which is num_kv_heads
@@ -305,7 +323,7 @@ def test_append_explicit_aiter_rejects_unsupported_layout_and_dtype(kv_layout, d
     k_cache = torch.zeros(*shape, dtype=dtype, device=device)
     v_cache = torch.zeros_like(k_cache)
 
-    with pytest.raises(ValueError, match="NHD|float16"):
+    with pytest.raises(ValueError, match=re.escape(expected)):
         flashinfer.append_paged_kv_cache(
             k,
             v,

@@ -19,8 +19,6 @@ import textwrap
 import pytest
 import torch
 
-from flashinfer.aiter_utils import is_aiter_supported
-from flashinfer.prefill_rocm import _aiter_ops_importable
 
 pytestmark = [
     pytest.mark.skipif(
@@ -131,13 +129,6 @@ def test_torch_compile_with_custom_ops():
     torch.torch_version.TorchVersion(torch.__version__)
     < torch.torch_version.TorchVersion("2.4"),
     reason="torch.compile custom ops require torch >= 2.4",
-)
-@pytest.mark.skipif(
-    torch.cuda.is_available()
-    and is_aiter_supported(torch.device("cuda:0"))
-    and _aiter_ops_importable(),
-    reason="AITER routes append_paged_kv_cache away from the custom-op path; "
-    "torch.compile succeeds without custom ops on this hardware",
 )
 def test_torch_compile_without_custom_ops_fails():
     """torch.compile fails when custom ops are disabled."""

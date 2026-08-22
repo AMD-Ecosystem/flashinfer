@@ -70,23 +70,37 @@ void append_paged_kv_cache_aiter(at::Tensor append_key, at::Tensor append_value,
   TORCH_CHECK(batch_indices.numel() == positions.numel(),
               "batch_indices and positions must have the same length, got ", batch_indices.numel(),
               " vs ", positions.numel());
-  // AITER indexes append_key/append_value by slot_mapping position, so a shorter
-  // append tensor is read past its end. csrc_rocm/page.cu checks the same.
+  // AITER derives num_heads/head_size from append_key's trailing dims and indexes
+  // it by slot_mapping position, so a wrong rank, head count, or head_dim copies
+  // the wrong element count per slot instead of erroring. csrc_rocm/page.cu
+  // enforces the shape checks; the length check against nnz is extra.
+  TORCH_CHECK(append_key.dim() == 3 && append_value.dim() == 3,
+              "append_key/append_value must be [nnz, num_kv_heads, head_dim], got ",
+              append_key.dim(), " and ", append_value.dim(), " dims");
+  TORCH_CHECK(append_key.sizes() == append_value.sizes(),
+              "append_key and append_value must have the same shape, got ", append_key.sizes(),
+              " vs ", append_value.sizes());
   TORCH_CHECK(batch_indices.numel() == append_key.size(0),
               "batch_indices length must equal append_key.size(0), got ", batch_indices.numel(),
               " vs ", append_key.size(0));
-  TORCH_CHECK(append_key.size(0) == append_value.size(0),
-              "append_key and append_value must have the same length, got ", append_key.size(0),
-              " vs ", append_value.size(0));
+  TORCH_CHECK(append_key.size(1) == paged_k_cache.size(2),
+              "append_key.size(1) must equal num_kv_heads, got ", append_key.size(1), " vs ",
+              paged_k_cache.size(2));
+  TORCH_CHECK(append_key.size(2) == paged_k_cache.size(3),
+              "append_key.size(2) must equal head_dim, got ", append_key.size(2), " vs ",
+              paged_k_cache.size(3));
 
   // The kernel dereferences these as raw device pointers, so a tensor on the wrong
   // device faults (or, with peer access, silently yields wrong indices) instead of
   // erroring. The torch ops this shim replaced raised a device-mismatch error.
+  // k_scale/v_scale are included because AITER dereferences them too, and this is
+  // a public torch op that callers can reach directly.
   const at::Device device = paged_k_cache.device();
   TORCH_CHECK(batch_indices.device() == device && positions.device() == device &&
                   kv_indices.device() == device && kv_indptr.device() == device &&
                   append_key.device() == device && append_value.device() == device &&
-                  paged_v_cache.device() == device,
+                  paged_v_cache.device() == device && k_scale.device() == device &&
+                  v_scale.device() == device,
               "all tensors must be on the same device as paged_k_cache (", device, ")");
 
   const int64_t nnz = batch_indices.numel();
@@ -108,12 +122,16 @@ void append_paged_kv_cache_aiter(at::Tensor append_key, at::Tensor append_value,
     constexpr int kThreads = 256;
     const int blocks = static_cast<int>((nnz + kThreads - 1) / kThreads);
     const hipStream_t stream = c10::hip::getCurrentHIPStream();
+    // Drain any error left by an earlier HIP call on this thread, so the check
+    // after the launch cannot attribute someone else's failure to this kernel.
+    (void)hipGetLastError();
     hipLaunchKernelGGL(build_slot_mapping_kernel, dim3(blocks), dim3(kThreads), 0, stream,
                        batch_indices_c.data_ptr<int32_t>(), positions_c.data_ptr<int32_t>(),
                        kv_indices_c.data_ptr<int32_t>(), kv_indptr_c.data_ptr<int32_t>(),
                        slot_mapping.data_ptr<int64_t>(), nnz, static_cast<int32_t>(page_size));
-    // Without this, a launch failure leaves slot_mapping uninitialized and the
-    // scatter below writes the append into garbage slots, silently.
+    // Catches launch-configuration failures only (an async fault inside the
+    // kernel surfaces at the next sync). Without it, a rejected launch leaves
+    // slot_mapping uninitialized and the scatter below runs anyway.
     const hipError_t err = hipGetLastError();
     TORCH_CHECK(err == hipSuccess,
                 "build_slot_mapping_kernel launch failed: ", hipGetErrorString(err));

@@ -373,8 +373,8 @@ class BatchMLAPagedAttentionWrapper:
                 f"[num_pages, page_size, head_dim]; got {ckv_cache.dim()}-D and "
                 f"{kpe_cache.dim()}-D. If you allocated a combined "
                 f"[num_pages, page_size, 1, head_dim_ckv + head_dim_kpe] buffer, "
-                f"drop the size-1 axis and split the 3-D form instead: "
-                f"cache.split([head_dim_ckv, head_dim_kpe], dim=-1)."
+                f"drop the size-1 axis first: "
+                f"cache.squeeze(2).split([head_dim_ckv, head_dim_kpe], dim=-1)."
             )
         kv_buffer = _combined_kv_view(ckv_cache, kpe_cache)
         if kv_buffer is None:

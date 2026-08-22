@@ -52,9 +52,18 @@ if IS_HIP:
         Caching the ``None`` matters: ``functools.cache`` does not memoize
         exceptions, so a raising getter would retry the whole AITER rebuild on
         every call.
+
+        ``MissingJITCacheError`` is deliberately *not* caught: it is the sentinel
+        for "JIT disabled and this module is absent from the prebuilt cache",
+        which ``tests/conftest.py`` turns into a skip and records so the module
+        gets added to the cache. Swallowing it would hide that.
         """
+        from .jit import MissingJITCacheError
+
         try:
             return get_page_aiter_module()
+        except MissingJITCacheError:
+            raise
         except Exception as exc:  # noqa: BLE001 - any build/link failure falls back
             _jit_logger.warning(
                 "AITER paged-KV append unavailable (%s: %s); falling back to the "
@@ -218,6 +227,24 @@ def _append_paged_mla_kv_cache_kernel(
         kv_indptr,
         kv_last_page_len,
     )
+
+
+# Needed for the same reason as the append_paged_kv_cache fake below: without a
+# fake impl, a torch.compile region calling this op fails at trace time. It
+# matters now that append_paged_mla_kv_cache is exported on ROCm too.
+@register_fake_op("flashinfer::append_paged_mla_kv_cache")
+def _fake_append_paged_mla_kv_cache_kernel(
+    append_ckv: torch.Tensor,
+    append_kpe: torch.Tensor,
+    batch_indices: torch.Tensor,
+    positions: torch.Tensor,
+    ckv_cache: Optional[torch.Tensor],
+    kpe_cache: Optional[torch.Tensor],
+    kv_indices: torch.Tensor,
+    kv_indptr: torch.Tensor,
+    kv_last_page_len: torch.Tensor,
+) -> None:
+    pass
 
 
 @register_custom_op(
