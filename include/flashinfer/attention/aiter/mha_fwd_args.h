@@ -116,9 +116,13 @@ struct mha_fwd_args {
   // Dropout seed/offset (first variant = {0,0} when dropout disabled)
   std::variant<std::pair<uint64_t, uint64_t>, std::pair<const void*, const void*>> drop_seed_offset;
 
-  // Added in 0.1.16, at the tail of the struct.
-  int32_t block_scale_size_q = 0;
-  int32_t block_scale_size_kv = 0;
+  // Added in 0.1.16, at the tail of the struct: per-block quantization block
+  // size. Defaulted to 128 because that is what every one of AITER's own arg
+  // builders passes unconditionally -- mha_fwd_kernels.cu, mha_varlen_fwd_kernels.cu,
+  // asm_mha_fwd.cu and asm_mha_varlen_fwd.cu all hard-code 128 -- so 0 is a
+  // value the pipeline never sees from AITER itself.
+  int32_t block_scale_size_q = 128;
+  int32_t block_scale_size_kv = 128;
 };
 
 }  // namespace aiter

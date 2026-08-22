@@ -20,11 +20,23 @@
 // failed at load with `undefined symbol`. A real declaration turns the next such
 // change into a compile error instead.
 #include <activation.h>
+#include <aiter_stream.h>
 
 #include "aiter_tensor_compat.h"
 
 void silu_and_mul_aiter(at::Tensor out, at::Tensor input) {
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(input.device());
+
+  // The stream must be propagated explicitly. The old torch-typed entry point
+  // read torch's current stream itself; the POD API launches on
+  // aiter::getCurrentHIPStream(), a thread_local that defaults to nullptr and is
+  // otherwise only set by AITER's Python layer (aiter_stream.h). Without this the
+  // kernel silently runs on the default stream while the surrounding torch ops
+  // run on another — correct on the default stream, an ordering hazard anywhere
+  // else, which is exactly the case tests on the default stream cannot catch.
+  // OptionalHIPGuardMasqueradingAsCUDA above restores the device, not the stream.
+  aiter::setCurrentHIPStream(at::hip::getCurrentHIPStream());
+
   const aiter_tensor_t out_a = flashinfer::aiter_compat::to_aiter(out);
   const aiter_tensor_t in_a = flashinfer::aiter_compat::to_aiter(input);
   // `limit` (new in 0.1.16) gates an optional clamp; 0.0f is AITER's own default
