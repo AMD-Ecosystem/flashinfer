@@ -5,7 +5,7 @@
 In-tree PEP 517 backend for ``amd-flashinfer``.
 
 This is a thin wrapper around ``setuptools.build_meta`` whose only extra job is
-to materialize ``flashinfer/include`` from the top-level ``include/`` directory.
+managing ``flashinfer/include``, materialized from the top-level ``include/``.
 
 Why that matters: ``flashinfer/get_include_paths.py`` resolves headers as
 ``Path(__file__).parent / "include"``, which becomes ``FLASHINFER_INCLUDE_DIR``
@@ -18,12 +18,11 @@ Three materialization modes, and the differences are load-bearing:
   no rebuild (and it matches the manual worktree setup documented in CLAUDE.md).
 - wheel -> a real recursive copy, because a symlink is not followed into a wheel
   and would ship a dangling link.
-- sdist -> cleared. The tarball carries the source layout (top-level
-  ``include/``, via MANIFEST.in) and a wheel built from it re-creates the copy;
-  see ``_prepare_for_sdist``.
+- sdist -> cleared; the tarball carries top-level ``include/`` via MANIFEST.in.
 
-The wheel and sdist hooks run *in the checkout*, so they restore an editable
-symlink they found on the way in — see ``_preserving_editable_link``.
+Wheel and sdist build in the checkout, so neither leaves a copy behind: a
+symlink is put back, and any other ``flashinfer/include`` is deleted rather
+than left to shadow ``include/`` (see ``_restoring_pkg_include``).
 
 The header filter mirrors what the retired CMake ``install(DIRECTORY ...)`` rule
 did, so wheel contents do not change with this backend swap.
@@ -33,7 +32,6 @@ Versioning is handled entirely by setuptools-scm via ``[tool.setuptools_scm]``
 implement the upstream ``version.txt`` / ``_build_meta.py`` scheme.
 """
 
-import os
 import shutil
 from contextlib import contextmanager
 from pathlib import Path
@@ -93,32 +91,28 @@ def _prepare_for_wheel() -> None:
 
 
 def _prepare_for_sdist() -> None:
-    """Clear the generated copy; the sdist ships the source layout instead.
+    """Clear the generated copy; the sdist ships top-level ``include/``.
 
-    An sdist carries top-level ``include/`` (see MANIFEST.in), and building a
-    wheel from that sdist re-runs ``build_wheel`` and re-materializes the copy.
-    Leaving a real copy here would duplicate the whole header tree in the
-    tarball, and leaving a symlink would ship a dangling one.
+    A real copy would duplicate the header tree in the tarball, a symlink would
+    dangle, and a wheel built from the sdist re-materializes it anyway.
     """
     _clear(_pkg_include)
 
 
 @contextmanager
-def _preserving_editable_link():
-    """Put an editable symlink back after a wheel or sdist hook replaces it.
+def _restoring_pkg_include():
+    """Leave ``flashinfer/include`` a symlink, or leave it absent.
 
-    pip builds a local directory in place, so ``pip wheel .`` in a checkout that
-    already has an editable install would otherwise swap its live symlink for a
-    frozen copy — later edits under ``include/`` would silently stop being seen.
-    Only a symlink is restored; a real copy left by an earlier wheel build is
-    gitignored and harmless.
+    A generated copy left in the checkout is what ``get_include()`` resolves
+    later, shadowing edits under ``include/``. Absent fails loudly; stale does
+    not.
     """
-    prior = os.readlink(_pkg_include) if _pkg_include.is_symlink() else None
+    prior = _pkg_include.readlink() if _pkg_include.is_symlink() else None
     try:
         yield
     finally:
+        _clear(_pkg_include)
         if prior is not None:
-            _clear(_pkg_include)
             _pkg_include.symlink_to(prior, target_is_directory=True)
 
 
@@ -138,11 +132,9 @@ def get_requires_for_build_editable(config_settings=None):
 
 
 def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
-    with _preserving_editable_link():
-        _prepare_for_wheel()
-        return _orig.prepare_metadata_for_build_wheel(
-            metadata_directory, config_settings
-        )
+    # No headers needed: metadata comes from [project], and build_wheel
+    # materializes the tree itself.
+    return _orig.prepare_metadata_for_build_wheel(metadata_directory, config_settings)
 
 
 def prepare_metadata_for_build_editable(metadata_directory, config_settings=None):
@@ -153,13 +145,13 @@ def prepare_metadata_for_build_editable(metadata_directory, config_settings=None
 
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
-    with _preserving_editable_link():
+    with _restoring_pkg_include():
         _prepare_for_wheel()
         return _orig.build_wheel(wheel_directory, config_settings, metadata_directory)
 
 
 def build_sdist(sdist_directory, config_settings=None):
-    with _preserving_editable_link():
+    with _restoring_pkg_include():
         _prepare_for_sdist()
         return _orig.build_sdist(sdist_directory, config_settings)
 
