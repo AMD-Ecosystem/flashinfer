@@ -187,6 +187,54 @@ def test_failed_validation_leaves_the_environment_alone(monkeypatch):
     assert "FLASHINFER_ROCM_ARCH_LIST" not in os.environ
 
 
+def test_publishes_the_validated_list_not_the_requested_one(monkeypatch):
+    """What reaches the AITER shim must be what the kernels were built for.
+
+    Validation filters as well as raises: ``validate_flashinfer_rocm_arch``
+    drops architectures this ROCm or this PyTorch cannot build, warning instead
+    of failing, so the context's target set can be a strict subset of the
+    resolver's answer. Publishing the wider list hands the shim an architecture
+    the kernels do not target -- the exact disagreement this change exists to
+    remove, arriving through the environment instead of through a hard-coded
+    default.
+
+    gfx950 is requested and accepted by the resolver; the context reports only
+    gfx942, standing in for a ROCm or PyTorch that cannot build gfx950. The
+    published value must follow the context.
+    """
+    import flashinfer.aot_hip as aot_hip
+
+    monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "gfx950,gfx942")
+
+    class _FilteringContext:
+        """Accepts the request, targets a subset -- what a filter looks like."""
+
+        TARGET_ROCM_ARCHS = {"gfx942"}
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(
+        "flashinfer.compilation_context_hip.CompilationContext", _FilteringContext
+    )
+
+    aot_hip.compile_and_package_modules(
+        out_dir=None,
+        build_dir=Path(tempfile.mkdtemp()),
+        project_root=Path(__file__).parent.parent,
+        config={
+            "fa2_head_dim": [(128, 128)],
+            "f16_dtype": [torch.float16],
+            "use_sliding_window": [False],
+            "use_logits_soft_cap": [False],
+        },
+        verbose=False,
+        skip_prebuilt=True,
+    )
+
+    assert os.environ["FLASHINFER_ROCM_ARCH_LIST"] == "gfx942"
+
+
 def test_module_naming_convention():
     """Test that generated module names follow expected conventions."""
     f16_dtype = [torch.float16]

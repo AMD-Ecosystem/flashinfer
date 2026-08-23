@@ -30,6 +30,26 @@ from flashinfer.hip_utils import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_arch_detection_cache():
+    """Reset the process-cached architecture probe around every test in this file.
+
+    ``_detected_supported_archs`` caches rocminfo's answer for the process, so a
+    test that patches ``rocminfo_gpu_agents`` can otherwise be shadowed by
+    whatever a previous test -- or the real hardware, via package import -- put
+    there first, and silently assert against the wrong architecture. Module-wide
+    rather than on the one class that resolves: several tests here reach the
+    probe indirectly through ``validate_rocm_arch(arch_list=None)``, and any test
+    added later that patches it inherits the same hazard.
+
+    Clearing on the way out as well keeps a fake from leaking into the rest of
+    the session.
+    """
+    hip_utils._detected_supported_archs.cache_clear()
+    yield
+    hip_utils._detected_supported_archs.cache_clear()
+
+
 # get_rocm_home
 class TestGetRocmHome:
     def test_rocm_path_env_var(self, monkeypatch):
@@ -148,16 +168,6 @@ class TestResolveTargetArchs:
     ``validate_flashinfer_rocm_arch(arch_list=None)`` returned ``{"gfx942"}``
     while ``CompilationContext`` emitted ``--offload-arch=gfx950``.
     """
-
-    @pytest.fixture(autouse=True)
-    def _clear_detection_cache(self):
-        """Detection is cached per process, so a patched rocminfo would otherwise
-        be shadowed by whatever the previous test (or the real hardware) put
-        there. Clearing on both sides keeps these tests order-independent and
-        stops them leaking a fake into the rest of the session."""
-        hip_utils._detected_supported_archs.cache_clear()
-        yield
-        hip_utils._detected_supported_archs.cache_clear()
 
     def _agents(self, *archs):
         return patch(

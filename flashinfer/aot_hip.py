@@ -222,15 +222,21 @@ def compile_and_package_modules(
     # boundary. That is a wider change than this one; leaving the lifetime
     # unchanged here keeps this commit to the resolution bug it is fixing.
     from .compilation_context_hip import CompilationContext
-    from .hip_utils import resolve_target_archs
 
-    # Validate before publishing, so a failed build leaves the environment as it
-    # found it. CompilationContext() re-resolves through the same function and
-    # the inputs cannot change in between, so it validates exactly the list
-    # published below -- the order costs nothing and stops a raise here from
-    # leaving FLASHINFER_ROCM_ARCH_LIST set for whatever runs next in-process.
-    rocm_arch_list = resolve_target_archs()
-    CompilationContext()  # validates the resolved list, raising on a bad one
+    # Publish the *validated* list, not the resolved one. Validation filters as
+    # well as raises: `validate_flashinfer_rocm_arch` drops architectures this
+    # ROCm or this PyTorch cannot build, warning rather than failing, so the
+    # context's target set can be a strict subset of what the resolver returned.
+    # Publishing the wider list recreates the disagreement this whole change
+    # exists to remove -- on ROCm 6.4 with FLASHINFER_ROCM_ARCH_LIST=
+    # "gfx950,gfx942", the kernels build for gfx942 while the shim reads gfx950
+    # from the environment and is built for a card the kernels do not target.
+    #
+    # Constructing the context first also means a failed validation leaves
+    # FLASHINFER_ROCM_ARCH_LIST as it found it, rather than exporting a list the
+    # build then rejected.
+    compilation_context = CompilationContext()
+    rocm_arch_list = ",".join(sorted(compilation_context.TARGET_ROCM_ARCHS))
     os.environ["FLASHINFER_ROCM_ARCH_LIST"] = rocm_arch_list
     if verbose:
         print(f"Target ROCm architectures: {rocm_arch_list}")
