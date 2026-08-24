@@ -30,6 +30,7 @@ import time
 import torch
 
 import flashinfer
+from flashinfer.aiter_utils import is_aiter_available
 
 # Fixed problem geometry (Llama-70B TP1-ish decode). BATCH/CAP_SEQ overridable
 # via env for quick scaling checks: FI_GRAPH_BATCH, FI_GRAPH_CAP_SEQ.
@@ -126,7 +127,7 @@ def _capture(w, q_static, kv):
 
 
 def main():
-    if not flashinfer.aiter_utils.is_aiter_supported(DEVICE):
+    if not is_aiter_available(DEVICE, "batch_decode"):
         print("AITER not supported on this device. Exiting.")
         return
 

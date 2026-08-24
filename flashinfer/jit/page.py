@@ -26,3 +26,22 @@ def gen_page_module() -> JitSpec:
             jit_env.FLASHINFER_CSRC_DIR / "flashinfer_page_binding.cu",
         ],
     )
+
+
+def gen_page_aiter_module() -> JitSpec:
+    from .aiter_source import aiter_jitspec_flags, refresh_aiter_jitspec
+
+    extra_include_paths, extra_ldflags = aiter_jitspec_flags("module_cache")
+    # Required: build.ninja is written only when missing, so without this a
+    # cached module keeps linking whichever AITER library it first saw.
+    return refresh_aiter_jitspec(
+        gen_jit_spec(
+            "page_aiter",
+            [
+                jit_env.FLASHINFER_CSRC_DIR / "page_aiter.cu",
+                jit_env.FLASHINFER_CSRC_DIR / "page_aiter_jit_pybind.cu",
+            ],
+            extra_include_paths=extra_include_paths,
+            extra_ldflags=extra_ldflags,
+        )
+    )

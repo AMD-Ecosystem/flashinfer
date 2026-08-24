@@ -19,8 +19,6 @@ import textwrap
 import pytest
 import torch
 
-from flashinfer.aiter_utils import is_aiter_supported
-from flashinfer.prefill_rocm import _aiter_ops_importable
 
 pytestmark = [
     pytest.mark.skipif(
@@ -59,6 +57,10 @@ _PREAMBLE = textwrap.dedent(
 
     def append(k, v):
         append_paged_kv_cache(k, v, batch_idx, positions, (k_cache, v_cache), indices, indptr, last_page_len)
+        return k
+
+    def append_aiter(k, v):
+        append_paged_kv_cache(k, v, batch_idx, positions, (k_cache, v_cache), indices, indptr, last_page_len, backend="aiter")
         return k
 """
 )
@@ -132,12 +134,101 @@ def test_torch_compile_with_custom_ops():
     < torch.torch_version.TorchVersion("2.4"),
     reason="torch.compile custom ops require torch >= 2.4",
 )
+def test_torch_compile_with_aiter_backend():
+    """torch.compile succeeds through the AITER shim's custom-op wrapper.
+
+    backend='auto' routes to the native kernel, so the shim is reachable only
+    via an explicit opt-in -- and without this test nothing compiles it.
+
+    What it guards is the @register_custom_op wrapper: the shim is registered
+    with TORCH_LIBRARY_FRAGMENT, so without a wrapper Dynamo traces into it and
+    its numel()/size() calls raise on symbolic shapes. Verified by removing the
+    wrapper, which fails this test. The paired fake is *not* what saves it --
+    a None-returning custom op needs no separate fake impl -- so removing that
+    alone leaves the test green.
+    """
+    snippet = _PREAMBLE + textwrap.dedent(
+        """\
+        import sys
+        from flashinfer.aiter_utils import is_aiter_available
+        if not is_aiter_available(k_cache.device, "append_paged_kv_cache"):
+            sys.exit(99)  # sentinel: no AITER here, report a skip rather than a pass
+        compiled = torch.compile(append_aiter, dynamic=True)
+        compiled(k, v)
+        assert (k_cache != 0).any(), "compiled aiter append wrote nothing"
+        print("OK")
+    """
+    )
+    # Longer than the default: this is the only test here whose child may have to
+    # build the AITER module and hipcc the shim from a cold ~/.cache/flashinfer,
+    # and it can additionally block on another xdist worker holding the JIT lock.
+    result = _run_snippet(
+        snippet, {"FLASHINFER_USE_TORCH_CUSTOM_OPS": "1"}, timeout=900
+    )
+    if result.returncode == 99:
+        pytest.skip("aiter package not available for the append backend")
+    assert result.returncode == 0, f"torch.compile (aiter) failed:\n{result.stderr}"
+
+
 @pytest.mark.skipif(
-    torch.cuda.is_available()
-    and is_aiter_supported(torch.device("cuda:0"))
-    and _aiter_ops_importable(),
-    reason="AITER routes append_paged_kv_cache away from the custom-op path; "
-    "torch.compile succeeds without custom ops on this hardware",
+    torch.torch_version.TorchVersion(torch.__version__)
+    < torch.torch_version.TorchVersion("2.4"),
+    reason="torch.compile custom ops require torch >= 2.4",
+)
+def test_torch_compile_mla_append():
+    """torch.compile succeeds through append_paged_mla_kv_cache.
+
+    That op is newly exported on HIP in this branch, but nothing compiled it --
+    a registration or signature regression would have kept the suite green.
+
+    As with the AITER case above, the custom-op wrapper is what this guards, not
+    the fake: removing @register_custom_op fails this test, removing the fake
+    alone does not.
+    """
+    snippet = textwrap.dedent(
+        """\
+        import torch
+        from flashinfer.page import append_paged_mla_kv_cache
+        import flashinfer
+
+        B, PAGE_SIZE, CKV, KPE, NUM_TOKENS = 2, 16, 512, 64, 8
+        DEVICE = "cuda"
+        pages = B * 2
+
+        ckv_cache = torch.zeros(pages, PAGE_SIZE, CKV, device=DEVICE, dtype=torch.bfloat16)
+        kpe_cache = torch.zeros(pages, PAGE_SIZE, KPE, device=DEVICE, dtype=torch.bfloat16)
+
+        indptr = torch.arange(0, B + 1, dtype=torch.int32, device=DEVICE) * 2
+        indices = torch.arange(pages, dtype=torch.int32, device=DEVICE)
+        last_page_len = torch.full((B,), PAGE_SIZE, dtype=torch.int32, device=DEVICE)
+        batch_idx = torch.arange(B, device=DEVICE, dtype=torch.int32).repeat_interleave(NUM_TOKENS)
+        positions = torch.arange(NUM_TOKENS, device=DEVICE, dtype=torch.int32).repeat(B)
+
+        ckv = torch.randn(B * NUM_TOKENS, CKV, device=DEVICE, dtype=torch.bfloat16)
+        kpe = torch.randn(B * NUM_TOKENS, KPE, device=DEVICE, dtype=torch.bfloat16)
+
+        def mla_append(ckv, kpe):
+            append_paged_mla_kv_cache(ckv, kpe, batch_idx, positions, ckv_cache, kpe_cache,
+                                      indices, indptr, last_page_len)
+            return ckv
+
+        assert flashinfer.use_torch_custom_ops_enabled()
+        compiled = torch.compile(mla_append, dynamic=True)
+        compiled(ckv, kpe)
+        assert (ckv_cache != 0).any(), "compiled MLA append wrote nothing"
+        print("OK")
+    """
+    )
+    result = _run_snippet(snippet, {"FLASHINFER_USE_TORCH_CUSTOM_OPS": "1"})
+    assert result.returncode == 0, (
+        f"torch.compile (MLA append) failed:\n{result.stderr}"
+    )
+
+
+@pytest.mark.skipif(
+    torch.torch_version.TorchVersion(torch.__version__)
+    < torch.torch_version.TorchVersion("2.4"),
+    reason="torch.compile custom ops require torch >= 2.4",
 )
 def test_torch_compile_without_custom_ops_fails():
     """torch.compile fails when custom ops are disabled."""

@@ -30,17 +30,26 @@ from .utils import (
 )
 
 if IS_HIP:
-    from .arch_caps import capability_available
 
     @functools.cache
-    def _aiter_cache_module():
-        from aiter.ops import cache as aiter_cache
+    def get_page_aiter_module():
+        from .jit.page import gen_page_aiter_module
 
-        return aiter_cache
+        return gen_page_aiter_module().build_and_load()
 
     @functools.cache
     def _aiter_unit_scale(device: torch.device) -> torch.Tensor:
         return torch.ones(1, dtype=torch.float32, device=device)
+
+    def _aiter_kv_append_supported(*, dtype: torch.dtype, kv_layout: str) -> bool:
+        """Shape/dtype constraints of AITER's reshape_and_cache_flash.
+
+        Gates the explicit ``backend="aiter"`` opt-in, which is now the only way
+        in: the shim reads ``page_size`` from ``paged_k_cache.size(1)``, which is
+        ``num_kv_heads`` under HND, so a wrong layout silently writes every token
+        to the wrong slot.
+        """
+        return kv_layout == "NHD" and dtype in (torch.float16, torch.bfloat16)
 
     def _auto_select_kv_append_backend(
         device: torch.device,
@@ -48,19 +57,19 @@ if IS_HIP:
         dtype: torch.dtype,
         kv_layout: str,
     ) -> str:
-        """Return 'aiter' when GPU + dtype + layout meet AITER's reshape_and_cache_flash constraints."""
-        if not capability_available(device, "append_paged_kv_cache", "aiter"):
-            return "native"
-        if kv_layout != "NHD":
-            return "native"
-        if dtype not in (torch.float16, torch.bfloat16):
-            return "native"
-        try:
-            _aiter_cache_module()
-        except Exception:
-            return "native"
-        return "aiter"
+        """Always 'native': AITER's append is correct here but slower.
 
+        Not expressed in ``arch_caps``, which answers whether a backend *may*
+        run; ``backend="aiter"`` still reaches the shim. Same shape as the
+        ``rope`` and ``silu_and_mul`` selectors.
+        """
+        del device, dtype, kv_layout  # signature kept; every input routes native
+        return "native"
+
+    @register_custom_op(
+        "flashinfer::append_paged_kv_cache_aiter",
+        mutates_args=("paged_k_cache", "paged_v_cache"),
+    )
     def _aiter_append_paged_kv_cache(
         append_key: torch.Tensor,
         append_value: torch.Tensor,
@@ -71,27 +80,39 @@ if IS_HIP:
         kv_indices: torch.Tensor,
         kv_indptr: torch.Tensor,
     ) -> None:
-        """Route append to AITER reshape_and_cache_flash. Cache layout: [num_pages, page_size, num_kv_heads, head_dim] (NHD)."""
-        page_size = paged_k_cache.size(1)
-        batch_idx_l = batch_indices.long()
-        positions_l = positions.long()
-        page_within = positions_l // page_size
-        offset_in_page = positions_l - page_within * page_size
-        global_page = kv_indices.long().index_select(
-            0, kv_indptr.long()[batch_idx_l] + page_within
-        )
-        slot_mapping = global_page * page_size + offset_in_page
+        """Route append to AITER reshape_and_cache_flash via the compiled shim.
+
+        Cache layout is NHD, ``[num_pages, page_size, num_kv_heads, head_dim]``.
+        The custom-op wrapper is required: without it Dynamo traces into the
+        TORCH_LIBRARY_FRAGMENT shim, whose ``numel()`` raises on symbolic shapes.
+        Indices are narrowed to int32 as the native path does.
+        """
         unit = _aiter_unit_scale(paged_k_cache.device)
-        _aiter_cache_module().reshape_and_cache_flash(
+        get_page_aiter_module().append_paged_kv_cache_aiter(
             append_key,
             append_value,
+            batch_indices.int(),
+            positions.int(),
             paged_k_cache,
             paged_v_cache,
-            slot_mapping,
-            "auto",
+            kv_indices.int(),
+            kv_indptr.int(),
             unit,
             unit,
         )
+
+    @register_fake_op("flashinfer::append_paged_kv_cache_aiter")
+    def _fake_aiter_append_paged_kv_cache(
+        append_key: torch.Tensor,
+        append_value: torch.Tensor,
+        batch_indices: torch.Tensor,
+        positions: torch.Tensor,
+        paged_k_cache: torch.Tensor,
+        paged_v_cache: torch.Tensor,
+        kv_indices: torch.Tensor,
+        kv_indptr: torch.Tensor,
+    ) -> None:
+        pass
 
 
 @functools.cache
@@ -166,6 +187,24 @@ def _append_paged_mla_kv_cache_kernel(
         kv_indptr,
         kv_last_page_len,
     )
+
+
+# Mirrors the append_paged_kv_cache fake below. What actually makes this op
+# traceable is the custom-op wrapper above -- removing this decorator alone
+# leaves torch.compile working, since a None-returning op needs no fake impl.
+@register_fake_op("flashinfer::append_paged_mla_kv_cache")
+def _fake_append_paged_mla_kv_cache_kernel(
+    append_ckv: torch.Tensor,
+    append_kpe: torch.Tensor,
+    batch_indices: torch.Tensor,
+    positions: torch.Tensor,
+    ckv_cache: Optional[torch.Tensor],
+    kpe_cache: Optional[torch.Tensor],
+    kv_indices: torch.Tensor,
+    kv_indptr: torch.Tensor,
+    kv_last_page_len: torch.Tensor,
+) -> None:
+    pass
 
 
 @register_custom_op(
@@ -399,7 +438,9 @@ def append_paged_kv_cache(
     kv_layout : str
         The layout of the paged kv-cache, either ``NHD`` or ``HND``.
     backend : str
-        Kernel backend to use. ``"auto"`` (default) selects the best available backend.
+        Kernel backend to use. ``"auto"`` (default) resolves to the native
+        FlashInfer JIT kernel on all platforms — it is the faster kernel on ROCm
+        (3.62 TB/s against AITER's 2.86 on gfx942).
         ``"native"`` uses the FlashInfer JIT kernel on all platforms.
         ``"aiter"`` uses AMD AITER's ``reshape_and_cache_flash`` — ROCm (gfx942/gfx950) only;
         requires the ``aiter`` package, NHD layout, and fp16/bf16 dtype.
@@ -481,6 +522,32 @@ def append_paged_kv_cache(
             else backend
         )
         if _backend == "aiter":
+            if backend == "aiter":
+                # Explicit opt-in skips _auto_select_kv_append_backend, so re-check
+                # its constraints here. Without this the shim would read page_size
+                # from size(1) -- num_kv_heads under HND -- and scatter every token
+                # to the wrong slot with no error.
+                from .aiter_utils import require_aiter
+
+                require_aiter(paged_k_cache.device, "append_paged_kv_cache")
+                if not _aiter_kv_append_supported(
+                    dtype=paged_k_cache.dtype, kv_layout=kv_layout
+                ):
+                    raise ValueError(
+                        f"backend='aiter' for append_paged_kv_cache requires "
+                        f"kv_layout='NHD' and a float16/bfloat16 cache; got "
+                        f"kv_layout={kv_layout!r} and dtype={paged_k_cache.dtype}. "
+                        f"Use backend='native'."
+                    )
+            # kv_last_page_len is not forwarded to the shim, so the batch-length
+            # invariant native enforces (page.cu's kv_indptr.size(0) == B+1) has
+            # nowhere else to live. Without it a short kv_indptr is read past its
+            # end inside build_slot_mapping_kernel and scatters silently.
+            if kv_indptr.numel() != kv_last_page_len.numel() + 1:
+                raise ValueError(
+                    f"kv_indptr must have kv_last_page_len.numel()+1 entries, got "
+                    f"{kv_indptr.numel()} vs {kv_last_page_len.numel()}."
+                )
             _aiter_append_paged_kv_cache(
                 append_key,
                 append_value,

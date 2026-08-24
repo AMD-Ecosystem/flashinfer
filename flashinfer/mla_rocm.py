@@ -6,6 +6,7 @@
 # and routes through aiter.mla.mla_decode_fwd / mla_prefill_fwd.
 
 import functools
+import warnings
 from typing import Optional, Tuple, Union
 
 import torch
@@ -18,6 +19,64 @@ def _aiter_mla():
     import aiter.mla as _m
 
     return _m
+
+
+def _combined_kv_view(
+    ckv_cache: torch.Tensor, kpe_cache: torch.Tensor
+) -> Optional[torch.Tensor]:
+    """AITER's ``[num_pages, page_size, 1, ckv+kpe]`` buffer as a zero-copy view.
+
+    Returns the view when ``ckv_cache`` and ``kpe_cache`` are exactly the two
+    halves of one contiguous ``[num_pages, page_size, ckv+kpe]`` buffer, and
+    ``None`` otherwise, in which case :meth:`run` must concatenate them.
+    """
+    if ckv_cache.dtype != kpe_cache.dtype:
+        return None
+    if ckv_cache.dim() != 3 or kpe_cache.dim() != 3:
+        return None
+    if ckv_cache.shape[:2] != kpe_cache.shape[:2]:
+        return None
+    if ckv_cache.device != kpe_cache.device:
+        return None
+    if ckv_cache.untyped_storage().data_ptr() != kpe_cache.untyped_storage().data_ptr():
+        return None
+
+    num_pages, page_size, head_dim_ckv = ckv_cache.shape
+    width = head_dim_ckv + kpe_cache.shape[2]
+    # kpe must begin exactly where ckv ends, and both must be column slices of one
+    # contiguous [num_pages, page_size, width] buffer. Anything else (padding
+    # between pages, a transposed layout, separate allocations) fails these and
+    # falls back to the copy.
+    if kpe_cache.storage_offset() != ckv_cache.storage_offset() + head_dim_ckv:
+        return None
+    expected_stride = (page_size * width, width, 1)
+    if ckv_cache.stride() != expected_stride or kpe_cache.stride() != expected_stride:
+        return None
+
+    return ckv_cache.as_strided(
+        (num_pages, page_size, 1, width),
+        (page_size * width, width, width, 1),
+        ckv_cache.storage_offset(),
+    )
+
+
+def _gather_plan_inputs_on_host(
+    qo_indptr: torch.Tensor, kv_indptr: torch.Tensor, kv_len_arr: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Fetch the three index tensors :meth:`plan` needs host-side in one transfer.
+
+    Cost here is round-trip count, not payload. Host-resident and mixed-device
+    inputs fall back to per-tensor copies: there is no sync to save, and
+    ``torch.cat`` rejects the mixed case.
+    """
+    tensors = (qo_indptr, kv_indptr, kv_len_arr)
+    if any(t.device.type == "cpu" for t in tensors) or not (
+        qo_indptr.device == kv_indptr.device == kv_len_arr.device
+    ):
+        return tuple(t.to("cpu") for t in tensors)  # type: ignore[return-value]
+    host = torch.cat(list(tensors)).to("cpu")
+    n_qo, n_kv = qo_indptr.numel(), kv_indptr.numel()
+    return host[:n_qo], host[n_qo : n_qo + n_kv], host[n_qo + n_kv :]
 
 
 def _kv_lens_to_last_page_len_cpu(
@@ -91,9 +150,19 @@ class BatchMLAPagedAttentionWrapper:
         ``kv_buffer[num_pages, page_size, 1, head_dim_ckv + head_dim_kpe]``
 
     This wrapper accepts the FlashInfer-style separate ``(ckv_cache, kpe_cache)``
-    tuple and concatenates them at run time.  For zero-copy, pre-allocate a single
-    buffer of shape ``[num_pages, page_size, 1, head_dim_ckv + head_dim_kpe]`` and
-    pass it as both arguments (sliced).
+    pair.  **Allocate them as one buffer** — AITER reads a single combined tensor,
+    so two separate allocations force a concatenation on every :meth:`run`, and
+    that copy spans the whole allocated page pool rather than the live pages::
+
+        cache = torch.empty(
+            num_pages, page_size, head_dim_ckv + head_dim_kpe, dtype=..., device=...
+        )
+        ckv_cache, kpe_cache = cache.split([head_dim_ckv, head_dim_kpe], dim=-1)
+
+    :meth:`run` detects that layout and passes a view, copying nothing.  This is
+    how vLLM (``kv_c_and_k_pe_cache``) and SGLang (``K_Buffer``) already store MLA
+    caches, so those callers get the fast path unchanged.  Separate allocations
+    still work but warn once.
 
     Parameters
     ----------
@@ -124,6 +193,8 @@ class BatchMLAPagedAttentionWrapper:
         self._kv_last_page_len: Optional[torch.Tensor] = None
         self._sm_scale: float = 1.0
         self._max_seqlen_q: int = 1
+        # run() warns at most once per wrapper about a non-adjacent KV cache.
+        self._warned_separate_kv: bool = False
 
     def plan(
         self,
@@ -215,11 +286,16 @@ class BatchMLAPagedAttentionWrapper:
         self._qo_indptr = qo_indptr.to(self.device, non_blocking=True)
         self._kv_indptr = kv_indptr.to(self.device, non_blocking=True)
         self._kv_indices = kv_indices.to(self.device, non_blocking=True)
-        last_cpu = _kv_lens_to_last_page_len_cpu(kv_indptr, kv_len_arr, page_size)
+        qo_host, kv_indptr_host, kv_lens_host = _gather_plan_inputs_on_host(
+            qo_indptr, kv_indptr, kv_len_arr
+        )
+        last_cpu = _kv_lens_to_last_page_len_cpu(
+            kv_indptr_host, kv_lens_host, page_size
+        )
         self._kv_last_page_len = last_cpu.to(self.device, non_blocking=True)
         self._sm_scale = sm_scale
-        qo_lens = qo_indptr[1:] - qo_indptr[:-1]
-        self._max_seqlen_q = int(qo_lens.max().item()) if len(qo_lens) > 0 else 1
+        qo_lens = qo_host[1:] - qo_host[:-1]
+        self._max_seqlen_q = int(qo_lens.max()) if qo_lens.numel() > 0 else 1
 
     def run(
         self,
@@ -243,6 +319,10 @@ class BatchMLAPagedAttentionWrapper:
             ``[num_pages, page_size, head_dim_ckv]``.
         kpe_cache : torch.Tensor
             Rope-key cache, shape ``[num_pages, page_size, head_dim_kpe]``.
+            When ``ckv_cache`` and ``kpe_cache`` are adjacent halves of one
+            ``[num_pages, page_size, head_dim_ckv + head_dim_kpe]`` allocation
+            (see the class docstring) they are passed to AITER as a view;
+            otherwise they are concatenated on every call, which warns once.
         out : Optional[torch.Tensor]
             Pre-allocated output, shape ``[total_q, num_heads, head_dim_ckv]``.
         return_lse : bool
@@ -269,9 +349,38 @@ class BatchMLAPagedAttentionWrapper:
             )
 
         q = torch.cat([q_nope, q_pe], dim=-1)
-        # kpe_cache is concatenated each call; pre-allocate a combined [pages, size, 1, ckv+kpe]
-        # buffer and pass sliced views to avoid this copy on hot paths.
-        kv_buffer = torch.cat([ckv_cache.unsqueeze(2), kpe_cache.unsqueeze(2)], dim=-1)
+        # 4-D input cannot work: the fallback below would unsqueeze it to 5-D,
+        # which AITER rejects. Raise rather than warn about false non-adjacency.
+        if ckv_cache.dim() != 3 or kpe_cache.dim() != 3:
+            raise ValueError(
+                f"ckv_cache and kpe_cache must be 3-D "
+                f"[num_pages, page_size, head_dim]; got {ckv_cache.dim()}-D and "
+                f"{kpe_cache.dim()}-D. If you allocated a combined "
+                f"[num_pages, page_size, 1, head_dim_ckv + head_dim_kpe] buffer, "
+                f"drop the size-1 axis first: "
+                f"cache.squeeze(2).split([head_dim_ckv, head_dim_kpe], dim=-1)."
+            )
+        kv_buffer = _combined_kv_view(ckv_cache, kpe_cache)
+        if kv_buffer is None:
+            # Explicit guard: warnings' own dedup is defeated by an "always"
+            # filter or logging capture, and this sits in a per-decode-step path.
+            # Per wrapper, so a second mis-allocated wrapper is still told.
+            if not self._warned_separate_kv:
+                self._warned_separate_kv = True
+                warnings.warn(
+                    "MLA: ckv_cache and kpe_cache are not adjacent halves of a single "
+                    "allocation, so run() must concatenate them on every call. That "
+                    "copy covers the whole allocated page pool, not just the live "
+                    "pages, so it scales with cache capacity. Allocate one "
+                    "[num_pages, page_size, head_dim_ckv + head_dim_kpe] buffer and "
+                    "pass torch.split(buf, [head_dim_ckv, head_dim_kpe], dim=-1) to "
+                    "run() for the zero-copy path.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            kv_buffer = torch.cat(
+                [ckv_cache.unsqueeze(2), kpe_cache.unsqueeze(2)], dim=-1
+            )
 
         if self._max_seqlen_q == 1:
             _aiter_mla().mla_decode_fwd(

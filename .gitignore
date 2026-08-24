@@ -202,6 +202,7 @@ cython_debug/
 *_timing.csv
 *_counter_collection.csv
 *_roofline.png
+*_meta.json
 *.rocprofv3/
 
 # Claude Code per-developer overrides — settings.json is shared, *.local.json is not.

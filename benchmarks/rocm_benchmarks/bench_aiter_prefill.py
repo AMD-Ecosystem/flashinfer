@@ -39,6 +39,7 @@ from pathlib import Path
 import torch
 
 import flashinfer
+from flashinfer.aiter_utils import is_aiter_available
 from flashinfer.jit.core import logger as _jit_logger
 
 # Suppress routine JIT INFO/DEBUG output; WARNING still surfaces compile errors.
@@ -287,7 +288,7 @@ def _make_configs() -> list[KernelConfig]:
 
 
 if __name__ == "__main__":
-    if not flashinfer.aiter_utils.is_aiter_supported(torch.device("cuda:0")):
+    if not is_aiter_available(torch.device("cuda:0"), "batch_prefill"):
         print("AITER backend not supported on this device. Exiting.")
         sys.exit(0)
 

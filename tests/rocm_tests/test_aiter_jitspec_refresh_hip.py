@@ -93,3 +93,49 @@ def test_refresh_waits_for_the_build_lock(lock_path):
     assert waited > hold_for / 2, (
         f"refresh did not wait on the lock (waited {waited:.3f}s)"
     )
+
+
+def test_every_generator_linking_aiter_refreshes_its_link_line():
+    """Every generator that links an AITER lib must refresh its build.ninja.
+
+    aiter_jitspec_flags() bakes an arch/version-specific -L and -rpath into the
+    link line, and JitSpec.build() writes build.ninja only when it is missing, so
+    a cached module keeps loading whichever AITER lib it first saw. page_aiter
+    shipped without the refresh and the suite stayed green.
+
+    The set is derived, not listed: calling aiter_jitspec_flags is the property
+    that creates the obligation. gen_batch_decode_aiter_module is correctly
+    excluded -- it dlopens AITER at runtime instead of linking it. Matched on the
+    AST, since a substring scan is satisfied by the comment explaining the call.
+    """
+    import ast
+    import pathlib
+
+    import flashinfer.jit as jit_pkg
+
+    def _calls(node, name):
+        return any(
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == name
+            for n in ast.walk(node)
+        )
+
+    root = pathlib.Path(jit_pkg.__file__).parent
+    linkers, missing = [], []
+    for src in sorted(root.rglob("*.py")):
+        for node in ast.walk(ast.parse(src.read_text())):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if not _calls(node, "aiter_jitspec_flags"):
+                continue
+            qualified = f"{src.relative_to(root)}::{node.name}"
+            linkers.append(qualified)
+            if not _calls(node, "refresh_aiter_jitspec"):
+                missing.append(qualified)
+
+    assert linkers, "scan found no AITER-linking generators; the pattern has rotted"
+    assert not missing, (
+        "generators that link an AITER library without refreshing the link line, "
+        f"so a cached module keeps a stale rpath: {missing}"
+    )
