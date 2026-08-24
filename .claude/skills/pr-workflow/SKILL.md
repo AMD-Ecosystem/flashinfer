@@ -30,7 +30,7 @@ mismatch to the user instead. Never guess the target.
 
 ```bash
 gh pr create --repo AMD-Ecosystem/flashinfer --base amd-integration \
-  --title "<title>" --body "$(cat /tmp/pr_body.md)"
+  --title "<title>" --body-file "$(git rev-parse --show-toplevel)/tmp/pr/<branch>.md"
 ```
 
 If the resolved owner of `--repo` is ever `flashinfer-ai`, abort. It is always
@@ -43,6 +43,9 @@ These are local config (not checked in) and must be redone per clone:
 ```bash
 git remote -v                        # origin should be AMD-Ecosystem/flashinfer; there must be NO flashinfer-ai remote
 gh repo set-default AMD-Ecosystem/flashinfer  # pin gh base repo so it does not fall back to the fork parent
+ex="$(git rev-parse --git-common-dir)/info/exclude"   # per-clone ignore patterns
+mkdir -p "$(dirname "$ex")"                           # info/ is absent in some clones
+grep -qxF '/tmp/' "$ex" || printf '/tmp/\n' >> "$ex"  # ignores the repo's own tmp/
 ```
 
 If a remote pointing at `flashinfer-ai/flashinfer` exists, remove it:
@@ -119,17 +122,13 @@ branch or checkout path — so every worktree shares one cache. Clear it with
 per-branch, when comparing kernel changes across branches.
 
 Exclude the worktree root **per-clone** rather than in a tracked ignore file, so
-it never appears as a diff against upstream. One run covers the whole clone,
-worktrees included:
+it never appears as a diff against upstream. This is the same `/tmp/` entry that
+hides PR drafts — run the snippet in *One-time setup after a fresh clone* once
+and it covers the whole clone, worktrees included.
 
-```bash
-ex="$(git rev-parse --git-common-dir)/info/exclude"
-grep -qxF '/tmp/' "$ex" || printf '/tmp/\n' >> "$ex"
-```
-
-Use `--git-common-dir`, not a literal `.git/info/exclude`: inside a linked
-worktree `.git` is a *file* pointing at the real git dir, so the literal path
-fails with `not a directory`.
+That snippet uses `--git-common-dir`, not a literal `.git/info/exclude`, because
+inside a linked worktree `.git` is a *file* pointing at the real git dir, so the
+literal path fails with `not a directory`.
 
 ### A fresh worktree is source-only
 
@@ -205,7 +204,7 @@ in doubt, hold the push and ask.
 gh api repos/AMD-Ecosystem/flashinfer/pulls/<number> --method PATCH --field body="<body>"
 
 # Or from a file
-gh api repos/AMD-Ecosystem/flashinfer/pulls/<number> --method PATCH --field body="$(cat /tmp/pr_body.md)"
+gh api repos/AMD-Ecosystem/flashinfer/pulls/<number> --method PATCH --field body="$(cat "$(git rev-parse --show-toplevel)/tmp/pr/<branch>.md")"
 ```
 
 Ask the user to confirm before running `git push` or `gh pr create` — these
@@ -314,6 +313,35 @@ Done = no unresolved Copilot threads remain, each carrying either a fix+SHA repl
 or a won't-fix rationale.
 
 ## PR Description
+
+**Draft it at `$(git rev-parse --show-toplevel)/tmp/pr/<branch>.md`** — the repo
+root of whichever checkout you are in, main or worktree, so the draft sits with
+the branch that it describes. Anchor to the top level rather than writing a
+relative `tmp/pr/...`, which resolves wrong from any subdirectory. `tmp/pr/`
+does not exist in a fresh clone or worktree, so create it as you go:
+
+```bash
+branch=$(git branch --show-current)   # empty on a detached HEAD
+draft="$(git rev-parse --show-toplevel)/tmp/pr/${branch:-detached-$(git rev-parse --short HEAD)}.md"
+mkdir -p "$(dirname "$draft")"
+# write the body to "$draft", then pass it as --body-file "$draft"
+```
+
+A detached HEAD is an abort condition for the PR itself (see above); the
+fallback name only keeps the snippet from producing `tmp/pr/.md` if you run it
+before noticing.
+
+Never the **system** `/tmp`: it is shared, and there is no remove access to it
+on these nodes, so drafts left there cannot be cleaned up. Note the two are
+easily confused — the `/tmp/` entry in `info/exclude` is a *repo-root-anchored*
+pattern (the leading slash means repo root, not the filesystem root), so it
+ignores this repo's own `tmp/` directory and has nothing to do with the system
+one.
+
+That entry comes from *One-time setup after a fresh clone*. Because
+`info/exclude` lives in the git **common** dir, the single line covers the main
+checkout and every linked worktree. If `git status` does show your draft, that
+setup step has not been run in this clone.
 
 - **Do not hard-wrap** the body to a fixed column. GitHub renders a single
   newline inside a paragraph as a `<br>`, so column-wrapped prose shows up as
