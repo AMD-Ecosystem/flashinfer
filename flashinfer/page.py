@@ -59,15 +59,9 @@ if IS_HIP:
     ) -> str:
         """Always 'native': AITER's append is correct here but slower.
 
-        AITER's ``reshape_and_cache_flash`` sustains 2.86 TB/s against the native
-        kernel's 3.62 on identical work (gfx942, nnz=262144), so ``auto`` picks
-        native at every size measured. ``backend="aiter"`` still routes to the
-        shim, and :func:`_aiter_kv_append_supported` still gates that opt-in.
-
-        Deliberately not expressed in ``arch_caps``: that table answers whether a
-        backend *may* run, and ``require_capability`` consults the same rows on
-        the explicit path, so a row saying "unsupported" would both misstate the
-        facts and break ``backend="aiter"``.
+        Not expressed in ``arch_caps``, which answers whether a backend *may*
+        run; ``backend="aiter"`` still reaches the shim. Same shape as the
+        ``rope`` and ``silu_and_mul`` selectors.
         """
         del device, dtype, kv_layout  # signature kept; every input routes native
         return "native"
@@ -88,19 +82,10 @@ if IS_HIP:
     ) -> None:
         """Route append to AITER reshape_and_cache_flash via the compiled shim.
 
-        Cache layout: ``[num_pages, page_size, num_kv_heads, head_dim]`` (NHD).
-        The shim derives AITER's absolute slot indices from FlashInfer's
-        ``(batch_indices, positions)`` + page table in a single kernel.
-
-        Registered as a custom op with the fake below, like the native kernel.
-        Without it, Dynamo puts the TORCH_LIBRARY_FRAGMENT-registered shim into
-        the FX graph and fake-runs it, and the shim's ``numel()``/``size()`` calls
-        raise "Cannot call numel() on tensor with symbolic sizes/strides".
-
-        The indices are narrowed to int32 the way the native kernel does. The
-        shim requires int32, so without this an int64 page table -- which the
-        public entry point otherwise accepts -- would fail only when AITER is
-        selected.
+        Cache layout is NHD, ``[num_pages, page_size, num_kv_heads, head_dim]``.
+        The custom-op wrapper is required: without it Dynamo traces into the
+        TORCH_LIBRARY_FRAGMENT shim, whose ``numel()`` raises on symbolic shapes.
+        Indices are narrowed to int32 as the native path does.
         """
         unit = _aiter_unit_scale(paged_k_cache.device)
         get_page_aiter_module().append_paged_kv_cache_aiter(

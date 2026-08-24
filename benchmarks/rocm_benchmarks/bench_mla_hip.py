@@ -15,34 +15,21 @@ limitations under the License.
 
 DeepSeek MLA decode benchmark (AITER backend), with cost attribution.
 
-Written for the "MLA on CDNA3" work item. `BatchMLAPagedAttentionWrapper.run()`
-used to concatenate `ckv_cache` and `kpe_cache` on *every* call, which is O(KV-cache
-size) per decoded token — the copy spans the whole allocated page pool, not the live
-pages. Production stacks do not do this: vLLM keeps one combined
-`kv_c_and_k_pe_cache` (576 = 512 kv_lora_rank + 64 qk_rope_head_dim) and SGLang keeps
-a single `K_Buffer`. `run()` now takes a zero-copy view of that layout; `--separate`
-reproduces the old two-allocation behaviour so the gap stays measurable.
+Four modes, so the number is attributable rather than opaque:
 
-Four modes, so the baseline is attributable rather than a single opaque number:
-
-  attn  — wrapper.run(...): the whole decode path end to end.
+  attn  — wrapper.run(...) end to end.
   cat   — the two torch.cat calls alone, so `attn - cat` under --separate
-          estimates the kernel time a combined-buffer layout leaves behind.
-  plan  — wrapper.plan(...): isolates the host round-trips it performs to derive
-          last-page lengths and max_seqlen_q.
-  pool  — run() vs KV *pool* size at a fixed active set. The cat covers the whole
-          allocated pool, not the live pages, so a sweep that sizes the pool to
-          batch*kv_len (as attn/cat above do) measures the best case. This mode
-          shows the production case; it is excluded from `--mode all` because it
-          allocates several GB per config.
+          estimates what a combined-buffer layout leaves behind.
+  plan  — wrapper.plan(...) and its host round-trips.
+  pool  — run() against KV *pool* size at a fixed active set. Excluded from
+          --mode all: it allocates several GB per config.
 
-Shapes: DeepSeek-V3/R1 MLA. ckv=512, kpe=64, page_size=1 (what vLLM's AITER MLA
-requires), bf16. num_heads 16 (TP8, the common serving config) and 128 (TP1) --
-AITER MLA supports only multiples of 16 up to 128.
+Shapes are DeepSeek-V3/R1 MLA: ckv=512, kpe=64, page_size=1 (what vLLM's AITER
+MLA requires), bf16, num_heads 16 (TP8) and 128 (TP1).
 
-The KV cache is allocated in the combined layout by default, which run() consumes
-as a zero-copy view; pass --separate for the two-allocation layout that forces the
-concatenation fallback. Comparing the two is the before/after for that change.
+The KV cache is allocated combined by default, which run() consumes as a
+zero-copy view; --separate forces the two-allocation layout and its
+concatenation fallback.
 
 Run:
     python benchmarks/rocm_benchmarks/bench_mla_hip.py --timing-only
@@ -51,10 +38,8 @@ Run:
     python benchmarks/rocm_benchmarks/bench_mla_hip.py --heads 16,128
     python benchmarks/rocm_benchmarks/bench_mla_hip.py                 # + roofline
 
-Design note: bench flags are parsed at module level because rocprofv3
-re-executes this script as a subprocess per PMC pass with the same sys.argv.
-Module-level parsing ensures the subprocess builds identical configs to the
-outer timing run.
+Bench flags are parsed at module level because rocprofv3 re-executes this script
+per PMC pass with the same sys.argv; the subprocess must build identical configs.
 """
 
 import argparse
@@ -65,7 +50,7 @@ from pathlib import Path
 import torch
 
 import flashinfer
-from flashinfer.aiter_utils import is_aiter_supported
+from flashinfer.aiter_utils import is_aiter_available
 from flashinfer.jit.core import logger as _jit_logger
 
 # Suppress routine JIT INFO/DEBUG output; WARNING still surfaces compile errors.
@@ -339,7 +324,7 @@ def _make_pool_config(pool_pages, batch, kv_len, num_heads):
 @torch.inference_mode()
 def _make_configs() -> list[KernelConfig]:
     device = torch.device("cuda:0")
-    if not is_aiter_supported(device):
+    if not is_aiter_available(device, "mla"):
         # is_aiter_supported also returns False on a CUDA build and with no
         # visible GPU, and gcnArchName does not exist in either case -- so the
         # lookup would raise in exactly the situations this message is for.

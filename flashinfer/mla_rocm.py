@@ -26,17 +26,9 @@ def _combined_kv_view(
 ) -> Optional[torch.Tensor]:
     """AITER's ``[num_pages, page_size, 1, ckv+kpe]`` buffer as a zero-copy view.
 
-    AITER reads a single combined buffer, so :meth:`run` otherwise has to
-    concatenate ``ckv_cache`` and ``kpe_cache`` on every call. That copy covers the
-    *entire allocated page pool*, not just the live pages, so its cost tracks cache
-    capacity rather than the working set.
-
-    Callers that keep the two halves adjacent in one allocation can skip it
-    entirely — which is what production already does (vLLM's
-    ``kv_c_and_k_pe_cache``, SGLang's ``K_Buffer``, both sliced with
-    ``torch.split``). Returns the view when ``ckv_cache`` and ``kpe_cache`` are
-    exactly the two halves of one contiguous ``[num_pages, page_size, ckv+kpe]``
-    buffer, and ``None`` otherwise.
+    Returns the view when ``ckv_cache`` and ``kpe_cache`` are exactly the two
+    halves of one contiguous ``[num_pages, page_size, ckv+kpe]`` buffer, and
+    ``None`` otherwise, in which case :meth:`run` must concatenate them.
     """
     if ckv_cache.dtype != kpe_cache.dtype:
         return None
@@ -73,16 +65,9 @@ def _gather_plan_inputs_on_host(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Fetch the three index tensors :meth:`plan` needs host-side in one transfer.
 
-    ``plan`` reads ``kv_indptr``/``kv_len_arr`` to derive last-page lengths and
-    ``qo_indptr`` to derive ``max_seqlen_q``.  Doing those as separate copies costs
-    a device→host sync each, and a sync is ~70 us on gfx942 regardless of payload —
-    these tensors are only ``batch+1`` int32 elements, so the round-trip count is
-    the whole cost.  Concatenating first makes it one.
-
-    Batching only helps when there is a sync to save, so inputs that are already
-    on the host are passed through untouched — concatenating them would add a real
-    CPU allocation and copy for no benefit. Mixed-device inputs also fall back to
-    per-tensor copies, since ``torch.cat`` rejects them.
+    Cost here is round-trip count, not payload. Host-resident and mixed-device
+    inputs fall back to per-tensor copies: there is no sync to save, and
+    ``torch.cat`` rejects the mixed case.
     """
     tensors = (qo_indptr, kv_indptr, kv_len_arr)
     if any(t.device.type == "cpu" for t in tensors) or not (
@@ -364,11 +349,8 @@ class BatchMLAPagedAttentionWrapper:
             )
 
         q = torch.cat([q_nope, q_pe], dim=-1)
-        # An earlier version of this docstring told callers to allocate
-        # [num_pages, page_size, 1, ckv+kpe] and pass 4-D slices. That shape never
-        # worked -- the fallback below would unsqueeze it to 5-D, which AITER
-        # rejects -- so say so plainly instead of warning that a genuinely adjacent
-        # buffer is not adjacent.
+        # 4-D input cannot work: the fallback below would unsqueeze it to 5-D,
+        # which AITER rejects. Raise rather than warn about false non-adjacency.
         if ckv_cache.dim() != 3 or kpe_cache.dim() != 3:
             raise ValueError(
                 f"ckv_cache and kpe_cache must be 3-D "
@@ -380,11 +362,9 @@ class BatchMLAPagedAttentionWrapper:
             )
         kv_buffer = _combined_kv_view(ckv_cache, kpe_cache)
         if kv_buffer is None:
-            # Guarded explicitly rather than left to the "default" warning filter,
-            # which dedups by (message, category, module, lineno) and so is
-            # defeated by an "always" filter or by logging capture -- this sits in
-            # a per-decode-step path, once per layer. Per wrapper rather than per
-            # process so a second mis-allocated wrapper is still told.
+            # Explicit guard: warnings' own dedup is defeated by an "always"
+            # filter or logging capture, and this sits in a per-decode-step path.
+            # Per wrapper, so a second mis-allocated wrapper is still told.
             if not self._warned_separate_kv:
                 self._warned_separate_kv = True
                 warnings.warn(

@@ -32,11 +32,8 @@ def gen_page_aiter_module() -> JitSpec:
     from .aiter_source import aiter_jitspec_flags, refresh_aiter_jitspec
 
     extra_include_paths, extra_ldflags = aiter_jitspec_flags("module_cache")
-    # refresh_aiter_jitspec is not optional: JitSpec.build() writes build.ninja
-    # only when it is missing, so a cached page_aiter would keep linking whatever
-    # AITER library it first saw -- across an arch or version change, that is a
-    # SIGSEGV rather than an error. Same reason norm/rope/activation route
-    # through it.
+    # Required: build.ninja is written only when missing, so without this a
+    # cached module keeps linking whichever AITER library it first saw.
     return refresh_aiter_jitspec(
         gen_jit_spec(
             "page_aiter",
