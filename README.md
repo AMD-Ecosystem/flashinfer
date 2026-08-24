@@ -62,7 +62,7 @@ kernel for non-attention ops). **AITER** = ROCm AITER backend.
 | **MLA (Multi-Latent Attention)** | — | ✅ | **AITER** (no HIP fallback) | DeepSeek-style 192/128 head-dim split; bf16 + `page_size=1`; `backend="auto"` (default) resolves to `"aiter"` |
 | **POD attention** | ✅ `fa2` | — | HIP | MHA / GQA / MQA; single + batch variants (`PODWithPagedKVCacheWrapper`, `BatchPODWithPagedKVCacheWrapper`); JIT-only (excluded from AOT, same as upstream CUDA) |
 | **RoPE (positional encoding)** | ✅ `native` | ✅ | **HIP `native`** (AITER is opt-in via `backend="aiter"`) | LLaMA-style + LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). The AITER backend covers `apply_rope_with_cos_sin_cache` and its inplace variant via AITER's C++ `rope_cached_positions_2c_fwd_impl` (linked at the C++ level, no runtime `import aiter`); cos/sin passed as float32. `backend="auto"` resolves to HIP `native` — the in-tree kernel is the better default; request AITER explicitly with `backend="aiter"` |
-| **Paged KV-cache append** | ✅ `native` | ✅ | **AITER** when `fp16/bf16` + `NHD` + gfx942/gfx950 + AITER importable; else **HIP `native`** | `append_paged_kv_cache`; fp8 KV-cache supported on the HIP path |
+| **Paged KV-cache append** | ✅ `native` | ✅ | **HIP `native`** (AITER is opt-in via `backend="aiter"`) | `append_paged_kv_cache`; fp8 KV-cache supported on the HIP path. `backend="auto"` resolves to HIP `native` — the in-tree kernel sustains 3.62 TB/s against AITER's 2.86 on identical work (gfx942), so AITER is slower at every size measured; request it explicitly with `backend="aiter"` (`fp16/bf16` + `NHD` only) |
 | **RMSNorm** | ✅ `native` | ✅ | **AITER** for 2-D fp16/bf16 inputs on gfx942/gfx950; else **HIP `native`** (3-D inputs, fp32, or AITER unavailable) | `rmsnorm`; AITER's C++ CK `rmsnorm2d` (the `rmsnorm2d_fwd` entry point, linked at the C++ level, no runtime `import aiter`); fp16/bf16, 2-D only, weight dtype must match input, slightly lower precision at `hidden_size >= 1024` |
 | **Fused add RMSNorm** | ✅ `native` | ✅ | **AITER** on gfx942/gfx950; else **HIP `native`** | `fused_add_rmsnorm`; AITER's C++ CK `rmsnorm2d_with_add` (linked at the C++ level, no runtime `import aiter`); 2-D only, slightly lower precision at `hidden_size >= 1024` |
 | **LayerNorm / Gemma RMSNorm** | ✅ | — | HIP | |
@@ -402,6 +402,11 @@ Backend-specific exceptions to "auto picks AITER when supported":
 * `silu_and_mul` and `rope` (cos/sin-cache): `backend="auto"` always resolves
   to the HIP `native` kernel — experimentation found it the better default.
   The AITER C++ path is reachable only via an explicit `backend="aiter"`.
+* `append_paged_kv_cache`: same, and for the same reason. AITER's
+  `reshape_and_cache_flash` is bit-exact against the in-tree kernel but
+  sustains 2.86 TB/s to its 3.62 on identical work (gfx942, nnz=262144), so
+  `backend="auto"` always resolves to `native`. Explicit `backend="aiter"`
+  additionally requires `fp16`/`bf16` and `NHD`.
 * `rmsnorm`: `backend="auto"` picks the AITER C++ path (CK `rmsnorm2d`) only
   for 2-D fp16/bf16 inputs whose weight dtype matches; 3-D inputs, fp32, or a
   mismatched weight dtype fall back to the HIP `native` kernel.

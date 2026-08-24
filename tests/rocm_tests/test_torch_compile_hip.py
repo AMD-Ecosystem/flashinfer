@@ -58,6 +58,10 @@ _PREAMBLE = textwrap.dedent(
     def append(k, v):
         append_paged_kv_cache(k, v, batch_idx, positions, (k_cache, v_cache), indices, indptr, last_page_len)
         return k
+
+    def append_aiter(k, v):
+        append_paged_kv_cache(k, v, batch_idx, positions, (k_cache, v_cache), indices, indptr, last_page_len, backend="aiter")
+        return k
 """
 )
 
@@ -123,6 +127,41 @@ def test_torch_compile_with_custom_ops():
     )
     result = _run_snippet(snippet, {"FLASHINFER_USE_TORCH_CUSTOM_OPS": "1"})
     assert result.returncode == 0, f"torch.compile failed:\n{result.stderr}"
+
+
+@pytest.mark.skipif(
+    torch.torch_version.TorchVersion(torch.__version__)
+    < torch.torch_version.TorchVersion("2.4"),
+    reason="torch.compile custom ops require torch >= 2.4",
+)
+def test_torch_compile_with_aiter_backend():
+    """torch.compile succeeds through the AITER shim's custom-op wrapper.
+
+    backend='auto' routes to the native kernel, so the shim is reachable only
+    via an explicit opt-in -- and without this test nothing compiles it.
+
+    What it guards is the @register_custom_op wrapper: the shim is registered
+    with TORCH_LIBRARY_FRAGMENT, so without a wrapper Dynamo traces into it and
+    its numel()/size() calls raise on symbolic shapes. Verified by removing the
+    wrapper, which fails this test. The paired fake is *not* what saves it --
+    a None-returning custom op needs no separate fake impl -- so removing that
+    alone leaves the test green.
+    """
+    snippet = _PREAMBLE + textwrap.dedent(
+        """\
+        import flashinfer.page as page_mod
+        from flashinfer.aiter_utils import is_aiter_available
+        if not is_aiter_available(k_cache.device, "append_paged_kv_cache"):
+            print("OK")  # no AITER here; nothing to compile
+        else:
+            compiled = torch.compile(append_aiter, dynamic=True)
+            compiled(k, v)
+            assert (k_cache != 0).any(), "compiled aiter append wrote nothing"
+            print("OK")
+    """
+    )
+    result = _run_snippet(snippet, {"FLASHINFER_USE_TORCH_CUSTOM_OPS": "1"})
+    assert result.returncode == 0, f"torch.compile (aiter) failed:\n{result.stderr}"
 
 
 @pytest.mark.skipif(

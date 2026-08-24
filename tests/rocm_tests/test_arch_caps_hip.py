@@ -271,11 +271,13 @@ class TestTableWellFormed:
         # literal-matching scan can see batch_prefill / batch_decode /
         # single_prefill. Those are reached by the runtime tests instead.
         assert used, "scan found no op names; the pattern has rotted"
-        # These two are reached *only* through require_capability /
-        # capability_available (mla_rocm.py, page.py), never through the
-        # aiter_utils wrappers. Their presence is what proves the alternation
-        # still covers the capability API directly; drop it and the scan
-        # silently narrows back to the wrappers while still passing.
+        # `mla` is reached *only* through require_capability (mla_rocm.py), never
+        # through the aiter_utils wrappers. Its presence is what proves the
+        # alternation still covers the capability API directly; drop it and the
+        # scan silently narrows back to the wrappers while still passing.
+        # `append_paged_kv_cache` no longer demonstrates that -- since the append
+        # auto-routing flip it reaches the table via require_aiter -- but it is
+        # still asserted, because the scan must keep seeing it either way.
         assert {"mla", "append_paged_kv_cache"} <= used, (
             "scan no longer sees ops called through the capability API: "
             f"{sorted({'mla', 'append_paged_kv_cache'} - used)}"

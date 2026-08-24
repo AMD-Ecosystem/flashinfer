@@ -6,7 +6,6 @@
 
 import logging
 import re
-import time
 
 import pytest
 import torch
@@ -132,7 +131,9 @@ def test_append_paged_kv_cache_aiter_vs_native(
     torch.testing.assert_close(v_aiter, v_native, rtol=0, atol=0)
 
 
-@requires_aiter
+# Deliberately NOT @requires_aiter: the point is that routing does not depend on
+# AITER at all. Gating on the package would skip exactly the environments where a
+# reintroduced AITER probe would go unnoticed.
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("kv_layout", ["NHD", "HND"])
 def test_append_paged_kv_cache_auto_always_routes_native(dtype, kv_layout):
@@ -196,6 +197,9 @@ def test_append_explicit_aiter_accepts_int64_indices():
 
     k32, v32 = _run(lambda t: t)
     k64, v64 = _run(lambda t: t.long())
+    # Without this, a shim that silently no-oped would leave both runs zero and
+    # the comparison below would pass.
+    assert (k32 != 0).any(), "the int32 run wrote nothing"
     torch.testing.assert_close(k64, k32, rtol=0, atol=0)
     torch.testing.assert_close(v64, v32, rtol=0, atol=0)
 
@@ -298,13 +302,15 @@ def test_append_paged_kv_cache_aiter_honors_current_stream():
         done = torch.cuda.Event()
         done.record(side)
 
-    time.sleep(0.05)  # let a null-stream append, if any, land
     # If the blocker already drained, the observation below proves nothing. Fail
-    # with a clear reason rather than passing vacuously.
+    # with a clear reason rather than passing vacuously. Measured margin on
+    # gfx942: the blocker still has ~140 ms left at this point.
     assert not done.query(), (
         "side stream drained before the cache was read; the blocker is too small "
         "for this GPU and the test cannot observe stream ordering"
     )
+    # No sleep needed: .item() issues on the default stream, which is the stream a
+    # rogue append would have landed on, so this read is ordered after it.
     still_empty = not bool(k_cache.any().item())
     done.synchronize()
 
@@ -316,7 +322,8 @@ def test_append_paged_kv_cache_aiter_honors_current_stream():
     torch.testing.assert_close(v_cache, v_ref, rtol=0, atol=0)
 
 
-@requires_aiter
+# Also not @requires_aiter, for the same reason: breaking get_page_aiter_module
+# is what this asserts, and that does not need the package installed.
 def test_append_auto_never_builds_the_aiter_shim(monkeypatch):
     """'auto' routes to native without so much as loading the AITER module.
 
