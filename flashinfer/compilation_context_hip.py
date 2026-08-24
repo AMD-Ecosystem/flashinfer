@@ -18,12 +18,9 @@ Global compilation context management for FlashInfer on ROCm.
 """
 
 import logging
-import os
 
-import torch
 
 from . import hip_utils
-from .arch_caps import normalize_arch
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +47,11 @@ class CompilationContext:
         """
         import torch.utils.cpp_extension as torch_cpp_ext
 
-        # Get architecture list from env or auto-detect
-        arch_list = os.environ.get("FLASHINFER_ROCM_ARCH_LIST")
-        if arch_list is None:
-            arch_list = self._auto_detect_archs()
-            if arch_list:
-                logger.info(f"Auto-detected ROCm architectures: {arch_list}")
+        # One resolver for every path that asks "what are we building for", so
+        # this cannot disagree with the validation in hip_utils -- it used to,
+        # returning gfx950 here while validation checked gfx942.
+        arch_list = hip_utils.resolve_target_archs()
+        logger.info(f"Target ROCm architectures: {arch_list}")
 
         # Comprehensive validation (all 3 checks)
         self.arch_flags, self.TARGET_ROCM_ARCHS = (
@@ -63,27 +59,6 @@ class CompilationContext:
                 arch_list=arch_list, torch_cpp_ext_module=torch_cpp_ext, verbose=False
             )
         )
-
-    def _auto_detect_archs(self) -> str:
-        """Auto-detect ROCm architectures from supported system devices.
-
-        Only devices whose gcnArchName is in FLASHINFER_SUPPORTED_ROCM_ARCHS are
-        considered, so unsupported integrated GPUs are silently ignored here rather
-        than being passed on to validate_flashinfer_rocm_arch for filtering.
-        """
-        try:
-            indices = hip_utils.get_supported_device_indices()
-            if indices:
-                archs = {
-                    normalize_arch(torch.cuda.get_device_properties(i).gcnArchName)
-                    for i in indices
-                }
-                return ",".join(sorted(archs))
-            logger.warning("No supported ROCm devices detected, defaulting to gfx942")
-            return "gfx942"
-        except Exception as e:
-            logger.warning(f"Failed to auto-detect ROCm device architectures: {e}")
-            return "gfx942"
 
     def get_hipcc_flags_list(self) -> list[str]:
         """
