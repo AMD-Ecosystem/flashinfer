@@ -36,6 +36,8 @@ def _seed(bb, state):
         bb._pkg_include.symlink_to(Path("..") / "include", target_is_directory=True)
     elif state == "realdir":
         shutil.copytree(bb._src_include, bb._pkg_include)
+    elif state == "abslink":
+        bb._pkg_include.symlink_to(bb._src_include, target_is_directory=True)
     elif state == "file":
         bb._pkg_include.write_text("not a directory")
     elif state != "absent":
@@ -69,6 +71,7 @@ def backend(tmp_path):
     "state, expected",
     [
         ("symlink", "symlink:../include"),
+        ("abslink", "symlink:../include"),
         ("realdir", "absent"),
         ("file", "absent"),
         ("absent", "absent"),

@@ -105,15 +105,16 @@ def _restoring_pkg_include():
 
     A generated copy left in the checkout is what ``get_include()`` resolves
     later, shadowing edits under ``include/``. Absent fails loudly; stale does
-    not.
+    not. A restored link is re-made relative, since the retired CMake hook wrote
+    absolute ones and those break under a bind mount.
     """
-    prior = _pkg_include.readlink() if _pkg_include.is_symlink() else None
+    had_link = _pkg_include.is_symlink()
     try:
         yield
     finally:
         _clear(_pkg_include)
-        if prior is not None:
-            _pkg_include.symlink_to(prior, target_is_directory=True)
+        if had_link:
+            _prepare_for_editable()
 
 
 # --------------------------------------------------------------- PEP 517 hooks
