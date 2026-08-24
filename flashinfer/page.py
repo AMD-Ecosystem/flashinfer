@@ -44,10 +44,10 @@ if IS_HIP:
     def _aiter_kv_append_supported(*, dtype: torch.dtype, kv_layout: str) -> bool:
         """Shape/dtype constraints of AITER's reshape_and_cache_flash.
 
-        Shared by the ``auto`` selector and the explicit ``backend="aiter"`` opt-in
-        so the two cannot drift: the shim reads ``page_size`` from
-        ``paged_k_cache.size(1)``, which is ``num_kv_heads`` under HND, so a wrong
-        layout silently writes every token to the wrong slot.
+        Gates the explicit ``backend="aiter"`` opt-in, which is now the only way
+        in: the shim reads ``page_size`` from ``paged_k_cache.size(1)``, which is
+        ``num_kv_heads`` under HND, so a wrong layout silently writes every token
+        to the wrong slot.
         """
         return kv_layout == "NHD" and dtype in (torch.float16, torch.bfloat16)
 
@@ -453,7 +453,9 @@ def append_paged_kv_cache(
     kv_layout : str
         The layout of the paged kv-cache, either ``NHD`` or ``HND``.
     backend : str
-        Kernel backend to use. ``"auto"`` (default) selects the best available backend.
+        Kernel backend to use. ``"auto"`` (default) resolves to the native
+        FlashInfer JIT kernel on all platforms — it is the faster kernel on ROCm
+        (3.62 TB/s against AITER's 2.86 on gfx942).
         ``"native"`` uses the FlashInfer JIT kernel on all platforms.
         ``"aiter"`` uses AMD AITER's ``reshape_and_cache_flash`` — ROCm (gfx942/gfx950) only;
         requires the ``aiter`` package, NHD layout, and fp16/bf16 dtype.

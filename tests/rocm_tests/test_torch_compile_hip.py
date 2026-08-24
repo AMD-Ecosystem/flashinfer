@@ -149,18 +149,24 @@ def test_torch_compile_with_aiter_backend():
     """
     snippet = _PREAMBLE + textwrap.dedent(
         """\
-        import flashinfer.page as page_mod
+        import sys
         from flashinfer.aiter_utils import is_aiter_available
         if not is_aiter_available(k_cache.device, "append_paged_kv_cache"):
-            print("OK")  # no AITER here; nothing to compile
-        else:
-            compiled = torch.compile(append_aiter, dynamic=True)
-            compiled(k, v)
-            assert (k_cache != 0).any(), "compiled aiter append wrote nothing"
-            print("OK")
+            sys.exit(99)  # sentinel: no AITER here, report a skip rather than a pass
+        compiled = torch.compile(append_aiter, dynamic=True)
+        compiled(k, v)
+        assert (k_cache != 0).any(), "compiled aiter append wrote nothing"
+        print("OK")
     """
     )
-    result = _run_snippet(snippet, {"FLASHINFER_USE_TORCH_CUSTOM_OPS": "1"})
+    # Longer than the default: this is the only test here whose child may have to
+    # build the AITER module and hipcc the shim from a cold ~/.cache/flashinfer,
+    # and it can additionally block on another xdist worker holding the JIT lock.
+    result = _run_snippet(
+        snippet, {"FLASHINFER_USE_TORCH_CUSTOM_OPS": "1"}, timeout=900
+    )
+    if result.returncode == 99:
+        pytest.skip("aiter package not available for the append backend")
     assert result.returncode == 0, f"torch.compile (aiter) failed:\n{result.stderr}"
 
 

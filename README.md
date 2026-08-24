@@ -455,10 +455,13 @@ devcontainer install this exact version.
 
 AITER constraints fall into two groups: hard incompatibilities (the call
 errors with `backend="aiter"` and triggers fallback under
-`backend="auto"`), and silently-ignored kwargs (the call runs but the
-flag has no effect on AITER — pass the in-tree backend explicitly if
-you need any of them: `backend="fa2"` for attention wrappers, or
-`backend="native"` for `append_paged_kv_cache` / `rmsnorm`).
+`backend="auto"`, for the ops whose `auto` can pick AITER at all), and
+silently-ignored kwargs (the call runs but the flag has no effect on
+AITER — pass the in-tree backend explicitly if you need any of them:
+`backend="fa2"` for attention wrappers, or `backend="native"` for
+`rmsnorm`). `append_paged_kv_cache` is outside both groups: its `auto`
+already resolves to `native`, so there is no fallback to trigger, and
+none of the ignored kwargs below are parameters of it.
 
 **Conditions that fall back to the in-tree HIP kernel under
 `backend="auto"`** (and raise under `backend="aiter"`):
