@@ -316,14 +316,20 @@ def _make_pool_config(pool_pages, batch, kv_len, num_heads):
         _DTYPE,
     )
     pool_gb = pool_pages * _QK_HEAD_DIM * 2 / 2**30
+    # Traffic depends on which path run() takes. With adjacent halves (the
+    # default) there is no copy at all and the only traffic is the attention
+    # read of the live KV; the pool-sized cat exists only under --separate, and
+    # counting it unconditionally would attribute GBs of nonexistent traffic to
+    # the zero-copy path and make it appear to scale with pool capacity.
+    attn_bytes = batch * kv_len * _QK_HEAD_DIM * 2
+    cat_bytes = 2 * pool_pages * _QK_HEAD_DIM * 2 if _bench_args.separate else 0
     return KernelConfig(
         name=f"pool_h{num_heads}_b{batch}_kv{kv_len}_p{pool_pages}",
         run_fn=torch.inference_mode()(
             lambda w=wrapper, a=q_nope, b=q_pe, c=ckv, d=kpe: w.run(a, b, c, d)
         ),
         theoretical_flops=_flops(batch, kv_len, num_heads),
-        # The pool-sized cat dominates: read ckv+kpe, write the combined buffer.
-        theoretical_bytes=2 * pool_pages * _QK_HEAD_DIM * 2,
+        theoretical_bytes=attn_bytes + cat_bytes,
         num_tokens=batch,
         label=f"pool  h={num_heads:>3d} b={batch:>3d} kv={kv_len:>6d} pool={pool_gb:>6.2f}GB",
     )

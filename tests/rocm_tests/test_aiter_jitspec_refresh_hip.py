@@ -93,3 +93,80 @@ def test_refresh_waits_for_the_build_lock(lock_path):
     assert waited > hold_for / 2, (
         f"refresh did not wait on the lock (waited {waited:.3f}s)"
     )
+
+
+def test_every_aiter_linked_generator_refreshes():
+    """Each gen_*_aiter_module must route its spec through refresh_aiter_jitspec.
+
+    The tests above prove the helper works; nothing proved the generators call
+    it. page_aiter shipped without it and the whole suite stayed green, because
+    the symptom only appears after an arch or AITER-version change against an
+    already-cached module.
+
+    Source inspection rather than execution: calling a generator runs
+    aiter_jitspec_flags(), which builds the AITER library for real.
+
+    Matched on the AST, not on text: a substring scan is satisfied by the
+    comment *explaining* the call, so it passes with the call removed.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from flashinfer.jit import activation, norm, page, rope
+
+    generators = [
+        activation.gen_silu_and_mul_aiter_module,
+        norm.gen_norm_aiter_module,
+        page.gen_page_aiter_module,
+        rope.gen_rope_aiter_module,
+    ]
+
+    def _calls_refresh(fn):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        return any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "refresh_aiter_jitspec"
+            for node in ast.walk(tree)
+        )
+
+    missing = [
+        f"{fn.__module__}.{fn.__name__}" for fn in generators if not _calls_refresh(fn)
+    ]
+    assert not missing, (
+        "AITER-linked generators that do not refresh their link line, so a "
+        f"cached module keeps linking a stale AITER library: {missing}"
+    )
+
+
+def test_generator_list_covers_every_aiter_module():
+    """The list above must not silently fall behind a newly added shim."""
+    import pkgutil
+
+    import flashinfer.jit as jit_pkg
+
+    found = set()
+    for mod in pkgutil.iter_modules(jit_pkg.__path__):
+        src_path = f"{jit_pkg.__path__[0]}/{mod.name}.py"
+        try:
+            with open(src_path) as fh:
+                src = fh.read()
+        except OSError:
+            continue
+        for line in src.splitlines():
+            if line.startswith("def gen_") and line.rstrip().endswith(
+                "_aiter_module() -> JitSpec:"
+            ):
+                found.add(f"flashinfer.jit.{mod.name}.{line[4:].split('(')[0]}")
+
+    covered = {
+        "flashinfer.jit.activation.gen_silu_and_mul_aiter_module",
+        "flashinfer.jit.norm.gen_norm_aiter_module",
+        "flashinfer.jit.page.gen_page_aiter_module",
+        "flashinfer.jit.rope.gen_rope_aiter_module",
+    }
+    assert found == covered, (
+        f"AITER generators not covered by the refresh test: {sorted(found - covered)}; "
+        f"listed but gone: {sorted(covered - found)}"
+    )

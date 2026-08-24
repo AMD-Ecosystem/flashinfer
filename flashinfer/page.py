@@ -204,9 +204,9 @@ def _append_paged_mla_kv_cache_kernel(
     )
 
 
-# Needed for the same reason as the append_paged_kv_cache fake below: without a
-# fake impl, a torch.compile region calling this op fails at trace time. It
-# matters now that append_paged_mla_kv_cache is exported on ROCm too.
+# Mirrors the append_paged_kv_cache fake below. What actually makes this op
+# traceable is the custom-op wrapper above -- removing this decorator alone
+# leaves torch.compile working, since a None-returning op needs no fake impl.
 @register_fake_op("flashinfer::append_paged_mla_kv_cache")
 def _fake_append_paged_mla_kv_cache_kernel(
     append_ckv: torch.Tensor,
