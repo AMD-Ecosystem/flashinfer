@@ -9,6 +9,9 @@ description = "Fast Attention Algorithms for LLM Inference on ROCm"
 requires-python = ">=3.10"
 readme = "README.md"
 license = "Apache-2.0"
+# Adding licenses/*.txt here makes `python -m build` write License-File
+# metadata it does not copy, so the wheel contradicts its own METADATA.
+license-files = ["LICENSE", "NOTICE"]
 authors = [
     {name = "AMD, Inc."}
 ]
@@ -45,56 +48,43 @@ dev = [
     "pytest",
     "pytest-xdist",
     "pytest-rerunfailures",
+    # tests/rocm_tests/test_build_backend.py parses pyproject.toml; tomllib is 3.11+.
+    "tomli; python_version < '3.11'",
+    "build",
 ]
 
 [build-system]
+# In-tree backend (see build_backend_rocm.py). Nothing is compiled at build time, so
+# torch/numpy are not required; `wheel` is not either since setuptools 70.1, and
+# listing it fails `python -m build --no-isolation` in docker/Dockerfile.rocm_ci.
 requires = [
-    "scikit-build-core>=0.4.3",
-    "torch >= 2.7",
-    "numpy",
-    "setuptools-scm >=9.2"
+    "setuptools>=80",
+    "setuptools-scm>=9.2",
+    "packaging>=24"
 ]
-build-backend = "scikit_build_core.build"
+build-backend = "build_backend_rocm"
+backend-path = ["."]
 
-[tool.scikit-build]
-cmake.build-type = "Release"
-editable.rebuild = true
-build.verbose = true
-logging.level = "INFO"
-build-dir = "_skbuild"
-experimental = true
-metadata.version.provider = "scikit_build_core.metadata.setuptools_scm"
-wheel.license-files = ["LICENSE"]
-wheel.packages = ["flashinfer"]
-wheel.py-api = "py3"
+[tool.setuptools.packages.find]
+# Anchored, not "flashinfer*": that glob also matched the sibling
+# flashinfer-cubin/ and flashinfer-jit-cache/ project roots and shipped them.
+include = ["flashinfer", "flashinfer.*"]
 
-[tool.scikit-build.sdist]
-cmake = false
-exclude = [
-    ".clang-format",
-    ".devcontainer",
-    ".github",
-    ".gitignore",
-    ".gitmodules",
-    ".pre-commit-config.yaml",
-    "examples",
-    "profiler",
-    "benchmarks",
-    "docker",
-    "scripts",
-    "tests",
-    "docs",
-    "3rdparty/spdlog/**/*",
-    "3rdparty/cutlass/**/*",
-    "ci",
-    "Jenkinsfile",
-    "format.sh",
-    "custom_backend.py",
-    "version.txt",
-    "CHANGELOG.md",
-]
-include = [
-    "flashinfer/_version.py"
+[tool.setuptools.package-data]
+# scikit-build-core's `wheel.packages = ["flashinfer"]` swept these in
+# implicitly; setuptools requires them to be named. Both matter at runtime:
+# get_csrc_dir() resolves flashinfer/csrc_rocm and get_include() resolves
+# flashinfer/include, so dropping either ships a wheel whose JIT cannot compile.
+# flashinfer/include itself is produced by build_backend_rocm.py, not by git.
+flashinfer = [
+    "py.typed",
+    "csrc_rocm/**/*.cu",
+    "csrc_rocm/**/*.cc",
+    "csrc_rocm/**/*.h",
+    "csrc_rocm/**/*.jinja",
+    "include/**/*.cuh",
+    "include/**/*.h",
+    "include/**/*.hpp",
 ]
 
 [tool.setuptools_scm]

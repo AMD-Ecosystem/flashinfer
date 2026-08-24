@@ -3,14 +3,150 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import functools
+import logging
 
 # arch_caps imports nothing (in particular, not torch), so importing it here
 # keeps this module safe to import before the HIP runtime starts -- which
 # tests/conftest.py relies on to set HIP_VISIBLE_DEVICES first.
 from .arch_caps import normalize_arch
 
+logger = logging.getLogger(__name__)
+
 # AMDGPU archs supported by amd-flashinfer
 FLASHINFER_SUPPORTED_ROCM_ARCHS = ["gfx942", "gfx950"]
+
+
+# The architecture assumed when nothing else can be determined. Must stay equal
+# to ``jit/aiter_source.py``'s ``_DEFAULT_BUILD_ARCH``: the two are consulted
+# independently on a GPU-less host, and a shim built for one architecture beside
+# kernels built for another faults at run time.
+_GPULESS_FALLBACK_ARCH = "gfx942"
+
+
+@functools.cache
+def _detected_supported_archs() -> tuple:
+    """Supported architectures rocminfo reports, cached for the process.
+
+    ``rocminfo_gpu_agents`` is deliberately uncached -- "the caller decides" --
+    and this caller is a hot one: ``CompilationContext`` is constructed from five
+    places and each construction resolves the target list. The code this replaces
+    reached rocminfo through the cached ``get_supported_device_indices``, so
+    calling the uncached probe directly would re-run the subprocess (with its
+    timeout) on every construction. Hardware cannot change under a running
+    process, so caching costs nothing in fidelity.
+
+    Tests that patch ``rocminfo_gpu_agents`` must call ``cache_clear()``.
+    """
+    return tuple(
+        sorted(
+            {
+                arch
+                for arch, _ in rocminfo_gpu_agents()
+                if arch in FLASHINFER_SUPPORTED_ROCM_ARCHS
+            }
+        )
+    )
+
+
+def _canonical_arch_list(raw: str) -> str:
+    """``"gfx950:sramecc+; gfx942,,gfx942"`` -> ``"gfx950,gfx942"``.
+
+    Caller- and environment-supplied lists arrive in whatever shape the operator
+    typed. The validators below split on ``","`` only and compare tokens against
+    :data:`FLASHINFER_SUPPORTED_ROCM_ARCHS` verbatim, so an unnormalized value is
+    not merely untidy -- ``"gfx942;gfx950"`` becomes the single token
+    ``"gfx942;gfx950"``, matches nothing, and
+    :func:`validate_flashinfer_rocm_arch` raises "FlashInfer does not support any
+    of the requested ROCm architectures". ``";"`` is worth accepting because
+    ``jit/aiter_source.py`` already documents it for this same variable, and the
+    two must not disagree about their own env var.
+
+    Only *syntax* is normalized. Unknown architectures are passed through so the
+    validators can report them; silently dropping one here would turn a clear
+    error into a build that quietly targets less than was asked for.
+
+    Order is preserved (first occurrence wins) rather than sorted: it is the
+    caller's stated preference, and it is what ends up on the hipcc command line.
+    """
+    seen = []
+    for token in raw.replace(";", ",").split(","):
+        arch = normalize_arch(token)
+        if arch and arch not in seen:
+            seen.append(arch)
+    return ",".join(seen)
+
+
+def resolve_target_archs(arch_list: str = None) -> str:
+    """Return the architectures to build for, as a comma-separated string.
+
+    The single answer to "what are we compiling for". Resolution order:
+
+    1. ``arch_list``, when a caller passes one explicitly.
+    2. ``FLASHINFER_ROCM_ARCH_LIST``.
+    3. The architectures of the supported GPUs actually present.
+    4. ``gfx942``, warned -- the pre-existing default, kept deliberately (see
+       the comment at the fallback).
+
+    The bug this fixes is that steps 1-3 were open-coded three times and
+    disagreed. On a CDNA4 host, ``validate_flashinfer_rocm_arch(arch_list=None)``
+    returned ``{"gfx942"}`` on a gfx950 device while ``CompilationContext``
+    compiled for gfx950 -- so the check that exists to catch "your PyTorch was
+    not built for this architecture" was validating an architecture nobody was
+    building for. Vacuous on a PyTorch carrying both; a spurious hard failure on
+    an arch-specific build that carries only gfx950. gfx942 was the one
+    architecture where the hard-coded literal happened to be right, which is why
+    CDNA3 never noticed.
+
+    Detection uses rocminfo rather than ``torch.cuda`` so this stays callable
+    before the HIP runtime starts, and keeps this module importable without
+    torch -- see ``tests/rocm_tests/test_arch_caps_hip.py``.
+    """
+    import os
+
+    # Canonicalize the two operator-supplied paths. A value that normalizes away
+    # entirely (";;", whitespace) falls through to detection rather than
+    # returning "", which would otherwise reach the validators as a single empty
+    # token and fail as an unsupported architecture.
+    if arch_list:
+        canonical = _canonical_arch_list(arch_list)
+        if canonical:
+            return canonical
+
+    from_env = os.environ.get("FLASHINFER_ROCM_ARCH_LIST")
+    if from_env:
+        canonical = _canonical_arch_list(from_env)
+        if canonical:
+            return canonical
+
+    detected = _detected_supported_archs()
+    if detected:
+        return ",".join(detected)
+
+    # Deliberately the *existing* default, not "every architecture we support".
+    #
+    # A fat list looks like the safer answer here and is not. `aot_hip` publishes
+    # this value into FLASHINFER_ROCM_ARCH_LIST, and `resolve_aiter_build_arch()`
+    # returns `env_archs[0]` when no device is visible -- so "gfx942,gfx950"
+    # ships gfx950 HIP kernels beside a gfx942-only AITER shim, which faults on a
+    # gfx950 card. Today both sides independently fall back to gfx942 and
+    # therefore agree; widening one of them alone is a regression.
+    #
+    # This keeps that agreement while fixing the bug this function exists for --
+    # the *disagreement* between the validator and the compiler on a host where a
+    # GPU is visible. Whether a GPU-less host should instead raise, build fat, or
+    # teach the shim to follow the list is a real question with its own blast
+    # radius (it breaks build hosts that work today), and belongs in its own
+    # change.
+    logger.warning(
+        "No supported AMD GPU detected and FLASHINFER_ROCM_ARCH_LIST is unset; "
+        "falling back to %s. Set FLASHINFER_ROCM_ARCH_LIST to the architecture "
+        "you are building for -- otherwise the result will not run on %s.",
+        _GPULESS_FALLBACK_ARCH,
+        ", ".join(
+            a for a in FLASHINFER_SUPPORTED_ROCM_ARCHS if a != _GPULESS_FALLBACK_ARCH
+        ),
+    )
+    return _GPULESS_FALLBACK_ARCH
 
 
 def get_rocm_home():
@@ -190,7 +326,7 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
 
     Args:
         arch_list: Comma-separated list of architectures (e.g., "gfx942,gfx90a").
-                   If None, reads from FLASHINFER_ROCM_ARCH_LIST env var or defaults to "gfx942"
+                   If None, resolved by :func:`resolve_target_archs`.
         verbose: Whether to print validation messages
 
     Returns:
@@ -199,7 +335,6 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
     Raises:
         RuntimeError: If ROCm not found or architectures not supported
     """
-    import os
 
     # ROCm compatibility matrix: version -> supported gfx architectures
     # Refer: https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html
@@ -234,7 +369,7 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
 
     # Get architecture list from parameter, env var, or default
     if arch_list is None:
-        arch_list = os.environ.get("FLASHINFER_ROCM_ARCH_LIST", "gfx942")
+        arch_list = resolve_target_archs()
 
     # Validate system has ROCm installed
     system_rocm_version = get_system_rocm_version()
@@ -315,11 +450,10 @@ def validate_flashinfer_rocm_arch(
     Raises:
         RuntimeError: If any validation step fails with clear error message
     """
-    import os
 
     # Get architecture list from parameter, env var, or default
     if arch_list is None:
-        arch_list = os.environ.get("FLASHINFER_ROCM_ARCH_LIST", "gfx942")
+        arch_list = resolve_target_archs()
 
     # Step 1: Validate against system ROCm version (reuse existing logic)
     validated_arch_list = validate_rocm_arch(arch_list=arch_list, verbose=verbose)

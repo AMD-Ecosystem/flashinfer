@@ -208,25 +208,49 @@ def compile_and_package_modules(
         final_config.update(config)
     config = final_config
 
-    # ROCm Arch: Ensure env var is set or create/validate using CompilationContext
+    # ROCm arch: resolve once, then validate.
+    #
+    # Publishing the result back into the environment is deliberate, not
+    # incidental bookkeeping: the AITER shim resolves its own build architecture
+    # from FLASHINFER_ROCM_ARCH_LIST (jit/aiter_source.py), and an AOT build has
+    # no other channel to tell it what this build targets. Without this, a shim
+    # built during an AOT run on a mixed or GPU-less host can disagree with the
+    # kernels it is packaged alongside.
+    #
+    # It is a process-global side effect that outlives the call, which is worth
+    # replacing with an explicit parameter threaded through the AOT -> JIT
+    # boundary. That is a wider change than this one; leaving the lifetime
+    # unchanged here keeps this commit to the resolution bug it is fixing.
     from .compilation_context_hip import CompilationContext
 
-    if "FLASHINFER_ROCM_ARCH_LIST" not in os.environ:
-        # Auto-detect or use default by creating a local context
-        compilation_context = CompilationContext()
-        detected_archs = ",".join(sorted(compilation_context.TARGET_ROCM_ARCHS))
-        os.environ["FLASHINFER_ROCM_ARCH_LIST"] = detected_archs
-        if verbose:
-            print(f"Auto-detected ROCm architectures: {detected_archs}")
-    else:
-        # Validate provided arch list by creating a local context
-        arch_list = os.environ["FLASHINFER_ROCM_ARCH_LIST"]
-        CompilationContext()  # Validates arch_list set via env var
-        if verbose:
-            print(f"Using ROCm architectures: {arch_list}")
-
-    # Verify paths are correct
-    rocm_arch_list = os.environ["FLASHINFER_ROCM_ARCH_LIST"]
+    # Publish the *validated* list, not the resolved one. Validation filters as
+    # well as raises: `validate_flashinfer_rocm_arch` drops architectures this
+    # ROCm or this PyTorch cannot build, warning rather than failing, so the
+    # context's target set can be a strict subset of what the resolver returned.
+    # Publishing the wider list recreates the disagreement this whole change
+    # exists to remove -- on ROCm 6.4 with FLASHINFER_ROCM_ARCH_LIST=
+    # "gfx950,gfx942", the kernels build for gfx942 while the shim reads gfx950
+    # from the environment and is built for a card the kernels do not target.
+    #
+    # Constructing the context first also means a failed validation leaves
+    # FLASHINFER_ROCM_ARCH_LIST as it found it, rather than exporting a list the
+    # build then rejected.
+    #
+    # Read the order from `arch_flags`, not `TARGET_ROCM_ARCHS`. The latter is a
+    # `set` (hip_utils: `arch_set = set(requested_archs)`), so the caller's order
+    # is already gone by the time it gets here, and imposing `sorted()` is not
+    # order-neutral: `resolve_aiter_build_arch()` takes `env_archs[0]` when no
+    # device is visible, so republishing "gfx950,gfx942" as "gfx942,gfx950"
+    # silently builds the shim for the architecture the caller listed *second*.
+    # `arch_flags` is built by iterating `requested_archs` in order, so it still
+    # carries the preference.
+    compilation_context = CompilationContext()
+    rocm_arch_list = ",".join(
+        flag.removeprefix("--offload-arch=") for flag in compilation_context.arch_flags
+    )
+    os.environ["FLASHINFER_ROCM_ARCH_LIST"] = rocm_arch_list
+    if verbose:
+        print(f"Target ROCm architectures: {rocm_arch_list}")
 
     # Print summary
     if verbose:
