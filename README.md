@@ -98,13 +98,18 @@ python examples/single_prefill_example.py
 | | Supported |
 | :--- | :--- |
 | GPUs | gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI350X, MI355X) |
-| ROCm | 7.0.2, 7.1.1, 7.2 |
-| PyTorch+ROCm | 2.8.0, 2.9.1 |
-| Python | 3.10+ (the published images and devcontainer use 3.12) |
+| ROCm | 7.0.2, 7.1.1, 7.2, 7.14 |
+| PyTorch+ROCm | 2.8.0, 2.9.1, 2.12.0 |
+| Python | 3.10+ (the published images use 3.12; the devcontainer uses 3.14) |
 
 Other versions may work but are untested. Replace `7.2` in the torch
 install command with the ROCm version you need; see
 <https://repo.radeon.com/rocm/manylinux/> for what is available.
+
+ROCm 7.14 is the exception: `repo.radeon.com` publishes no `rocm-rel-7.14/`
+directory, so there is no pip recipe for it. Take torch from the
+`rocm/pytorch:rocm7.14_ubuntu26.04_py3.14_pytorch_release_2.12.0` image
+instead, as the devcontainer does.
 
 ## Support matrix
 
