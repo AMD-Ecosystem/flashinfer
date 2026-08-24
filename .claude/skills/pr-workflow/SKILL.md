@@ -30,7 +30,7 @@ mismatch to the user instead. Never guess the target.
 
 ```bash
 gh pr create --repo AMD-Ecosystem/flashinfer --base amd-integration \
-  --title "<title>" --body "$(cat tmp/pr/<branch>.md)"
+  --title "<title>" --body-file "$(git rev-parse --show-toplevel)/tmp/pr/<branch>.md"
 ```
 
 If the resolved owner of `--repo` is ever `flashinfer-ai`, abort. It is always
@@ -43,8 +43,8 @@ These are local config (not checked in) and must be redone per clone:
 ```bash
 git remote -v                        # origin should be AMD-Ecosystem/flashinfer; there must be NO flashinfer-ai remote
 gh repo set-default AMD-Ecosystem/flashinfer  # pin gh base repo so it does not fall back to the fork parent
-ex="$(git rev-parse --git-common-dir)/info/exclude"   # holds worktree roots and PR drafts
-grep -qxF '/tmp/' "$ex" || printf '/tmp/\n' >> "$ex"
+ex="$(git rev-parse --git-common-dir)/info/exclude"   # per-clone ignore patterns
+grep -qxF '/tmp/' "$ex" || printf '/tmp/\n' >> "$ex"  # ignores the repo's own tmp/
 ```
 
 If a remote pointing at `flashinfer-ai/flashinfer` exists, remove it:
@@ -207,7 +207,7 @@ in doubt, hold the push and ask.
 gh api repos/AMD-Ecosystem/flashinfer/pulls/<number> --method PATCH --field body="<body>"
 
 # Or from a file
-gh api repos/AMD-Ecosystem/flashinfer/pulls/<number> --method PATCH --field body="$(cat tmp/pr/<branch>.md)"
+gh api repos/AMD-Ecosystem/flashinfer/pulls/<number> --method PATCH --field body="$(cat "$(git rev-parse --show-toplevel)/tmp/pr/<branch>.md")"
 ```
 
 Ask the user to confirm before running `git push` or `gh pr create` — these
@@ -317,11 +317,21 @@ or a won't-fix rationale.
 
 ## PR Description
 
-**Draft it at `tmp/pr/<branch>.md` in the main checkout** — never `/tmp`, which
-is shared and has no remove access on these nodes. This relies on `/tmp/` being
-in the clone's `info/exclude` (see *One-time setup after a fresh clone*); that
-file lives in the git *common* dir, so one entry covers every linked worktree
-and the draft never shows up as untracked. If `git status` does show it, that
+**Draft it at `$(git rev-parse --show-toplevel)/tmp/pr/<branch>.md`** — the repo
+root of whichever checkout you are in, main or worktree, so the draft sits with
+the branch that it describes. Anchor to the top level rather than writing a
+relative `tmp/pr/...`, which resolves wrong from any subdirectory.
+
+Never the **system** `/tmp`: it is shared, and there is no remove access to it
+on these nodes, so drafts left there cannot be cleaned up. Note the two are
+easily confused — the `/tmp/` entry in `info/exclude` is a *repo-root-anchored*
+pattern (the leading slash means repo root, not the filesystem root), so it
+ignores this repo's own `tmp/` directory and has nothing to do with the system
+one.
+
+That entry comes from *One-time setup after a fresh clone*. Because
+`info/exclude` lives in the git **common** dir, the single line covers the main
+checkout and every linked worktree. If `git status` does show your draft, that
 setup step has not been run in this clone.
 
 - **Do not hard-wrap** the body to a fixed column. GitHub renders a single
