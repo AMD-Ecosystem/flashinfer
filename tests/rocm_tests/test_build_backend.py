@@ -30,7 +30,7 @@ def _load_backend():
 
 
 def _seed(bb, state):
-    """Put ``_pkg_include`` into ``state`` and return it."""
+    """Put ``_pkg_include`` into ``state``."""
     bb._clear(bb._pkg_include)
     if state == "symlink":
         bb._pkg_include.symlink_to(Path("..") / "include", target_is_directory=True)
@@ -85,9 +85,9 @@ def test_restore_leaves_symlink_or_nothing(backend, prepare, state, expected):
     assert _describe(backend._pkg_include) == expected
 
 
-@pytest.mark.parametrize("state", ["symlink", "realdir", "absent"])
+@pytest.mark.parametrize("state", ["symlink", "abslink", "realdir", "absent"])
 def test_restore_runs_when_the_build_raises(backend, state):
-    expected = "symlink:../include" if state == "symlink" else "absent"
+    expected = "symlink:../include" if state.endswith("link") else "absent"
     _seed(backend, state)
     with (
         pytest.raises(RuntimeError, match="build failed"),
@@ -96,6 +96,14 @@ def test_restore_runs_when_the_build_raises(backend, state):
         backend._prepare_for_wheel()
         raise RuntimeError("build failed")
     assert _describe(backend._pkg_include) == expected
+
+
+def test_restore_survives_a_vanished_source_tree(backend):
+    """The finally must not raise: that would mask whatever failed the build."""
+    _seed(backend, "symlink")
+    with backend._restoring_pkg_include():
+        shutil.rmtree(backend._src_include)
+    assert _describe(backend._pkg_include) == "symlink:../include"
 
 
 def test_wheel_copy_is_real_and_header_filtered(backend):

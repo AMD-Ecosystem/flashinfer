@@ -114,7 +114,10 @@ def _restoring_pkg_include():
     finally:
         _clear(_pkg_include)
         if had_link:
-            _prepare_for_editable()
+            # Linked directly, not via _prepare_for_editable: that validates
+            # include/ and would raise out of this finally, masking the build's
+            # own error and leaving nothing behind.
+            _pkg_include.symlink_to(Path("..") / "include", target_is_directory=True)
 
 
 # --------------------------------------------------------------- PEP 517 hooks
