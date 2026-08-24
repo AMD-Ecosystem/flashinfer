@@ -30,50 +30,12 @@ from .utils import (
 )
 
 if IS_HIP:
-    from .arch_caps import capability_available
-    from .jit.core import logger as _jit_logger
 
     @functools.cache
     def get_page_aiter_module():
         from .jit.page import gen_page_aiter_module
 
         return gen_page_aiter_module().build_and_load()
-
-    @functools.cache
-    def _try_get_page_aiter_module():
-        """``get_page_aiter_module()`` or ``None``, caching the failure.
-
-        The shim links AITER's C++ symbols, so loading it can fail for reasons an
-        import probe cannot see: no hipcc, an unwritable cache dir, or an AITER
-        whose ``reshape_and_cache_flash`` signature no longer matches the forward
-        declaration. ``backend="auto"`` should not raise on those, so it routes
-        through here and falls back to the native kernel.
-
-        Caching the ``None`` matters: ``functools.cache`` does not memoize
-        exceptions, so a raising getter would retry the whole AITER rebuild on
-        every call.
-
-        ``MissingJITCacheError`` is the one exception, and is re-raised. It fires
-        only under ``FLASHINFER_DISABLE_JIT``, which ``README.md`` documents as
-        "fail loudly on missing kernels rather than trigger a build" — swallowing
-        it would silently defeat the flag a user set precisely to catch a
-        jit-cache packaging gap. It is also what ``tests/conftest.py`` turns into
-        a skip while recording the module for the cache build.
-        """
-        from .jit import MissingJITCacheError
-
-        try:
-            return get_page_aiter_module()
-        except MissingJITCacheError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - any build/link failure falls back
-            _jit_logger.warning(
-                "AITER paged-KV append unavailable (%s: %s); falling back to the "
-                "native HIP kernel. Pass backend='aiter' to see the full error.",
-                type(exc).__name__,
-                exc,
-            )
-            return None
 
     @functools.cache
     def _aiter_unit_scale(device: torch.device) -> torch.Tensor:
@@ -95,14 +57,20 @@ if IS_HIP:
         dtype: torch.dtype,
         kv_layout: str,
     ) -> str:
-        """Return 'aiter' when GPU + dtype + layout meet AITER's reshape_and_cache_flash constraints."""
-        if not capability_available(device, "append_paged_kv_cache", "aiter"):
-            return "native"
-        if not _aiter_kv_append_supported(dtype=dtype, kv_layout=kv_layout):
-            return "native"
-        if _try_get_page_aiter_module() is None:
-            return "native"
-        return "aiter"
+        """Always 'native': AITER's append is correct here but slower.
+
+        AITER's ``reshape_and_cache_flash`` sustains 2.86 TB/s against the native
+        kernel's 3.62 on identical work (gfx942, nnz=262144), so ``auto`` picks
+        native at every size measured. ``backend="aiter"`` still routes to the
+        shim, and :func:`_aiter_kv_append_supported` still gates that opt-in.
+
+        Deliberately not expressed in ``arch_caps``: that table answers whether a
+        backend *may* run, and ``require_capability`` consults the same rows on
+        the explicit path, so a row saying "unsupported" would both misstate the
+        facts and break ``backend="aiter"``.
+        """
+        del device, dtype, kv_layout  # signature kept; every input routes native
+        return "native"
 
     @register_custom_op(
         "flashinfer::append_paged_kv_cache_aiter",

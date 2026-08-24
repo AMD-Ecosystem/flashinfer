@@ -133,26 +133,21 @@ def test_append_paged_kv_cache_aiter_vs_native(
 
 
 @requires_aiter
-def test_append_paged_kv_cache_aiter_auto_routes_on_nhd_fp16():
-    """auto backend should pick aiter when device + dtype + layout match constraints."""
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("kv_layout", ["NHD", "HND"])
+def test_append_paged_kv_cache_auto_always_routes_native(dtype, kv_layout):
+    """auto picks native for every input, including the ones AITER supports.
+
+    AITER's reshape_and_cache_flash is correct but slower than the in-tree kernel
+    at every size measured on gfx942 (2.86 vs 3.62 TB/s), so the fp16/bf16 + NHD
+    combination it does support is routed native too. backend='aiter' remains the
+    way to reach it.
+    """
     from flashinfer.page import _auto_select_kv_append_backend
 
     device = torch.device("cuda:0")
     assert (
-        _auto_select_kv_append_backend(device, dtype=torch.float16, kv_layout="NHD")
-        == "aiter"
-    )
-    assert (
-        _auto_select_kv_append_backend(device, dtype=torch.bfloat16, kv_layout="NHD")
-        == "aiter"
-    )
-    # Non-AITER constraints fall back to native.
-    assert (
-        _auto_select_kv_append_backend(device, dtype=torch.float16, kv_layout="HND")
-        == "native"
-    )
-    assert (
-        _auto_select_kv_append_backend(device, dtype=torch.float32, kv_layout="NHD")
+        _auto_select_kv_append_backend(device, dtype=dtype, kv_layout=kv_layout)
         == "native"
     )
 
@@ -216,18 +211,13 @@ def test_append_paged_kv_cache_aiter_honors_current_stream():
 
 
 @requires_aiter
-def test_append_auto_falls_back_when_aiter_shim_fails_to_build(monkeypatch):
-    """backend='auto' falls back to native when the shim cannot be built.
+def test_append_auto_never_builds_the_aiter_shim(monkeypatch):
+    """'auto' routes to native without so much as loading the AITER module.
 
-    The shim links AITER's C++ symbols, so it can fail for reasons an import probe
-    cannot see (no hipcc, unwritable cache, AITER signature drift). 'auto' is the
-    default for every caller, including ones that never opted into AITER.
-
-    One deliberate carve-out: MissingJITCacheError is re-raised, not swallowed. It
-    fires only under FLASHINFER_DISABLE_JIT, which README.md documents as failing
-    loudly on missing kernels. Do not "fix" that re-raise to satisfy this test --
-    this test simulates a build failure with a plain RuntimeError and would pass
-    either way.
+    Routing is a static decision (AITER's append is slower), so 'auto' must not
+    pay AITER's build cost to discover that. Breaking get_page_aiter_module is
+    what makes this fail if the routing ever consults it again -- asserting only
+    on the returned string would not.
     """
     from flashinfer import page as page_mod
 
@@ -271,26 +261,18 @@ def test_append_auto_falls_back_when_aiter_shim_fails_to_build(monkeypatch):
     assert (k_ref != 0).any(), "reference append wrote nothing"
 
     def _boom():
-        raise RuntimeError("simulated AITER build/link failure")
+        raise AssertionError("auto must not load the AITER shim")
 
     monkeypatch.setattr(page_mod, "get_page_aiter_module", _boom)
-    # The finally below clears again so the simulated None never leaks. On a host
-    # where the shim genuinely cannot build, that discards a legitimate cached
-    # None and costs one extra failed build attempt in this worker.
-    page_mod._try_get_page_aiter_module.cache_clear()
-    try:
-        assert (
-            page_mod._auto_select_kv_append_backend(
-                device, dtype=dtype, kv_layout="NHD"
-            )
-            == "native"
-        )
-        k_cache, v_cache = _zeros()
-        _append((k_cache, v_cache), "auto")  # must not raise
-    finally:
-        page_mod._try_get_page_aiter_module.cache_clear()
 
-    # Assert the fallback actually appended; isfinite() on a zero cache would
+    assert (
+        page_mod._auto_select_kv_append_backend(device, dtype=dtype, kv_layout="NHD")
+        == "native"
+    )
+    k_cache, v_cache = _zeros()
+    _append((k_cache, v_cache), "auto")
+
+    # Assert the native path actually appended; isfinite() on a zero cache would
     # pass even if it silently no-oped.
     torch.testing.assert_close(k_cache, k_ref, rtol=0, atol=0)
     torch.testing.assert_close(v_cache, v_ref, rtol=0, atol=0)
