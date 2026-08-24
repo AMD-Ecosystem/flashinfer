@@ -30,7 +30,7 @@ mismatch to the user instead. Never guess the target.
 
 ```bash
 gh pr create --repo AMD-Ecosystem/flashinfer --base amd-integration \
-  --title "<title>" --body "$(cat /tmp/pr_body.md)"
+  --title "<title>" --body "$(cat tmp/pr/<branch>.md)"
 ```
 
 If the resolved owner of `--repo` is ever `flashinfer-ai`, abort. It is always
@@ -43,6 +43,8 @@ These are local config (not checked in) and must be redone per clone:
 ```bash
 git remote -v                        # origin should be AMD-Ecosystem/flashinfer; there must be NO flashinfer-ai remote
 gh repo set-default AMD-Ecosystem/flashinfer  # pin gh base repo so it does not fall back to the fork parent
+ex="$(git rev-parse --git-common-dir)/info/exclude"   # holds worktree roots and PR drafts
+grep -qxF '/tmp/' "$ex" || printf '/tmp/\n' >> "$ex"
 ```
 
 If a remote pointing at `flashinfer-ai/flashinfer` exists, remove it:
@@ -205,7 +207,7 @@ in doubt, hold the push and ask.
 gh api repos/AMD-Ecosystem/flashinfer/pulls/<number> --method PATCH --field body="<body>"
 
 # Or from a file
-gh api repos/AMD-Ecosystem/flashinfer/pulls/<number> --method PATCH --field body="$(cat /tmp/pr_body.md)"
+gh api repos/AMD-Ecosystem/flashinfer/pulls/<number> --method PATCH --field body="$(cat tmp/pr/<branch>.md)"
 ```
 
 Ask the user to confirm before running `git push` or `gh pr create` — these
@@ -314,6 +316,13 @@ Done = no unresolved Copilot threads remain, each carrying either a fix+SHA repl
 or a won't-fix rationale.
 
 ## PR Description
+
+**Draft it at `tmp/pr/<branch>.md` in the main checkout** — never `/tmp`, which
+is shared and has no remove access on these nodes. This relies on `/tmp/` being
+in the clone's `info/exclude` (see *One-time setup after a fresh clone*); that
+file lives in the git *common* dir, so one entry covers every linked worktree
+and the draft never shows up as untracked. If `git status` does show it, that
+setup step has not been run in this clone.
 
 - **Do not hard-wrap** the body to a fixed column. GitHub renders a single
   newline inside a paragraph as a `<br>`, so column-wrapped prose shows up as
