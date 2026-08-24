@@ -122,17 +122,13 @@ branch or checkout path — so every worktree shares one cache. Clear it with
 per-branch, when comparing kernel changes across branches.
 
 Exclude the worktree root **per-clone** rather than in a tracked ignore file, so
-it never appears as a diff against upstream. One run covers the whole clone,
-worktrees included:
+it never appears as a diff against upstream. This is the same `/tmp/` entry that
+hides PR drafts — run the snippet in *One-time setup after a fresh clone* once
+and it covers the whole clone, worktrees included.
 
-```bash
-ex="$(git rev-parse --git-common-dir)/info/exclude"
-grep -qxF '/tmp/' "$ex" || printf '/tmp/\n' >> "$ex"
-```
-
-Use `--git-common-dir`, not a literal `.git/info/exclude`: inside a linked
-worktree `.git` is a *file* pointing at the real git dir, so the literal path
-fails with `not a directory`.
+That snippet uses `--git-common-dir`, not a literal `.git/info/exclude`, because
+inside a linked worktree `.git` is a *file* pointing at the real git dir, so the
+literal path fails with `not a directory`.
 
 ### A fresh worktree is source-only
 
