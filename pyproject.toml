@@ -48,6 +48,8 @@ dev = [
     "pytest",
     "pytest-xdist",
     "pytest-rerunfailures",
+    # tests/rocm_tests/test_build_backend.py parses pyproject.toml; tomllib is 3.11+.
+    "tomli; python_version < '3.11'",
 ]
 
 [build-system]
