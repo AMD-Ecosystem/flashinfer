@@ -95,78 +95,47 @@ def test_refresh_waits_for_the_build_lock(lock_path):
     )
 
 
-def test_every_aiter_linked_generator_refreshes():
-    """Each gen_*_aiter_module must route its spec through refresh_aiter_jitspec.
+def test_every_generator_linking_aiter_refreshes_its_link_line():
+    """Every generator that links an AITER lib must refresh its build.ninja.
 
-    The tests above prove the helper works; nothing proved the generators call
-    it. page_aiter shipped without it and the whole suite stayed green, because
-    the symptom only appears after an arch or AITER-version change against an
-    already-cached module.
+    aiter_jitspec_flags() bakes an arch/version-specific -L and -rpath into the
+    link line, and JitSpec.build() writes build.ninja only when it is missing, so
+    a cached module keeps loading whichever AITER lib it first saw. page_aiter
+    shipped without the refresh and the suite stayed green.
 
-    Source inspection rather than execution: calling a generator runs
-    aiter_jitspec_flags(), which builds the AITER library for real.
-
-    Matched on the AST, not on text: a substring scan is satisfied by the
-    comment *explaining* the call, so it passes with the call removed.
+    The set is derived, not listed: calling aiter_jitspec_flags is the property
+    that creates the obligation. gen_batch_decode_aiter_module is correctly
+    excluded -- it dlopens AITER at runtime instead of linking it. Matched on the
+    AST, since a substring scan is satisfied by the comment explaining the call.
     """
     import ast
-    import inspect
-    import textwrap
-
-    from flashinfer.jit import activation, norm, page, rope
-
-    generators = [
-        activation.gen_silu_and_mul_aiter_module,
-        norm.gen_norm_aiter_module,
-        page.gen_page_aiter_module,
-        rope.gen_rope_aiter_module,
-    ]
-
-    def _calls_refresh(fn):
-        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
-        return any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "refresh_aiter_jitspec"
-            for node in ast.walk(tree)
-        )
-
-    missing = [
-        f"{fn.__module__}.{fn.__name__}" for fn in generators if not _calls_refresh(fn)
-    ]
-    assert not missing, (
-        "AITER-linked generators that do not refresh their link line, so a "
-        f"cached module keeps linking a stale AITER library: {missing}"
-    )
-
-
-def test_generator_list_covers_every_aiter_module():
-    """The list above must not silently fall behind a newly added shim."""
-    import pkgutil
+    import pathlib
 
     import flashinfer.jit as jit_pkg
 
-    found = set()
-    for mod in pkgutil.iter_modules(jit_pkg.__path__):
-        src_path = f"{jit_pkg.__path__[0]}/{mod.name}.py"
-        try:
-            with open(src_path) as fh:
-                src = fh.read()
-        except OSError:
-            continue
-        for line in src.splitlines():
-            if line.startswith("def gen_") and line.rstrip().endswith(
-                "_aiter_module() -> JitSpec:"
-            ):
-                found.add(f"flashinfer.jit.{mod.name}.{line[4:].split('(')[0]}")
+    def _calls(node, name):
+        return any(
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == name
+            for n in ast.walk(node)
+        )
 
-    covered = {
-        "flashinfer.jit.activation.gen_silu_and_mul_aiter_module",
-        "flashinfer.jit.norm.gen_norm_aiter_module",
-        "flashinfer.jit.page.gen_page_aiter_module",
-        "flashinfer.jit.rope.gen_rope_aiter_module",
-    }
-    assert found == covered, (
-        f"AITER generators not covered by the refresh test: {sorted(found - covered)}; "
-        f"listed but gone: {sorted(covered - found)}"
+    root = pathlib.Path(jit_pkg.__file__).parent
+    linkers, missing = [], []
+    for src in sorted(root.rglob("*.py")):
+        for node in ast.walk(ast.parse(src.read_text())):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if not _calls(node, "aiter_jitspec_flags"):
+                continue
+            qualified = f"{src.relative_to(root)}::{node.name}"
+            linkers.append(qualified)
+            if not _calls(node, "refresh_aiter_jitspec"):
+                missing.append(qualified)
+
+    assert linkers, "scan found no AITER-linking generators; the pattern has rotted"
+    assert not missing, (
+        "generators that link an AITER library without refreshing the link line, "
+        f"so a cached module keeps a stale rpath: {missing}"
     )
