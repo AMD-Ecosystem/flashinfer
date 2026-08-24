@@ -64,12 +64,6 @@ repos:
       - id: ruff-format
         types_or: [ python, pyi ]
 
-  - repo: https://github.com/cheshirekow/cmake-format-precommit
-    rev: v0.6.13
-    hooks:
-      - id: cmake-format
-        additional_dependencies: [pyyaml>=5.1]
-
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.45.0
     hooks:
