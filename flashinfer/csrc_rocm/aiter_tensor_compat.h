@@ -1,22 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// at::Tensor -> aiter_tensor_t adapter.
+// at::Tensor -> aiter_tensor_t adapter, for AITER's POD C++ API (0.1.16+).
 //
-// From 0.1.16 AITER's C++ API takes its own POD `aiter_tensor_t` instead of
-// `at::Tensor` (15 of 16 public headers migrated). Shims therefore have to
-// translate at the boundary.
-//
-// `aiter_tensor.h` is AITER's *real* header, and it is included deliberately
-// rather than vendored: the struct layout is the part that fails silently when
-// it drifts (see the mha_fwd_args incident), so taking it from AITER makes any
-// future layout change a compile error instead of wrong numbers. The header is
-// self-contained -- unlike rope.h and rmsnorm.h it pulls no pybind11, so it is
-// safe under FlashInfer's -DPy_LIMITED_API build.
+// Include AITER's real aiter_tensor.h, never a vendored copy: a layout change
+// must be a compile error, not wrong numbers. It is safe under
+// -DPy_LIMITED_API because it pulls no pybind11.
 #pragma once
 
 #include <ATen/ATen.h>
-
 #include <aiter_enum.h>
 #include <aiter_tensor.h>
 
@@ -30,6 +22,8 @@ inline AiterDtype to_aiter_dtype(at::ScalarType t) {
       return AITER_DTYPE_bf16;
     case at::kFloat:
       return AITER_DTYPE_fp32;
+    // OCP (gfx950) and FNUZ (gfx942) e4m3 differ in exponent bias and NaN
+    // encoding, but AITER exposes one fp8 enum; the arch picks the meaning.
     case at::kFloat8_e4m3fn:
     case at::kFloat8_e4m3fnuz:
       return AITER_DTYPE_fp8;

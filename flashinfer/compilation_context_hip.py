@@ -34,15 +34,9 @@ class CompilationContext:
         "-DFLASHINFER_ENABLE_FP8_E4M3",
         "-DFLASHINFER_ENABLE_FP8_E5M2",
         "-DHIP_ENABLE_WARP_SYNC_BUILTINS=1",
-        # Required from torch 2.12 on. The c10::hip / at::hip compatibility
-        # namespaces in c10/hip/HIPStream.h ("hipify v2 backward compat in
-        # external projects") are wrapped in `#ifdef USE_ROCM`. Without this,
-        # c10::hip::getCurrentHIPStream() -- used by every *_aiter.cu shim --
-        # fails to resolve, while the namespace itself still exists via other
-        # headers, so the error reads "no member named ... in namespace
-        # 'c10::hip'" rather than a missing include. Earlier torch releases
-        # declared the block unconditionally, which is why this was not needed
-        # before. AITER's own builds already pass -DUSE_ROCM=1.
+        # Required from torch 2.12 on: c10/hip/HIPStream.h gates the c10::hip
+        # compat namespace behind `#ifdef USE_ROCM`, so without this every
+        # *_aiter.cu shim fails on c10::hip::getCurrentHIPStream().
         "-DUSE_ROCM=1",
     ]
 
