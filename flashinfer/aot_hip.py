@@ -235,8 +235,19 @@ def compile_and_package_modules(
     # Constructing the context first also means a failed validation leaves
     # FLASHINFER_ROCM_ARCH_LIST as it found it, rather than exporting a list the
     # build then rejected.
+    #
+    # Read the order from `arch_flags`, not `TARGET_ROCM_ARCHS`. The latter is a
+    # `set` (hip_utils: `arch_set = set(requested_archs)`), so the caller's order
+    # is already gone by the time it gets here, and imposing `sorted()` is not
+    # order-neutral: `resolve_aiter_build_arch()` takes `env_archs[0]` when no
+    # device is visible, so republishing "gfx950,gfx942" as "gfx942,gfx950"
+    # silently builds the shim for the architecture the caller listed *second*.
+    # `arch_flags` is built by iterating `requested_archs` in order, so it still
+    # carries the preference.
     compilation_context = CompilationContext()
-    rocm_arch_list = ",".join(sorted(compilation_context.TARGET_ROCM_ARCHS))
+    rocm_arch_list = ",".join(
+        flag.removeprefix("--offload-arch=") for flag in compilation_context.arch_flags
+    )
     os.environ["FLASHINFER_ROCM_ARCH_LIST"] = rocm_arch_list
     if verbose:
         print(f"Target ROCm architectures: {rocm_arch_list}")

@@ -209,6 +209,7 @@ def test_publishes_the_validated_list_not_the_requested_one(monkeypatch):
     class _FilteringContext:
         """Accepts the request, targets a subset -- what a filter looks like."""
 
+        arch_flags = ["--offload-arch=gfx942"]
         TARGET_ROCM_ARCHS = {"gfx942"}
 
         def __init__(self):
@@ -233,6 +234,50 @@ def test_publishes_the_validated_list_not_the_requested_one(monkeypatch):
     )
 
     assert os.environ["FLASHINFER_ROCM_ARCH_LIST"] == "gfx942"
+
+
+def test_publishing_preserves_the_requested_order(monkeypatch):
+    """The caller's first choice must stay first.
+
+    ``resolve_aiter_build_arch()`` takes ``env_archs[0]`` when no device is
+    visible, so the order of the published list decides which architecture the
+    single-arch AITER shim is built for. ``TARGET_ROCM_ARCHS`` is a ``set`` --
+    ``arch_set = set(requested_archs)`` in hip_utils -- so reading order from it
+    is impossible, and sorting it is not order-neutral: it would turn a request
+    for "gfx950,gfx942" into a shim built for gfx942. ``arch_flags`` iterates
+    ``requested_archs`` in order and is the only ordered survivor.
+    """
+    import flashinfer.aot_hip as aot_hip
+
+    monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "gfx950,gfx942")
+
+    class _OrderedContext:
+        # Deliberately not alphabetical: sorted() would reverse this.
+        arch_flags = ["--offload-arch=gfx950", "--offload-arch=gfx942"]
+        TARGET_ROCM_ARCHS = {"gfx942", "gfx950"}
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(
+        "flashinfer.compilation_context_hip.CompilationContext", _OrderedContext
+    )
+
+    aot_hip.compile_and_package_modules(
+        out_dir=None,
+        build_dir=Path(tempfile.mkdtemp()),
+        project_root=Path(__file__).parent.parent,
+        config={
+            "fa2_head_dim": [(128, 128)],
+            "f16_dtype": [torch.float16],
+            "use_sliding_window": [False],
+            "use_logits_soft_cap": [False],
+        },
+        verbose=False,
+        skip_prebuilt=True,
+    )
+
+    assert os.environ["FLASHINFER_ROCM_ARCH_LIST"] == "gfx950,gfx942"
 
 
 def test_module_naming_convention():
