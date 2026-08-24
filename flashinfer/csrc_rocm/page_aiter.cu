@@ -1,16 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// PyTorch entry point for AITER's reshape_and_cache_flash. FlashInfer links the
-// symbol-visible AITER module (see flashinfer/jit/aiter_source.py) and calls the
-// kernel directly, bypassing AITER's per-call @compile_ops Python dispatch and its
-// lazy build-on-first-call. (It does not avoid `import aiter` altogether — the
-// backend-availability probe in aiter_utils still imports the package.)
-//
-// AITER addresses the paged KV cache with vLLM-style absolute slot indices, while
-// FlashInfer describes an append with (batch_indices, positions) plus a page table.
-// Translating between them used to be seven tensor ops on the Python side; the
-// kernel below does it in one launch. Measured 102 us -> 11 us on gfx942.
+// PyTorch entry point for AITER's reshape_and_cache_flash, called against the
+// symbol-visible AITER module rather than through AITER's per-call Python
+// dispatch. build_slot_mapping_kernel translates FlashInfer's (batch_indices,
+// positions) + page table into AITER's vLLM-style absolute slot indices.
 
 #include <ATen/ATen.h>
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
@@ -19,14 +13,9 @@
 
 #include <string>
 
-// AITER's public header (cache.h) pulls in <torch/extension.h> → full pybind11,
-// which clashes with FlashInfer's -DPy_LIMITED_API. torch::Tensor is at::Tensor,
-// so forward-declare the entry point; the linker resolves it against the
-// symbol-visible AITER .so. Unlike the norm/rope/activation entry points, this one
-// lives in namespace aiter (verified against the built module's symbol table).
-//
-// The kernel takes its stream from at::hip::getCurrentHIPStream() internally, so
-// the caller only has to set the device.
+// Forward-declared rather than included: AITER's cache.h pulls in
+// <torch/extension.h>, which clashes with -DPy_LIMITED_API. Unlike the
+// norm/rope/activation entry points this one lives in namespace aiter.
 namespace aiter {
 void reshape_and_cache_flash(at::Tensor& key, at::Tensor& value, at::Tensor& key_cache,
                              at::Tensor& value_cache, at::Tensor& slot_mapping,
@@ -59,10 +48,7 @@ void append_paged_kv_cache_aiter(at::Tensor append_key, at::Tensor append_value,
                                  at::Tensor paged_k_cache, at::Tensor paged_v_cache,
                                  at::Tensor kv_indices, at::Tensor kv_indptr, at::Tensor k_scale,
                                  at::Tensor v_scale) {
-  // Before the guard: an all-CPU call satisfies the same-device check below
-  // (every tensor agrees), and the guard itself then fails an INTERNAL ASSERT
-  // telling the user to report a PyTorch bug. This turns that into a real
-  // message; the shim is a directly-callable torch op, so it is reachable.
+  // Before the guard, which otherwise fails an INTERNAL ASSERT on CPU tensors.
   TORCH_CHECK(paged_k_cache.is_cuda(), "paged_k_cache must be on a GPU, got ",
               paged_k_cache.device());
 
@@ -71,40 +57,38 @@ void append_paged_kv_cache_aiter(at::Tensor append_key, at::Tensor append_value,
   TORCH_CHECK(paged_k_cache.dim() == 4,
               "paged_k_cache must be [num_pages, page_size, num_kv_heads, head_dim] (NHD), got ",
               paged_k_cache.dim(), " dims");
-  // Both caches are written through slot indices derived from paged_k_cache's
-  // page_size, so a differently-shaped value cache is scattered out of bounds.
-  // The dtype must match too: strides are counted in elements, so a narrower
-  // v-cache has identical strides and slips past AITER's own stride check while
-  // the kernel writes wider elements into it.
+  // Shape and dtype: the slot indices come from paged_k_cache, so a differently
+  // shaped v-cache scatters out of bounds. Dtype matters because strides count
+  // elements, so a narrower v-cache has the identical stride tuple.
   TORCH_CHECK(paged_v_cache.sizes() == paged_k_cache.sizes() &&
                   paged_v_cache.scalar_type() == paged_k_cache.scalar_type(),
               "paged_k_cache and paged_v_cache must have the same shape and dtype, got ",
               paged_k_cache.sizes(), " ", paged_k_cache.scalar_type(), " vs ",
               paged_v_cache.sizes(), " ", paged_v_cache.scalar_type());
+  // AITER indexes both source and cache as flat contiguous blocks and honours
+  // only stride(0), so any inner-stride difference is a silent wrong write.
+  // page.cu passes full stride arrays instead and handles these correctly.
+  TORCH_CHECK(append_key.is_contiguous() && append_value.is_contiguous() &&
+                  paged_k_cache.is_contiguous() && paged_v_cache.is_contiguous(),
+              "backend='aiter' requires contiguous append_key/append_value and caches; got "
+              "contiguity ",
+              append_key.is_contiguous(), "/", append_value.is_contiguous(), "/",
+              paged_k_cache.is_contiguous(), "/", paged_v_cache.is_contiguous(),
+              ". Use backend='native', which handles strided inputs.");
   TORCH_CHECK(batch_indices.scalar_type() == at::kInt && positions.scalar_type() == at::kInt &&
                   kv_indices.scalar_type() == at::kInt && kv_indptr.scalar_type() == at::kInt,
               "batch_indices/positions/kv_indices/kv_indptr must be int32");
-  // build_slot_mapping_kernel indexes kv_indptr by batch id and kv_indices by
-  // the resulting offset, so a wrong-rank page table reads out of bounds before
-  // AITER is ever reached; page.cu rejects the same ranks via CHECK_DIM.
-  // Element values stay unchecked here, as they are in the native kernel --
-  // validating them needs a device read, i.e. a sync on the append hot path.
-  // numel() >= 2 is this shim's own floor, not parity: page.cu accepts a
-  // length-1 kv_indptr, but only alongside batch_size == 0, which implies
-  // nnz == 0 and skips the launch below entirely.
+  // Rank only, for parity with page.cu's CHECK_DIM. Element values stay
+  // unchecked, as they are there: validating them needs a device read.
   TORCH_CHECK(batch_indices.dim() == 1 && positions.dim() == 1 && kv_indices.dim() == 1 &&
                   kv_indptr.dim() == 1,
               "batch_indices/positions/kv_indices/kv_indptr must be 1-D, got ", batch_indices.dim(),
               "/", positions.dim(), "/", kv_indices.dim(), "/", kv_indptr.dim());
-  TORCH_CHECK(kv_indptr.numel() >= 2, "kv_indptr must have at least 2 entries, got ",
-              kv_indptr.numel());
   TORCH_CHECK(batch_indices.numel() == positions.numel(),
               "batch_indices and positions must have the same length, got ", batch_indices.numel(),
               " vs ", positions.numel());
-  // AITER derives num_heads/head_size from append_key's trailing dims and indexes
-  // it by slot_mapping position, so a wrong rank, head count, or head_dim copies
-  // the wrong element count per slot instead of erroring. csrc_rocm/page.cu
-  // enforces the shape checks; the length check against nnz is extra.
+  // AITER derives num_heads/head_size from append_key's trailing dims, so a wrong
+  // rank or head_dim copies the wrong element count per slot instead of erroring.
   TORCH_CHECK(append_key.dim() == 3 && append_value.dim() == 3,
               "append_key/append_value must be [nnz, num_kv_heads, head_dim], got ",
               append_key.dim(), " and ", append_value.dim(), " dims");
@@ -120,21 +104,16 @@ void append_paged_kv_cache_aiter(at::Tensor append_key, at::Tensor append_value,
   TORCH_CHECK(append_key.size(2) == paged_k_cache.size(3),
               "append_key.size(2) must equal head_dim, got ", append_key.size(2), " vs ",
               paged_k_cache.size(3));
-  // AITER dispatches reshape_and_cache_flash on the *source* dtype and casts the
-  // cache pointer to it, so a wider append_key writes past the end of a narrower
-  // cache. The Python backend gate only inspects paged_k_cache, and csrc_rocm's
-  // native kernel dispatches on the cache instead, so neither catches this.
+  // AITER dispatches on the *source* dtype and casts the cache pointer to it, so
+  // a wider append_key writes past the end of a narrower cache.
   TORCH_CHECK(append_key.scalar_type() == paged_k_cache.scalar_type() &&
                   append_value.scalar_type() == paged_k_cache.scalar_type(),
               "append_key/append_value must have the same dtype as the caches, got ",
               append_key.scalar_type(), " and ", append_value.scalar_type(), " vs ",
               paged_k_cache.scalar_type());
 
-  // The kernel dereferences these as raw device pointers, so a tensor on the wrong
-  // device faults (or, with peer access, silently yields wrong indices) instead of
-  // erroring. The torch ops this shim replaced raised a device-mismatch error.
-  // k_scale/v_scale are included because AITER dereferences them too, and this is
-  // a public torch op that callers can reach directly.
+  // Raw device pointers: a tensor on the wrong device faults, or silently yields
+  // wrong indices under peer access. k_scale/v_scale included, AITER reads them.
   const at::Device device = paged_k_cache.device();
   TORCH_CHECK(batch_indices.device() == device && positions.device() == device &&
                   kv_indices.device() == device && kv_indptr.device() == device &&
@@ -147,38 +126,35 @@ void append_paged_kv_cache_aiter(at::Tensor append_key, at::Tensor append_value,
   const int64_t page_size = paged_k_cache.size(1);
   TORCH_CHECK(page_size > 0, "page_size must be positive, got ", page_size);
 
+  // AITER's host function does dim3 grid(key.size(0)) with no zero guard, so an
+  // empty append would launch a zero-block grid and leave the resulting error
+  // pending for an unrelated call to report.
+  if (nnz == 0) return;
+
+  // Bind the contiguous copies to named locals: as temporaries they would be
+  // destroyed at the end of the launch statement, while the kernel is pending.
+  at::Tensor batch_indices_c = batch_indices.contiguous();
+  at::Tensor positions_c = positions.contiguous();
+  at::Tensor kv_indices_c = kv_indices.contiguous();
+  at::Tensor kv_indptr_c = kv_indptr.contiguous();
+
   at::Tensor slot_mapping = at::empty({nnz}, paged_k_cache.options().dtype(at::kLong));
 
-  if (nnz > 0) {
-    // Bind the contiguous copies to named locals: as temporaries they would be
-    // destroyed at the end of the launch statement, while the kernel is still
-    // pending.
-    at::Tensor batch_indices_c = batch_indices.contiguous();
-    at::Tensor positions_c = positions.contiguous();
-    at::Tensor kv_indices_c = kv_indices.contiguous();
-    at::Tensor kv_indptr_c = kv_indptr.contiguous();
+  // Indices are small and read once; a plain 1-D grid is enough.
+  constexpr int kThreads = 256;
+  const int blocks = static_cast<int>((nnz + kThreads - 1) / kThreads);
+  const hipStream_t stream = c10::hip::getCurrentHIPStream();
+  hipLaunchKernelGGL(build_slot_mapping_kernel, dim3(blocks), dim3(kThreads), 0, stream,
+                     batch_indices_c.data_ptr<int32_t>(), positions_c.data_ptr<int32_t>(),
+                     kv_indices_c.data_ptr<int32_t>(), kv_indptr_c.data_ptr<int32_t>(),
+                     slot_mapping.data_ptr<int64_t>(), nnz, static_cast<int32_t>(page_size));
+  // Launch-configuration failures only; an async fault surfaces at the next
+  // sync. Without this the scatter below would run on an uninitialized mapping.
+  const hipError_t err = hipGetLastError();
+  TORCH_CHECK(err == hipSuccess,
+              "build_slot_mapping_kernel launch failed: ", hipGetErrorString(err));
 
-    // Indices are small and read once; a plain 1-D grid is enough.
-    constexpr int kThreads = 256;
-    const int blocks = static_cast<int>((nnz + kThreads - 1) / kThreads);
-    const hipStream_t stream = c10::hip::getCurrentHIPStream();
-    // Drain any error left by an earlier HIP call on this thread, so the check
-    // after the launch cannot attribute someone else's failure to this kernel.
-    (void)hipGetLastError();
-    hipLaunchKernelGGL(build_slot_mapping_kernel, dim3(blocks), dim3(kThreads), 0, stream,
-                       batch_indices_c.data_ptr<int32_t>(), positions_c.data_ptr<int32_t>(),
-                       kv_indices_c.data_ptr<int32_t>(), kv_indptr_c.data_ptr<int32_t>(),
-                       slot_mapping.data_ptr<int64_t>(), nnz, static_cast<int32_t>(page_size));
-    // Catches launch-configuration failures only (an async fault inside the
-    // kernel surfaces at the next sync). Without it, a rejected launch leaves
-    // slot_mapping uninitialized and the scatter below runs anyway.
-    const hipError_t err = hipGetLastError();
-    TORCH_CHECK(err == hipSuccess,
-                "build_slot_mapping_kernel launch failed: ", hipGetErrorString(err));
-  }
-
-  // "auto" selects the no-quantization path, for which the scales are ignored;
-  // they are still required arguments.
+  // "auto" selects the no-quantization path; the scales are ignored but required.
   const std::string kv_cache_dtype = "auto";
   aiter::reshape_and_cache_flash(append_key, append_value, paged_k_cache, paged_v_cache,
                                  slot_mapping, kv_cache_dtype, k_scale, v_scale);

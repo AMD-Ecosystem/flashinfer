@@ -11,10 +11,20 @@ import pytest
 import torch
 
 import flashinfer
+from flashinfer.aiter_utils import is_aiter_supported
 from tests.test_helpers.test_helpers import requires_aiter
 from flashinfer.jit.core import logger
 
 logger.setLevel(logging.ERROR)
+
+# @requires_aiter was this module's only GPU/arch gate until two routing tests
+# dropped it (they must run without the AITER package). This keeps the arch gate
+# for the whole file; the routing tests still do not require aiter to be
+# importable.
+pytestmark = pytest.mark.skipif(
+    not torch.cuda.is_available() or not is_aiter_supported(torch.device("cuda:0")),
+    reason="requires a gfx942/gfx950 GPU",
+)
 
 
 def _build_append_inputs(append_lens, page_size, num_kv_heads, head_dim, dtype, device):
@@ -202,6 +212,126 @@ def test_append_explicit_aiter_accepts_int64_indices():
     assert (k32 != 0).any(), "the int32 run wrote nothing"
     torch.testing.assert_close(k64, k32, rtol=0, atol=0)
     torch.testing.assert_close(v64, v32, rtol=0, atol=0)
+
+
+@requires_aiter
+def test_append_aiter_rejects_noncontiguous_inputs():
+    """A fused KV projection yields non-contiguous halves; AITER cannot take them.
+
+    AITER indexes source and cache as flat contiguous blocks and honours only
+    stride(0), so a strided append_key writes the wrong bytes for every head past
+    the first -- silently. The native kernel is passed full stride arrays and
+    handles the same input correctly, so the shim must refuse rather than corrupt.
+    """
+    device = torch.device("cuda:0")
+    dtype = torch.bfloat16
+    nnz, num_kv_heads, head_dim, page_size, num_pages = 8, 4, 64, 16, 4
+
+    torch.manual_seed(0xC0FFEE)
+    fused = torch.randn(nnz, num_kv_heads, 2 * head_dim, dtype=dtype, device=device)
+    k, v = fused[..., :head_dim], fused[..., head_dim:]
+    assert not k.is_contiguous()
+
+    indptr = torch.tensor([0, nnz], dtype=torch.int32, device=device)
+    seq_lens = torch.tensor([nnz], dtype=torch.int32, device=device)
+    batch_indices, positions = flashinfer.get_batch_indices_positions(
+        indptr, seq_lens, nnz
+    )
+    kv_indptr = torch.tensor([0, num_pages], dtype=torch.int32, device=device)
+    kv_indices = torch.arange(num_pages, dtype=torch.int32, device=device)
+    kv_last_page_len = torch.tensor([nnz], dtype=torch.int32, device=device)
+
+    def _caches():
+        c = torch.zeros(
+            num_pages, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
+        )
+        return c, torch.zeros_like(c)
+
+    # native accepts strided input and is the reference.
+    k_native, v_native = _caches()
+    flashinfer.append_paged_kv_cache(
+        k,
+        v,
+        batch_indices,
+        positions,
+        (k_native, v_native),
+        kv_indices,
+        kv_indptr,
+        kv_last_page_len,
+        backend="native",
+    )
+    assert (k_native != 0).any(), "reference append wrote nothing"
+
+    with pytest.raises(RuntimeError, match="contiguous"):
+        flashinfer.append_paged_kv_cache(
+            k,
+            v,
+            batch_indices,
+            positions,
+            _caches(),
+            kv_indices,
+            kv_indptr,
+            kv_last_page_len,
+            backend="aiter",
+        )
+
+    # Made contiguous, aiter must agree with native bit for bit.
+    k_aiter, v_aiter = _caches()
+    flashinfer.append_paged_kv_cache(
+        k.contiguous(),
+        v.contiguous(),
+        batch_indices,
+        positions,
+        (k_aiter, v_aiter),
+        kv_indices,
+        kv_indptr,
+        kv_last_page_len,
+        backend="aiter",
+    )
+    torch.testing.assert_close(k_aiter, k_native, rtol=0, atol=0)
+    torch.testing.assert_close(v_aiter, v_native, rtol=0, atol=0)
+
+
+@requires_aiter
+def test_append_empty_batch_is_a_noop_under_aiter():
+    """An empty append step is a no-op, not a launch failure.
+
+    A scheduler that drains to zero requests issues this routinely. AITER's host
+    function does dim3 grid(key.size(0)) with no zero guard, so the shim returns
+    before dispatching.
+
+    backend='native' is deliberately not exercised: it raises
+    hipErrorInvalidConfiguration for the same input, because
+    include/flashinfer/attention/generic/page.cuh:398 computes nblks(0). That is
+    upstream CUDA code this port does not modify, so the shim is simply better
+    here rather than at parity.
+    """
+    device = torch.device("cuda:0")
+    dtype = torch.bfloat16
+    num_kv_heads, head_dim, page_size, num_pages = 4, 64, 16, 4
+
+    empty_i32 = torch.empty(0, dtype=torch.int32, device=device)
+    k = torch.empty(0, num_kv_heads, head_dim, dtype=dtype, device=device)
+    v = torch.empty_like(k)
+    kv_indptr = torch.tensor([0], dtype=torch.int32, device=device)
+
+    kc = torch.zeros(
+        num_pages, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
+    )
+    vc = torch.zeros_like(kc)
+    flashinfer.append_paged_kv_cache(
+        k,
+        v,
+        empty_i32,
+        empty_i32,
+        (kc, vc),
+        empty_i32,
+        kv_indptr,
+        empty_i32,
+        backend="aiter",
+    )
+    torch.cuda.synchronize()  # a deferred launch failure would surface here
+    assert not bool(kc.any().item()), "empty append wrote to the cache"
 
 
 @requires_aiter
