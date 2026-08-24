@@ -65,6 +65,7 @@ from pathlib import Path
 import torch
 
 import flashinfer
+from flashinfer.aiter_utils import is_aiter_supported
 from flashinfer.jit.core import logger as _jit_logger
 
 # Suppress routine JIT INFO/DEBUG output; WARNING still surfaces compile errors.
@@ -338,8 +339,14 @@ def _make_pool_config(pool_pages, batch, kv_len, num_heads):
 @torch.inference_mode()
 def _make_configs() -> list[KernelConfig]:
     device = torch.device("cuda:0")
-    if not flashinfer.aiter_utils.is_aiter_supported(device):
-        arch = torch.cuda.get_device_properties(device).gcnArchName
+    if not is_aiter_supported(device):
+        # is_aiter_supported also returns False on a CUDA build and with no
+        # visible GPU, and gcnArchName does not exist in either case -- so the
+        # lookup would raise in exactly the situations this message is for.
+        try:
+            arch = torch.cuda.get_device_properties(device).gcnArchName
+        except Exception:
+            arch = "unknown"
         print(
             f"AITER MLA requires gfx942/gfx950; this device is {arch!r}. Nothing to run."
         )

@@ -468,6 +468,20 @@ def test_append_aiter_shim_rejects_mismatched_device_shape_dtype_and_length():
     mod = flashinfer.page.get_page_aiter_module()
     unit = flashinfer.page._aiter_unit_scale(device)
 
+    with pytest.raises(RuntimeError, match="must be on a GPU"):
+        mod.append_paged_kv_cache_aiter(
+            k.cpu(),
+            v.cpu(),
+            batch_indices.cpu(),
+            positions.cpu(),
+            k_cache.cpu(),
+            v_cache.cpu(),
+            kv_indices.cpu(),
+            kv_indptr.cpu(),
+            unit.cpu(),
+            unit.cpu(),
+        )
+
     with pytest.raises(RuntimeError, match="same device"):
         mod.append_paged_kv_cache_aiter(
             k,

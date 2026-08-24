@@ -59,6 +59,13 @@ void append_paged_kv_cache_aiter(at::Tensor append_key, at::Tensor append_value,
                                  at::Tensor paged_k_cache, at::Tensor paged_v_cache,
                                  at::Tensor kv_indices, at::Tensor kv_indptr, at::Tensor k_scale,
                                  at::Tensor v_scale) {
+  // Before the guard: an all-CPU call satisfies the same-device check below
+  // (every tensor agrees), and the guard itself then fails an INTERNAL ASSERT
+  // telling the user to report a PyTorch bug. This turns that into a real
+  // message; the shim is a directly-callable torch op, so it is reachable.
+  TORCH_CHECK(paged_k_cache.is_cuda(), "paged_k_cache must be on a GPU, got ",
+              paged_k_cache.device());
+
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(paged_k_cache.device());
 
   TORCH_CHECK(paged_k_cache.dim() == 4,
