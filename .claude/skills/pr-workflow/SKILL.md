@@ -324,10 +324,15 @@ relative `tmp/pr/...`, which resolves wrong from any subdirectory. `tmp/pr/`
 does not exist in a fresh clone or worktree, so create it as you go:
 
 ```bash
-draft="$(git rev-parse --show-toplevel)/tmp/pr/$(git branch --show-current).md"
+branch=$(git branch --show-current)   # empty on a detached HEAD
+draft="$(git rev-parse --show-toplevel)/tmp/pr/${branch:-detached-$(git rev-parse --short HEAD)}.md"
 mkdir -p "$(dirname "$draft")"
 # write the body to "$draft", then pass it as --body-file "$draft"
 ```
+
+A detached HEAD is an abort condition for the PR itself (see above); the
+fallback name only keeps the snippet from producing `tmp/pr/.md` if you run it
+before noticing.
 
 Never the **system** `/tmp`: it is shared, and there is no remove access to it
 on these nodes, so drafts left there cannot be cleaned up. Note the two are
