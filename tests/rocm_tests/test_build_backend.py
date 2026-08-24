@@ -13,6 +13,7 @@ in, and ``tests/rocm_tests`` is the only directory ``testpaths`` covers.
 
 import importlib.util
 import shutil
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -138,3 +139,73 @@ def test_find_patterns_exclude_sibling_projects():
         assert not any(fnmatch(sibling, p) for p in patterns), sibling
     for wanted in ("flashinfer", "flashinfer.jit", "flashinfer.jit.attention"):
         assert any(fnmatch(wanted, p) for p in patterns), wanted
+
+
+# --------------------------------------------------------- artifact integration
+
+
+def _isolated_project(dest):
+    """Copy the source layout a build needs into ``dest``, without .git."""
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "pyproject.toml",
+        "MANIFEST.in",
+        "build_backend.py",
+        "build_utils.py",
+        "LICENSE",
+        "NOTICE",
+        "README.md",
+    ):
+        shutil.copy2(_REPO_ROOT / name, dest / name)
+    shutil.copytree(_REPO_ROOT / "include", dest / "include")
+    shutil.copytree(
+        _REPO_ROOT / "flashinfer",
+        dest / "flashinfer",
+        symlinks=True,
+        ignore=shutil.ignore_patterns("__pycache__", "include"),
+    )
+    # The sibling project roots must be present or the packages.find assertion
+    # below is vacuous — an unanchored glob is exactly what swept them in.
+    for sibling in ("flashinfer-cubin", "flashinfer-jit-cache"):
+        pkg = sibling.replace("-", "_")
+        (dest / sibling / pkg).mkdir(parents=True)
+        (dest / sibling / pkg / "__init__.py").write_text("")
+        (dest / sibling / "pyproject.toml").write_text("")
+    return dest
+
+
+def test_wheel_carries_the_paths_the_jit_resolves(tmp_path, monkeypatch):
+    """Assert on the artifact: the helpers above do not prove what setuptools ships.
+
+    csrc_rocm reaches the wheel through both package-data and MANIFEST.in, so
+    the counts here catch losing it, not which of the two carried it.
+    """
+    build = pytest.importorskip("build")
+    project = _isolated_project(tmp_path / "src")
+    monkeypatch.setenv("SETUPTOOLS_SCM_PRETEND_VERSION", "0.0.1")
+
+    out = tmp_path / "dist"
+    # No isolation: build deps are already present, and this must not hit the network.
+    name = build.ProjectBuilder(project).build("wheel", str(out))
+
+    with zipfile.ZipFile(name) as z:
+        names = z.namelist()
+        top = z.read(next(f for f in names if f.endswith("top_level.txt"))).decode()
+
+    shipped = {f for f in names if f.startswith("flashinfer/include/")}
+    for suffix in (".cuh", ".h", ".hpp"):
+        assert any(f.endswith(suffix) for f in shipped), suffix
+    assert len(shipped) == sum(
+        1
+        for f in (_REPO_ROOT / "include").rglob("*")
+        if f.suffix in {".cuh", ".h", ".hpp"}
+    )
+    csrc = {f for f in names if f.startswith("flashinfer/csrc_rocm/")}
+    assert len(csrc) == sum(
+        1
+        for f in (_REPO_ROOT / "flashinfer" / "csrc_rocm").rglob("*")
+        if f.suffix in {".cu", ".cc", ".h", ".jinja"}
+    )
+    # The sibling projects leaked in once via an unanchored packages.find glob.
+    assert top.split() == ["flashinfer"], top
+    assert not [f for f in names if f.startswith(("flashinfer-", "amd-flashinfer-"))]
