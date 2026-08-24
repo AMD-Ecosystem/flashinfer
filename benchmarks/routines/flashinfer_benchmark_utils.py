@@ -1,5 +1,7 @@
 import torch
 
+from flashinfer.arch_caps import capability_available, normalize_arch
+from flashinfer.device_utils import IS_HIP
 from flashinfer.testing.utils import set_seed
 from flashinfer.utils import get_compute_capability
 
@@ -291,15 +293,49 @@ routine_cc_to_supported_backends = {
 }
 
 
+# Benchmark routine -> the CAPABILITIES op key in flashinfer/arch_caps.py.
+# Deriving the ROCm backend list from that table rather than restating it keeps
+# this in step with the arch-support matrix its pre-commit hook guards.
+# BatchMLAPagedAttentionWrapper maps to op "mla", but is deliberately absent
+# until the mla_rocm ctor/run() divergence from the CUDA wrapper is resolved.
+_ROCM_ROUTINE_TO_CAP_OP = {
+    "BatchDecodeWithPagedKVCacheWrapper": "batch_decode",
+    "BatchPrefillWithPagedKVCacheWrapper": "batch_prefill",
+    "BatchPrefillWithRaggedKVCacheWrapper": "batch_prefill",
+}
+
+
+def get_device_arch(device):
+    """Normalized gfx architecture of ``device``, e.g. ``"gfx950"``."""
+    return normalize_arch(torch.cuda.get_device_properties(device).gcnArchName)
+
+
+def rocm_supported_backends(routine, device):
+    """Backends this harness can run for ``routine`` on a ROCm ``device``.
+
+    "fa2" is the harness's name for the in-tree HIP kernel -- the same backend
+    arch_caps calls "hip" and declares as the AITER rows' ``fallback``.
+    """
+    op = _ROCM_ROUTINE_TO_CAP_OP.get(routine)
+    if op is None:
+        return []
+    return ["fa2"] if capability_available(device, op, "hip") else []
+
+
 def filter_backends_by_compute_capability(backends, routine, device):
     # FlashInfer currently does not have an isSupported() function that checks support.
     # WAR: Use helper function to check support.
-    major, minor = get_compute_capability(device)
-    compute_capability = f"{major}.{minor}"
+    if IS_HIP:
+        # gfx942/gfx950 report compute capability 9.4/9.5, which match no entry
+        # in the NVIDIA table -- every backend would be stripped, including fa2.
+        target = get_device_arch(device)
+        supported_backends = rocm_supported_backends(routine, device)
+    else:
+        major, minor = get_compute_capability(device)
+        target = f"{major}.{minor}"
+        # If the compute capability is not supported, return an empty list.
+        supported_backends = routine_cc_to_supported_backends[routine].get(target, [])
 
-    # If the compute capability is not supported, return an empty list.
-    cc_to_supported_backends = routine_cc_to_supported_backends[routine]
-    supported_backends = cc_to_supported_backends.get(compute_capability, [])
     backends_to_remove = []
     for backend in backends:
         if backend not in supported_backends:
@@ -307,6 +343,6 @@ def filter_backends_by_compute_capability(backends, routine, device):
     for backend in backends_to_remove:
         backends.remove(backend)
         print(
-            f"[WARNING] {backend} for routine {routine} is not supported on compute capability {compute_capability}. Skipping."
+            f"[WARNING] {backend} for routine {routine} is not supported on {target}. Skipping."
         )
     return backends
