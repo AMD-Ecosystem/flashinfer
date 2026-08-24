@@ -13,6 +13,10 @@ graft include
 # build from this sdist imports it.
 include build_backend.py
 
+# Not used by the root backend: flashinfer-cubin and flashinfer-jit-cache
+# import get_git_version from it at module load.
+include build_utils.py
+
 # setuptools-scm cannot derive a version outside a git checkout, so the
 # generated version module has to travel with the tarball.
 include flashinfer/_version.py
