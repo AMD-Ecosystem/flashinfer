@@ -23,7 +23,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def _load_backend():
     spec = importlib.util.spec_from_file_location(
-        "_fi_build_backend", _REPO_ROOT / "build_backend.py"
+        "_fi_build_backend_rocm", _REPO_ROOT / "build_backend_rocm.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -151,6 +151,7 @@ def _isolated_project(dest):
         "pyproject.toml",
         "MANIFEST.in",
         "build_backend.py",
+        "build_backend_rocm.py",
         "build_utils.py",
         "LICENSE",
         "NOTICE",

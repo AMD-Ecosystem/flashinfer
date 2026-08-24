@@ -5,13 +5,15 @@
 #
 # include/ is the source header tree. It is NOT under flashinfer/, and the
 # generated flashinfer/include copy is deliberately absent from the sdist (see
-# _prepare_for_sdist in build_backend.py) — building a wheel from this sdist
+# _prepare_for_sdist in build_backend_rocm.py) — building a wheel from this sdist
 # re-creates it. Without this graft that wheel build would have no headers.
 graft include
 
-# The PEP 517 backend itself: pyproject.toml sets backend-path = ["."], so a
-# build from this sdist imports it.
+# The PEP 517 backend: pyproject.toml sets backend-path = ["."], so a build from
+# this sdist imports build_backend_rocm. Upstream's build_backend.py ships too —
+# unused here, but kept byte-identical so rebases do not conflict on it.
 include build_backend.py
+include build_backend_rocm.py
 
 # Not used by the root backend: flashinfer-cubin and flashinfer-jit-cache
 # import get_git_version from it at module load.

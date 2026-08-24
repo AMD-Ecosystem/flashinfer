@@ -54,7 +54,7 @@ dev = [
 ]
 
 [build-system]
-# In-tree backend (see build_backend.py). Nothing is compiled at build time, so
+# In-tree backend (see build_backend_rocm.py). Nothing is compiled at build time, so
 # torch/numpy are not required; `wheel` is not either since setuptools 70.1, and
 # listing it fails `python -m build --no-isolation` in docker/Dockerfile.rocm_ci.
 requires = [
@@ -62,7 +62,7 @@ requires = [
     "setuptools-scm>=9.2",
     "packaging>=24"
 ]
-build-backend = "build_backend"
+build-backend = "build_backend_rocm"
 backend-path = ["."]
 
 [tool.setuptools.packages.find]
@@ -75,7 +75,7 @@ include = ["flashinfer", "flashinfer.*"]
 # implicitly; setuptools requires them to be named. Both matter at runtime:
 # get_csrc_dir() resolves flashinfer/csrc_rocm and get_include() resolves
 # flashinfer/include, so dropping either ships a wheel whose JIT cannot compile.
-# flashinfer/include itself is produced by build_backend.py, not by git.
+# flashinfer/include itself is produced by build_backend_rocm.py, not by git.
 flashinfer = [
     "py.typed",
     "csrc_rocm/**/*.cu",
