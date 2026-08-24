@@ -44,6 +44,7 @@ These are local config (not checked in) and must be redone per clone:
 git remote -v                        # origin should be AMD-Ecosystem/flashinfer; there must be NO flashinfer-ai remote
 gh repo set-default AMD-Ecosystem/flashinfer  # pin gh base repo so it does not fall back to the fork parent
 ex="$(git rev-parse --git-common-dir)/info/exclude"   # per-clone ignore patterns
+mkdir -p "$(dirname "$ex")"                           # info/ is absent in some clones
 grep -qxF '/tmp/' "$ex" || printf '/tmp/\n' >> "$ex"  # ignores the repo's own tmp/
 ```
 
