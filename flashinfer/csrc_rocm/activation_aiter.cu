@@ -21,16 +21,17 @@
 void silu_and_mul_aiter(at::Tensor out, at::Tensor input) {
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(input.device());
 
+  // The kernel indexes linearly, so strides in aiter_tensor_t are not honoured.
+  // AITER's torch entry point used to reject this; the POD API cannot. Checked
+  // before the stream is set, so a rejected call leaves no thread_local behind.
+  TORCH_CHECK(input.is_contiguous(), "silu_and_mul: input must be contiguous");
+  TORCH_CHECK(out.is_contiguous(), "silu_and_mul: out must be contiguous");
+
   // The POD API launches on aiter::getCurrentHIPStream(), a thread_local that
   // defaults to nullptr and is otherwise set only by AITER's Python layer; the
   // old torch-typed entry point read torch's stream itself. The device guard
   // above restores the device, not the stream.
   aiter::setCurrentHIPStream(at::hip::getCurrentHIPStream());
-
-  // The kernel indexes linearly, so strides in aiter_tensor_t are not honoured.
-  // AITER's torch entry point used to reject this; the POD API cannot.
-  TORCH_CHECK(input.is_contiguous(), "silu_and_mul: input must be contiguous");
-  TORCH_CHECK(out.is_contiguous(), "silu_and_mul: out must be contiguous");
 
   const aiter_tensor_t out_a = flashinfer::aiter_compat::to_aiter(out);
   const aiter_tensor_t in_a = flashinfer::aiter_compat::to_aiter(input);

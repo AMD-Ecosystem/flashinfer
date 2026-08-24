@@ -1037,3 +1037,53 @@ if __name__ == "__main__":
     test_batch_prefill_with_ragged_kv_cache(
         12, 54, 37, 8, 8, 128, True, "NONE", 0.0, False
     )
+
+
+@pytest.mark.parametrize("kv_len", [512, 2048])
+@pytest.mark.parametrize("qo_len", [37, 127])
+def test_ragged_softcap_avoids_broken_aiter_kernel(kv_len, qo_len):
+    """backend='auto' must stay numerically correct for causal soft-cap prefill.
+
+    The ragged wrapper always dispatches through mha_varlen_fwd, which AITER
+    miscomputes when logits_soft_cap > 0; without the fallback this returns
+    plausible-looking values roughly 0.17 off an fp32 reference.
+    """
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+
+    head_dim, num_heads, soft_cap = 128, 4, 8.0
+    torch.manual_seed(0)
+    q = torch.randn(qo_len, num_heads, head_dim, dtype=torch.float16, device=device)
+    k = torch.randn(kv_len, num_heads, head_dim, dtype=torch.float16, device=device)
+    v = torch.randn(kv_len, num_heads, head_dim, dtype=torch.float16, device=device)
+
+    qs, ks, vs = (t.transpose(0, 1).float() for t in (q, k, v))
+    logits = soft_cap * torch.tanh(
+        (qs @ ks.transpose(-1, -2)) * head_dim**-0.5 / soft_cap
+    )
+    mask = torch.ones(qo_len, kv_len, dtype=torch.bool, device=device).tril(
+        diagonal=kv_len - qo_len
+    )
+    ref = (
+        torch.softmax(logits.masked_fill(~mask, float("-inf")), dim=-1) @ vs
+    ).transpose(0, 1)
+
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
+    wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
+    )
+    indptr_q = torch.tensor([0, qo_len], dtype=torch.int32, device=device)
+    indptr_kv = torch.tensor([0, kv_len], dtype=torch.int32, device=device)
+    wrapper.plan(
+        indptr_q,
+        indptr_kv,
+        num_heads,
+        num_heads,
+        head_dim,
+        causal=True,
+        logits_soft_cap=soft_cap,
+        q_data_type=torch.float16,
+        kv_data_type=torch.float16,
+    )
+    torch.testing.assert_close(wrapper.run(q, k, v).float(), ref, rtol=1e-3, atol=1e-3)
