@@ -101,11 +101,15 @@ _bench_parser.add_argument(
 _bench_args, _ = _bench_parser.parse_known_args()
 
 _counters = _bench_args.counters
-_label = (
-    _bench_args.label
-    if _bench_args.label is not None
-    else ("mla" if _counters == "roofline" else f"mla_{_counters}")
-)
+# Every output file is keyed on the label, so the default has to distinguish
+# the runs the docstring tells you to compare -- otherwise --separate overwrites
+# the baseline it exists to be compared against.
+_auto_label = "mla" if _counters == "roofline" else f"mla_{_counters}"
+if _bench_args.mode != "all":
+    _auto_label += f"_{_bench_args.mode}"
+if _bench_args.separate:
+    _auto_label += "_separate"
+_label = _bench_args.label if _bench_args.label is not None else _auto_label
 
 # ---------------------------------------------------------------------------
 # Sweep configuration — DeepSeek-V3/R1 MLA decode (q_len=1).
@@ -264,7 +268,9 @@ def _make_plan_config(batch, kv_len, num_heads):
         name=f"plan_h{num_heads}_b{batch}_kv{kv_len}",
         run_fn=torch.inference_mode()(_plan),
         theoretical_flops=0,
-        theoretical_bytes=batch * 4 * 2,  # kv_indptr + kv_lens reads; host-bound
+        # One batched D2H of qo_indptr+kv_indptr+kv_len_arr, plus the H2D of the
+        # computed last_page_len. Host-bound; round-trip count is the real cost.
+        theoretical_bytes=(3 * batch + 2) * 4 + batch * 4,
         num_tokens=batch,
         label=f"plan  h={num_heads:>3d} b={batch:>3d} kv={kv_len:>6d}",
     )
@@ -307,7 +313,7 @@ def _make_pool_config(pool_pages, batch, kv_len, num_heads):
     # read of the live KV; the pool-sized cat exists only under --separate, and
     # counting it unconditionally would attribute GBs of nonexistent traffic to
     # the zero-copy path and make it appear to scale with pool capacity.
-    attn_bytes = batch * kv_len * _QK_HEAD_DIM * 2
+    attn_bytes = _attn_bytes(batch, kv_len, num_heads)
     cat_bytes = 2 * pool_pages * _QK_HEAD_DIM * 2 if _bench_args.separate else 0
     return KernelConfig(
         name=f"pool_h{num_heads}_b{batch}_kv{kv_len}_p{pool_pages}",

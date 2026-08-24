@@ -218,10 +218,10 @@ def test_append_explicit_aiter_accepts_int64_indices():
 def test_append_aiter_rejects_noncontiguous_inputs():
     """A fused KV projection yields non-contiguous halves; AITER cannot take them.
 
-    AITER indexes source and cache as flat contiguous blocks and honours only
-    stride(0), so a strided append_key writes the wrong bytes for every head past
-    the first -- silently. The native kernel is passed full stride arrays and
-    handles the same input correctly, so the shim must refuse rather than corrupt.
+    AITER reads stride(0) but assumes the dimensions below it are packed, so a
+    strided append_key writes the wrong bytes for every head past the first --
+    silently. The native kernel takes full stride arrays and handles the same
+    input, so the shim must refuse rather than corrupt.
     """
     device = torch.device("cuda:0")
     dtype = torch.bfloat16
@@ -262,7 +262,7 @@ def test_append_aiter_rejects_noncontiguous_inputs():
     )
     assert (k_native != 0).any(), "reference append wrote nothing"
 
-    with pytest.raises(RuntimeError, match="contiguous"):
+    with pytest.raises(RuntimeError, match="dense inside stride"):
         flashinfer.append_paged_kv_cache(
             k,
             v,
@@ -290,6 +290,53 @@ def test_append_aiter_rejects_noncontiguous_inputs():
     )
     torch.testing.assert_close(k_aiter, k_native, rtol=0, atol=0)
     torch.testing.assert_close(v_aiter, v_native, rtol=0, atol=0)
+
+
+@requires_aiter
+def test_append_aiter_accepts_the_5d_combined_cache():
+    """The documented 5-D [P, 2, S, H, D] cache must still reach AITER.
+
+    _unpack_paged_kv_cache unbinds it into halves whose stride(0) is 2*S*H*D with
+    dense interiors -- not contiguous, but exactly what AITER indexes against,
+    since it reads stride(0) and assumes only the dimensions below it are packed.
+    A blanket is_contiguous() check rejects this form.
+    """
+    device = torch.device("cuda:0")
+    dtype = torch.bfloat16
+    nnz, num_kv_heads, head_dim, page_size, num_pages = 8, 4, 64, 16, 4
+
+    torch.manual_seed(0x5D)
+    k = torch.randn(nnz, num_kv_heads, head_dim, dtype=dtype, device=device)
+    v = torch.randn_like(k)
+    indptr = torch.tensor([0, nnz], dtype=torch.int32, device=device)
+    seq_lens = torch.tensor([nnz], dtype=torch.int32, device=device)
+    batch_indices, positions = flashinfer.get_batch_indices_positions(
+        indptr, seq_lens, nnz
+    )
+    kv_indptr = torch.tensor([0, num_pages], dtype=torch.int32, device=device)
+    kv_indices = torch.arange(num_pages, dtype=torch.int32, device=device)
+    kv_last_page_len = torch.tensor([nnz], dtype=torch.int32, device=device)
+
+    def _run(backend):
+        combined = torch.zeros(
+            num_pages, 2, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
+        )
+        flashinfer.append_paged_kv_cache(
+            k,
+            v,
+            batch_indices,
+            positions,
+            combined,
+            kv_indices,
+            kv_indptr,
+            kv_last_page_len,
+            backend=backend,
+        )
+        return combined
+
+    native = _run("native")
+    assert (native != 0).any(), "reference append wrote nothing"
+    torch.testing.assert_close(_run("aiter"), native, rtol=0, atol=0)
 
 
 @requires_aiter

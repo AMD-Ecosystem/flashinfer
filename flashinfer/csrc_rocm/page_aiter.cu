@@ -25,6 +25,17 @@ void reshape_and_cache_flash(at::Tensor& key, at::Tensor& value, at::Tensor& key
 
 namespace {
 
+// Every dimension after the first is packed, whatever stride(0) is. This is the
+// layout AITER indexes against; it reads stride(0) but nothing below it.
+bool inner_dense(const at::Tensor& t) {
+  int64_t expected = 1;
+  for (int64_t d = t.dim() - 1; d >= 1; --d) {
+    if (t.stride(d) != expected) return false;
+    expected *= t.size(d);
+  }
+  return true;
+}
+
 // slot = kv_indices[kv_indptr[batch] + page_within] * page_size + offset_in_page
 __global__ void build_slot_mapping_kernel(const int32_t* __restrict__ batch_indices,
                                           const int32_t* __restrict__ positions,
@@ -65,16 +76,21 @@ void append_paged_kv_cache_aiter(at::Tensor append_key, at::Tensor append_value,
               "paged_k_cache and paged_v_cache must have the same shape and dtype, got ",
               paged_k_cache.sizes(), " ", paged_k_cache.scalar_type(), " vs ",
               paged_v_cache.sizes(), " ", paged_v_cache.scalar_type());
-  // AITER indexes both source and cache as flat contiguous blocks and honours
-  // only stride(0), so any inner-stride difference is a silent wrong write.
-  // page.cu passes full stride arrays instead and handles these correctly.
-  TORCH_CHECK(append_key.is_contiguous() && append_value.is_contiguous() &&
-                  paged_k_cache.is_contiguous() && paged_v_cache.is_contiguous(),
-              "backend='aiter' requires contiguous append_key/append_value and caches; got "
-              "contiguity ",
-              append_key.is_contiguous(), "/", append_value.is_contiguous(), "/",
-              paged_k_cache.is_contiguous(), "/", paged_v_cache.is_contiguous(),
-              ". Use backend='native', which handles strided inputs.");
+  // AITER reads stride(0) but assumes every dimension inside it is dense, so an
+  // inner-stride difference is a silent wrong write. stride(0) is deliberately
+  // left free: a 5-D combined cache unbinds to halves with stride(0) == 2*S*H*D
+  // and dense interiors, which AITER handles and which page.py documents.
+  // page.cu takes full stride arrays and accepts anything.
+  TORCH_CHECK(inner_dense(paged_k_cache) && inner_dense(paged_v_cache) &&
+                  paged_k_cache.strides() == paged_v_cache.strides(),
+              "backend='aiter' needs paged_k_cache/paged_v_cache dense inside stride(0) and "
+              "identically strided; got ",
+              paged_k_cache.strides(), " and ", paged_v_cache.strides(),
+              ". Use backend='native', which accepts any strides.");
+  TORCH_CHECK(inner_dense(append_key) && inner_dense(append_value),
+              "backend='aiter' needs append_key/append_value dense inside stride(0); got ",
+              append_key.strides(), " and ", append_value.strides(),
+              ". Use backend='native', which accepts any strides.");
   TORCH_CHECK(batch_indices.scalar_type() == at::kInt && positions.scalar_type() == at::kInt &&
                   kv_indices.scalar_type() == at::kInt && kv_indptr.scalar_type() == at::kInt,
               "batch_indices/positions/kv_indices/kv_indptr must be int32");
