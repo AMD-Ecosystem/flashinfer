@@ -320,7 +320,14 @@ or a won't-fix rationale.
 **Draft it at `$(git rev-parse --show-toplevel)/tmp/pr/<branch>.md`** — the repo
 root of whichever checkout you are in, main or worktree, so the draft sits with
 the branch that it describes. Anchor to the top level rather than writing a
-relative `tmp/pr/...`, which resolves wrong from any subdirectory.
+relative `tmp/pr/...`, which resolves wrong from any subdirectory. `tmp/pr/`
+does not exist in a fresh clone or worktree, so create it as you go:
+
+```bash
+draft="$(git rev-parse --show-toplevel)/tmp/pr/$(git branch --show-current).md"
+mkdir -p "$(dirname "$draft")"
+# write the body to "$draft", then pass it as --body-file "$draft"
+```
 
 Never the **system** `/tmp`: it is shared, and there is no remove access to it
 on these nodes, so drafts left there cannot be cleaned up. Note the two are
