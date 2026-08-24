@@ -1,4 +1,5 @@
 import argparse
+import csv
 import sys
 
 from routines.attention import parse_attention_args, run_attention_test
@@ -58,15 +59,13 @@ def run_test(args):
 
     # Write results to output file if specified
     if args.output_path is not None:
-        with open(args.output_path, "a") as fout:
+        with open(args.output_path, "a", newline="") as fout:
+            writer = csv.writer(fout, lineterminator="\n")
             for cur_res in res:
                 for key in output_column_dict["general"]:
                     cur_res[key] = getattr(args, key)
 
-                output_line = ",".join(
-                    [str(cur_res[col]) for col in full_output_columns]
-                )
-                fout.write(output_line + "\n")
+                writer.writerow([str(cur_res[col]) for col in full_output_columns])
             fout.flush()
     return
 
@@ -208,8 +207,8 @@ if __name__ == "__main__":
 
     # Setup output file if specified
     if testlist_args.output_path is not None:
-        with open(testlist_args.output_path, "w") as fout:
-            fout.write(",".join(full_output_columns) + "\n")
+        with open(testlist_args.output_path, "w", newline="") as fout:
+            csv.writer(fout, lineterminator="\n").writerow(full_output_columns)
 
     # Process tests either from testlist file or command line arguments
     if testlist_args.testlist is not None:
