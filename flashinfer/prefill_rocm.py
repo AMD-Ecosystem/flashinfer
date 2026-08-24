@@ -20,6 +20,7 @@ import logging
 import math
 import os
 import threading
+import warnings
 from importlib.metadata import PackageNotFoundError
 from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
@@ -62,7 +63,7 @@ from .utils import (
 # sizes we try. The second is the newest release we have actually validated against;
 # bumping it must not silently move the support boundary.
 _AITER_NATIVE_PAGING_SINCE = "0.1.10"
-_AITER_LAST_VALIDATED = "0.1.10"
+_AITER_LAST_VALIDATED = "0.1.16.post3.dev0+g620287969.d20260725"
 
 
 @functools.cache
@@ -329,6 +330,24 @@ def _require_aiter_runtime(device: torch.device, op: str = "batch_prefill") -> N
 _aiter_auto_warned: set[tuple[torch.device, str]] = set()
 
 
+def _aiter_softcap_defect(
+    causal: bool, logits_soft_cap: float, head_dim: int, kv_len: Optional[int]
+) -> bool:
+    """Would this call hit AITER's miscomputed soft cap?
+
+    A non-zero cap disables AITER's asm paths, leaving mha_varlen_fwd's CK
+    kernel, which applies the cap wrongly for causal head_dim=128 with
+    kv_len >= 512. Non-causal is exact. Present through at least aiter 0.1.21.
+    """
+    if not (causal and logits_soft_cap and logits_soft_cap > 0):
+        return False
+    if head_dim != 128:
+        return False
+    # kv_len is unknown at plan() time for some wrappers; assume the worst,
+    # since a wrong answer costs more than the fa2 slowdown.
+    return kv_len is None or kv_len >= 512
+
+
 def _auto_select_prefill_backend(
     device: torch.device,
     *,
@@ -340,6 +359,9 @@ def _auto_select_prefill_backend(
     head_dim_vo: int,
     pos_encoding_mode: str = "NONE",
     op: str = "batch_prefill",
+    causal: bool = False,
+    logits_soft_cap: Optional[float] = None,
+    kv_len: Optional[int] = None,
 ) -> Tuple[str, Optional[str]]:
     """Return ``(backend, reason)``: 'aiter' when the GPU and call parameters satisfy
     AITER's constraints, else 'fa2' plus the reason AITER was declined.
@@ -376,6 +398,11 @@ def _auto_select_prefill_backend(
         elif pos_encoding_mode != "NONE":
             reason = (
                 f"pos_encoding_mode={pos_encoding_mode!r} (AITER only supports NONE)"
+            )
+        elif _aiter_softcap_defect(causal, logits_soft_cap, head_dim_qk, kv_len):
+            reason = (
+                f"logits_soft_cap={logits_soft_cap} with causal head_dim={head_dim_qk} "
+                "(AITER mha_varlen_fwd computes the soft cap incorrectly)"
             )
 
     if reason is not None:
@@ -1516,12 +1543,27 @@ def single_prefill_with_kv_cache(
             head_dim_vo=v.shape[-1],
             pos_encoding_mode=pos_encoding_mode,
             op="single_prefill",
+            causal=causal,
+            logits_soft_cap=logits_soft_cap,
+            kv_len=k.shape[0] if kv_layout == "NHD" else k.shape[1],
         )
 
     if backend == "aiter":
         # Outside the probe on purpose: this raises ArchCapabilityError, which
         # gates known-bad toolchains and must never be demoted to a silent fa2.
         _require_aiter_runtime(q.device, "single_prefill")
+        if _aiter_softcap_defect(
+            causal,
+            logits_soft_cap,
+            q.shape[-1],
+            k.shape[0] if kv_layout == "NHD" else k.shape[1],
+        ):
+            warnings.warn(
+                "AITER computes logits_soft_cap incorrectly for causal "
+                "head_dim=128 prefill with kv_len >= 512; results will be wrong. "
+                "Use backend='fa2' or backend='auto'.",
+                stacklevel=2,
+            )
         if pos_encoding_mode != "NONE":
             raise ValueError(
                 f"AITER backend does not support pos_encoding_mode={pos_encoding_mode!r}; "
