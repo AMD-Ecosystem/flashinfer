@@ -6,7 +6,7 @@
 
 import logging
 import re
-from contextlib import nullcontext
+import time
 
 import pytest
 import torch
@@ -153,6 +153,54 @@ def test_append_paged_kv_cache_auto_always_routes_native(dtype, kv_layout):
 
 
 @requires_aiter
+def test_append_explicit_aiter_accepts_int64_indices():
+    """int64 index tensors must work, as they do on the native path.
+
+    The shim requires int32, so without normalization in _aiter_append_paged_kv_cache
+    an int64 page table -- which append_paged_kv_cache otherwise accepts, and which
+    the native kernel narrows with .int() -- would fail only when AITER is selected.
+    """
+    device = torch.device("cuda:0")
+    dtype = torch.bfloat16
+    page_size, num_kv_heads, head_dim = 16, 8, 128
+    (
+        k,
+        v,
+        batch_indices,
+        positions,
+        kv_indices,
+        kv_indptr,
+        kv_last_page_len,
+        num_pages,
+    ) = _build_append_inputs(
+        [37, 5, 64], page_size, num_kv_heads, head_dim, dtype, device
+    )
+
+    def _run(cast):
+        kc = torch.zeros(
+            num_pages, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
+        )
+        vc = torch.zeros_like(kc)
+        flashinfer.append_paged_kv_cache(
+            k,
+            v,
+            cast(batch_indices),
+            cast(positions),
+            (kc, vc),
+            cast(kv_indices),
+            cast(kv_indptr),
+            cast(kv_last_page_len),
+            backend="aiter",
+        )
+        return kc, vc
+
+    k32, v32 = _run(lambda t: t)
+    k64, v64 = _run(lambda t: t.long())
+    torch.testing.assert_close(k64, k32, rtol=0, atol=0)
+    torch.testing.assert_close(v64, v32, rtol=0, atol=0)
+
+
+@requires_aiter
 def test_append_paged_kv_cache_aiter_honors_current_stream():
     """The AITER append must run on torch's current stream, not the default one.
 
@@ -180,34 +228,92 @@ def test_append_paged_kv_cache_aiter_honors_current_stream():
         [37, 5, 64], page_size, num_kv_heads, head_dim, dtype, device
     )
 
-    def _run_append(stream):
-        k_cache = torch.zeros(
-            num_pages, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
+    k_ref = torch.zeros(
+        num_pages, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
+    )
+    v_ref = torch.zeros_like(k_ref)
+    flashinfer.append_paged_kv_cache(
+        k,
+        v,
+        batch_indices,
+        positions,
+        (k_ref, v_ref),
+        kv_indices,
+        kv_indptr,
+        kv_last_page_len,
+        backend="native",
+    )
+    torch.cuda.synchronize()
+
+    # Queue a long blocker on a side stream, then the append behind it, and read
+    # the cache from the host *while the side stream is still busy*. An append
+    # that honours the current stream cannot have run yet, so the cache is still
+    # zero; one that ignores it and lands on the null stream is not behind the
+    # blocker, completes in ~11 us, and the read sees data.
+    #
+    # Checking contents after any sync cannot detect this -- the null-stream
+    # append finishes long before the blocker either way. That is the flaw in
+    # the obvious version of this test.
+    side = torch.cuda.Stream()
+    k_cache = torch.zeros_like(k_ref)
+    v_cache = torch.zeros_like(v_ref)
+    # Warm the AITER path first. Its first call loads the kernel module, and
+    # hipModuleLoad synchronizes the device -- inside the block below that would
+    # drain the blocker before the observation.
+    warm_k, warm_v = torch.zeros_like(k_ref), torch.zeros_like(v_ref)
+    flashinfer.append_paged_kv_cache(
+        k,
+        v,
+        batch_indices,
+        positions,
+        (warm_k, warm_v),
+        kv_indices,
+        kv_indptr,
+        kv_last_page_len,
+        backend="aiter",
+    )
+    torch.cuda.synchronize()
+
+    # Preallocated out= buffers: allocating per iteration exhausts the caching
+    # allocator, which synchronizes to free and drains the very queue this test
+    # depends on staying full.
+    burn_a = torch.randn(4096, 4096, dtype=torch.float32, device=device)
+    burn_b = torch.empty_like(burn_a)
+
+    with torch.cuda.stream(side):
+        for _ in range(100):
+            torch.mm(burn_a, burn_a, out=burn_b)
+            torch.mm(burn_b, burn_b, out=burn_a)
+        flashinfer.append_paged_kv_cache(
+            k,
+            v,
+            batch_indices,
+            positions,
+            (k_cache, v_cache),
+            kv_indices,
+            kv_indptr,
+            kv_last_page_len,
+            backend="aiter",
         )
-        v_cache = torch.zeros_like(k_cache)
-        ctx = torch.cuda.stream(stream) if stream is not None else nullcontext()
-        with ctx:
-            flashinfer.append_paged_kv_cache(
-                k,
-                v,
-                batch_indices,
-                positions,
-                (k_cache, v_cache),
-                kv_indices,
-                kv_indptr,
-                kv_last_page_len,
-                backend="aiter",
-            )
-        if stream is not None:
-            torch.cuda.current_stream().wait_stream(stream)
-        torch.cuda.synchronize()
-        return k_cache, v_cache
+        done = torch.cuda.Event()
+        done.record(side)
 
-    k_default, v_default = _run_append(None)
-    k_side, v_side = _run_append(torch.cuda.Stream())
+    time.sleep(0.05)  # let a null-stream append, if any, land
+    # If the blocker already drained, the observation below proves nothing. Fail
+    # with a clear reason rather than passing vacuously.
+    assert not done.query(), (
+        "side stream drained before the cache was read; the blocker is too small "
+        "for this GPU and the test cannot observe stream ordering"
+    )
+    still_empty = not bool(k_cache.any().item())
+    done.synchronize()
 
-    torch.testing.assert_close(k_side, k_default, rtol=0, atol=0)
-    torch.testing.assert_close(v_side, v_default, rtol=0, atol=0)
+    assert still_empty, (
+        "the AITER append completed while the side stream it was issued on was "
+        "still blocked, so it ran on another stream (likely the null stream)"
+    )
+    torch.testing.assert_close(k_cache, k_ref, rtol=0, atol=0)
+    torch.testing.assert_close(v_cache, v_ref, rtol=0, atol=0)
 
 
 @requires_aiter

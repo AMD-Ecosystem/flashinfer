@@ -466,7 +466,7 @@ def test_mla_warns_only_for_separate_kv_allocations():
     q_nope = torch.randn(batch_size, num_heads, ckv_dim, dtype=dtype, device=device)
     q_pe = torch.randn(batch_size, num_heads, kpe_dim, dtype=dtype, device=device)
 
-    def _run(ckv, kpe):
+    def _run(ckv, kpe, runs=1):
         wrapper = BatchMLAPagedAttentionWrapper(
             torch.empty(8 * 1024 * 1024, dtype=torch.uint8, device=device)
         )
@@ -486,7 +486,8 @@ def test_mla_warns_only_for_separate_kv_allocations():
         )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            wrapper.run(q_nope, q_pe, ckv, kpe)
+            for _ in range(runs):
+                wrapper.run(q_nope, q_pe, ckv, kpe)
         return [w for w in caught if issubclass(w.category, UserWarning)]
 
     assert _run(split_ckv, split_kpe) == [], "combined layout must not warn"
@@ -494,6 +495,10 @@ def test_mla_warns_only_for_separate_kv_allocations():
     separate = _run(ckv_cache, kpe_cache)
     assert len(separate) == 1
     assert "adjacent halves" in str(separate[0].message)
+
+    # "always" defeats warnings' own (message, category, module, lineno) dedup,
+    # so without the per-wrapper guard this would be one warning per decode step.
+    assert len(_run(ckv_cache, kpe_cache, runs=5)) == 1
 
 
 @requires_aiter

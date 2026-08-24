@@ -96,17 +96,22 @@ if IS_HIP:
         Without it, Dynamo puts the TORCH_LIBRARY_FRAGMENT-registered shim into
         the FX graph and fake-runs it, and the shim's ``numel()``/``size()`` calls
         raise "Cannot call numel() on tensor with symbolic sizes/strides".
+
+        The indices are narrowed to int32 the way the native kernel does. The
+        shim requires int32, so without this an int64 page table -- which the
+        public entry point otherwise accepts -- would fail only when AITER is
+        selected.
         """
         unit = _aiter_unit_scale(paged_k_cache.device)
         get_page_aiter_module().append_paged_kv_cache_aiter(
             append_key,
             append_value,
-            batch_indices,
-            positions,
+            batch_indices.int(),
+            positions.int(),
             paged_k_cache,
             paged_v_cache,
-            kv_indices,
-            kv_indptr,
+            kv_indices.int(),
+            kv_indptr.int(),
             unit,
             unit,
         )

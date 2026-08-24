@@ -208,6 +208,8 @@ class BatchMLAPagedAttentionWrapper:
         self._kv_last_page_len: Optional[torch.Tensor] = None
         self._sm_scale: float = 1.0
         self._max_seqlen_q: int = 1
+        # run() warns at most once per wrapper about a non-adjacent KV cache.
+        self._warned_separate_kv: bool = False
 
     def plan(
         self,
@@ -378,17 +380,24 @@ class BatchMLAPagedAttentionWrapper:
             )
         kv_buffer = _combined_kv_view(ckv_cache, kpe_cache)
         if kv_buffer is None:
-            warnings.warn(
-                "MLA: ckv_cache and kpe_cache are not adjacent halves of a single "
-                "allocation, so run() must concatenate them on every call. That "
-                "copy covers the whole allocated page pool, not just the live "
-                "pages, so it scales with cache capacity. Allocate one "
-                "[num_pages, page_size, head_dim_ckv + head_dim_kpe] buffer and "
-                "pass torch.split(buf, [head_dim_ckv, head_dim_kpe], dim=-1) to "
-                "run() for the zero-copy path.",
-                UserWarning,
-                stacklevel=2,
-            )
+            # Guarded explicitly rather than left to the "default" warning filter,
+            # which dedups by (message, category, module, lineno) and so is
+            # defeated by an "always" filter or by logging capture -- this sits in
+            # a per-decode-step path, once per layer. Per wrapper rather than per
+            # process so a second mis-allocated wrapper is still told.
+            if not self._warned_separate_kv:
+                self._warned_separate_kv = True
+                warnings.warn(
+                    "MLA: ckv_cache and kpe_cache are not adjacent halves of a single "
+                    "allocation, so run() must concatenate them on every call. That "
+                    "copy covers the whole allocated page pool, not just the live "
+                    "pages, so it scales with cache capacity. Allocate one "
+                    "[num_pages, page_size, head_dim_ckv + head_dim_kpe] buffer and "
+                    "pass torch.split(buf, [head_dim_ckv, head_dim_kpe], dim=-1) to "
+                    "run() for the zero-copy path.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             kv_buffer = torch.cat(
                 [ckv_cache.unsqueeze(2), kpe_cache.unsqueeze(2)], dim=-1
             )

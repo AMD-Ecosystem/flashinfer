@@ -77,6 +77,17 @@ void append_paged_kv_cache_aiter(at::Tensor append_key, at::Tensor append_value,
   TORCH_CHECK(batch_indices.scalar_type() == at::kInt && positions.scalar_type() == at::kInt &&
                   kv_indices.scalar_type() == at::kInt && kv_indptr.scalar_type() == at::kInt,
               "batch_indices/positions/kv_indices/kv_indptr must be int32");
+  // build_slot_mapping_kernel indexes kv_indptr by batch id and kv_indices by
+  // the resulting offset. A 0-D or empty kv_indptr reads out of bounds before
+  // AITER is ever reached; page.cu rejects the same shapes via CHECK_DIM.
+  // Element values stay unchecked here, as they are in the native kernel --
+  // validating them needs a device read, i.e. a sync on the append hot path.
+  TORCH_CHECK(batch_indices.dim() == 1 && positions.dim() == 1 && kv_indices.dim() == 1 &&
+                  kv_indptr.dim() == 1,
+              "batch_indices/positions/kv_indices/kv_indptr must be 1-D, got ", batch_indices.dim(),
+              "/", positions.dim(), "/", kv_indices.dim(), "/", kv_indptr.dim());
+  TORCH_CHECK(kv_indptr.numel() >= 2, "kv_indptr must have at least 2 entries, got ",
+              kv_indptr.numel());
   TORCH_CHECK(batch_indices.numel() == positions.numel(),
               "batch_indices and positions must have the same length, got ", batch_indices.numel(),
               " vs ", positions.numel());
