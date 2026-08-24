@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from flashinfer import hip_utils
 from flashinfer.hip_utils import (
     FLASHINFER_SUPPORTED_ROCM_ARCHS,
     check_torch_rocm_compatibility,
@@ -23,9 +24,30 @@ from flashinfer.hip_utils import (
     get_supported_device_indices,
     get_system_rocm_version_from_hipconfig,
     is_therock_build,
+    resolve_target_archs,
     validate_flashinfer_rocm_arch,
     validate_rocm_arch,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_arch_detection_cache():
+    """Reset the process-cached architecture probe around every test in this file.
+
+    ``_detected_supported_archs`` caches rocminfo's answer for the process, so a
+    test that patches ``rocminfo_gpu_agents`` can otherwise be shadowed by
+    whatever a previous test -- or the real hardware, via package import -- put
+    there first, and silently assert against the wrong architecture. Module-wide
+    rather than on the one class that resolves: several tests here reach the
+    probe indirectly through ``validate_rocm_arch(arch_list=None)``, and any test
+    added later that patches it inherits the same hazard.
+
+    Clearing on the way out as well keeps a fake from leaking into the rest of
+    the session.
+    """
+    hip_utils._detected_supported_archs.cache_clear()
+    yield
+    hip_utils._detected_supported_archs.cache_clear()
 
 
 # get_rocm_home
@@ -137,7 +159,174 @@ class TestGetSystemRocmVersionFromHipconfig:
             assert get_system_rocm_version_from_hipconfig() is None
 
 
-# validate_rocm_arch
+# resolve_target_archs
+class TestResolveTargetArchs:
+    """The single resolver every build path now consults.
+
+    Before it existed, three call sites answered "what are we building for"
+    independently and could disagree: on a gfx950 host,
+    ``validate_flashinfer_rocm_arch(arch_list=None)`` returned ``{"gfx942"}``
+    while ``CompilationContext`` emitted ``--offload-arch=gfx950``.
+    """
+
+    def _agents(self, *archs):
+        return patch(
+            "flashinfer.hip_utils.rocminfo_gpu_agents",
+            return_value=tuple((arch, "") for arch in archs),
+        )
+
+    def test_explicit_argument_wins(self, monkeypatch):
+        monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "gfx950")
+        with self._agents("gfx950"):
+            assert resolve_target_archs("gfx942") == "gfx942"
+
+    def test_env_var_beats_detection(self, monkeypatch):
+        """An explicit request is honoured even when it is not what is plugged in
+        -- cross-compiling for the other architecture must stay possible."""
+        monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "gfx942")
+        with self._agents("gfx950"):
+            assert resolve_target_archs() == "gfx942"
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            # Qualifiers: what torch's gcnArchName looks like, so an operator
+            # copying from `rocminfo` or a torch error message pastes this shape.
+            ("gfx950:sramecc+:xnack-", "gfx950"),
+            # ';' is documented for this same variable by jit/aiter_source.py.
+            # The two consumers must not disagree about their own env var.
+            ("gfx942;gfx950", "gfx942,gfx950"),
+            ("gfx942; gfx950", "gfx942,gfx950"),
+            # Empty tokens would otherwise reach the validators as "" and be
+            # reported as an unsupported architecture.
+            ("gfx942,,gfx950", "gfx942,gfx950"),
+            ("gfx942, gfx950 ", "gfx942,gfx950"),
+            # Duplicates collapse; first occurrence sets the order, which is what
+            # lands on the hipcc command line.
+            ("gfx950,gfx942,gfx950", "gfx950,gfx942"),
+            # Already canonical input must round-trip untouched.
+            ("gfx942,gfx950", "gfx942,gfx950"),
+        ],
+    )
+    def test_env_var_is_canonicalized(self, monkeypatch, raw, expected):
+        """The validators split on ',' only and match tokens verbatim, so an
+        unnormalized value is a hard failure, not an untidiness: "gfx942;gfx950"
+        arrives as one token, matches nothing, and validate_flashinfer_rocm_arch
+        raises "does not support any of the requested ROCm architectures"."""
+        monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", raw)
+        with self._agents("gfx950"):
+            assert resolve_target_archs() == expected
+
+    def test_explicit_argument_is_canonicalized(self, monkeypatch):
+        monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+        with self._agents("gfx950"):
+            assert resolve_target_archs("gfx942:xnack-;gfx950") == "gfx942,gfx950"
+
+    def test_unknown_archs_survive_normalization(self, monkeypatch):
+        """Only syntax is normalized. Dropping an unrecognized arch here would
+        turn the validators' clear error into a build that quietly targets less
+        than was asked for."""
+        monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "gfx900:xnack-;gfx942")
+        with self._agents("gfx950"):
+            assert resolve_target_archs() == "gfx900,gfx942"
+
+    @pytest.mark.parametrize("raw", [";;", "  ", ",", " ; , "])
+    def test_a_value_that_normalizes_away_falls_through(self, monkeypatch, raw):
+        """Returning "" would reach the validators as a single empty token and
+        fail as an unsupported architecture; detection is the better answer."""
+        monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", raw)
+        with self._agents("gfx950"):
+            assert resolve_target_archs() == "gfx950"
+
+    def test_detects_the_running_device(self, monkeypatch):
+        monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+        with self._agents("gfx950"):
+            assert resolve_target_archs() == "gfx950"
+
+    def test_detects_every_distinct_supported_arch(self, monkeypatch):
+        monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+        with self._agents("gfx942", "gfx950", "gfx942"):
+            assert resolve_target_archs() == "gfx942,gfx950"
+
+    def test_ignores_unsupported_agents(self, monkeypatch):
+        """An integrated GPU alongside the dGPU must not widen the target set."""
+        monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+        with self._agents("gfx1035", "gfx950"):
+            assert resolve_target_archs() == "gfx950"
+
+    def test_no_device_keeps_the_existing_default_and_warns(self, monkeypatch, caplog):
+        """A GPU-less host keeps today's answer, loudly.
+
+        Widening this to every supported architecture was tried and reverted: it
+        desynchronizes the AITER shim, which takes exactly one architecture and
+        picks ``env_archs[0]`` when no device is visible, so a fat list ships
+        gfx950 kernels beside a gfx942-only shim. Making the GPU-less default
+        *correct* rather than merely consistent is a separate change.
+        """
+        monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+        with self._agents(), caplog.at_level("WARNING"):
+            assert resolve_target_archs() == "gfx942"
+        assert "FLASHINFER_ROCM_ARCH_LIST" in caplog.text
+
+    def test_gpuless_fallback_matches_the_aiter_shim_default(self):
+        """The two are resolved independently on a GPU-less host; if they ever
+        diverge, the shim is built for a different architecture than the kernels
+        it ships beside and faults at run time."""
+        from flashinfer.jit.aiter_source import _DEFAULT_BUILD_ARCH
+
+        assert hip_utils._GPULESS_FALLBACK_ARCH == _DEFAULT_BUILD_ARCH
+
+    def test_detection_is_cached_per_process(self):
+        """Restores a cache the refactor dropped: the previous implementation
+        reached rocminfo through the cached ``get_supported_device_indices``,
+        while ``rocminfo_gpu_agents`` is uncached by design."""
+        with patch(
+            "flashinfer.hip_utils.rocminfo_gpu_agents",
+            return_value=(("gfx950", ""),),
+        ) as probe:
+            hip_utils._detected_supported_archs()
+            hip_utils._detected_supported_archs()
+        assert probe.call_count == 1
+
+    def test_agrees_with_the_compilation_context(self, monkeypatch):
+        """The property the whole change exists for: the validator and the thing
+        that emits --offload-arch must not disagree."""
+        monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+        import torch.utils.cpp_extension as torch_cpp_ext
+
+        from flashinfer.compilation_context_hip import CompilationContext
+
+        # Both sides must see the same PyTorch. CompilationContext imports the
+        # real torch.utils.cpp_extension and validates against it, while the
+        # direct call below is handed _FakeCppExt -- so without this patch the
+        # assertion depends on the installed wheel. The wheel here is a fat build
+        # advertising gfx950, which is why that went unnoticed; an arch-specific
+        # build (gfx942-only) would make CompilationContext() raise "PyTorch does
+        # not support the following architectures" and fail this test for a
+        # reason that has nothing to do with resolver agreement.
+        with (
+            self._agents("gfx950"),
+            patch("flashinfer.hip_utils.get_system_rocm_version", return_value="7.1.0"),
+            patch.object(
+                torch_cpp_ext,
+                "_get_rocm_arch_flags",
+                _FakeCppExt._get_rocm_arch_flags,
+            ),
+        ):
+            _, validated = validate_flashinfer_rocm_arch(
+                arch_list=None, torch_cpp_ext_module=_FakeCppExt(), verbose=False
+            )
+            assert validated == CompilationContext().TARGET_ROCM_ARCHS
+
+
+class _FakeCppExt:
+    """Stands in for torch.utils.cpp_extension: claims both archs are built in."""
+
+    @staticmethod
+    def _get_rocm_arch_flags():
+        return [f"--offload-arch={a}" for a in FLASHINFER_SUPPORTED_ROCM_ARCHS]
+
+
 class TestValidateRocmArch:
     def _patch_rocm_version(self, version):
         return patch(
@@ -188,10 +377,24 @@ class TestValidateRocmArch:
         with self._patch_rocm_version("7.1.0"):
             assert validate_rocm_arch(arch_list=None) == "gfx942"
 
-    def test_defaults_to_gfx942_when_no_env_and_no_arg(self, monkeypatch):
+    def test_falls_back_to_the_running_device_not_a_hard_coded_arch(self, monkeypatch):
+        """With no argument and no env var, follow the hardware.
+
+        This used to assert ``== "gfx942"``, encoding the literal that made
+        ``validate_flashinfer_rocm_arch(arch_list=None)`` answer ``gfx942`` on a
+        gfx950 device while CompilationContext compiled for gfx950. A test that
+        pins a wrong constant is how the constant survives, so it is now pinned
+        to the detected architecture instead.
+        """
         monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
-        with self._patch_rocm_version("7.1.0"):
-            assert validate_rocm_arch(arch_list=None) == "gfx942"
+        with (
+            self._patch_rocm_version("7.1.0"),
+            patch(
+                "flashinfer.hip_utils.rocminfo_gpu_agents",
+                return_value=(("gfx950", "AMD Instinct MI350X"),),
+            ),
+        ):
+            assert validate_rocm_arch(arch_list=None) == "gfx950"
 
     def test_verbose_prints_message(self, capsys):
         with self._patch_rocm_version("7.1.0"):
