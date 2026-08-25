@@ -81,6 +81,26 @@ with `AITER_SYMBOL_VISIBLE=1` and caches it under
 `~/.cache/flashinfer/aiter_libs/`. The CK `module_rmsnorm` build is large
 and can take many minutes the first time.
 
+### `mha_fwd` is the only AITER op not shipped prebuilt
+
+The 0.1.10 wheel carries 58 prebuilt `mha_varlen_fwd_*.so` files and zero
+`mha_fwd*` — only `mha_fwd_kernels.cu` source. Single prefill is the one op
+that routes through the non-varlen `mha_fwd` template (batch=1 needs no
+seqstart plumbing, see PR #246), so it is the one op that JIT-builds on
+first call, per `(dtype, causal, has_lse)`.
+
+**Absence of `mha_fwd*.so` is expected, not a broken install.** AITER
+prebuilds what vLLM and SGLang call, which is the varlen path; the
+non-varlen variant space is not in that set.
+
+Two consequences worth planning for:
+
+* Budget **20+ minutes** for a cold variant — not the `~90s` a docstring
+  claims.
+* A read-only or foreign-owned `site-packages/aiter/jit/` lets the build
+  succeed but the install step fail. That error currently propagates out of
+  `backend="auto"` instead of falling back to `fa2`.
+
 ## How `backend="auto"` resolves
 
 There are four policies. Which one applies is a property of the op, not of
