@@ -332,6 +332,7 @@ def test_fused_moe_rejects_bad_arguments(kwargs, cast, match):
         # the shim's message rather than raising IndexError from the selector.
         (lambda t: {"ids": t["ids"][0, 0].clone()}, "must be 2-D"),
         (lambda t: {"w1": t["w1"][0].clone()}, "must be 3-D"),
+        (lambda t: {"x": t["x"][0].clone()}, "must be 2-D"),
         # topk=0 divides by zero inside AITER: without this check the process
         # dies on SIGFPE, which no caller can catch. The upper bound below is
         # the other half of the same range check.

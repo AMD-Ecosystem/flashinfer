@@ -174,11 +174,11 @@ def aiter_fused_moe(
             block_m = _SUPPORTED_BLOCK_M[0]
 
     if out is None:
-        out = torch.empty(
-            (hidden_states.shape[0], hidden_states.shape[1]),
-            dtype=hidden_states.dtype,
-            device=hidden_states.device,
-        )
+        # Shaped from hidden_states only when its rank is right. Indexing a
+        # degenerate one here raises IndexError before the shim can say
+        # "hidden_states must be 2-D"; an empty out reaches that check intact.
+        shape = tuple(hidden_states.shape) if hidden_states.dim() == 2 else (0, 0)
+        out = torch.empty(shape, dtype=hidden_states.dtype, device=hidden_states.device)
 
     module = _get_module(hidden_states.dtype, activation)
     # Skip torch custom-op dispatch, as the other AITER ROCm paths do: AITER is
