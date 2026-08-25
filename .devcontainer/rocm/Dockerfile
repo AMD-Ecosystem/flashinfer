@@ -77,16 +77,15 @@ RUN rm -rf /home/ubuntu && if grep ubuntu:x:1000:1000 /etc/passwd >/dev/null; th
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="$VIRTUAL_ENV/bin:/usr/lib/llvm-19/bin:$PATH"
 
-# cmake and scikit-build-core are build backend deps. They must be present in
-# the image because the documented install uses --no-build-isolation, which is
-# itself required: isolation would resolve `torch >= 2.7` from PyPI and pull a
-# non-ROCm wheel.
+# setuptools and setuptools-scm are the in-tree backend's build requirements.
+# They must be in the image because the documented install passes
+# --no-build-isolation, which is itself required: isolation resolves torch from
+# PyPI and pulls a non-ROCm wheel.
 RUN pip install --no-cache-dir \
         ninja \
-        cmake \
-        "scikit-build-core>=0.4.3" \
         "setuptools>=80" \
         "setuptools-scm>=9.2" \
+        "packaging>=24" \
         pre-commit \
         numpy \
         pytest pytest-cov pytest-xdist pytest-rerunfailures \
