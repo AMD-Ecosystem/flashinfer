@@ -248,6 +248,14 @@ class Capability:
 _MEASURED_950 = "MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-19"
 _MEASURED_942 = "MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-19"
 
+# MLA is called out separately: the suite runs above predate the MLA decode and
+# prefill tests, so the ✅ on that row was carried by a run that never exercised
+# it. Decode and prefill are now measured directly on both head counts.
+_MEASURED_950_MLA = (
+    "mla: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-24 "
+    "(decode + prefill, heads 16/128)"
+)
+
 # The one defect measured so far. Upstream calls it a compiler bug and gates
 # their own test skips on exactly (major, minor) == (7, 2) with gfx950
 # (aiter op_tests/test_batch_prefill.py::should_skip_rocm72_issue, still present
@@ -311,7 +319,12 @@ CAPABILITIES: Tuple[Capability, ...] = (
         ),
         fallback="fa2",
     ),
-    Capability("mla", "aiter", _archs(_OK_942, _OK_950)),  # no alternative backend
+    # No alternative backend -- hence no fallback=.
+    Capability(
+        "mla",
+        "aiter",
+        _archs(_OK_942, ArchSupport(Support.SUPPORTED, evidence=_MEASURED_950_MLA)),
+    ),
     Capability("rope", "aiter", _archs(_OK_942, _OK_950), fallback="native"),
     Capability(
         "append_paged_kv_cache", "aiter", _archs(_OK_942, _OK_950), fallback="native"
