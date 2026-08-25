@@ -71,9 +71,8 @@ inline void DebugPrintCUDAArray(T* device_ptr, size_t size, std::string prefix =
  * The HIP heuristic never selects 128, so that arm is compiled into every ROCm
  * build but unreachable and cannot otherwise be benchmarked. Forcing bypasses the
  * heuristic's guards and can therefore produce configurations it exists to avoid:
- * 128 at head_dim >= 256 raises from IsInvalid(); 16 at head_dim >= 256 needs 72 KB
- * of smem, which only the single-prefill path range-checks; and 128 can exceed the
- * workspace PrefillPlan sized from its own conservative_cta_tile_q estimate.
+ * 128 at head_dim >= 256 raises from IsInvalid(); and 16 at head_dim >= 256 needs 72 KB
+ * of smem, which only the single-prefill path range-checks.
  */
 inline uint32_t FA2ForcedCtaTileQ() {
   static const uint32_t forced = [] {
