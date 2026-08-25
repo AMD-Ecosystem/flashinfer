@@ -116,10 +116,9 @@ _counters = _bench_args.counters
 _auto_label = "mla" if _counters == "roofline" else f"mla_{_counters}"
 if _bench_args.mode != "all":
     _auto_label += f"_{_bench_args.mode}"
-# Only non-default sweeps are encoded, so the invocations in the docstring keep
-# the filenames the CDNA3 numbers were published under.
-if _bench_args.heads != _bench_parser.get_default("heads"):
-    _auto_label += f"_h{_bench_args.heads.replace(',', '-')}"
+# Only a non-default --batches is encoded. --heads deliberately is not: it
+# predates this flag, so suffixing it would orphan already-published CSVs from
+# --replot.
 if _bench_args.batches != _bench_parser.get_default("batches"):
     _auto_label += f"_b{_bench_args.batches.replace(',', '-')}"
 if _bench_args.separate:
@@ -134,7 +133,25 @@ _HEAD_DIM_KPE = 64  # qk_rope_head_dim
 _QK_HEAD_DIM = _HEAD_DIM_CKV + _HEAD_DIM_KPE  # 576
 _DTYPE = torch.bfloat16
 _PAGE_SIZE = 1  # what vLLM's AITER MLA backend requires
-_BATCHES = [int(b) for b in _bench_args.batches.split(",") if b.strip()]
+
+
+def _positive_ints(raw: str, flag: str) -> list:
+    """Parse a comma-separated sweep list, failing through argparse.
+
+    Unvalidated, a bad value surfaces far from its cause: batch 0 divides by
+    zero in the roofline only after the GPU work is done, and an empty list
+    reports as "no configs", which is what a missing GPU also looks like.
+    """
+    try:
+        values = [int(v) for v in raw.split(",") if v.strip()]
+    except ValueError:
+        _bench_parser.error(f"{flag}: expected comma-separated integers, got {raw!r}")
+    if not values or any(v < 1 for v in values):
+        _bench_parser.error(f"{flag}: values must be >= 1, got {raw!r}")
+    return values
+
+
+_BATCHES = _positive_ints(_bench_args.batches, "--batches")
 _KV_LENS = [1024, 8192, 32768]
 
 # --mode pool: fixed (small) active set, growing page pool. Not in --mode all
@@ -217,7 +234,7 @@ def _make_attn_config(batch, kv_len, num_heads):
         _HEAD_DIM_CKV,
         _HEAD_DIM_KPE,
         _PAGE_SIZE,
-        False,  # causal — ignored by the ROCm wrapper, passed for API parity
+        False,  # causal — moot at q_len=1; plan() rejects False above it
         1.0 / (_QK_HEAD_DIM**0.5),
         _DTYPE,
         _DTYPE,

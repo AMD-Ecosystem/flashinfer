@@ -248,9 +248,7 @@ class Capability:
 _MEASURED_950 = "MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-19"
 _MEASURED_942 = "MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-19"
 
-# MLA is called out separately: the suite runs above predate the MLA decode and
-# prefill tests, so the ✅ on that row was carried by a run that never exercised
-# it. Decode and prefill are now measured directly on both head counts.
+# Separate from the suite strings above, which predate the MLA tests.
 _MEASURED_950_MLA = (
     "mla: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-24 "
     "(decode + prefill, heads 16/128)"

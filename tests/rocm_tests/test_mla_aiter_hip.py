@@ -34,24 +34,9 @@ def _paged_mla_ref(
 
     out = torch.zeros_like(q_nope)
     for b in range(batch):
-        start = int(kv_indptr[b].item())
-        end = int(kv_indptr[b + 1].item())
-        last_len = int(kv_last_page_len[b].item())
-
-        keys_nope = []
-        keys_pe = []
-        for p_idx in range(start, end - 1):
-            pg = int(kv_indices[p_idx].item())
-            keys_nope.append(ckv_cache[pg])  # [page_size, ckv]
-            keys_pe.append(kpe_cache[pg])
-        if start < end:
-            pg = int(kv_indices[end - 1].item())
-            keys_nope.append(ckv_cache[pg, :last_len])
-            keys_pe.append(kpe_cache[pg, :last_len])
-
-        k_nope = torch.cat(keys_nope, dim=0).float()  # [kv_len, ckv]
-        k_pe = torch.cat(keys_pe, dim=0).float()  # [kv_len, kpe]
-        k = torch.cat([k_nope, k_pe], dim=-1)  # [kv_len, ckv+kpe]
+        k_nope, k = _gather_paged_kv(
+            ckv_cache, kpe_cache, kv_indptr, kv_indices, kv_last_page_len, b
+        )
 
         q = torch.cat(
             [q_nope[b].float(), q_pe[b].float()], dim=-1
@@ -116,13 +101,17 @@ def _paged_mla_prefill_ref(
         q_start = int(qo_indptr[b].item())
         q_end = int(qo_indptr[b + 1].item())
         qo_len = q_end - q_start
-        if qo_len == 0:
+        if qo_len <= 0:
             continue
 
         k_nope, k = _gather_paged_kv(
             ckv_cache, kpe_cache, kv_indptr, kv_indices, kv_last_page_len, b
         )
         kv_len = k.shape[0]
+        # Right-aligned masking leaves query 0 with kv_len-qo_len+1 keys; if that
+        # is <= 0 the row is fully masked and softmax returns NaN, which reads as
+        # a kernel fault rather than an invalid reference input.
+        assert kv_len >= qo_len, f"request {b}: kv_len={kv_len} < qo_len={qo_len}"
 
         q = torch.cat(
             [q_nope[q_start:q_end].float(), q_pe[q_start:q_end].float()], dim=-1
@@ -339,12 +328,7 @@ def _run_prefill(
 def test_mla_prefill_vs_ref(
     dtype, num_heads, head_dim_ckv, head_dim_kpe, qo_lens, kv_lens
 ):
-    """Cover the mla_prefill_fwd branch, which had no test on either arch.
-
-    ROCm 7.2.x is recorded as miscompiling AITER's *other* causal kernel on
-    gfx950 (arch_caps._ROCM72_CAUSAL_PREFILL); prefill MLA uses the same
-    causal ASM family, so it needs a numeric reference and not an assumption.
-    """
+    """Cover the mla_prefill_fwd branch against an fp32 reference."""
     device = torch.device("cuda:0")
     got, ref_args = _run_prefill(
         qo_lens, kv_lens, num_heads, head_dim_ckv, head_dim_kpe, dtype, device
@@ -353,17 +337,26 @@ def test_mla_prefill_vs_ref(
 
     # Report max_abs_err the way the batch-prefill miscompile was characterised
     # (0.595 vs fp32), so a failure here is comparable to that investigation.
+    # Scale the tolerance to the reference peak. A fixed 1e-1 exceeds |out|
+    # itself once kv_len is long -- softmax is near-uniform over zero-mean keys,
+    # so |out| ~ 0.1/sqrt(kv_len) -- and an all-zeros kernel would pass.
+    ref_peak = ref.float().abs().max().item()
     max_abs_err = (got.float() - ref.float()).abs().max().item()
-    assert max_abs_err < 1e-1, f"max_abs_err={max_abs_err:.6f}"
-    torch.testing.assert_close(got.float(), ref.float(), rtol=1e-1, atol=1e-1)
+    assert max_abs_err <= 0.05 * ref_peak, (
+        f"max_abs_err={max_abs_err:.6f} exceeds 5% of reference peak {ref_peak:.6f}"
+    )
+    torch.testing.assert_close(
+        got.float(), ref.float(), rtol=1e-2, atol=0.05 * ref_peak
+    )
 
 
 @requires_aiter
 def test_mla_plan_rejects_non_causal_multi_token():
     """causal=False with multi-token queries must raise, not mask silently.
 
-    aiter.mla.mla_prefill_fwd has no causal parameter; it always dispatches
-    mla_prefill_asm_fwd, so the flag cannot be honoured.
+    A rejected plan() must also leave the wrapper's state alone: run() only
+    gates on ``_qo_indptr is None``, so a half-planned wrapper would answer
+    with exactly the masking the raise exists to prevent.
     """
     from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
 
@@ -386,17 +379,22 @@ def test_mla_plan_rejects_non_causal_multi_token():
         q_data_type=torch.bfloat16,
         kv_data_type=torch.bfloat16,
     )
+    single = torch.tensor([0, 1], dtype=torch.int32, device=device)
     multi = torch.tensor([0, 4], dtype=torch.int32, device=device)
+
+    # Plan a valid decode first, so the reject below has state it could corrupt.
+    wrapper.plan(qo_indptr=single, causal=False, **kwargs)
     with pytest.raises(ValueError, match="causal"):
         wrapper.plan(qo_indptr=multi, causal=False, **kwargs)
 
-    # Same shape with causal=True, and single-token with causal=False, both fine.
+    # Checked before any re-plan: run() gates only on `_qo_indptr is None`, so a
+    # leaked _max_seqlen_q would route this decode into mla_prefill_fwd.
+    assert wrapper._max_seqlen_q == 1
+    assert torch.equal(wrapper._qo_indptr, single.to(wrapper._qo_indptr.device))
+
+    # Same shape with causal=True is fine.
     wrapper.plan(qo_indptr=multi, causal=True, **kwargs)
-    wrapper.plan(
-        qo_indptr=torch.tensor([0, 1], dtype=torch.int32, device=device),
-        causal=False,
-        **kwargs,
-    )
+    assert wrapper._max_seqlen_q == 4
 
 
 @requires_aiter
