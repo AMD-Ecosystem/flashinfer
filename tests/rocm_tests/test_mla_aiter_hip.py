@@ -65,6 +65,80 @@ def _paged_mla_ref(
     return out
 
 
+def _gather_paged_kv(
+    ckv_cache: torch.Tensor,
+    kpe_cache: torch.Tensor,
+    kv_indptr: torch.Tensor,
+    kv_indices: torch.Tensor,
+    kv_last_page_len: torch.Tensor,
+    b: int,
+):
+    """Flatten request ``b``'s pages into contiguous fp32 [kv_len, dim] keys."""
+    start = int(kv_indptr[b].item())
+    end = int(kv_indptr[b + 1].item())
+    last_len = int(kv_last_page_len[b].item())
+
+    keys_nope, keys_pe = [], []
+    for p_idx in range(start, end - 1):
+        pg = int(kv_indices[p_idx].item())
+        keys_nope.append(ckv_cache[pg])
+        keys_pe.append(kpe_cache[pg])
+    if start < end:
+        pg = int(kv_indices[end - 1].item())
+        keys_nope.append(ckv_cache[pg, :last_len])
+        keys_pe.append(kpe_cache[pg, :last_len])
+
+    k_nope = torch.cat(keys_nope, dim=0).float()
+    k_pe = torch.cat(keys_pe, dim=0).float()
+    return k_nope, torch.cat([k_nope, k_pe], dim=-1)
+
+
+def _paged_mla_prefill_ref(
+    q_nope: torch.Tensor,
+    q_pe: torch.Tensor,
+    ckv_cache: torch.Tensor,
+    kpe_cache: torch.Tensor,
+    qo_indptr: torch.Tensor,
+    kv_indptr: torch.Tensor,
+    kv_indices: torch.Tensor,
+    kv_last_page_len: torch.Tensor,
+    sm_scale: float,
+    causal: bool = True,
+) -> torch.Tensor:
+    """Pure-PyTorch ragged paged MLA prefill reference.
+
+    q_nope/q_pe are ragged over ``qo_indptr``: [total_q, num_heads, head_dim].
+    Causal masking is right-aligned -- the last query attends to every key --
+    which is the append/chunked-prefill convention.
+    """
+    out = torch.zeros_like(q_nope)
+    for b in range(int(qo_indptr.numel()) - 1):
+        q_start = int(qo_indptr[b].item())
+        q_end = int(qo_indptr[b + 1].item())
+        qo_len = q_end - q_start
+        if qo_len == 0:
+            continue
+
+        k_nope, k = _gather_paged_kv(
+            ckv_cache, kpe_cache, kv_indptr, kv_indices, kv_last_page_len, b
+        )
+        kv_len = k.shape[0]
+
+        q = torch.cat(
+            [q_nope[q_start:q_end].float(), q_pe[q_start:q_end].float()], dim=-1
+        )  # [qo_len, num_heads, ckv+kpe]
+
+        scores = torch.einsum("qhd,ld->qhl", q, k) * sm_scale
+        if causal:
+            qi = torch.arange(qo_len, device=scores.device).unsqueeze(1)
+            ki = torch.arange(kv_len, device=scores.device).unsqueeze(0)
+            mask = ki > (kv_len - qo_len + qi)  # [qo_len, kv_len]
+            scores = scores.masked_fill(mask.unsqueeze(1), float("-inf"))
+        attn = torch.softmax(scores, dim=-1)
+        out[q_start:q_end] = torch.einsum("qhl,lc->qhc", attn, k_nope).to(out.dtype)
+    return out
+
+
 def _build_paged_kv(
     batch_size: int,
     kv_lens: list,
@@ -181,6 +255,103 @@ def test_mla_decode_vs_ref(
     # MLA decode: fp16 atol ~5e-2 due to large head_dim softmax, bf16 slightly wider
     rtol, atol = (1e-1, 1e-1) if dtype == torch.bfloat16 else (5e-2, 5e-2)
     torch.testing.assert_close(got.float(), ref.float(), rtol=rtol, atol=atol)
+
+
+def _run_prefill(
+    qo_lens, kv_lens, num_heads, head_dim_ckv, head_dim_kpe, dtype, device
+):
+    """Drive the wrapper's prefill branch and return (got, ref_inputs)."""
+    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+
+    batch_size = len(kv_lens)
+    total_q = sum(qo_lens)
+    sm_scale = 1.0 / math.sqrt(head_dim_ckv + head_dim_kpe)
+    page_size = 1
+
+    ckv_cache, kpe_cache, kv_indptr, kv_indices, kv_last_page_len = _build_paged_kv(
+        batch_size, kv_lens, page_size, head_dim_ckv, head_dim_kpe, dtype, device
+    )
+    kv_len_tensor = torch.tensor(kv_lens, dtype=torch.int32, device=device)
+
+    torch.manual_seed(42)
+    q_nope = (
+        torch.randn(total_q, num_heads, head_dim_ckv, dtype=dtype, device=device) * 0.1
+    )
+    q_pe = (
+        torch.randn(total_q, num_heads, head_dim_kpe, dtype=dtype, device=device) * 0.1
+    )
+
+    qo_indptr = torch.zeros(batch_size + 1, dtype=torch.int32, device=device)
+    for i, n in enumerate(qo_lens):
+        qo_indptr[i + 1] = qo_indptr[i] + n
+
+    ws = torch.empty(1, dtype=torch.float32, device=device)
+    wrapper = BatchMLAPagedAttentionWrapper(ws, backend="aiter")
+    wrapper.plan(
+        qo_indptr=qo_indptr,
+        kv_indptr=kv_indptr,
+        kv_indices=kv_indices,
+        kv_len_arr=kv_len_tensor,
+        num_heads=num_heads,
+        head_dim_ckv=head_dim_ckv,
+        head_dim_kpe=head_dim_kpe,
+        page_size=page_size,
+        causal=True,
+        sm_scale=sm_scale,
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+    # The whole point: this must take the mla_prefill_fwd branch, not decode.
+    assert wrapper._max_seqlen_q == max(qo_lens)
+
+    got = wrapper.run(
+        q_nope=q_nope, q_pe=q_pe, ckv_cache=ckv_cache, kpe_cache=kpe_cache
+    )
+    return got, (
+        q_nope,
+        q_pe,
+        ckv_cache,
+        kpe_cache,
+        qo_indptr,
+        kv_indptr,
+        kv_indices,
+        kv_last_page_len,
+        sm_scale,
+    )
+
+
+@requires_aiter
+@pytest.mark.parametrize("dtype", [torch.bfloat16])
+@pytest.mark.parametrize("num_heads,head_dim_ckv,head_dim_kpe", [(16, 512, 64)])
+@pytest.mark.parametrize(
+    "qo_lens,kv_lens",
+    [
+        ([4], [4]),  # full triangle
+        ([16], [16]),
+        ([48], [64]),  # chunked prefill, 3:4
+        ([2, 8, 5, 1], [2, 64, 127, 32]),  # ragged, mixed ratios
+    ],
+)
+def test_mla_prefill_vs_ref(
+    dtype, num_heads, head_dim_ckv, head_dim_kpe, qo_lens, kv_lens
+):
+    """Cover the mla_prefill_fwd branch, which had no test on either arch.
+
+    ROCm 7.2.x is recorded as miscompiling AITER's *other* causal kernel on
+    gfx950 (arch_caps._ROCM72_CAUSAL_PREFILL); prefill MLA uses the same
+    causal ASM family, so it needs a numeric reference and not an assumption.
+    """
+    device = torch.device("cuda:0")
+    got, ref_args = _run_prefill(
+        qo_lens, kv_lens, num_heads, head_dim_ckv, head_dim_kpe, dtype, device
+    )
+    ref = _paged_mla_prefill_ref(*ref_args)
+
+    # Report max_abs_err the way the batch-prefill miscompile was characterised
+    # (0.595 vs fp32), so a failure here is comparable to that investigation.
+    max_abs_err = (got.float() - ref.float()).abs().max().item()
+    assert max_abs_err < 1e-1, f"max_abs_err={max_abs_err:.6f}"
+    torch.testing.assert_close(got.float(), ref.float(), rtol=1e-1, atol=1e-1)
 
 
 @requires_aiter
