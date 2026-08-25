@@ -142,6 +142,23 @@ def test_hip_gqa_group_sizes_match_the_kernel_dispatch():
     assert 128 // 8 not in from_kernel
 
 
+def test_cuda_path_still_matches_its_table(monkeypatch):
+    """The CUDA table is keyed "10.0", so the lookup may not use the warning text.
+
+    Forces the non-HIP branch on a ROCm box, since the defect is in the lookup
+    rather than the device: reusing one variable for both the dict key and the
+    "not supported on ..." message strips every backend on NVIDIA -- the exact
+    failure this branch exists to fix for AMD.
+    """
+    u = _utils()
+    monkeypatch.setattr(u, "IS_HIP", False)
+    monkeypatch.setattr(u, "get_compute_capability", lambda device: (10, 0))
+    kept = u.filter_backends_by_compute_capability(
+        ["fa2", "cudnn"], "BatchDecodeWithPagedKVCacheWrapper", torch.device("cuda")
+    )
+    assert kept == ["fa2", "cudnn"]
+
+
 def test_auto_inherits_fa2_constraints_when_aiter_cannot_serve():
     """`auto` resolves to fa2 when AITER is declined, so it inherits fa2's limits.
 

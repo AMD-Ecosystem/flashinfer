@@ -426,11 +426,13 @@ def filter_backends_by_compute_capability(backends, routine, device):
     if IS_HIP:
         # gfx942/gfx950 report compute capability 9.4/9.5, which match no entry
         # in the NVIDIA table -- every backend would be stripped, including fa2.
-        target = f"architecture {get_device_arch(device)}"
+        target = get_device_arch(device)
+        label = f"architecture {target}"
         supported_backends = rocm_supported_backends(routine, device)
     else:
         major, minor = get_compute_capability(device)
-        target = f"compute capability {major}.{minor}"
+        target = f"{major}.{minor}"
+        label = f"compute capability {target}"
         # If the compute capability is not supported, return an empty list.
         supported_backends = routine_cc_to_supported_backends[routine].get(target, [])
 
@@ -441,6 +443,6 @@ def filter_backends_by_compute_capability(backends, routine, device):
     for backend in backends_to_remove:
         backends.remove(backend)
         print(
-            f"[WARNING] {backend} for routine {routine} is not supported on {target}. Skipping."
+            f"[WARNING] {backend} for routine {routine} is not supported on {label}. Skipping."
         )
     return backends

@@ -290,7 +290,9 @@ were appended and shift the index of everything after them.
 
 ### Reading the output
 
-Two columns exist only on ROCm:
+Two columns are present in every CSV, but only ever populated on ROCm — the
+schema is the same on both platforms, so a CUDA run leaves them empty rather
+than omitting them:
 
 - **`backend_resolved`** — what `auto` actually became (`aiter` or `fa2`). Without
   it an `auto` row is uninterpretable, since both possibilities look identical.
