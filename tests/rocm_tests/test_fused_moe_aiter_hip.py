@@ -146,11 +146,11 @@ def test_supported_block_m_matches_the_shim():
         / "csrc_rocm"
         / "fused_moe_aiter.cu"
     ).read_text()
-    body = re.search(r"bool is_supported_block_m\([^)]*\)\s*\{(.*?)\}", shim, re.S)
+    body = re.search(r"bool\s+is_supported_block_m\s*\([^)]*\)\s*\{(.*?)\}", shim, re.S)
     assert body, "is_supported_block_m not found in the shim"
-    assert tuple(int(v) for v in re.findall(r"block_m == (\d+)", body.group(1))) == (
-        _SUPPORTED_BLOCK_M
-    )
+    assert tuple(
+        int(v) for v in re.findall(r"block_m\s*==\s*(\d+)", body.group(1))
+    ) == (_SUPPORTED_BLOCK_M)
 
 
 def test_select_block_m_only_returns_supported_tiles():
@@ -166,7 +166,7 @@ def test_select_block_m_only_returns_supported_tiles():
 
 def test_select_block_m_never_divides_by_zero():
     """A degenerate weight is the shim's error to report, not ours to crash on."""
-    assert _select_block_m(64, 2, 0) in (32, 64, 128)
+    assert _select_block_m(64, 2, 0) in _SUPPORTED_BLOCK_M
 
 
 @requires_aiter
