@@ -38,6 +38,7 @@ Run:
     python benchmarks/rocm_benchmarks/bench_fused_moe_aiter.py --counters       # PMC passes
 """
 
+import functools
 import logging
 import sys
 from pathlib import Path
@@ -68,14 +69,22 @@ _SHAPES = [
 _DTYPE = torch.bfloat16
 
 
-try:
-    from aiter.fused_moe import fused_moe as _aiter_fused_moe
-except Exception:  # noqa: BLE001 -- a half-installed aiter raises more than ImportError
-    # Matches aiter_utils._aiter_importable: importing aiter drives its JIT
-    # loader, so a missing ROCm dep surfaces as something other than ImportError.
-    # The baseline is optional; --replot and --list-presets need no aiter at all.
-    _aiter_fused_moe = None
-    print("note: aiter not importable, running without the tuned-CSV baseline")
+@functools.cache
+def _aiter_baseline():
+    """aiter.fused_moe, or None. Imported lazily and once.
+
+    Importing aiter drives its JIT loader, so this stays out of module scope:
+    --replot and --list-presets build no configs and must not pay for it. The
+    except is broad because a half-installed aiter raises more than ImportError
+    -- same reason as aiter_utils._aiter_importable.
+    """
+    try:
+        from aiter.fused_moe import fused_moe
+
+        return fused_moe
+    except Exception:  # noqa: BLE001
+        print("note: aiter not importable, running without the tuned-CSV baseline")
+        return None
 
 
 @torch.inference_mode()
@@ -142,11 +151,12 @@ def _make_configs(block_m_sweep: bool = False) -> list[KernelConfig]:
                     flashinfer.aiter_fused_moe(x, w1, w2, ids, w)
                 ),
             )
-            if _aiter_fused_moe is not None:
+            baseline = _aiter_baseline()
+            if baseline is not None:
                 add(
                     f"moe_{label}_nt{nt}_aiter",
-                    lambda x=x, w1=w1, w2=w2, ids=ids, w=weights: (
-                        _aiter_fused_moe(x, w1, w2, w, ids)
+                    lambda x=x, w1=w1, w2=w2, ids=ids, w=weights, f=baseline: (
+                        f(x, w1, w2, w, ids)
                     ),
                     suffix=" [aiter baseline]",
                 )
