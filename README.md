@@ -101,6 +101,7 @@ the routing decisions the library makes. Do not edit it by hand; run
 | `rmsnorm` | `aiter` | ✅ | ✅ |
 | `fused_add_rmsnorm` | `aiter` | ✅ | ✅ |
 | `silu_and_mul` | `aiter` | ✅ | ✅ |
+| `fused_moe` | `aiter` | ✅ | ✅ |
 | `single_decode` | `hip` | ◻️ | ◻️ |
 | `batch_decode` | `hip` | ◻️ | ◻️ |
 | `single_prefill` | `hip` | ◻️ | ◻️ |
@@ -127,7 +128,9 @@ the routing decisions the library makes. Do not edit it by hand; run
 Measured on:
 
 * `gfx942` — MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-19
+* `gfx942` — fused_moe: MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-24
 * `gfx950` — MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-19
+* `gfx950` — fused_moe: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-24
 
 <!-- END GENERATED: arch support matrix -->
 

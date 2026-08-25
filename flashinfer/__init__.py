@@ -192,6 +192,8 @@ elif IS_HIP:
     from .decode_rocm import (  # type: ignore[no-redef]
         single_decode_with_kv_cache as single_decode_with_kv_cache,
     )
+    from .fused_moe_rocm import aiter_fused_moe as aiter_fused_moe
+    from .fused_moe_rocm import shuffle_moe_weight as shuffle_moe_weight
     from .get_include_paths import get_csrc_dir, get_include
     from .norm import fused_add_rmsnorm as fused_add_rmsnorm
     from .norm import gemma_fused_add_rmsnorm as gemma_fused_add_rmsnorm

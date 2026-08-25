@@ -276,6 +276,17 @@ def _archs(gfx942: ArchSupport, gfx950: ArchSupport) -> Mapping[str, ArchSupport
 
 _OK_942 = ArchSupport(Support.SUPPORTED, evidence=_MEASURED_942)
 _OK_950 = ArchSupport(Support.SUPPORTED, evidence=_MEASURED_950)
+# Fused MoE has its own runs, so they name themselves: the README lists evidence
+# per architecture, and two bare gfx950 strings differing only by date are not
+# attributable to an op.
+_OK_942_MOE = ArchSupport(
+    Support.SUPPORTED,
+    evidence="fused_moe: MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-24",
+)
+_OK_950_MOE = ArchSupport(
+    Support.SUPPORTED,
+    evidence="fused_moe: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-24",
+)
 # HIP rows: declared, not yet individually attributed. The suites above cover
 # them, but no per-op HIP measurement has been recorded, so the evidence field
 # stays empty rather than borrowing the AITER runs' credibility.
@@ -310,6 +321,8 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "fused_add_rmsnorm", "aiter", _archs(_OK_942, _OK_950), fallback="native"
     ),
     Capability("silu_and_mul", "aiter", _archs(_OK_942, _OK_950), fallback="native"),
+    # No HIP MoE kernel, so no fallback.
+    Capability("fused_moe", "aiter", _archs(_OK_942_MOE, _OK_950_MOE)),
     # --- HIP backends: declared; per-op evidence not yet recorded ----------
     Capability("single_decode", "hip", _archs(_HIP_942, _HIP_950)),
     Capability("batch_decode", "hip", _archs(_HIP_942, _HIP_950)),
