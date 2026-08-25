@@ -1,4 +1,5 @@
 import argparse
+import csv
 import sys
 
 from routines.attention import parse_attention_args, run_attention_test
@@ -7,8 +8,33 @@ from routines.flashinfer_benchmark_utils import (
     full_output_columns,
     output_column_dict,
 )
-from routines.gemm import parse_gemm_args, run_gemm_test
-from routines.moe import parse_moe_args, run_moe_test
+
+# The gemm and moe routines pull in CUDA-only modules (flashinfer.autotuner,
+# flashinfer.fused_moe), so importing them unconditionally makes the whole runner
+# unimportable on ROCm -- including the attention routines, which do work there.
+_ROUTINE_IMPORT_ERRORS = {}
+
+try:
+    from routines.gemm import parse_gemm_args, run_gemm_test
+except Exception as exc:
+    parse_gemm_args = run_gemm_test = None
+    _ROUTINE_IMPORT_ERRORS["gemm"] = exc
+
+try:
+    from routines.moe import parse_moe_args, run_moe_test
+except Exception as exc:
+    parse_moe_args = run_moe_test = None
+    _ROUTINE_IMPORT_ERRORS["moe"] = exc
+
+
+def require_routine_group(group):
+    """Raise with the original import error if this routine group failed to import."""
+    exc = _ROUTINE_IMPORT_ERRORS.get(group)
+    if exc is not None:
+        raise RuntimeError(
+            f"The '{group}' benchmark routines are unavailable on this platform: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def run_test(args):
@@ -23,23 +49,23 @@ def run_test(args):
     if args.routine in benchmark_apis["attention"]:
         res = run_attention_test(args)
     elif args.routine in benchmark_apis["gemm"]:
+        require_routine_group("gemm")
         res = run_gemm_test(args)
     elif args.routine in benchmark_apis["moe"]:
+        require_routine_group("moe")
         res = run_moe_test(args)
     else:
         raise ValueError(f"Unsupported routine: {args.routine}")
 
     # Write results to output file if specified
     if args.output_path is not None:
-        with open(args.output_path, "a") as fout:
+        with open(args.output_path, "a", newline="") as fout:
+            writer = csv.writer(fout, lineterminator="\n")
             for cur_res in res:
                 for key in output_column_dict["general"]:
                     cur_res[key] = getattr(args, key)
 
-                output_line = ",".join(
-                    [str(cur_res[col]) for col in full_output_columns]
-                )
-                fout.write(output_line + "\n")
+                writer.writerow([str(cur_res[col]) for col in full_output_columns])
             fout.flush()
     return
 
@@ -123,6 +149,23 @@ def parse_args(line=sys.argv[1:]):
         help="Number of dry runs.",
     )
     parser.add_argument(
+        "--dry_run_time_ms",
+        type=int,
+        required=False,
+        default=None,
+        help="Warmup budget in ms. Overrides --dry_run_iters. On ROCm prefer this "
+        "over an iteration count: clock sampling intervals run to hundreds of ms, "
+        "so a handful of iterations warms up well short of steady-state clocks.",
+    )
+    parser.add_argument(
+        "--repeat_time_ms",
+        type=int,
+        required=False,
+        default=None,
+        help="Measurement budget in ms. Overrides --num_iters. Leaving this unset "
+        "keeps the sample count fixed, which makes std_time comparable run over run.",
+    )
+    parser.add_argument(
         "--case_tag",
         type=str,
         required=False,
@@ -147,8 +190,10 @@ def parse_args(line=sys.argv[1:]):
     if args.routine in benchmark_apis["attention"]:
         args = parse_attention_args(line, parser)
     elif args.routine in benchmark_apis["gemm"]:
+        require_routine_group("gemm")
         args = parse_gemm_args(line, parser)
     elif args.routine in benchmark_apis["moe"]:
+        require_routine_group("moe")
         args = parse_moe_args(line, parser)
     else:
         raise ValueError(f"Unsupported routine: {args.routine}")
@@ -179,8 +224,8 @@ if __name__ == "__main__":
 
     # Setup output file if specified
     if testlist_args.output_path is not None:
-        with open(testlist_args.output_path, "w") as fout:
-            fout.write(",".join(full_output_columns) + "\n")
+        with open(testlist_args.output_path, "w", newline="") as fout:
+            csv.writer(fout, lineterminator="\n").writerow(full_output_columns)
 
     # Process tests either from testlist file or command line arguments
     if testlist_args.testlist is not None:

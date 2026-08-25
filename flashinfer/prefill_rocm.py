@@ -339,8 +339,9 @@ def _auto_select_prefill_backend(
     head_dim_vo: int,
     pos_encoding_mode: str = "NONE",
     op: str = "batch_prefill",
-) -> str:
-    """Return 'aiter' when the GPU and call parameters satisfy AITER's constraints; else 'fa2'.
+) -> Tuple[str, Optional[str]]:
+    """Return ``(backend, reason)``: 'aiter' when the GPU and call parameters satisfy
+    AITER's constraints, else 'fa2' plus the reason AITER was declined.
 
     On gfx942/gfx950, checks NHD layout, no custom mask, fp16/bf16, equal dtypes and head dims.
     Falls back to 'fa2' with a one-time warning for each distinct skip reason.
@@ -349,6 +350,10 @@ def _auto_select_prefill_backend(
     uniform across ops: the ROCm 7.2 causal miscompile on gfx950 applies to batch
     prefill only, so checking a single shared "is AITER supported here" would
     either under- or over-block.
+
+    The warning fires once per ``(device, reason)`` for the process lifetime, so a
+    caller that needs the reason on *every* call must read it from the return
+    value -- the log carries it only the first time.
     """
     # The capability gate is just one more reason, so an architecture or
     # toolchain that cannot serve this op warns once and falls back like any
@@ -377,19 +382,20 @@ def _auto_select_prefill_backend(
         if key not in _aiter_auto_warned:
             _aiter_auto_warned.add(key)
             logger.warning("auto backend falling back to fa2: %s", reason)
-        return "fa2"
+        return "fa2", reason
 
     if not _aiter_ops_importable():
+        reason = (
+            "aiter package not installed "
+            "(see https://github.com/ROCm/aiter for install instructions)"
+        )
         key = (device, "import_failed")
         if key not in _aiter_auto_warned:
             _aiter_auto_warned.add(key)
-            logger.warning(
-                "auto backend falling back to fa2: aiter package not installed "
-                "(see https://github.com/ROCm/aiter for install instructions)"
-            )
-        return "fa2"
+            logger.warning("auto backend falling back to fa2: %s", reason)
+        return "fa2", reason
 
-    return "aiter"
+    return "aiter", None
 
 
 _aiter_bootstrap_lock = threading.Lock()
@@ -1431,7 +1437,7 @@ def single_prefill_with_kv_cache(
             scale_v = torch.ones(v.shape[1], dtype=torch.float32, device=q.device)
 
     if backend == "auto":
-        backend = _auto_select_prefill_backend(
+        backend, _ = _auto_select_prefill_backend(
             q.device,
             dtype_q=q.dtype,
             dtype_kv=k.dtype,
@@ -1793,6 +1799,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._mask_indptr_buf = mask_indptr_buf
         self._max_total_num_rows = None
         self._backend = backend
+        self._backend_fallback_reason: Optional[str] = None
         self._plan_info: Optional[torch.Tensor] = None
         self._cached_module = None
         self._seq_lens_kv = None
@@ -1806,6 +1813,20 @@ class BatchPrefillWithPagedKVCacheWrapper:
     @property
     def is_cuda_graph_enabled(self) -> bool:
         return self._use_cuda_graph
+
+    @property
+    def backend(self) -> str:
+        """The backend in use -- concrete after :meth:`plan`, ``"auto"`` before it."""
+        return self._backend
+
+    @property
+    def backend_fallback_reason(self) -> Optional[str]:
+        """Why ``auto`` declined AITER, or ``None`` if it did not.
+
+        Only set by the ``auto`` constraint check; an explicit ``backend=``
+        leaves it ``None``.
+        """
+        return self._backend_fallback_reason
 
     def reset_workspace_buffer(
         self, float_workspace_buffer: torch.Tensor, int_workspace_buffer: torch.Tensor
@@ -2114,16 +2135,18 @@ class BatchPrefillWithPagedKVCacheWrapper:
             self._cached_module = self._jit_module
         else:
             if self._backend == "auto":
-                self._backend = _auto_select_prefill_backend(
-                    self.device,
-                    dtype_q=q_data_type,
-                    dtype_kv=kv_data_type,
-                    kv_layout=self._kv_layout,
-                    has_custom_mask=self._custom_mask_buf is not None,
-                    head_dim_qk=head_dim_qk,
-                    head_dim_vo=head_dim_vo,
-                    pos_encoding_mode=pos_encoding_mode,
-                    op="batch_prefill",
+                self._backend, self._backend_fallback_reason = (
+                    _auto_select_prefill_backend(
+                        self.device,
+                        dtype_q=q_data_type,
+                        dtype_kv=kv_data_type,
+                        kv_layout=self._kv_layout,
+                        has_custom_mask=self._custom_mask_buf is not None,
+                        head_dim_qk=head_dim_qk,
+                        head_dim_vo=head_dim_vo,
+                        pos_encoding_mode=pos_encoding_mode,
+                        op="batch_prefill",
+                    )
                 )
             if self._backend == "aiter" and pos_encoding_mode != "NONE":
                 raise ValueError(
@@ -2832,12 +2855,27 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         self._mask_indptr_buf = mask_indptr_buf
         self._max_total_num_rows = None
         self._backend = backend
+        self._backend_fallback_reason: Optional[str] = None
         self._plan_info: Optional[torch.Tensor] = None
         self._cached_module = None
 
     @property
     def is_cuda_graph_enabled(self) -> bool:
         return self._use_cuda_graph
+
+    @property
+    def backend(self) -> str:
+        """The backend in use -- concrete after :meth:`plan`, ``"auto"`` before it."""
+        return self._backend
+
+    @property
+    def backend_fallback_reason(self) -> Optional[str]:
+        """Why ``auto`` declined AITER, or ``None`` if it did not.
+
+        Only set by the ``auto`` constraint check; an explicit ``backend=``
+        leaves it ``None``.
+        """
+        return self._backend_fallback_reason
 
     def reset_workspace_buffer(
         self, float_workspace_buffer: torch.Tensor, int_workspace_buffer
@@ -3073,16 +3111,18 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             self._cached_module = self._jit_module
         else:
             if self._backend == "auto":
-                self._backend = _auto_select_prefill_backend(
-                    self.device,
-                    dtype_q=q_data_type,
-                    dtype_kv=kv_data_type,
-                    kv_layout=self._kv_layout,
-                    has_custom_mask=packed_custom_mask is not None,
-                    head_dim_qk=head_dim_qk,
-                    head_dim_vo=head_dim_vo,
-                    pos_encoding_mode=pos_encoding_mode,
-                    op="batch_prefill",
+                self._backend, self._backend_fallback_reason = (
+                    _auto_select_prefill_backend(
+                        self.device,
+                        dtype_q=q_data_type,
+                        dtype_kv=kv_data_type,
+                        kv_layout=self._kv_layout,
+                        has_custom_mask=packed_custom_mask is not None,
+                        head_dim_qk=head_dim_qk,
+                        head_dim_vo=head_dim_vo,
+                        pos_encoding_mode=pos_encoding_mode,
+                        op="batch_prefill",
+                    )
                 )
             if self._backend == "aiter" and pos_encoding_mode != "NONE":
                 raise ValueError(
