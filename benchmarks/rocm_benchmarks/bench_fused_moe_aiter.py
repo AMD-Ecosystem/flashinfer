@@ -93,7 +93,6 @@ def _make_configs(block_m_sweep: bool = False) -> list[KernelConfig]:
             weights, ids = torch.topk(torch.softmax(logits, dim=-1), topk, dim=-1)
             ids = ids.to(torch.int32).contiguous()
             weights = weights.contiguous()
-            out = torch.empty(nt, K, device="cuda", dtype=_DTYPE)
 
             # Two GEMMs per (token, expert): [1,K]x[K,2I] and [1,I]x[I,K].
             theo_flops = 2 * nt * topk * (K * 2 * I + I * K)
@@ -118,6 +117,9 @@ def _make_configs(block_m_sweep: bool = False) -> list[KernelConfig]:
                 )
 
             if block_m_sweep:
+                # Only the sweep reuses a buffer; the comparison path below
+                # deliberately lets both sides allocate.
+                out = torch.empty(nt, K, device="cuda", dtype=_DTYPE)
                 for bm in _SUPPORTED_BLOCK_M:
                     add(
                         f"moe_{label}_nt{nt}_bm{bm}",

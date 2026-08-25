@@ -47,7 +47,7 @@ def _select_block_m(num_tokens: int, topk: int, num_experts: int) -> int:
     for limit, block_m in _BLOCK_M_THRESHOLDS:
         if per_expert < limit:
             return block_m
-    return 128
+    return _SUPPORTED_BLOCK_M[-1]
 
 
 # CK's MFMA tile for the weight operand: 16 rows x 16 columns per instruction.

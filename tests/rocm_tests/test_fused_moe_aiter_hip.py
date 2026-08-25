@@ -10,11 +10,19 @@
 # being loose enough to hide a wrong kernel (unshuffled weights, the failure this
 # suite exists to catch, land at ~1.3).
 
+import pathlib
+import re
+
 import pytest
 import torch
 
 import flashinfer
-from flashinfer.fused_moe_rocm import _select_block_m, shuffle_moe_weight
+from flashinfer.fused_moe_rocm import (
+    _BLOCK_M_THRESHOLDS,
+    _SUPPORTED_BLOCK_M,
+    _select_block_m,
+    shuffle_moe_weight,
+)
 from tests.test_helpers.test_helpers import requires_aiter
 
 _ACT = {"silu": torch.nn.functional.silu, "gelu": torch.nn.functional.gelu}
@@ -122,6 +130,38 @@ def test_select_block_m_tracks_tokens_per_expert_not_tokens():
     assert _select_block_m(256, 8, 128) == 32
     assert _select_block_m(512, 2, 8) == 128
     assert _select_block_m(512, 8, 128) == 64
+
+
+def test_supported_block_m_matches_the_shim():
+    """_SUPPORTED_BLOCK_M must equal the tiles the C++ shim accepts.
+
+    The shim's is_supported_block_m() is the authority -- CK's heuristic
+    dispatch TORCH_CHECKs anything else. Growing the Python tuple alone would
+    let _select_block_m return a tile that aborts on every large-batch call,
+    which no Python-side check can catch.
+    """
+    shim = (
+        pathlib.Path(__file__).parents[2]
+        / "flashinfer"
+        / "csrc_rocm"
+        / "fused_moe_aiter.cu"
+    ).read_text()
+    body = re.search(r"bool is_supported_block_m\([^)]*\)\s*\{(.*?)\}", shim, re.S)
+    assert body, "is_supported_block_m not found in the shim"
+    assert tuple(int(v) for v in re.findall(r"block_m == (\d+)", body.group(1))) == (
+        _SUPPORTED_BLOCK_M
+    )
+
+
+def test_select_block_m_only_returns_supported_tiles():
+    """Every tile the selector can return is one the shim accepts.
+
+    Paired with the conformance test above, this is what makes the thresholds
+    safe to edit: a threshold naming an unsupported tile is a runtime abort,
+    not a slow kernel.
+    """
+    returned = {bm for _, bm in _BLOCK_M_THRESHOLDS} | {_select_block_m(1 << 20, 8, 1)}
+    assert returned <= set(_SUPPORTED_BLOCK_M)
 
 
 def test_select_block_m_never_divides_by_zero():
