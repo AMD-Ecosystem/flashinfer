@@ -149,6 +149,23 @@ def parse_args(line=sys.argv[1:]):
         help="Number of dry runs.",
     )
     parser.add_argument(
+        "--dry_run_time_ms",
+        type=int,
+        required=False,
+        default=None,
+        help="Warmup budget in ms. Overrides --dry_run_iters. On ROCm prefer this "
+        "over an iteration count: clock sampling intervals run to hundreds of ms, "
+        "so a handful of iterations warms up well short of steady-state clocks.",
+    )
+    parser.add_argument(
+        "--repeat_time_ms",
+        type=int,
+        required=False,
+        default=None,
+        help="Measurement budget in ms. Overrides --num_iters. Leaving this unset "
+        "keeps the sample count fixed, which makes std_time comparable run over run.",
+    )
+    parser.add_argument(
         "--case_tag",
         type=str,
         required=False,

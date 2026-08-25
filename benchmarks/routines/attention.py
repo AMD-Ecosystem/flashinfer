@@ -18,6 +18,7 @@ from .flashinfer_benchmark_utils import (
     filter_backends_by_compute_capability,
     as_nhd_paged_kv_cache,
     record_backend_resolution,
+    bench_timing_kwargs,
 )
 
 
@@ -554,11 +555,7 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
         # Unified benchmark entry: prefer graph if compatible and not using CUPTI
         backend_times[cur_backend] = bench_gpu_time(
             fn=lambda: run_backend_wrapper(cur_backend),
-            dry_run_iters=args.dry_run_iters,
-            repeat_iters=args.num_iters,
-            l2_flush=True,
-            l2_flush_size_mb=256,
-            l2_flush_device=device,
+            **bench_timing_kwargs(args, device),
             sleep_after_run=False,
             enable_cupti=args.use_cupti,
             # "auto" may have resolved to AITER, whose launch grid is fixed at
@@ -1029,11 +1026,7 @@ def testBatchPrefillWithPagedKVCacheWrapper(args):
                 reference_output = outputs[cur_backend]
         backend_times[cur_backend] = bench_gpu_time(
             fn=lambda: run_backend_wrapper(cur_backend),
-            dry_run_iters=args.dry_run_iters,
-            repeat_iters=args.num_iters,
-            l2_flush=True,
-            l2_flush_size_mb=256,
-            l2_flush_device=device,
+            **bench_timing_kwargs(args, device),
             sleep_after_run=False,
             enable_cupti=args.use_cupti,
             # "auto" may have resolved to AITER, whose launch grid is fixed at
@@ -1489,11 +1482,7 @@ def testBatchPrefillWithRaggedKVCacheWrapper(args):
                 reference_output = outputs[cur_backend]
         backend_times[cur_backend] = bench_gpu_time(
             fn=lambda: run_backend_wrapper(cur_backend),
-            dry_run_iters=args.dry_run_iters,
-            repeat_iters=args.num_iters,
-            l2_flush=True,
-            l2_flush_size_mb=256,
-            l2_flush_device=device,
+            **bench_timing_kwargs(args, device),
             sleep_after_run=True,
             enable_cupti=args.use_cupti,
             # "auto" may have resolved to AITER, whose launch grid is fixed at
@@ -1891,11 +1880,7 @@ def testBatchMLAPagedAttentionWrapper(args):
                 reference_output = outputs[cur_backend]
         backend_times[cur_backend] = bench_gpu_time(
             fn=lambda: run_backend_wrapper(cur_backend),
-            dry_run_iters=args.dry_run_iters,
-            repeat_iters=args.num_iters,
-            l2_flush=True,
-            l2_flush_size_mb=256,
-            l2_flush_device=device,
+            **bench_timing_kwargs(args, device),
             sleep_after_run=False,
             enable_cupti=args.use_cupti,
             # "auto" may have resolved to AITER, whose launch grid is fixed at

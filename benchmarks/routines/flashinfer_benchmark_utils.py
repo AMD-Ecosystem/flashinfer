@@ -314,6 +314,40 @@ def get_device_arch(device):
     return normalize_arch(torch.cuda.get_device_properties(device).gcnArchName)
 
 
+def l2_flush_size_mb():
+    """Flush-buffer size large enough to evict the device's last-level cache.
+
+    CDNA3 and CDNA4 both carry 256 MB of memory-side Infinity Cache, so the
+    upstream 256 MB buffer exactly equals capacity and leaves its own tail
+    resident. NVIDIA L2 is 40-126 MB, where 256 MB is already >= 2x.
+    """
+    return 512 if IS_HIP else 256
+
+
+def bench_timing_kwargs(args, device):
+    """Timing arguments shared by every bench_gpu_time call site.
+
+    `bench_gpu_time` honours a `*_time_ms` budget only when the matching
+    `*_iters` is None, so the two are mutually exclusive per phase. Passing
+    neither `--dry_run_time_ms` nor `--repeat_time_ms` reproduces the previous
+    iteration-count behaviour exactly.
+    """
+    kwargs = {
+        "dry_run_iters": args.dry_run_iters,
+        "repeat_iters": args.num_iters,
+        "l2_flush": True,
+        "l2_flush_size_mb": l2_flush_size_mb(),
+        "l2_flush_device": device,
+    }
+    if getattr(args, "dry_run_time_ms", None) is not None:
+        kwargs["dry_run_iters"] = None
+        kwargs["dry_run_time_ms"] = args.dry_run_time_ms
+    if getattr(args, "repeat_time_ms", None) is not None:
+        kwargs["repeat_iters"] = None
+        kwargs["repeat_time_ms"] = args.repeat_time_ms
+    return kwargs
+
+
 def as_nhd_paged_kv_cache(kv_cache):
     """View an HND-shaped ``[pages, 2, heads, page_size, dim]`` paged cache as NHD.
 
