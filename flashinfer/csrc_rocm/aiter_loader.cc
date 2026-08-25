@@ -19,6 +19,13 @@ namespace flashinfer::aiter {
 
 namespace {
 
+// Appended to failures on the paths that resolve the pinned mangled symbols
+// below. Keep the version in step with _AITER_LAST_VALIDATED in prefill_rocm.py.
+constexpr const char* kAbiPinNote =
+    "\n  These symbols and .so names are pinned to amd-aiter 0.1.10, which has no stable"
+    "\n  C++ ABI. If AITER was upgraded, that is the likely cause: either reinstall the"
+    "\n  pin (pip install amd-aiter==0.1.10) or re-pin the symbols in aiter_loader.cc.";
+
 std::string get_jit_dir() {
   if (const char* env = std::getenv("AITER_JIT_DIR")) return env;
 #ifdef FLASHINFER_AITER_JIT_DIR
@@ -82,7 +89,7 @@ void* load_and_cache_sym(std::shared_mutex& mu, std::unordered_map<Key, void*, H
     const char* err = dlerror();
     dlclose(handle);
     throw std::runtime_error("dlsym(" + std::string(sym_name) + ") failed in " + so_path + ": " +
-                             (err ? err : "unknown"));
+                             (err ? err : "unknown") + "\n" + hint_fn());
   }
 
   cache.emplace(key, sym);
@@ -169,7 +176,7 @@ void* get_aiter_mha_fwd_handle(VariantKey const& key) {
            "calling mha_fwd with matching (dtype=" +
            std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
            ", causal=" + (key.causal ? "true" : "false") +
-           ", has_lse=" + (key.has_lse ? "true" : "false") + ").";
+           ", has_lse=" + (key.has_lse ? "true" : "false") + ")." + kAbiPinNote;
   });
 }
 
@@ -180,7 +187,7 @@ void* get_aiter_mha_varlen_fwd_handle(VariantKey const& key) {
            "calling mha_varlen_fwd with matching (dtype=" +
            std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
            ", causal=" + (key.causal ? "true" : "false") +
-           ", has_lse=" + (key.has_lse ? "true" : "false") + ").";
+           ", has_lse=" + (key.has_lse ? "true" : "false") + ")." + kAbiPinNote;
   });
 }
 
@@ -195,7 +202,7 @@ void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key) {
                ", has_lse=" + (key.has_lse ? "true" : "false") +
                ") before this C++ path.\n"
                "  If the .so exists but dlsym fails, run: nm -D " +
-               so_path + " | grep mha_batch_prefill";
+               so_path + " | grep mha_batch_prefill" + kAbiPinNote;
       });
 }
 
