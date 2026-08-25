@@ -131,6 +131,7 @@ Measured on:
 * `gfx942` — fused_moe: MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-24
 * `gfx950` — MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-19
 * `gfx950` — fused_moe: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-24
+* `gfx950` — mla: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-24 (decode + prefill, heads 16/128)
 
 <!-- END GENERATED: arch support matrix -->
 

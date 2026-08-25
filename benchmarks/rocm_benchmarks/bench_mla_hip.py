@@ -36,6 +36,7 @@ Run:
     python benchmarks/rocm_benchmarks/bench_mla_hip.py --timing-only --separate
     python benchmarks/rocm_benchmarks/bench_mla_hip.py --mode pool --timing-only
     python benchmarks/rocm_benchmarks/bench_mla_hip.py --heads 16,128
+    python benchmarks/rocm_benchmarks/bench_mla_hip.py --batches 1,8,32,64,128,256
     python benchmarks/rocm_benchmarks/bench_mla_hip.py                 # + roofline
 
 Bench flags are parsed at module level because rocprofv3 re-executes this script
@@ -90,6 +91,14 @@ _bench_parser.add_argument(
     help="Comma-separated num_heads per GPU (AITER MLA: multiples of 16, <=128). Default: 16.",
 )
 _bench_parser.add_argument(
+    "--batches",
+    default="1,8,32",
+    help=(
+        "Comma-separated batch sizes. Default: 1,8,32. AITER picks split-k depth "
+        "from the CU count, so the architectures only diverge above 32."
+    ),
+)
+_bench_parser.add_argument(
     "--separate",
     action="store_true",
     help=(
@@ -107,6 +116,15 @@ _counters = _bench_args.counters
 _auto_label = "mla" if _counters == "roofline" else f"mla_{_counters}"
 if _bench_args.mode != "all":
     _auto_label += f"_{_bench_args.mode}"
+# Only a non-default --batches, and only where it is actually consumed: pool
+# mode sweeps _POOL_PAGES at the fixed _POOL_BATCH, so encoding a batch list
+# there would name a sweep the rows do not contain. --heads deliberately is not
+# encoded: it predates this flag, so a suffix would orphan published CSVs from
+# --replot.
+if _bench_args.mode != "pool" and _bench_args.batches != _bench_parser.get_default(
+    "batches"
+):
+    _auto_label += f"_b{_bench_args.batches.replace(',', '-')}"
 if _bench_args.separate:
     _auto_label += "_separate"
 _label = _bench_args.label if _bench_args.label is not None else _auto_label
@@ -119,7 +137,25 @@ _HEAD_DIM_KPE = 64  # qk_rope_head_dim
 _QK_HEAD_DIM = _HEAD_DIM_CKV + _HEAD_DIM_KPE  # 576
 _DTYPE = torch.bfloat16
 _PAGE_SIZE = 1  # what vLLM's AITER MLA backend requires
-_BATCHES = [1, 8, 32]
+
+
+def _positive_ints(raw: str, flag: str) -> list:
+    """Parse a comma-separated sweep list, failing through argparse.
+
+    Unvalidated, a bad value surfaces far from its cause: batch 0 divides by
+    zero in the roofline only after the GPU work is done, and an empty list
+    reports as "no configs", which is what a missing GPU also looks like.
+    """
+    try:
+        values = [int(v) for v in raw.split(",") if v.strip()]
+    except ValueError:
+        _bench_parser.error(f"{flag}: expected comma-separated integers, got {raw!r}")
+    if not values or any(v < 1 for v in values):
+        _bench_parser.error(f"{flag}: values must be >= 1, got {raw!r}")
+    return values
+
+
+_BATCHES = _positive_ints(_bench_args.batches, "--batches")
 _KV_LENS = [1024, 8192, 32768]
 
 # --mode pool: fixed (small) active set, growing page pool. Not in --mode all
@@ -202,7 +238,7 @@ def _make_attn_config(batch, kv_len, num_heads):
         _HEAD_DIM_CKV,
         _HEAD_DIM_KPE,
         _PAGE_SIZE,
-        False,  # causal — ignored by the ROCm wrapper, passed for API parity
+        False,  # causal — moot at q_len=1; plan() rejects False above it
         1.0 / (_QK_HEAD_DIM**0.5),
         _DTYPE,
         _DTYPE,

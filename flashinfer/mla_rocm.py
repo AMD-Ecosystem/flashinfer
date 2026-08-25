@@ -142,7 +142,10 @@ class BatchMLAPagedAttentionWrapper:
     r"""ROCm MLA paged attention wrapper backed by AITER.
 
     Mirrors the public API of :class:`flashinfer.mla.BatchMLAPagedAttentionWrapper`
-    for use on AMD gfx942/gfx950 GPUs.  Implements the Matrix Absorption variant
+    for use on AMD gfx942/gfx950 GPUs, with one divergence: the CUDA wrapper
+    honours ``causal=False`` for multi-token queries, and AITER's prefill kernel
+    cannot, so :meth:`plan` rejects it rather than silently masking.
+    Implements the Matrix Absorption variant
     (absorbed W_UQ·W_UK and W_UV·W_O) where the KV-cache stores compressed-KV
     (``ckv``) and rope-key (``kpe``) tensors concatenated into a single buffer.
 
@@ -242,7 +245,9 @@ class BatchMLAPagedAttentionWrapper:
         page_size : int
             Page size of the paged KV-cache.
         causal : bool
-            Whether to apply causal masking (no-op for single-token decode).
+            Whether to apply causal masking. No-op for single-token decode.
+            Multi-token queries are always masked causally by AITER, so
+            ``causal=False`` raises rather than silently masking.
         sm_scale : float
             Softmax scale (typically ``1 / sqrt(head_dim_ckv + head_dim_kpe)``).
         q_data_type : torch.dtype
@@ -283,19 +288,33 @@ class BatchMLAPagedAttentionWrapper:
                 f"got {tuple(kv_len_arr.shape)} for kv_indptr with length {kv_indptr.numel()}."
             )
 
-        self._qo_indptr = qo_indptr.to(self.device, non_blocking=True)
-        self._kv_indptr = kv_indptr.to(self.device, non_blocking=True)
-        self._kv_indices = kv_indices.to(self.device, non_blocking=True)
         qo_host, kv_indptr_host, kv_lens_host = _gather_plan_inputs_on_host(
             qo_indptr, kv_indptr, kv_len_arr
         )
+        qo_lens = qo_host[1:] - qo_host[:-1]
+        max_seqlen_q = int(qo_lens.max()) if qo_lens.numel() > 0 else 1
+
+        # AITER's mla_prefill_fwd takes no causal flag, so causal=False cannot be
+        # honoured for multi-token queries. Single-token masks nothing either way.
+        if max_seqlen_q > 1 and not causal:
+            raise ValueError(
+                "AITER MLA applies causal masking unconditionally for "
+                f"multi-token queries (max_seqlen_q={max_seqlen_q}); "
+                "causal=False cannot be honoured. Pass causal=True, or use "
+                "single-token queries where the distinction does not arise."
+            )
         last_cpu = _kv_lens_to_last_page_len_cpu(
             kv_indptr_host, kv_lens_host, page_size
         )
+
+        # Every validation above this line runs before any state is written, so a
+        # rejected plan() leaves a previously-planned wrapper untouched.
+        self._qo_indptr = qo_indptr.to(self.device, non_blocking=True)
+        self._kv_indptr = kv_indptr.to(self.device, non_blocking=True)
+        self._kv_indices = kv_indices.to(self.device, non_blocking=True)
         self._kv_last_page_len = last_cpu.to(self.device, non_blocking=True)
         self._sm_scale = sm_scale
-        qo_lens = qo_host[1:] - qo_host[:-1]
-        self._max_seqlen_q = int(qo_lens.max()) if qo_lens.numel() > 0 else 1
+        self._max_seqlen_q = max_seqlen_q
 
     def run(
         self,
