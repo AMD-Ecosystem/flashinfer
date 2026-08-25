@@ -52,54 +52,8 @@ if IS_CUDA:
     from .vllm_ar import register_buffer as vllm_register_buffer
     from .vllm_ar import register_graph_buffers as vllm_register_graph_buffers
 else:
-    # On ROCm, every other comm submodule is CUDA-only: cuda_ipc and
-    # trtllm_ar eagerly bind to libcudart at import time (AssertionError);
-    # vllm_ar / nvshmem / nvshmem_allreduce import OK but explode at call
-    # time when JIT loading triggers; mnnvl imports pynvml which isn't
-    # installed. Install a meta-path finder that intercepts every
-    # CUDA-only submodule lookup and raises a uniform catchable
-    # ImportError — for both `from X import Y` and plain `import X`.
-    import importlib.abc
-    import importlib.machinery
-    import sys
+    from .._rocm import gate_cuda_only_modules
 
-    _CUDA_ONLY_SUBMODULES = frozenset(
-        {
-            "flashinfer.comm.cuda_ipc",
-            "flashinfer.comm.trtllm_ar",
-            "flashinfer.comm.trtllm_alltoall",
-            "flashinfer.comm.trtllm_mnnvl_ar",
-            "flashinfer.comm.vllm_ar",
-            "flashinfer.comm.mnnvl",
-            "flashinfer.comm.nvshmem",
-            "flashinfer.comm.nvshmem_allreduce",
-        }
-    )
-
-    class _CudaOnlyLoader(importlib.abc.Loader):
-        def create_module(self, spec):
-            return None
-
-        def exec_module(self, module):
-            raise ImportError(
-                f"{module.__spec__.name} is CUDA-only and not available on ROCm"
-            )
-
-    class _CudaOnlyFinder(importlib.abc.MetaPathFinder):
-        # Stable marker so the idempotency check below survives
-        # importlib.reload(flashinfer.comm), which redefines the class object
-        # and would otherwise make isinstance() return False against the
-        # already-installed finder from the previous load.
-        _is_flashinfer_cuda_only_finder = True
-
-        def find_spec(self, fullname, path=None, target=None):
-            if fullname in _CUDA_ONLY_SUBMODULES:
-                return importlib.machinery.ModuleSpec(fullname, _CudaOnlyLoader())
-            return None
-
-    if not any(
-        getattr(f, "_is_flashinfer_cuda_only_finder", False) for f in sys.meta_path
-    ):
-        sys.meta_path.insert(0, _CudaOnlyFinder())
+    gate_cuda_only_modules()
 
 # from .mnnvl import MnnvlMemory, MnnvlMoe, MoEAlltoallInfo
