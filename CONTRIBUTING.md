@@ -46,6 +46,62 @@ provide a HIP implementation under `gpu_iface/backend/hip/`. Don't
 reach for `hipcub`, `__hip_*`, or inline asm from inside
 `include/flashinfer/` — go through `gpu_iface`.
 
+# Additive-Only: the rule that keeps upstream syncs cheap
+
+This is a **permanent downstream fork** that syncs from
+`flashinfer-ai/flashinfer` by merge. The cost of every sync is decided by one
+number: how many upstream files the port has edited in place. Additions —
+however large — are close to free at merge time, because upstream has nothing
+to merge them against. The exception is a path upstream later adds too: that
+conflicts as add/add, with no common ancestor to help resolve it, which is how
+`CLAUDE.md` and `.claude/skills/benchmark-kernel/SKILL.md` got onto the
+conflict list. Prefer a `_rocm`/`_aiter`-suffixed name for anything upstream
+might plausibly create.
+
+**So: add files, don't edit them.** Concretely, prefer in this order:
+
+1. **Source-path redirect.** `FLASHINFER_CSRC_DIR` already points at
+   `flashinfer/csrc_rocm/` on ROCm (see `flashinfer/jit/env.py` and
+   `flashinfer/get_include_paths.py`), so a shared JIT generator naming
+   `sampling.cu` picks up the HIP source with **zero Python diff**. This is why
+   `flashinfer/sampling.py` and `quantization.py` contain no HIP references at
+   all. Use it whenever only the kernel differs.
+2. **A ROCm module beside the upstream one**, swapped into `sys.modules` in
+   `flashinfer/__init__.py` — how `prefill_rocm.py` and `decode_rocm.py` are
+   reached.
+3. **A declared-unsupported gate**, so an op the port does not implement raises
+   a named error rather than `AttributeError`. See the meta-path loader in
+   `flashinfer/comm/__init__.py`.
+
+**Last resort: an `if IS_HIP:` branch inside an upstream file.** Every one of
+these is a permanent merge conflict, so it needs a reason that the three
+mechanisms above cannot serve. `scripts/upstream_canary.py` is the authoritative
+list — it reports exactly which files a merge would conflict on. The
+`[tool.coverage.run].include` block in `pyproject.toml` is *not* that list: it is
+generated for coverage, contains ROCm-only additions such as `prefill_rocm.py`
+that are not edits to anything, and its workflow only watches
+`flashinfer/**/*.py`, so an in-place edit under `csrc/` or `include/` never
+appears there at all.
+
+**Forked headers are exempt from conflicts and therefore from warnings.**
+`include/flashinfer/attention/generic/` is a fork of the upstream attention
+headers re-expressed on `gpu_iface`. It conflicts with nothing, so it goes
+stale silently instead — a fix that lands upstream will not reach it, and
+nothing will say so.
+
+**Check the cost before and after your change:**
+
+```bash
+git fetch upstream
+python3 scripts/upstream_canary.py          # conflicts, ranked; plus forked-header drift
+```
+
+It builds nothing, needs no GPU, and leaves your working tree and index
+untouched — the merge is resolved via `git merge-tree` into the object
+database. (It does leave unreferenced loose objects behind, so a long-lived CI
+checkout wants a periodic `git gc`.) A conflicting result is the normal steady
+state; what matters is that your change does not lengthen the list.
+
 # Adding a Kernel
 
 1. **Kernel implementation** — framework-agnostic header(s) in
@@ -91,6 +147,8 @@ CI rejects PRs that don't pass `pre-commit run -a`.
 # Submitting Changes
 
 Open PRs against the `amd-integration` branch of
-[`ROCm/flashinfer`](https://github.com/ROCm/flashinfer). For PR
+[`AMD-Ecosystem/flashinfer`](https://github.com/AMD-Ecosystem/flashinfer) —
+never against `flashinfer-ai/flashinfer`, which `gh pr create` will otherwise
+pick as the default base. For PR
 description conventions (sections, benchmarks, test plan), see the
 "PR Description" section of [`CLAUDE.md`](CLAUDE.md).
