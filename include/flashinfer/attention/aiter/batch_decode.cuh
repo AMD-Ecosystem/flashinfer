@@ -62,13 +62,11 @@ inline std::size_t AiterPaV1WorkspaceBytes(int num_seqs, int num_heads, int max_
 // The iteration space uses slots_per_seq = max(max_blocks_per_seq, 1) so the
 // slot-0 threads still run, and still write context_lens, when every sequence
 // has zero pages.
-static __global__ void AiterPaV1BuildBlockTablesKernel(const int32_t* __restrict__ indptr,
-                                                       const int32_t* __restrict__ indices,
-                                                       const int32_t* __restrict__ last_page_len,
-                                                       int32_t* __restrict__ block_tables,
-                                                       int32_t* __restrict__ context_lens,
-                                                       int num_seqs, int max_blocks_per_seq,
-                                                       int slots_per_seq, int page_size) {
+static __global__ void AiterPaV1BuildBlockTablesKernel(
+    const int32_t* __restrict__ indptr, const int32_t* __restrict__ indices,
+    const int32_t* __restrict__ last_page_len, int32_t* __restrict__ block_tables,
+    int32_t* __restrict__ context_lens, int num_seqs, int max_blocks_per_seq, int slots_per_seq,
+    int page_size, int64_t indices_numel) {
   const int64_t total = static_cast<int64_t>(num_seqs) * slots_per_seq;
   for (int64_t idx = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x; idx < total;
        idx += static_cast<int64_t>(gridDim.x) * blockDim.x) {
@@ -78,8 +76,12 @@ static __global__ void AiterPaV1BuildBlockTablesKernel(const int32_t* __restrict
     const int32_t npages = indptr[seq + 1] - begin;
 
     if (slot < max_blocks_per_seq) {
+      // The ATen index_select this replaced bounds-checked the gather; reading
+      // indices[] directly means a malformed indptr walks off the end instead.
+      const int64_t src = static_cast<int64_t>(begin) + slot;
+      const bool in_range = slot < npages && src >= 0 && src < indices_numel;
       block_tables[static_cast<int64_t>(seq) * max_blocks_per_seq + slot] =
-          slot < npages ? indices[begin + slot] : 0;
+          in_range ? indices[src] : 0;
     }
 
     // Fold the context-length pass into the slot-0 threads rather than paying a
@@ -96,7 +98,7 @@ inline hipError_t AiterPaV1BuildBlockTables(const int32_t* indptr, const int32_t
                                             const int32_t* last_page_len, int32_t* block_tables,
                                             int32_t* context_lens, int num_seqs,
                                             int max_blocks_per_seq, int page_size,
-                                            hipStream_t stream) {
+                                            int64_t indices_numel, hipStream_t stream) {
   if (num_seqs == 0) return hipSuccess;
   const int slots_per_seq = max_blocks_per_seq > 0 ? max_blocks_per_seq : 1;
   const int64_t total = static_cast<int64_t>(num_seqs) * slots_per_seq;
@@ -107,7 +109,7 @@ inline hipError_t AiterPaV1BuildBlockTables(const int32_t* indptr, const int32_t
   const int blocks = static_cast<int>(want < 4096 ? want : 4096);
   hipLaunchKernelGGL(AiterPaV1BuildBlockTablesKernel, dim3(blocks), dim3(kThreads), 0, stream,
                      indptr, indices, last_page_len, block_tables, context_lens, num_seqs,
-                     max_blocks_per_seq, slots_per_seq, page_size);
+                     max_blocks_per_seq, slots_per_seq, page_size, indices_numel);
   return hipGetLastError();
 }
 

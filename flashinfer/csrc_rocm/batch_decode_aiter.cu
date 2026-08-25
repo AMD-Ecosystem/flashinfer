@@ -9,8 +9,7 @@
 //
 // FlashInfer's paged KV layout (flat indices + indptr + last_page_len) is
 // converted in-line to PA v1's expected dense [num_seqs, max_blocks_per_seq]
-// block_tables + per-seq context_lens. This conversion is small (O(batch))
-// and runs on GPU via torch ops; correctness-first, optimize later if needed.
+// block_tables + per-seq context_lens, by a single fused kernel per run().
 
 #include <ATen/ATen.h>
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
@@ -74,7 +73,8 @@ static std::pair<at::Tensor, at::Tensor> build_block_tables_and_ctxlens(
       paged_kv_indptr.data_ptr<int32_t>(), paged_kv_indices.data_ptr<int32_t>(),
       paged_kv_last_page_len.data_ptr<int32_t>(), block_tables.data_ptr<int32_t>(),
       context_lens.data_ptr<int32_t>(), static_cast<int>(num_seqs),
-      static_cast<int>(max_blocks_per_seq), static_cast<int>(page_size), stream);
+      static_cast<int>(max_blocks_per_seq), static_cast<int>(page_size), paged_kv_indices.numel(),
+      stream);
   TORCH_CHECK(status == hipSuccess,
               "AiterPaV1BuildBlockTables failed: ", hipGetErrorString(status));
 
