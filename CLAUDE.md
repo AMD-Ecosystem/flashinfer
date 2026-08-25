@@ -112,7 +112,7 @@ Note `amd-aiter` is **not** on the top-level
 `pypi.amd.com/simple` index, and it must be `--extra-index-url` rather than
 `--index-url` so AITER's own dependencies still resolve from PyPI.
 
-**Only cp310 and cp312 wheels exist** on that channel (verified 2026-08-20).
+**Only cp310 and cp312 wheels exist** on that channel.
 On any other interpreter — 3.11, 3.13, 3.14 — the command fails with
 `No matching distribution found`, and there is no pinned-version fallback:
 public PyPI tops out at a stale `0.1.7.post2.dev18`, and the nightlies index

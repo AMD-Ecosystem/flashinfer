@@ -185,7 +185,7 @@ class KnownBad:
 class ArchSupport:
     """How one ``(op, backend)`` behaves on one architecture.
 
-    ``evidence`` records *what was actually run* -- board, ROCm, AITER, date --
+    ``evidence`` records *what was actually run* -- board, ROCm, AITER, torch --
     rather than a bare "validated" flag. An empty string means the row is a
     declaration nobody has measured, which is a fact worth being able to render.
     """
@@ -248,12 +248,12 @@ class Capability:
 # both on torch 2.9.1+rocm7.2.0, HIP 7.2.26015, amd-aiter 0.1.10.
 # --------------------------------------------------------------------------
 
-_MEASURED_950 = "MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-19"
-_MEASURED_942 = "MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-19"
+_MEASURED_950 = "MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1"
+_MEASURED_942 = "MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1"
 
 # Separate from the suite strings above, which predate the MLA tests.
 _MEASURED_950_MLA = (
-    "mla: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-24 "
+    "mla: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 "
     "(decode + prefill, heads 16/128)"
 )
 
@@ -285,16 +285,15 @@ def _archs(gfx942: ArchSupport, gfx950: ArchSupport) -> Mapping[str, ArchSupport
 
 _OK_942 = ArchSupport(Support.SUPPORTED, evidence=_MEASURED_942)
 _OK_950 = ArchSupport(Support.SUPPORTED, evidence=_MEASURED_950)
-# Fused MoE has its own runs, so they name themselves: the README lists evidence
-# per architecture, and two bare gfx950 strings differing only by date are not
-# attributable to an op.
+# Fused MoE has its own runs, so the strings name the op: an evidence line that
+# differs from the suite runs only by board is not attributable to anything.
 _OK_942_MOE = ArchSupport(
     Support.SUPPORTED,
-    evidence="fused_moe: MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-24",
+    evidence="fused_moe: MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1",
 )
 _OK_950_MOE = ArchSupport(
     Support.SUPPORTED,
-    evidence="fused_moe: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-24",
+    evidence="fused_moe: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1",
 )
 # HIP rows: declared, not yet individually attributed. The suites above cover
 # them, but no per-op HIP measurement has been recorded, so the evidence field
