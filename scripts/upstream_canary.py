@@ -141,7 +141,10 @@ def _churn_map(
         else:
             # Rename/copy: path field empty, next two fields are old then new.
             if i + 1 >= len(fields):
-                break
+                raise ToolError(
+                    f"truncated numstat -z rename record at field {i}: expected an "
+                    "old and a new path but the stream ended"
+                )
             renames[fields[i + 1]] = fields[i]
             path = fields[i + 1]
             i += 2
