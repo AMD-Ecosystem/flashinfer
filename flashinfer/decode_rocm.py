@@ -935,6 +935,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     device=float_workspace_buffer.device,
                 )
         self._backend = backend
+        self._backend_fallback_reason: Optional[str] = None
         # ROCm never supports PDL; cache once to avoid per-call device property lookup.
         self._pdl_supported = device_support_pdl(float_workspace_buffer.device)
 
@@ -945,6 +946,21 @@ class BatchDecodeWithPagedKVCacheWrapper:
     @property
     def is_cuda_graph_enabled(self) -> bool:
         return self._use_cuda_graph
+
+    @property
+    def backend(self) -> str:
+        """The backend in use -- concrete after :meth:`plan`, ``"auto"`` before it."""
+        return self._backend
+
+    @property
+    def backend_fallback_reason(self) -> Optional[str]:
+        """Why ``auto`` declined AITER, or ``None`` if it did not.
+
+        Only set by the ``auto`` constraint check. An explicit ``backend=`` leaves
+        it ``None``, as do the short-circuits that keep ``auto`` on fa2 under
+        ``use_tensor_cores`` or CUDA-graph capture.
+        """
+        return self._backend_fallback_reason
 
     def reset_workspace_buffer(
         self, float_workspace_buffer: torch.Tensor, int_workspace_buffer: torch.Tensor
@@ -1140,18 +1156,20 @@ class BatchDecodeWithPagedKVCacheWrapper:
             if self.use_tensor_cores or self.is_cuda_graph_enabled:
                 self._backend = "fa2"
             else:
-                self._backend = _auto_select_prefill_backend(
-                    self.device,
-                    dtype_q=q_data_type,
-                    dtype_kv=kv_data_type,
-                    kv_layout=self._kv_layout,
-                    has_custom_mask=False,
-                    head_dim_qk=head_dim,
-                    head_dim_vo=head_dim,
-                    pos_encoding_mode=pos_encoding_mode,
-                    # Decode borrows the prefill selector, but it is a distinct
-                    # capability row -- the gates are not the same op.
-                    op="batch_decode",
+                self._backend, self._backend_fallback_reason = (
+                    _auto_select_prefill_backend(
+                        self.device,
+                        dtype_q=q_data_type,
+                        dtype_kv=kv_data_type,
+                        kv_layout=self._kv_layout,
+                        has_custom_mask=False,
+                        head_dim_qk=head_dim,
+                        head_dim_vo=head_dim,
+                        pos_encoding_mode=pos_encoding_mode,
+                        # Decode borrows the prefill selector, but it is a distinct
+                        # capability row -- the gates are not the same op.
+                        op="batch_decode",
+                    )
                 )
         if self._backend == "aiter":
             if self.use_tensor_cores:
