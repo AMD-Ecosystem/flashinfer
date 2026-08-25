@@ -314,6 +314,12 @@ def get_device_arch(device):
     return normalize_arch(torch.cuda.get_device_properties(device).gcnArchName)
 
 
+# GQA group sizes the HIP decode kernel instantiates; see DISPATCH_GQA_GROUP_SIZE
+# in include/flashinfer/utils.cuh. Others raise "Unsupported group_size" from the
+# kernel, which aborts the whole test case rather than skipping one backend.
+HIP_DECODE_GQA_GROUP_SIZES = frozenset({1, 2, 3, 4, 8})
+
+
 def l2_flush_size_mb():
     """Flush-buffer size large enough to evict the device's last-level cache.
 

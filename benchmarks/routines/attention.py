@@ -19,7 +19,9 @@ from .flashinfer_benchmark_utils import (
     as_nhd_paged_kv_cache,
     record_backend_resolution,
     bench_timing_kwargs,
+    HIP_DECODE_GQA_GROUP_SIZES,
 )
+from flashinfer.device_utils import IS_HIP
 
 
 def normalize_backends(backends):
@@ -285,6 +287,14 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
         if head_grp_size == 5:
             print(
                 "[INFO] FA2 backend is not supported for this configuration. Skipping."
+            )
+            remove_fa2 = True
+        if IS_HIP and head_grp_size not in HIP_DECODE_GQA_GROUP_SIZES:
+            # DISPATCH_GQA_GROUP_SIZE covers {1,2,3,4,8}; anything else raises
+            # from inside the kernel and takes the whole row down with it.
+            print(
+                f"[INFO] FA2 backend does not support GQA group size "
+                f"{head_grp_size} on ROCm. Skipping."
             )
             remove_fa2 = True
         if remove_fa2:
