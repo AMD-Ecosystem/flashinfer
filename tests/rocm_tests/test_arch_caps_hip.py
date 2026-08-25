@@ -589,20 +589,34 @@ class TestNoteValidation:
 
 
 class TestLegend:
-    """The legend explains the symbols the table uses, and only those."""
+    """The legend explains the symbols the table uses, and only those.
+
+    Both cases edit one named row rather than a positional one: keyed by
+    ``(op, backend)`` these stay meaningful however the table is reordered or
+    extended, and an appended row that is genuinely ❌ cannot make the first
+    case pass or fail for the wrong reason.
+    """
+
+    ROW = ("quantization", "hip")
+
+    def _render_with(self, **changes):
+        rows = [
+            dataclasses.replace(cap, **changes)
+            if (cap.op, cap.backend) == self.ROW
+            else cap
+            for cap in arch_caps.CAPABILITIES
+        ]
+        assert any((c.op, c.backend) == self.ROW for c in rows), (
+            f"{self.ROW} is no longer in CAPABILITIES; pick another row"
+        )
+        return gen.render(types.SimpleNamespace(CAPABILITIES=tuple(rows)))
 
     def test_a_symbol_named_only_in_a_note_gets_no_legend_entry(self):
-        rows = list(arch_caps.CAPABILITIES)
-        rows[-1] = dataclasses.replace(
-            rows[-1], note="not available on pre-CDNA3 (marked ❌)"
-        )
-        rendered = gen.render(types.SimpleNamespace(CAPABILITIES=tuple(rows)))
+        rendered = self._render_with(note="not available on pre-CDNA3 (marked ❌)")
         assert "**not available**" not in rendered
 
     def test_a_symbol_used_in_a_status_cell_gets_one(self):
-        rows = list(arch_caps.CAPABILITIES)
-        archs = dict(rows[-1].archs)
+        cap = arch_caps._BY_KEY[self.ROW]
+        archs = dict(cap.archs)
         archs["gfx942"] = arch_caps.ArchSupport(arch_caps.Support.UNSUPPORTED)
-        rows[-1] = dataclasses.replace(rows[-1], archs=archs)
-        rendered = gen.render(types.SimpleNamespace(CAPABILITIES=tuple(rows)))
-        assert "**not available**" in rendered
+        assert "**not available**" in self._render_with(archs=archs)
