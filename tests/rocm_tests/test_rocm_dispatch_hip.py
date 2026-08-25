@@ -73,3 +73,22 @@ def test_gate_installs_on_demand_and_widens_in_place(restore_gate):
     assert len(finders()) == 1
     with pytest.raises(ImportError, match="CUDA-only"):
         importlib.import_module("flashinfer.comm._also_not_real")
+
+
+def test_gate_tolerates_a_foreign_marker(restore_gate):
+    """A marker-bearing object we cannot widen must not break gating."""
+    import flashinfer  # noqa: F401
+
+    class Impostor:
+        _is_flashinfer_cuda_only_finder = True
+
+        def find_spec(self, *args, **kwargs):
+            return None
+
+    sys.meta_path.insert(0, Impostor())
+    try:
+        gate_cuda_only_modules({"flashinfer.comm._foreign_marker_probe"})
+        with pytest.raises(ImportError, match="CUDA-only"):
+            importlib.import_module("flashinfer.comm._foreign_marker_probe")
+    finally:
+        sys.meta_path[:] = [f for f in sys.meta_path if not isinstance(f, Impostor)]

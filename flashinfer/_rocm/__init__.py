@@ -72,8 +72,6 @@ class _CudaOnlyLoader(importlib.abc.Loader):
 
 
 class _CudaOnlyFinder(importlib.abc.MetaPathFinder):
-    # Marker, not isinstance: importlib.reload redefines the class, and the
-    # installed finder must still be recognised and widened in place.
     _is_flashinfer_cuda_only_finder = True
 
     def __init__(self, names: FrozenSet[str]) -> None:
@@ -94,8 +92,13 @@ def gate_cuda_only_modules(names: Iterable[str] = CUDA_ONLY_MODULES) -> None:
     """
     wanted = frozenset(names)
     for finder in sys.meta_path:
-        if getattr(finder, "_is_flashinfer_cuda_only_finder", False):
-            installed = cast(_CudaOnlyFinder, finder)
-            installed.names = installed.names | wanted
-            return
+        # Marker, not isinstance: importlib.reload redefines the class, so the
+        # installed finder must still be recognised and widened in place.
+        if not getattr(finder, "_is_flashinfer_cuda_only_finder", False):
+            continue
+        existing = getattr(finder, "names", None)
+        if existing is None:
+            continue  # marker without our shape; fall through and install ours
+        cast(_CudaOnlyFinder, finder).names = existing | wanted
+        return
     sys.meta_path.insert(0, _CudaOnlyFinder(wanted))
