@@ -117,9 +117,12 @@ def _churn_map(
 ) -> Tuple[Dict[str, Churn], Dict[str, str]]:
     """Per-path churn for a revision range, plus a new->old map of renames.
 
-    No pathspec: filtering by path suppresses git's rename detection.
+    ``-M`` because rename detection is otherwise subject to diff.renames, and no
+    pathspec because filtering by path suppresses it outright.
     """
-    fields = _run(repo, "diff", "--numstat", "-z", f"{base}..{tip}").stdout.split("\0")
+    fields = _run(repo, "diff", "--numstat", "-z", "-M", f"{base}..{tip}").stdout.split(
+        "\0"
+    )
     churn: Dict[str, Churn] = {}
     renames: Dict[str, str] = {}
     i = 0
@@ -346,7 +349,8 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    summary = (__doc__ or "Report what an upstream sync would cost.").splitlines()[0]
+    parser = argparse.ArgumentParser(description=summary)
     parser.add_argument(
         "--upstream-ref",
         default="upstream/main",
