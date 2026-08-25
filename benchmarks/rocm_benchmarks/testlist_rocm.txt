@@ -1,0 +1,74 @@
+# ROCm attention testlist for benchmarks/flashinfer_benchmark.py (gfx942 / gfx950).
+#
+#   cd benchmarks
+#   python flashinfer_benchmark.py --testlist rocm_benchmarks/testlist_rocm.txt \
+#       --output_path run-$(date +%F).csv
+#
+# Every line runs `fa2` and `auto`. `fa2` is the in-tree HIP kernel and, being
+# listed first, is also the reference that --refcheck compares against; `auto` is
+# whatever the library would pick in production. Read backend_resolved to see
+# which one `auto` became and backend_fallback_reason for why it declined AITER.
+# A row with backend_resolved=fa2 and an EMPTY reason did not come from a
+# constraint -- investigate rather than assume.
+#
+# Choices worth knowing before editing:
+#
+#   --page_size 128 for paged prefill, not 16. 128 is AITER-native for
+#     amd-aiter >= 0.1.10; other sizes take a flat-gather path that copies the
+#     whole KV cache inside the timed region, so the row becomes a memcpy
+#     benchmark. Decode has no gather path and uses the serving-default 16.
+#
+#   --refcheck WITHOUT --allow_output_mismatch. fa2 and auto run side by side
+#     anyway, so the correctness check is free, and a fast-but-wrong number is
+#     worse than a missing row in a run-over-run diff.
+#
+#   No --random_actual_seq_len. GPU-RNG-derived lengths vary max_kv_len, which
+#     varies AITER's compiled kernel variant and makes shapes differ run to run.
+#
+#   bf16 only. The decode routine accepts bf16 or fp8_e4m3 (not fp16), and AITER
+#     is fp16/bf16, so bf16 is the one dtype common to every path here.
+#
+#   DeepSeek-R1 (head_dim_qk 192 / head_dim_vo 128) is deliberately absent: AITER
+#     requires equal head dims, and the fa2 fallback fails to compile on gfx950
+#     (static_assert in permuted_smem.cuh). Neither backend can serve it.
+#
+# On gfx950 with ROCm 7.2.x every prefill row resolves to fa2: arch_caps gates
+# AITER batch prefill off for the causal-miscompile known-bad entry. That is
+# correct behaviour, and the reason column says so. Decode is unaffected.
+
+## Batch decode -- page_size 16, bf16, GQA
+# Llama-3.1-8B (32 qo / 8 kv heads)
+--routine BatchDecodeWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 1 --s_qo 1 --s_kv 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine BatchDecodeWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 16 --s_qo 1 --s_kv 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine BatchDecodeWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 64 --s_qo 1 --s_kv 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine BatchDecodeWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 16 --s_qo 1 --s_kv 8192 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine BatchDecodeWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 64 --s_qo 1 --s_kv 8192 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+
+# Llama-3.1-70B (64 qo / 8 kv heads)
+--routine BatchDecodeWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 1 --s_qo 1 --s_kv 1024 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+--routine BatchDecodeWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 16 --s_qo 1 --s_kv 1024 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+--routine BatchDecodeWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 64 --s_qo 1 --s_kv 1024 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+--routine BatchDecodeWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 16 --s_qo 1 --s_kv 8192 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+--routine BatchDecodeWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 64 --s_qo 1 --s_kv 8192 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+
+# Llama-3.1-405B (128 qo / 8 kv heads). GQA group size 16 is outside the HIP
+# kernel's DISPATCH_GQA_GROUP_SIZE set {1,2,3,4,8}, so fa2 is skipped and only
+# AITER runs -- these two rows have no reference and are NOT refcheck-verified.
+--routine BatchDecodeWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 16 --s_qo 1 --s_kv 1024 --num_qo_heads 128 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-405B"
+--routine BatchDecodeWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 64 --s_qo 1 --s_kv 8192 --num_qo_heads 128 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-405B"
+
+## Batch paged prefill -- page_size 128 (AITER-native), causal, bf16
+--routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 128 --batch_size 1 --s_qo 1024 --s_kv 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 128 --batch_size 16 --s_qo 1024 --s_kv 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 128 --batch_size 4 --s_qo 4096 --s_kv 4096 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 128 --batch_size 1 --s_qo 1024 --s_kv 1024 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+--routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 128 --batch_size 16 --s_qo 1024 --s_kv 1024 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+--routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 128 --batch_size 4 --s_qo 4096 --s_kv 4096 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+
+## Batch ragged prefill -- causal, bf16
+--routine BatchPrefillWithRaggedKVCacheWrapper --backends fa2 auto --batch_size 1 --s_qo 1024 --s_kv 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine BatchPrefillWithRaggedKVCacheWrapper --backends fa2 auto --batch_size 16 --s_qo 1024 --s_kv 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine BatchPrefillWithRaggedKVCacheWrapper --backends fa2 auto --batch_size 4 --s_qo 4096 --s_kv 4096 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine BatchPrefillWithRaggedKVCacheWrapper --backends fa2 auto --batch_size 1 --s_qo 1024 --s_kv 1024 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+--routine BatchPrefillWithRaggedKVCacheWrapper --backends fa2 auto --batch_size 16 --s_qo 1024 --s_kv 1024 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+--routine BatchPrefillWithRaggedKVCacheWrapper --backends fa2 auto --batch_size 4 --s_qo 4096 --s_kv 4096 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
