@@ -10,11 +10,19 @@
 # being loose enough to hide a wrong kernel (unshuffled weights, the failure this
 # suite exists to catch, land at ~1.3).
 
+import pathlib
+import re
+
 import pytest
 import torch
 
 import flashinfer
-from flashinfer.fused_moe_rocm import shuffle_moe_weight
+from flashinfer.fused_moe_rocm import (
+    _BLOCK_M_THRESHOLDS,
+    _SUPPORTED_BLOCK_M,
+    _select_block_m,
+    shuffle_moe_weight,
+)
 from tests.test_helpers.test_helpers import requires_aiter
 
 _ACT = {"silu": torch.nn.functional.silu, "gelu": torch.nn.functional.gelu}
@@ -68,6 +76,8 @@ def test_fused_moe_vs_ref(dtype, M, E, K, I, topk):
     device = torch.device("cuda:0")
     x, w1, w2, ids, weights = _make_case(M, E, K, I, topk, dtype, device)
 
+    # block_m defaults to "auto", so this sweep exercises the selected tile on
+    # every shape -- a different tile changes the accumulation order.
     got = flashinfer.aiter_fused_moe(
         x, shuffle_moe_weight(w1), shuffle_moe_weight(w2), ids, weights
     )
@@ -75,6 +85,88 @@ def test_fused_moe_vs_ref(dtype, M, E, K, I, topk):
     assert got.shape == (M, K) and got.dtype == dtype
     assert torch.isfinite(got).all()
     assert _rel_err(got, _moe_ref(x, w1, w2, ids, weights, "silu")) < 2e-2
+
+
+# The measured optimum, gfx942 and gfx950 agreeing at every point:
+# (num_tokens, topk, num_experts) -> block_m. Mixtral-8x7B is E=8/topk=2,
+# Qwen3-235B is E=128/topk=8. A threshold edit that contradicts this fails.
+_MEASURED_BLOCK_M = [
+    (1, 2, 8, 32),
+    (8, 2, 8, 32),
+    (32, 2, 8, 32),
+    (128, 2, 8, 64),
+    (512, 2, 8, 128),
+    (2048, 2, 8, 128),
+    (1, 8, 128, 32),
+    (8, 8, 128, 32),
+    (32, 8, 128, 32),
+    (128, 8, 128, 32),
+    (512, 8, 128, 64),
+    (2048, 8, 128, 128),
+    # The two boundary points, which are what the thresholds actually turn on.
+    # per_expert=16 still prefers 32 (by 2% on both shapes); per_expert=64 has
+    # already flipped to 128 (by 11% and 3%).
+    (64, 2, 8, 32),
+    (256, 8, 128, 32),
+    (256, 2, 8, 128),
+    (1024, 8, 128, 128),
+]
+
+
+@pytest.mark.parametrize("num_tokens,topk,num_experts,expected", _MEASURED_BLOCK_M)
+def test_select_block_m_matches_measurement(num_tokens, topk, num_experts, expected):
+    """Pure arithmetic: no GPU, no aiter."""
+    assert _select_block_m(num_tokens, topk, num_experts) == expected
+
+
+def test_select_block_m_tracks_tokens_per_expert_not_tokens():
+    """Same num_tokens, different expert geometry, different tile.
+
+    This is the whole point of the selector: keying on num_tokens alone would
+    give Mixtral's answer to Qwen3. The widest divergence is at M=256, two
+    steps apart -- and 128 measured 13% slower than 32 on Qwen3 there.
+    """
+    assert _select_block_m(256, 2, 8) == 128
+    assert _select_block_m(256, 8, 128) == 32
+    assert _select_block_m(512, 2, 8) == 128
+    assert _select_block_m(512, 8, 128) == 64
+
+
+def test_supported_block_m_matches_the_shim():
+    """_SUPPORTED_BLOCK_M must equal the tiles the C++ shim accepts.
+
+    The shim's is_supported_block_m() is the authority -- CK's heuristic
+    dispatch TORCH_CHECKs anything else. Growing the Python tuple alone would
+    let _select_block_m return a tile that aborts on every large-batch call,
+    which no Python-side check can catch.
+    """
+    shim = (
+        pathlib.Path(__file__).parents[2]
+        / "flashinfer"
+        / "csrc_rocm"
+        / "fused_moe_aiter.cu"
+    ).read_text()
+    body = re.search(r"bool\s+is_supported_block_m\s*\([^)]*\)\s*\{(.*?)\}", shim, re.S)
+    assert body, "is_supported_block_m not found in the shim"
+    assert tuple(
+        int(v) for v in re.findall(r"block_m\s*==\s*(\d+)", body.group(1))
+    ) == (_SUPPORTED_BLOCK_M)
+
+
+def test_select_block_m_only_returns_supported_tiles():
+    """Every tile the selector can return is one the shim accepts.
+
+    Paired with the conformance test above, this is what makes the thresholds
+    safe to edit: a threshold naming an unsupported tile is a runtime abort,
+    not a slow kernel.
+    """
+    returned = {bm for _, bm in _BLOCK_M_THRESHOLDS} | {_select_block_m(1 << 20, 8, 1)}
+    assert returned <= set(_SUPPORTED_BLOCK_M)
+
+
+def test_select_block_m_never_divides_by_zero():
+    """A degenerate weight is the shim's error to report, not ours to crash on."""
+    assert _select_block_m(64, 2, 0) in _SUPPORTED_BLOCK_M
 
 
 @requires_aiter
@@ -207,7 +299,8 @@ def test_shuffle_moe_weight_rejects_bad_shapes():
     "kwargs,cast,match",
     [
         ({"activation": "relu"}, None, "activation must be one of"),
-        ({"block_m": 48}, None, "block_m must be one of"),
+        ({"block_m": 48}, None, 'block_m must be "auto" or one of'),
+        ({"block_m": "bogus"}, None, 'block_m must be "auto" or one of'),
         # Rejected in Python, before _get_module: one module is built per dtype,
         # so an unsupported dtype would otherwise trigger a multi-minute compile
         # only to fail afterwards.
@@ -235,6 +328,11 @@ def test_fused_moe_rejects_bad_arguments(kwargs, cast, match):
         (lambda t: {"w2": t["w2"][:, :, : t["w2"].shape[2] // 2]}, "expected w1"),
         (lambda t: {"w1": t["w1"][:-1]}, "experts"),
         (lambda t: {"x": t["x"].unsqueeze(0)}, "must be 2-D"),
+        # block_m="auto" reads these shapes; a degenerate rank must still reach
+        # the shim's message rather than raising IndexError from the selector.
+        (lambda t: {"ids": t["ids"][0, 0].clone()}, "must be 2-D"),
+        (lambda t: {"w1": t["w1"][0].clone()}, "must be 3-D"),
+        (lambda t: {"x": t["x"][0].clone()}, "must be 2-D"),
         # topk=0 divides by zero inside AITER: without this check the process
         # dies on SIGFPE, which no caller can catch. The upper bound below is
         # the other half of the same range check.
