@@ -58,6 +58,11 @@ static std::pair<at::Tensor, at::Tensor> build_block_tables_and_ctxlens(
   TORCH_CHECK(paged_kv_indptr.is_contiguous() && paged_kv_indices.is_contiguous() &&
                   paged_kv_last_page_len.is_contiguous(),
               "AITER PA v1 requires contiguous paged-KV index tensors");
+  TORCH_CHECK(paged_kv_indptr.dim() == 1 && paged_kv_indices.dim() == 1 &&
+                  paged_kv_last_page_len.dim() == 1,
+              "AITER PA v1 requires 1-D paged-KV index tensors; got indptr.dim()=",
+              paged_kv_indptr.dim(), " indices.dim()=", paged_kv_indices.dim(),
+              " last_page_len.dim()=", paged_kv_last_page_len.dim());
   TORCH_CHECK(paged_kv_indptr.numel() == num_seqs + 1, "paged_kv_indptr must have num_seqs+1 (",
               num_seqs + 1, ") elements; got ", paged_kv_indptr.numel());
   TORCH_CHECK(paged_kv_last_page_len.numel() == num_seqs,
