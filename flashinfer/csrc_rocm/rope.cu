@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <flashinfer/attention/generic/pos_enc.cuh>
+#include <flashinfer/generic/attention/pos_enc.cuh>
 
 #include "pytorch_extension_utils.h"
 

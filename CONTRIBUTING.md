@@ -84,7 +84,7 @@ that are not edits to anything, and its workflow only watches
 appears there at all.
 
 **Forked headers are exempt from conflicts and therefore from warnings.**
-`include/flashinfer/attention/generic/` is a fork of the upstream attention
+`include/flashinfer/generic/attention/` is a fork of the upstream attention
 headers re-expressed on `gpu_iface`. It conflicts with nothing, so it goes
 stale silently instead — a fix that lands upstream will not reach it, and
 nothing will say so.

@@ -77,7 +77,7 @@ repos:
         name: reuse (selective files)
         entry: ./scripts/reuse-check-selective.sh
         language: system
-        files: ^(include/flashinfer/attention/generic/|include/gpu_iface/).*\.(cuh|hpp|h)$
+        files: ^(include/flashinfer/generic/attention/|include/gpu_iface/).*\.(cuh|hpp|h)$
         pass_filenames: true
 
   # The README's per-architecture support matrix is generated from

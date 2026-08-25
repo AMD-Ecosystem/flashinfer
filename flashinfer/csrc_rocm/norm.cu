@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 #include <cstdint>
-#include <flashinfer/attention/generic/norm.cuh>
+#include <flashinfer/generic/attention/norm.cuh>
 
 #include "pytorch_extension_utils.h"
 
