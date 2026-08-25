@@ -16,7 +16,7 @@ it would rebind the attribute from this function to that module.
 """
 
 import functools
-from typing import Optional
+from typing import Optional, Union
 
 import torch
 
@@ -29,11 +29,26 @@ __all__ = ["aiter_fused_moe", "shuffle_moe_weight"]
 # are also the supported-activation set, here and in the JIT spec.
 _ACTIVATION_CODE = {"silu": 0, "gelu": 1}
 
-# CK's stage-1 tile height. 32 suits decode-shaped batches; larger tiles amortize
-# better once there are many tokens per expert. The heuristic dispatch enumerates
-# exactly {32, 64, 128}.
-_DEFAULT_BLOCK_M = 32
+# CK's stage-1 tile height; the heuristic dispatch enumerates exactly these.
 _SUPPORTED_BLOCK_M = (32, 64, 128)
+
+# What fills a stage-1 tile is the tokens routed to *one* expert, so the tile
+# height tracks num_tokens * topk / num_experts rather than num_tokens. Measured
+# optimum on gfx942 and gfx950 across two expert geometries; see the benchmark's
+# --block-m-sweep to regenerate.
+_BLOCK_M_THRESHOLDS = ((32, 32), (64, 64))
+
+
+def _select_block_m(num_tokens: int, topk: int, num_experts: int) -> int:
+    """Pick the CK tile height from the average tokens routed to one expert."""
+    # max(): a degenerate weight is the shim's error to report, not a
+    # ZeroDivisionError from here that would hide it.
+    per_expert = num_tokens * topk / max(num_experts, 1)
+    for limit, block_m in _BLOCK_M_THRESHOLDS:
+        if per_expert < limit:
+            return block_m
+    return _SUPPORTED_BLOCK_M[-1]
+
 
 # CK's MFMA tile for the weight operand: 16 rows x 16 columns per instruction.
 _SHUFFLE_LAYOUT = (16, 16)
@@ -88,7 +103,7 @@ def aiter_fused_moe(
     topk_weights: torch.Tensor,
     *,
     activation: str = "silu",
-    block_m: int = _DEFAULT_BLOCK_M,
+    block_m: Union[int, str] = "auto",
     out: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     r"""Fused mixture-of-experts forward pass on ROCm.
@@ -114,7 +129,9 @@ def aiter_fused_moe(
             bounds. Validating on device would cost a synchronize per call.
         topk_weights: ``[num_tokens, topk]`` float32, the routing weights.
         activation: ``"silu"`` or ``"gelu"``.
-        block_m: CK tile height, one of ``(32, 64, 128)``.
+        block_m: CK tile height, one of ``(32, 64, 128)``, or ``"auto"`` to
+            pick it from the average tokens per expert. Explicit values are
+            honoured unchanged.
         out: Optional ``[num_tokens, model_dim]`` destination. Allocated if
             None. Overwritten, not accumulated into, and it may not overlap any
             input -- it is zero-filled before the activations are read.
@@ -134,8 +151,10 @@ def aiter_fused_moe(
         raise ValueError(
             f"activation must be one of {sorted(_ACTIVATION_CODE)}, got {activation!r}"
         )
-    if block_m not in _SUPPORTED_BLOCK_M:
-        raise ValueError(f"block_m must be one of {_SUPPORTED_BLOCK_M}, got {block_m}")
+    if block_m != "auto" and block_m not in _SUPPORTED_BLOCK_M:
+        raise ValueError(
+            f'block_m must be "auto" or one of {_SUPPORTED_BLOCK_M}, got {block_m!r}'
+        )
     if hidden_states.dtype not in SUPPORTED_DTYPES:
         # Ahead of _get_module: one module is built per dtype, so an unsupported
         # one would otherwise compile for minutes before anything rejected it.
@@ -144,12 +163,22 @@ def aiter_fused_moe(
             f"got {hidden_states.dtype}"
         )
 
+    if block_m == "auto":
+        # Only when the ranks are sane. Indexing a degenerate shape here would
+        # raise IndexError and hide the shim's message naming the real problem.
+        if hidden_states.dim() == 2 and topk_ids.dim() == 2 and w1_shuffled.dim() == 3:
+            block_m = _select_block_m(
+                hidden_states.shape[0], topk_ids.shape[1], w1_shuffled.shape[0]
+            )
+        else:
+            block_m = _SUPPORTED_BLOCK_M[0]
+
     if out is None:
-        out = torch.empty(
-            (hidden_states.shape[0], hidden_states.shape[1]),
-            dtype=hidden_states.dtype,
-            device=hidden_states.device,
-        )
+        # Shaped from hidden_states only when its rank is right. Indexing a
+        # degenerate one here raises IndexError before the shim can say
+        # "hidden_states must be 2-D"; an empty out reaches that check intact.
+        shape = tuple(hidden_states.shape) if hidden_states.dim() == 2 else (0, 0)
+        out = torch.empty(shape, dtype=hidden_states.dtype, device=hidden_states.device)
 
     module = _get_module(hidden_states.dtype, activation)
     # Skip torch custom-op dispatch, as the other AITER ROCm paths do: AITER is
