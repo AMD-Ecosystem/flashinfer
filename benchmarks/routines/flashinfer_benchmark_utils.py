@@ -409,15 +409,13 @@ def rocm_supported_backends(routine, device):
     op = _ROCM_ROUTINE_TO_CAP_OP.get(routine)
     if op is None:
         return []
-    backends = []
+    # AITER is reached through "auto", which records what it resolved to, so
+    # "aiter" is deliberately not offered: the attention routines have no
+    # construction or dispatch path for it, and advertising it here would let a
+    # backend through the filter that argparse rejects and no wrapper builds.
     if capability_available(device, op, "hip"):
-        # "auto" is always offered alongside fa2: when AITER is unavailable the
-        # selector falls back to fa2 and records why, which is a result worth
-        # having rather than a row that cannot run.
-        backends += ["fa2", "auto"]
-    if aiter_serves(device, op):
-        backends.append("aiter")
-    return backends
+        return ["fa2", "auto"]
+    return []
 
 
 def filter_backends_by_compute_capability(backends, routine, device):

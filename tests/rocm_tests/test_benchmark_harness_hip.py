@@ -142,6 +142,39 @@ def test_hip_gqa_group_sizes_match_the_kernel_dispatch():
     assert 128 // 8 not in from_kernel
 
 
+def _backend_choices():
+    """The values attention.py's `--backends` will accept."""
+    import argparse
+    import contextlib
+
+    import routines.attention as attention
+
+    parser = argparse.ArgumentParser()
+    # argparse may reject the stub argv; the action is registered either way.
+    with contextlib.suppress(SystemExit):
+        attention.parse_attention_args(
+            ["--routine", "BatchDecodeWithPagedKVCacheWrapper"], parser
+        )
+    for action in parser._actions:
+        if action.dest == "backends":
+            return set(action.choices)
+    raise AssertionError("--backends action not registered")
+
+
+@pytest.mark.parametrize("routine", ATTENTION_ROUTINES)
+def test_filter_only_offers_backends_the_cli_accepts(routine):
+    """Whatever survives the filter must be a backend attention.py can dispatch.
+
+    Offering one that argparse rejects, or that no wrapper branch constructs,
+    turns a supported configuration into a silently missing CSV row.
+    """
+    u = _utils()
+    offered = u.rocm_supported_backends(routine, torch.device("cuda"))
+    assert offered, f"{routine} offers no backend at all on this device"
+    unknown = set(offered) - _backend_choices()
+    assert not unknown, f"{unknown} survive the filter but --backends rejects them"
+
+
 def test_cuda_path_still_matches_its_table(monkeypatch):
     """The CUDA table is keyed "10.0", so the lookup may not use the warning text.
 
