@@ -372,3 +372,28 @@ def test_auto_backend_avoids_aiter_softcap_defect(
         kv_len=kv_len,
     )
     assert chosen == ("aiter" if expect_aiter else "fa2")
+
+
+def test_explicit_aiter_backend_rejects_softcap_defect():
+    """An explicit backend='aiter' must fail loudly, not return wrong numbers.
+
+    'auto' silently falls back; asking for AITER by name is a deliberate choice,
+    so the defect region has to raise rather than degrade.
+    """
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+
+    kv_len, qo_len, num_heads, head_dim = 512, 37, 4, 128
+    q = torch.randn(qo_len, num_heads, head_dim, dtype=torch.float16, device=device)
+    k = torch.randn(kv_len, num_heads, head_dim, dtype=torch.float16, device=device)
+    v = torch.randn(kv_len, num_heads, head_dim, dtype=torch.float16, device=device)
+
+    with pytest.raises(ValueError, match="logits_soft_cap"):
+        flashinfer.single_prefill_with_kv_cache(
+            q, k, v, causal=True, logits_soft_cap=8.0, backend="aiter"
+        )
+
+    # Same shape without the cap must still be served by AITER, so the guard is
+    # not quietly disabling the backend outright.
+    flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="aiter")

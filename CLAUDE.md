@@ -126,7 +126,7 @@ The devcontainer runs CPython 3.14, for which the nightlies index carries the
 only wheel that exists:
 
 ```bash
-pip install amd_aiter==0.1.16.post3.dev0+g620287969.d20260725 \
+pip install amd-aiter==0.1.16.post3.dev0+g620287969.d20260725 \
   --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/vllm-cdna/
 ```
 

@@ -50,6 +50,13 @@ ARG USERNAME=devuser
 ARG USER_UID=1003
 ARG USER_GID=$USER_UID
 
+# Ubuntu 26.04 ships a default `ubuntu` user at UID/GID 1000, which is the most
+# common host UID and what the README's $(id -u) yields -- so it has to go
+# *before* devuser is created, or groupadd fails with "GID '1000' already
+# exists" and the build dies here.
+RUN rm -rf /home/ubuntu && \
+    if grep -q '^ubuntu:x:1000:1000' /etc/passwd; then userdel -f -r ubuntu; fi
+
 # Silence the warning about out-of-range UID/GID, then create the user.
 RUN sed -i 's/^\(UID_MAX\s*\).*$/\11000000000/' /etc/login.defs && \
     sed -i 's/^\(GID_MAX\s*\).*$/\11000000000/' /etc/login.defs && \
@@ -66,10 +73,6 @@ RUN (getent group render >/dev/null || groupadd -r render) && \
     usermod -a -G render,video $USERNAME
 
 RUN echo "set-option -g default-command \"/bin/bash -i\"" >> /home/$USERNAME/.tmux.conf
-
-# Remove the default 'ubuntu' user (UID 1000) to prevent devcontainer permission
-# conflicts. It still exists on Ubuntu 26.04.
-RUN rm -rf /home/ubuntu && if grep ubuntu:x:1000:1000 /etc/passwd >/dev/null; then userdel -f -r ubuntu; fi
 
 # System python3.14 is PEP 668 externally-managed, so everything goes into the
 # base image's existing venv -- that is where torch already lives, and creating a
@@ -92,7 +95,7 @@ RUN pip install --no-cache-dir \
         pybind11 \
         ruff \
         filelock && \
-    pip install --no-cache-dir "amd_aiter==${AITER_VERSION}" --extra-index-url "${AITER_INDEX}" && \
+    pip install --no-cache-dir "amd-aiter==${AITER_VERSION}" --extra-index-url "${AITER_INDEX}" && \
     python3 -c "import importlib.metadata as m; print('amd-aiter', m.version('amd-aiter'))"
 
 # Editable installs write into the venv, so hand it to the dev user.
