@@ -84,10 +84,14 @@ that are not edits to anything, and its workflow only watches
 appears there at all.
 
 **Forked headers are exempt from conflicts and therefore from warnings.**
-`include/flashinfer/generic/attention/` is a fork of the upstream attention
-headers re-expressed on `gpu_iface`. It conflicts with nothing, so it goes
-stale silently instead — a fix that lands upstream will not reach it, and
-nothing will say so.
+Everything under `include/flashinfer/generic/` is a fork of an upstream header
+re-expressed on `gpu_iface` — `generic/attention/` for the attention headers,
+plus `generic/sampling.cuh` and `generic/quantization.cuh`. Their upstream
+originals are byte-identical to the merge base and will merge cleanly forever,
+so a fix landing upstream reaches the original and *not* the fork, with nothing
+conflicting to tell you. The canary's drift report is the only signal, and a fix
+to sampling or quantization belongs in the `generic/` copy — the one ROCm
+actually compiles.
 
 **Check the cost before and after your change:**
 

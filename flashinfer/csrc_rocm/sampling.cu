@@ -19,7 +19,7 @@ typedef hipStream_t cudaStream_t;
 #include <ATen/cuda/CUDAGeneratorImpl.h>
 #endif
 
-#include <flashinfer/sampling.cuh>
+#include <flashinfer/generic/sampling.cuh>
 
 #include "pytorch_extension_utils.h"
 
