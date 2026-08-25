@@ -48,7 +48,7 @@ reach for `hipcub`, `__hip_*`, or inline asm from inside
 
 # Additive-Only: the rule that keeps upstream syncs cheap
 
-This is a **permanent downstream fork** that syncs from
+This is a **downstream fork** that syncs from
 `flashinfer-ai/flashinfer` by merge. The cost of every sync is decided by one
 number: how many upstream files the port has edited in place. Additions —
 however large — are close to free at merge time, because upstream has nothing
@@ -74,7 +74,7 @@ might plausibly create.
    `flashinfer/comm/__init__.py`.
 
 **Last resort: an `if IS_HIP:` branch inside an upstream file.** Every one of
-these is a permanent merge conflict, so it needs a reason that the three
+these is a recurring merge conflict, so it needs a reason that the three
 mechanisms above cannot serve. `scripts/upstream_canary.py` is the authoritative
 list — it reports exactly which files a merge would conflict on. The
 `[tool.coverage.run].include` block in `pyproject.toml` is *not* that list: it is
