@@ -19,7 +19,15 @@ ARG UBUNTU_VERSION=26.04
 ARG PY_VERSION=3.14
 ARG TORCH_VERSION=2.12.0
 
+# Header donor. The rocm/pytorch base is runtime-only: it carries the pip ROCm
+# SDK (_rocm_sdk_core) rather than /opt/rocm, and that SDK ships no math or
+# utility headers -- no thrust, rocPRIM, rocBLAS or hipBLASLt. torch 2.12's
+# complex.h needs thrust/complex.h, so the JIT cannot compile without them.
+FROM rocm/dev-ubuntu-${UBUNTU_VERSION}:${ROCM_VERSION}.0-full AS rocmdev
+
 FROM rocm/pytorch:rocm${ROCM_VERSION}_ubuntu${UBUNTU_VERSION}_py${PY_VERSION}_pytorch_release_${TORCH_VERSION}
+ARG ROCM_VERSION
+ARG PY_VERSION
 
 # AITER is pinned to an exact build including the local version segment: this is
 # currently the only cp314 wheel published anywhere, and pip will not select a
@@ -79,6 +87,33 @@ RUN echo "set-option -g default-command \"/bin/bash -i\"" >> /home/$USERNAME/.tm
 # second one would hide it.
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="$VIRTUAL_ENV/bin:/usr/lib/llvm-19/bin:$PATH"
+
+# Close the three gaps between the pip ROCm SDK and a /opt/rocm install, without
+# which every JIT compile dies on `/opt/rocm/bin/amdclang++: not found`.
+ENV ROCM_SDK="/opt/venv/lib/python${PY_VERSION}/site-packages/_rocm_sdk_core"
+COPY --from=rocmdev /opt/rocm/core-${ROCM_VERSION}/include /opt/rocm-headers/include
+
+#  1. Headers, from the donor stage above.
+ENV CPATH="/opt/rocm-headers/include"
+#  2. Link names: the SDK ships only versioned libs (libamdhip64.so.7), so
+#     -lamdhip64 cannot resolve without an unversioned symlink.
+#  3. Compiler name: flashinfer invokes $ROCM_HOME/bin/amdclang++, and the SDK
+#     ships bin/hipcc plus lib/llvm/bin/clang++ under a different name. The
+#     device bitcode also sits at lib/llvm/amdgcn rather than $ROCM_PATH/amdgcn.
+RUN set -eu; \
+    for so in "$ROCM_SDK"/lib/lib*.so.[0-9]*; do \
+        base="${so%%.so.*}.so"; [ -e "$base" ] || ln -s "$(basename "$so")" "$base"; \
+    done; \
+    ln -sf ../lib/llvm/bin/clang++ "$ROCM_SDK/bin/amdclang++"; \
+    ln -sf ../lib/llvm/bin/clang "$ROCM_SDK/bin/amdclang"; \
+    [ -e "$ROCM_SDK/amdgcn" ] || ln -s lib/llvm/amdgcn "$ROCM_SDK/amdgcn"
+
+# Point at the SDK root, NOT at the grafted header tree: hipcc resolves its own
+# clang via $ROCM_PATH/lib/llvm/bin, which only exists under the SDK.
+ENV ROCM_PATH="$ROCM_SDK"
+ENV ROCM_HOME="$ROCM_SDK"
+ENV LIBRARY_PATH="$ROCM_SDK/lib"
+ENV LD_LIBRARY_PATH="$ROCM_SDK/lib"
 
 # setuptools and setuptools-scm are the in-tree backend's build requirements.
 # They must be in the image because the documented install passes
