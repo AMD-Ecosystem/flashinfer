@@ -295,6 +295,18 @@ _OK_950_MOE = ArchSupport(
     Support.SUPPORTED,
     evidence="fused_moe: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1",
 )
+_OK_942_FP8_MOE = ArchSupport(
+    Support.SUPPORTED,
+    evidence=(
+        "fused_moe fp8: MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-25"
+    ),
+)
+_OK_950_FP8_MOE = ArchSupport(
+    Support.SUPPORTED,
+    evidence=(
+        "fused_moe fp8: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-25"
+    ),
+)
 # HIP rows: declared, not yet individually attributed. The suites above cover
 # them, but no per-op HIP measurement has been recorded, so the evidence field
 # stays empty rather than borrowing the AITER runs' credibility.
@@ -380,6 +392,12 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "aiter",
         _archs(_OK_942_MOE, _OK_950_MOE),
         note="`aiter_fused_moe`; bf16/fp16. Weights must be pre-shuffled with `shuffle_moe_weight` or results are silently wrong.",
+    ),
+    Capability(
+        "fused_moe_fp8",
+        "aiter",
+        _archs(_OK_942_FP8_MOE, _OK_950_FP8_MOE),
+        note="`aiter_fused_moe` with fp8 weights in `moe_fp8_dtype()` plus both scales; activations are quantized per token in the shim.",
     ),
     # --- HIP backends: declared; per-op evidence not yet recorded ----------
     Capability(
