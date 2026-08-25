@@ -14,6 +14,10 @@ output_column_dict = {
         "tflops",
         "tb_per_sec",
         "backend",
+        # What backend="auto" actually resolved to, and why it declined AITER.
+        # Empty on CUDA and for explicitly-named backends.
+        "backend_resolved",
+        "backend_fallback_reason",
     ],
     "attention": [
         "page_size",
@@ -310,6 +314,32 @@ def get_device_arch(device):
     return normalize_arch(torch.cuda.get_device_properties(device).gcnArchName)
 
 
+def as_nhd_paged_kv_cache(kv_cache):
+    """View an HND-shaped ``[pages, 2, heads, page_size, dim]`` paged cache as NHD.
+
+    A pure view: ``result[p, i, s, h]`` is ``kv_cache[p, i, h, s]``, the same
+    logical KV entry. The harness already lays this cache out NHD-ordered behind
+    an HND-shaped view, so the transpose is contiguous and copies nothing.
+    """
+    return kv_cache.transpose(2, 3)
+
+
+def record_backend_resolution(cur_res, wrapper):
+    """Record which backend a wrapper resolved to, and why it declined AITER.
+
+    Only the ROCm wrappers expose these; on CUDA both stay empty, as they do for
+    backends dispatched through a free function rather than a wrapper object.
+    """
+    if wrapper is None:
+        return
+    # `or ""` matters: the attribute exists and is None when auto did not decline,
+    # and str(None) would write the literal "None" into the CSV.
+    cur_res["backend_resolved"] = getattr(wrapper, "backend", "") or ""
+    cur_res["backend_fallback_reason"] = (
+        getattr(wrapper, "backend_fallback_reason", "") or ""
+    )
+
+
 def rocm_supported_backends(routine, device):
     """Backends this harness can run for ``routine`` on a ROCm ``device``.
 
@@ -319,7 +349,15 @@ def rocm_supported_backends(routine, device):
     op = _ROCM_ROUTINE_TO_CAP_OP.get(routine)
     if op is None:
         return []
-    return ["fa2"] if capability_available(device, op, "hip") else []
+    backends = []
+    if capability_available(device, op, "hip"):
+        # "auto" is always offered alongside fa2: when AITER is unavailable the
+        # selector falls back to fa2 and records why, which is a result worth
+        # having rather than a row that cannot run.
+        backends += ["fa2", "auto"]
+    if capability_available(device, op, "aiter"):
+        backends.append("aiter")
+    return backends
 
 
 def filter_backends_by_compute_capability(backends, routine, device):

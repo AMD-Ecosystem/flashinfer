@@ -16,6 +16,8 @@ from .flashinfer_benchmark_utils import (
     print_perf_metrics,
     is_close_stats,
     filter_backends_by_compute_capability,
+    as_nhd_paged_kv_cache,
+    record_backend_resolution,
 )
 
 
@@ -92,6 +94,7 @@ def parse_attention_args(line, parser):
             "trtllm-gen",
             "trtllm-native",
             "trtllm-gen-native",  # Deprecated, will be removed in future
+            "auto",  # ROCm: let the wrapper pick AITER or fa2 per its constraints
         ],
         help="Kernel backends to test. Default: fa2",
     )
@@ -456,15 +459,18 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
     # Prepare wrappers
     backend_wrappers = {}
     for backend in backends:
-        if backend in ["fa2", "fa2_tc", "trtllm-gen"]:
+        if backend in ["fa2", "fa2_tc", "trtllm-gen", "auto"]:
             plan_kv_indptr = (
                 kv_indptr.clone().detach() if backend == "trtllm-gen" else kv_indptr
             )
+            # AITER decode needs NHD, use_tensor_cores=False and no graph capture;
+            # `auto` silently resolves to fa2 if any of those is not met, so pass
+            # all three or the row measures fa2 while claiming to be auto.
             backend_wrappers[backend] = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
                 workspace_buffer,
-                "HND",
-                use_cuda_graph=is_cuda_graph_compatible,
-                use_tensor_cores=(backend != "fa2"),
+                "NHD" if backend == "auto" else "HND",
+                use_cuda_graph=is_cuda_graph_compatible and backend != "auto",
+                use_tensor_cores=(backend not in ("fa2", "auto")),
                 paged_kv_indptr_buffer=plan_kv_indptr,
                 paged_kv_indices_buffer=kv_indices,
                 paged_kv_last_page_len_buffer=kv_last_page_len,
@@ -501,9 +507,10 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
             kv_cache_for_trt = torch.cat([k_fp8, v_fp8], dim=1)
 
     def run_backend_wrapper(backend):
-        if backend in ["fa2", "fa2_tc", "trtllm-gen"]:
+        if backend in ["fa2", "fa2_tc", "trtllm-gen", "auto"]:
+            cache = as_nhd_paged_kv_cache(kv_cache) if backend == "auto" else kv_cache
             return backend_wrappers[backend].run(
-                q, kv_cache, k_scale=k_scale, v_scale=v_scale
+                q, cache, k_scale=k_scale, v_scale=v_scale
             )
         elif backend == "cudnn":
             return flashinfer.decode.cudnn_batch_decode_with_kv_cache(
@@ -554,7 +561,11 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
             l2_flush_device=device,
             sleep_after_run=False,
             enable_cupti=args.use_cupti,
-            use_cuda_graph=(is_cuda_graph_compatible and cur_backend != "fa2"),
+            # "auto" may have resolved to AITER, whose launch grid is fixed at
+            # capture shapes; time it eagerly like fa2 rather than under a graph.
+            use_cuda_graph=(
+                is_cuda_graph_compatible and cur_backend not in ("fa2", "auto")
+            ),
         )
 
     # Perform reference check
@@ -622,6 +633,7 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
                 cur_res["tflops"] = tflops
                 cur_res["tb_per_sec"] = tb_per_sec
                 cur_res["backend"] = backend
+                record_backend_resolution(cur_res, backend_wrappers.get(backend))
                 cur_res["page_size"] = page_size
                 cur_res["batch_size"] = batch_size
                 cur_res["s_qo"] = s_qo
@@ -919,13 +931,14 @@ def testBatchPrefillWithPagedKVCacheWrapper(args):
     # Prepare wrappers
     backend_wrappers = {}
     for backend in backends:
-        if backend in ["fa2", "fa3", "trtllm-gen"]:
+        if backend in ["fa2", "fa3", "trtllm-gen", "auto"]:
+            # AITER paged prefill requires NHD; `auto` falls back to fa2 without it.
             backend_wrappers[backend] = (
                 flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
                     workspace_buffer,
-                    "HND",
+                    "NHD" if backend == "auto" else "HND",
                     use_cuda_graph=is_cuda_graph_compatible
-                    if backend != "fa2"
+                    if backend not in ("fa2", "auto")
                     else False,
                     qo_indptr_buf=qo_indptr,
                     paged_kv_indptr_buf=kv_indptr,
@@ -962,9 +975,10 @@ def testBatchPrefillWithPagedKVCacheWrapper(args):
         kv_cache = torch.cat([k_fp8, v_fp8], dim=1)
 
     def run_backend_wrapper(backend):
-        if backend in ["fa2", "fa3", "trtllm-gen"]:
+        if backend in ["fa2", "fa3", "trtllm-gen", "auto"]:
+            cache = as_nhd_paged_kv_cache(kv_cache) if backend == "auto" else kv_cache
             return backend_wrappers[backend].run(
-                q, kv_cache, k_scale=k_scale, v_scale=v_scale
+                q, cache, k_scale=k_scale, v_scale=v_scale
             )
         elif backend == "cudnn":
             return flashinfer.prefill.cudnn_batch_prefill_with_kv_cache(
@@ -1022,7 +1036,11 @@ def testBatchPrefillWithPagedKVCacheWrapper(args):
             l2_flush_device=device,
             sleep_after_run=False,
             enable_cupti=args.use_cupti,
-            use_cuda_graph=(is_cuda_graph_compatible and cur_backend != "fa2"),
+            # "auto" may have resolved to AITER, whose launch grid is fixed at
+            # capture shapes; time it eagerly like fa2 rather than under a graph.
+            use_cuda_graph=(
+                is_cuda_graph_compatible and cur_backend not in ("fa2", "auto")
+            ),
         )
 
     # Perform reference check
@@ -1091,6 +1109,7 @@ def testBatchPrefillWithPagedKVCacheWrapper(args):
                 cur_res["tflops"] = tflops
                 cur_res["tb_per_sec"] = tb_per_sec
                 cur_res["backend"] = backend
+                record_backend_resolution(cur_res, backend_wrappers.get(backend))
                 cur_res["page_size"] = page_size
                 cur_res["batch_size"] = batch_size
                 cur_res["s_qo"] = s_qo
@@ -1375,13 +1394,14 @@ def testBatchPrefillWithRaggedKVCacheWrapper(args):
     # Prepare wrappers
     backend_wrappers = {}
     for backend in backends:
-        if backend in ["cutlass", "fa2", "fa3", "trtllm-gen"]:
+        if backend in ["cutlass", "fa2", "fa3", "trtllm-gen", "auto"]:
+            # Already NHD, so `auto` only needs the graph capture suppressed.
             backend_wrappers[backend] = (
                 flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
                     workspace_buffer,
                     "NHD",
                     use_cuda_graph=is_cuda_graph_compatible
-                    if backend != "fa2"
+                    if backend not in ("fa2", "auto")
                     else False,
                     qo_indptr_buf=qo_indptr,
                     kv_indptr_buf=kv_indptr,
@@ -1410,7 +1430,7 @@ def testBatchPrefillWithRaggedKVCacheWrapper(args):
         v = (v / v_scale).to(kv_dtype)
 
     def run_backend_wrapper(backend):
-        if backend in ["cutlass", "fa2", "fa3", "trtllm-gen"]:
+        if backend in ["cutlass", "fa2", "fa3", "trtllm-gen", "auto"]:
             return backend_wrappers[backend].run_return_lse(q, k, v)[0]
         elif backend == "cudnn":
             return flashinfer.prefill.cudnn_batch_prefill_with_kv_cache(
@@ -1476,7 +1496,11 @@ def testBatchPrefillWithRaggedKVCacheWrapper(args):
             l2_flush_device=device,
             sleep_after_run=True,
             enable_cupti=args.use_cupti,
-            use_cuda_graph=(is_cuda_graph_compatible and cur_backend != "fa2"),
+            # "auto" may have resolved to AITER, whose launch grid is fixed at
+            # capture shapes; time it eagerly like fa2 rather than under a graph.
+            use_cuda_graph=(
+                is_cuda_graph_compatible and cur_backend not in ("fa2", "auto")
+            ),
         )
 
     # Perform reference check
@@ -1546,6 +1570,7 @@ def testBatchPrefillWithRaggedKVCacheWrapper(args):
                 cur_res["tflops"] = tflops
                 cur_res["tb_per_sec"] = tb_per_sec
                 cur_res["backend"] = backend
+                record_backend_resolution(cur_res, backend_wrappers.get(backend))
                 cur_res["page_size"] = 0  # No page size for ragged
                 cur_res["batch_size"] = batch_size
                 cur_res["s_qo"] = s_qo
@@ -1873,7 +1898,11 @@ def testBatchMLAPagedAttentionWrapper(args):
             l2_flush_device=device,
             sleep_after_run=False,
             enable_cupti=args.use_cupti,
-            use_cuda_graph=(is_cuda_graph_compatible and cur_backend != "fa2"),
+            # "auto" may have resolved to AITER, whose launch grid is fixed at
+            # capture shapes; time it eagerly like fa2 rather than under a graph.
+            use_cuda_graph=(
+                is_cuda_graph_compatible and cur_backend not in ("fa2", "auto")
+            ),
         )
 
     # Perform reference check
