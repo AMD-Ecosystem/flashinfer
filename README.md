@@ -44,8 +44,8 @@ Then, inside the container:
 python -c "import flashinfer; print(flashinfer.__version__)"
 ```
 
-The container's micromamba environment activates on shell start — no
-manual `micromamba activate`.
+The container's micromamba environment activates on shell start, so no
+manual `micromamba activate` is required.
 
 ### pip
 
@@ -218,7 +218,7 @@ Read at runtime or import time:
 | `FLASHINFER_AITER_STRICT` | `0` | Raise instead of degrading when AITER cannot serve a page size natively. Set in CI to catch AITER coverage regressions rather than absorb them as a slowdown. |
 | `FLASHINFER_ARCH_ALLOW_KNOWN_BAD` | `0` | Run an (op, backend, arch) combination the capability table marks known-broken on your toolchain. Only if you have validated it yourself. |
 | `FLASHINFER_HIP_FUSED_CASCADE` | `0` | Use the fused single-kernel HIP cascade path instead of the two-level merge. Experimental. |
-| `FLASHINFER_WORKSPACE_BASE` | `~` | Parent of the JIT cache directory (`.cache/flashinfer/`). Point it at fast local disk when `$HOME` is on NFS. |
+| `FLASHINFER_WORKSPACE_BASE` | `$HOME` | Parent of the JIT cache directory (`.cache/flashinfer/`). Point it at fast local disk when `$HOME` is on NFS. Pass an absolute path — the value is not tilde-expanded, so `~` becomes a literal `./~` directory. |
 | `FLASHINFER_DISABLE_JIT` | unset | Set to **any non-empty value** — including `0` — to skip JIT compilation. Useful with an AOT-built install, to fail loudly on a missing kernel rather than trigger a build. |
 | `FLASHINFER_DISABLE_VERSION_CHECK` | unset | Any non-empty value skips the JIT-cache package version check. |
 | `FLASHINFER_LOGGING_LEVEL` | `INFO` | Logger verbosity (`DEBUG`, `INFO`, `WARNING`, …). Affects AITER fallback warnings and JIT build messages. |
