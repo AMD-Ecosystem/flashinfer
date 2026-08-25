@@ -623,7 +623,9 @@ gpuError_t AppendPagedKVMlaCache(paged_kv_mla_t<DType, IdType> paged_kv, DType* 
   constexpr uint32_t HEAD_KPE_DIM = 64;
   FLASHINFER_CHECK(head_dim_ckv == HEAD_CKV_DIM, "head_dim_ckv must be equal to 512");
   FLASHINFER_CHECK(head_dim_kpe == HEAD_KPE_DIM, "head_dim_kpe must be equal to 64");
-  constexpr uint32_t vec_size = 2;
+  // 16-byte accesses instead of a fixed 2 elements (4 bytes at bf16). bdx is
+  // 64 at 16-bit dtypes, one CDNA wavefront; fp8 gives 32, half a wave.
+  constexpr uint32_t vec_size = 16 / sizeof(DType);
 
   uint32_t bdx = HEAD_CKV_DIM / vec_size;
   uint32_t num_threads = bdx;
