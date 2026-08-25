@@ -49,7 +49,7 @@ changed, misinterpret kernel arguments silently. Both the CI image
 (`docker/Dockerfile.rocm_ci`) and the devcontainer install this exact
 version.
 
-Only cp310 and cp312 wheels exist on that channel (verified 2026-08-20).
+Only cp310 and cp312 wheels exist on that channel.
 On any other interpreter the command fails with
 `No matching distribution found`, and there is no good fallback: public
 PyPI tops out at a stale `0.1.7.post2.dev18` and the nightlies index only

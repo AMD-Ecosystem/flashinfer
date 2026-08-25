@@ -169,7 +169,7 @@ decisions the library makes. Do not edit it by hand; run
 | `silu_and_mul` | `hip` | ◻️ | ◻️ | SiLU and GELU with fused gating; the default for `auto`. |
 | `quantization` | `hip` | ◻️ | ◻️ | `packbits` and `segment_packbits`. |
 
-* ✅ **validated** — this op was exercised on this architecture, and the board, ROCm, AITER, and date are recorded in `flashinfer/arch_caps.py`.
+* ✅ **validated** — this op has been exercised on this architecture.
 * ◻️ **supported** — the op runs here and the test suite covers it, but no run has been recorded against this specific op and architecture.
 * ⚠️ **broken on some toolchains** — usable, but not on every ROCm/AITER version; see the footnote.
 

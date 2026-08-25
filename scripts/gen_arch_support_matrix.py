@@ -67,8 +67,7 @@ UNSUPPORTED = "❌"
 LEGEND = (
     (
         VALIDATED,
-        "**validated** — this op was exercised on this architecture, and the board, ROCm, "
-        "AITER, and date are recorded in `flashinfer/arch_caps.py`.",
+        "**validated** — this op has been exercised on this architecture.",
     ),
     (
         DECLARED,
