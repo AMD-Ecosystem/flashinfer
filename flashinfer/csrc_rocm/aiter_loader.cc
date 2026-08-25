@@ -23,8 +23,10 @@ namespace {
 // below. Keep the version in step with _AITER_LAST_VALIDATED in prefill_rocm.py.
 constexpr const char* kAbiPinNote =
     "\n  These symbols and .so names are pinned to amd-aiter 0.1.10, which has no stable"
-    "\n  C++ ABI. If AITER was upgraded, that is the likely cause: either reinstall the"
-    "\n  pin (pip install amd-aiter==0.1.10) or re-pin the symbols in aiter_loader.cc.";
+    "\n  C++ ABI. If AITER was upgraded, that is the likely cause. Reinstall the pin:"
+    "\n    pip install amd-aiter==0.1.10 \\"
+    "\n      --extra-index-url https://pypi.amd.com/rocm-7.1.1/simple"
+    "\n  or re-pin the symbols in flashinfer/csrc_rocm/aiter_loader.cc.";
 
 std::string get_jit_dir() {
   if (const char* env = std::getenv("AITER_JIT_DIR")) return env;
