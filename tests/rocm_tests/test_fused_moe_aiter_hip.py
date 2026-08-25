@@ -19,13 +19,23 @@ import torch
 import flashinfer
 from flashinfer.fused_moe_rocm import (
     _BLOCK_M_THRESHOLDS,
+    _FP8_BY_ARCH,
+    _fp8_stage2_k_tile,
     _SUPPORTED_BLOCK_M,
     _select_block_m,
+    moe_fp8_dtype,
+    quantize_moe_weight,
     shuffle_moe_weight,
 )
+from flashinfer.jit.aiter_source import resolve_aiter_build_arch
 from tests.test_helpers.test_helpers import requires_aiter
 
 _ACT = {"silu": torch.nn.functional.silu, "gelu": torch.nn.functional.gelu}
+
+# Bound on fp8 quantization error against the dequantized-weight reference.
+# test_fp8_activation_scaling_is_per_token is what pins the *granularity*,
+# which this bound is too loose to see.
+_FP8_TOL = 0.08
 
 
 def _moe_ref(x, w1, w2, topk_ids, topk_weights, activation):
@@ -58,6 +68,21 @@ def _make_case(M, E, K, I, topk, dtype, device, seed=0xA17E3):
 
 def _rel_err(got, ref):
     return (got.float() - ref).abs().max().item() / max(ref.abs().max().item(), 1e-9)
+
+
+def _dequantize(q, scale):
+    return (q.float().view(-1, q.shape[-1]) * scale.view(-1, 1)).view(q.shape)
+
+
+def _make_fp8_case(M, E, K, I, topk, device, seed=0xA17E3):
+    """The bf16 case plus fp8 weights and the reference that dequantizes them."""
+    x, w1, w2, ids, weights = _make_case(M, E, K, I, topk, torch.bfloat16, device, seed)
+    w1q, w1s = quantize_moe_weight(w1)
+    w2q, w2s = quantize_moe_weight(w2)
+    ref = _moe_ref(
+        x, _dequantize(w1q, w1s), _dequantize(w2q, w2s), ids, weights, "silu"
+    )
+    return x, w1q, w1s, w2q, w2s, ids, weights, ref
 
 
 @requires_aiter
@@ -319,10 +344,84 @@ def test_fused_moe_rejects_bad_arguments(kwargs, cast, match):
 
 
 @requires_aiter
+def test_fused_moe_rejects_weights_of_the_wrong_dtype():
+    """A weight dtype that is neither hidden_states' nor fp8, before the build."""
+    device = torch.device("cuda:0")
+    x, w1, w2, ids, weights = _make_case(8, 8, 512, 256, 2, torch.bfloat16, device)
+
+    with pytest.raises(ValueError, match="expert weights must be"):
+        flashinfer.aiter_fused_moe(
+            x,
+            shuffle_moe_weight(w1).float(),
+            shuffle_moe_weight(w2).float(),
+            ids,
+            weights,
+        )
+
+
+@requires_aiter
+@pytest.mark.parametrize("quantize_w1", [True, False])
+def test_fused_moe_rejects_mismatched_weight_dtypes(quantize_w1):
+    """Quantizing one weight and not the other, caught before the build.
+
+    _get_module keys on w1 alone, so without this the fp8 case compiles a CK
+    module for minutes and only then fails in the shim.
+    """
+    device = torch.device("cuda:0")
+    x, w1, w2, ids, weights = _make_case(8, 8, 512, 256, 2, torch.bfloat16, device)
+    w1q, w1s = quantize_moe_weight(w1)
+    w2q, w2s = quantize_moe_weight(w2)
+    if quantize_w1:
+        pair, scales = (w1q, w2), {"w1_scale": w1s, "w2_scale": w2s}
+    else:
+        pair, scales = (w1, w2q), {}
+
+    with pytest.raises(ValueError, match="must have the same dtype"):
+        flashinfer.aiter_fused_moe(
+            x,
+            shuffle_moe_weight(pair[0]),
+            shuffle_moe_weight(pair[1]),
+            ids,
+            weights,
+            **scales,
+        )
+
+
+@requires_aiter
+@pytest.mark.parametrize(
+    "break_scale,match",
+    [
+        (lambda s: s.half(), "must be float32"),
+        (lambda s: s.squeeze(-1), r"must be \["),
+        (lambda s: s[:, :-16], r"must be \["),
+        (lambda s: s.repeat(1, 1, 2)[..., :1], "must be contiguous"),
+    ],
+)
+def test_fp8_rejects_malformed_weight_scales(break_scale, match):
+    """The shim is the only thing that validates scale dtype, shape and layout.
+
+    CK reads the scale buffer at a stride derived from the weight shape, so a
+    wrong one is out-of-bounds reads or wrong numbers, not a crash.
+    """
+    device = torch.device("cuda:0")
+    x, w1q, w1s, w2q, w2s, ids, weights, _ = _make_fp8_case(64, 8, 512, 256, 2, device)
+
+    with pytest.raises(RuntimeError, match=match):
+        flashinfer.aiter_fused_moe(
+            x,
+            shuffle_moe_weight(w1q),
+            shuffle_moe_weight(w2q),
+            ids,
+            weights,
+            w1_scale=break_scale(w1s),
+            w2_scale=w2s,
+        )
+
+
+@requires_aiter
 @pytest.mark.parametrize(
     "mutate,match",
     [
-        (lambda t: {"w1": t["w1"].float()}, "w1/w2 dtype must match"),
         (lambda t: {"ids": t["ids"].to(torch.int64)}, "topk_ids must be int32"),
         (lambda t: {"weights": t["weights"].to(torch.bfloat16)}, "must be float32"),
         (lambda t: {"w2": t["w2"][:, :, : t["w2"].shape[2] // 2]}, "expected w1"),
@@ -360,3 +459,294 @@ def test_fused_moe_rejects_bad_tensors(mutate, match):
     t.update(mutate(t))
     with pytest.raises(RuntimeError, match=match):
         flashinfer.aiter_fused_moe(t["x"], t["w1"], t["w2"], t["ids"], t["weights"])
+
+
+@requires_aiter
+@pytest.mark.parametrize(
+    "M,E,K,I,topk",
+    [
+        (1, 8, 512, 256, 2),
+        (64, 8, 512, 256, 2),
+        (256, 32, 1024, 512, 6),
+        # inter_dim=1408 is not a multiple of 256, which gfx950's fp8 stage 2
+        # needs at block_m 32 and 64 -- "auto" must step up to 128 rather than
+        # raise from inside CK.
+        (1024, 8, 4096, 1408, 2),
+    ],
+)
+def test_fp8_moe_vs_dequantized_ref(M, E, K, I, topk):
+    device = torch.device("cuda:0")
+    x, w1q, w1s, w2q, w2s, ids, weights, ref = _make_fp8_case(M, E, K, I, topk, device)
+
+    got = flashinfer.aiter_fused_moe(
+        x,
+        shuffle_moe_weight(w1q),
+        shuffle_moe_weight(w2q),
+        ids,
+        weights,
+        w1_scale=w1s,
+        w2_scale=w2s,
+    )
+
+    assert got.shape == (M, K) and got.dtype == torch.bfloat16
+    assert torch.isfinite(got).all()
+    assert _rel_err(got, ref) < _FP8_TOL
+
+
+@requires_aiter
+@pytest.mark.parametrize("activation", ["silu", "gelu"])
+@pytest.mark.parametrize("block_m", [32, 64, 128])
+def test_fp8_moe_activation_and_block_m(activation, block_m):
+    device = torch.device("cuda:0")
+    x, w1q, w1s, w2q, w2s, ids, weights, _ = _make_fp8_case(128, 8, 512, 256, 2, device)
+    ref = _moe_ref(
+        x, _dequantize(w1q, w1s), _dequantize(w2q, w2s), ids, weights, activation
+    )
+
+    got = flashinfer.aiter_fused_moe(
+        x,
+        shuffle_moe_weight(w1q),
+        shuffle_moe_weight(w2q),
+        ids,
+        weights,
+        w1_scale=w1s,
+        w2_scale=w2s,
+        activation=activation,
+        block_m=block_m,
+    )
+
+    assert _rel_err(got, ref) < _FP8_TOL
+
+
+@requires_aiter
+@pytest.mark.parametrize("drop", ["w1_scale", "w2_scale", "both"])
+def test_fp8_needs_both_scales(drop):
+    """CK gates *all* scaling on the scale pointers arriving together, so a
+    half-supplied pair silently runs an unscaled GEMM."""
+    device = torch.device("cuda:0")
+    x, w1q, w1s, w2q, w2s, ids, weights, _ = _make_fp8_case(64, 8, 512, 256, 2, device)
+    scales = {"w1_scale": w1s, "w2_scale": w2s}
+    for key in ["w1_scale", "w2_scale"] if drop == "both" else [drop]:
+        scales[key] = None
+
+    with pytest.raises(ValueError, match="must both be given"):
+        flashinfer.aiter_fused_moe(
+            x,
+            shuffle_moe_weight(w1q),
+            shuffle_moe_weight(w2q),
+            ids,
+            weights,
+            **scales,
+        )
+
+
+@requires_aiter
+def test_scales_are_rejected_without_fp8_weights():
+    """The other half of the same rule: bf16 weights take no scales."""
+    device = torch.device("cuda:0")
+    x, w1, w2, ids, weights = _make_case(64, 8, 512, 256, 2, torch.bfloat16, device)
+    ones = torch.ones(8, 512, 1, dtype=torch.float32, device=device)
+
+    with pytest.raises(ValueError, match="must both be given"):
+        flashinfer.aiter_fused_moe(
+            x,
+            shuffle_moe_weight(w1),
+            shuffle_moe_weight(w2),
+            ids,
+            weights,
+            w1_scale=ones,
+            w2_scale=ones,
+        )
+
+
+@requires_aiter
+def test_fp8_rejects_the_other_architectures_encoding():
+    """The other board's encoding quantizes, shuffles and runs; only the numbers
+    are wrong. Which one is right is a property of the device."""
+    device = torch.device("cuda:0")
+    x, w1q, w1s, w2q, w2s, ids, weights, _ = _make_fp8_case(64, 8, 512, 256, 2, device)
+    other = next(d for d in _FP8_BY_ARCH.values() if d != moe_fp8_dtype())
+
+    with pytest.raises(ValueError, match="expert weights must be"):
+        flashinfer.aiter_fused_moe(
+            x,
+            shuffle_moe_weight(w1q).view(other),
+            shuffle_moe_weight(w2q).view(other),
+            ids,
+            weights,
+            w1_scale=w1s,
+            w2_scale=w2s,
+        )
+
+
+# CK's fp8 stage-2 K tile, measured through this shim on both boards by running
+# every (inter_dim, block_m) below and recording ok / raised. gfx942 keeps a
+# narrow tile for inter_dim <= 192; gfx950 builds no such instance.
+_MEASURED_STAGE2_K_TILE = [
+    ("gfx942", 32, 192, 64),
+    ("gfx942", 32, 320, 128),
+    ("gfx942", 128, 1408, 128),
+    ("gfx950", 32, 320, 256),
+    ("gfx950", 64, 1408, 256),
+    ("gfx950", 128, 1408, 128),
+    ("gfx950", 128, 192, 128),
+]
+
+
+@pytest.mark.parametrize("arch,block_m,inter_dim,expected", _MEASURED_STAGE2_K_TILE)
+def test_fp8_stage2_k_tile_matches_measurement(arch, block_m, inter_dim, expected):
+    """Pure arithmetic: no GPU, no aiter."""
+    assert _fp8_stage2_k_tile(arch, block_m, inter_dim) == expected
+
+
+@requires_aiter
+@pytest.mark.parametrize("block_m", [32, 64, 128])
+def test_fp8_rejects_a_shape_ck_cannot_serve(block_m):
+    """inter_dim=1408 is legal on gfx942 at every tile and illegal on gfx950 below 128.
+
+    CK's own rejection names neither dimension, so this asserts the arch-specific
+    answer rather than a fixed one.
+    """
+    device = torch.device("cuda:0")
+    inter_dim = 1408
+    x, w1q, w1s, w2q, w2s, ids, weights, ref = _make_fp8_case(
+        64, 8, 512, inter_dim, 2, device
+    )
+    call = lambda: flashinfer.aiter_fused_moe(  # noqa: E731
+        x,
+        shuffle_moe_weight(w1q),
+        shuffle_moe_weight(w2q),
+        ids,
+        weights,
+        w1_scale=w1s,
+        w2_scale=w2s,
+        block_m=block_m,
+    )
+
+    if inter_dim % _fp8_stage2_k_tile(resolve_aiter_build_arch(), block_m, inter_dim):
+        with pytest.raises(ValueError, match="inter_dim must be divisible by"):
+            call()
+    else:
+        assert _rel_err(call(), ref) < _FP8_TOL
+
+
+@requires_aiter
+def test_fp8_rejects_a_model_dim_no_tile_can_serve():
+    """Stage 1 steps K by 128 on every tile and both boards, so no tile rescues this.
+
+    Reaching CK instead returns non-finite output on gfx942 rather than raising.
+    """
+    device = torch.device("cuda:0")
+    x, w1q, w1s, w2q, w2s, ids, weights, _ = _make_fp8_case(64, 8, 544, 512, 2, device)
+    assert 544 % 128 and 544 % 32 == 0  # indivisible for CK, still shuffleable
+
+    with pytest.raises(ValueError, match="model_dim must be divisible by 128"):
+        flashinfer.aiter_fused_moe(
+            x,
+            shuffle_moe_weight(w1q),
+            shuffle_moe_weight(w2q),
+            ids,
+            weights,
+            w1_scale=w1s,
+            w2_scale=w2s,
+        )
+
+
+@requires_aiter
+def test_fp8_auto_picks_a_tile_that_can_serve_the_shape():
+    """The selector wants 32 here; on gfx950 that tile cannot serve inter_dim=1408.
+
+    "auto" must find a legal tile rather than propagate the rejection, and must
+    still be correct on gfx942 where 32 was legal all along.
+    """
+    device = torch.device("cuda:0")
+    assert _select_block_m(64, 2, 8) == 32
+    x, w1q, w1s, w2q, w2s, ids, weights, ref = _make_fp8_case(
+        64, 8, 512, 1408, 2, device
+    )
+
+    got = flashinfer.aiter_fused_moe(
+        x,
+        shuffle_moe_weight(w1q),
+        shuffle_moe_weight(w2q),
+        ids,
+        weights,
+        w1_scale=w1s,
+        w2_scale=w2s,
+    )
+
+    assert _rel_err(got, ref) < _FP8_TOL
+
+
+@requires_aiter
+def test_fp8_activation_scaling_is_per_token():
+    """One token far outside fp8's exponent range, so the rest must not be crushed.
+
+    The outlier has to be this large: e4m3 spans ~2.3e5, so below that a single
+    shared scale is nearly as good as per-row and no tolerance separates the two.
+    At 1e5 per-token measures 0.06 against per-tensor's 0.75.
+    """
+    device = torch.device("cuda:0")
+    x, w1q, w1s, w2q, w2s, ids, weights, _ = _make_fp8_case(64, 8, 512, 256, 2, device)
+    x = x.clone().float()
+    x[0] *= 1e5
+    x = x.bfloat16()
+    ref = _moe_ref(x, _dequantize(w1q, w1s), _dequantize(w2q, w2s), ids, weights, "silu")
+
+    got = flashinfer.aiter_fused_moe(
+        x,
+        shuffle_moe_weight(w1q),
+        shuffle_moe_weight(w2q),
+        ids,
+        weights,
+        w1_scale=w1s,
+        w2_scale=w2s,
+    )
+
+    # Per row: the outlier's own magnitude must not mask the rows it would crush.
+    rel = (got.float() - ref).abs().amax(-1) / ref.abs().amax(-1).clamp_min(1e-9)
+    assert rel.max().item() < _FP8_TOL, rel
+
+
+@requires_aiter
+@pytest.mark.parametrize("quantized", [False, True])
+def test_zero_tokens_returns_an_empty_result(quantized):
+    """An expert-parallel rank can be routed nothing.
+
+    AITER launches a zero-sized grid for that and leaves a sticky HIP error that
+    surfaces on a later unrelated op, so the shim has to return before it.
+    """
+    device = torch.device("cuda:0")
+    x, w1, w2, _, _ = _make_case(8, 8, 512, 256, 2, torch.bfloat16, device)
+    x = x[:0].contiguous()
+    ids = torch.empty(0, 2, dtype=torch.int32, device=device)
+    weights = torch.empty(0, 2, dtype=torch.float32, device=device)
+    scales = {}
+    if quantized:
+        w1, w1s = quantize_moe_weight(w1)
+        w2, w2s = quantize_moe_weight(w2)
+        scales = {"w1_scale": w1s, "w2_scale": w2s}
+
+    got = flashinfer.aiter_fused_moe(
+        x, shuffle_moe_weight(w1), shuffle_moe_weight(w2), ids, weights, **scales
+    )
+    torch.cuda.synchronize()
+
+    assert got.shape == (0, 512)
+    # The sticky error the early return exists to prevent lands here, not above.
+    torch.zeros(4, device=device).sum().item()
+
+
+@requires_aiter
+def test_fp8_shuffle_matches_aiters_own():
+    """The lane width is 16 // element_size, so fp8 takes a different branch than
+    the bf16 path shuffle_moe_weight was written for."""
+    aiter_shuffle = pytest.importorskip("aiter.ops.shuffle").shuffle_weight
+    device = torch.device("cuda:0")
+    w = torch.randn(4, 128, 256, dtype=torch.bfloat16, device=device)
+    q, _ = quantize_moe_weight(w)
+
+    assert torch.equal(
+        shuffle_moe_weight(q).view(torch.uint8),
+        aiter_shuffle(q, layout=(16, 16)).view(torch.uint8),
+    )

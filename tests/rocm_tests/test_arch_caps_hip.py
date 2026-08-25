@@ -261,7 +261,7 @@ class TestTableWellFormed:
         # op second, so one alternation covers them.
         pattern = re.compile(
             r"(?:require_aiter|is_aiter_available|require_capability"
-            r'|capability_available|capability_reason)\([^,()]*(?:\([^()]*\))?[^,()]*,\s*"([a-z_]+)"'
+            r'|capability_available|capability_reason)\([^,()]*(?:\([^()]*\))?[^,()]*,\s*"([a-z0-9_]+)"'
         )
         used = set()
         for src in pkg.rglob("*.py"):  # subpackages too, not just the top level
@@ -283,6 +283,10 @@ class TestTableWellFormed:
             "scan no longer sees ops called through the capability API: "
             f"{sorted({'mla', 'append_paged_kv_cache'} - used)}"
         )
+        # A digit in an op name is what silently narrowed this scan once: the
+        # character class excluded [0-9], so the whole call site stopped matching
+        # and both MoE rows vanished from `used` while the test still passed.
+        assert "fused_moe_fp8" in used, "the scan stopped seeing digit-bearing op names"
         declared = {c.op for c in arch_caps.CAPABILITIES if c.backend == "aiter"}
         assert used <= declared, (
             f"ops passed by the library but absent from the table: "
