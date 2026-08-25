@@ -49,7 +49,10 @@ inline std::size_t AiterPaV1WorkspaceBytes(int num_seqs, int num_heads, int max_
 // Dense block table + context lengths from FlashInfer's flat paged-KV indexing.
 //
 //   block_tables[i][j] = j < npages(i) ? indices[indptr[i] + j] : 0
-//   context_lens[i]    = (npages(i) - 1) * page_size + last_page_len[i]
+//   context_lens[i]    = npages(i) > 0 ? (npages(i) - 1) * page_size + last_page_len[i] : 0
+//
+// The npages == 0 arm is not decoration: without it the expression underflows to
+// -page_size + last_page_len and hands AITER a negative context length.
 //
 // One thread per (seq, slot). Grid-stride so the launch config is independent of
 // max_blocks_per_seq. `static`, not weak-linked like the templates elsewhere in
@@ -82,7 +85,7 @@ static __global__ void AiterPaV1BuildBlockTablesKernel(const int32_t* __restrict
     // Fold the context-length pass into the slot-0 threads rather than paying a
     // second launch for num_seqs elements.
     if (slot == 0) {
-      context_lens[seq] = (npages - 1) * page_size + last_page_len[seq];
+      context_lens[seq] = npages > 0 ? (npages - 1) * page_size + last_page_len[seq] : 0;
     }
   }
 }

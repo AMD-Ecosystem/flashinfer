@@ -54,6 +54,17 @@ static std::pair<at::Tensor, at::Tensor> build_block_tables_and_ctxlens(
   auto device = paged_kv_indices.device();
   auto int32_opts = at::TensorOptions().dtype(at::kInt).device(device);
 
+  // The kernel indexes these as flat int32 arrays, so unlike the ATen form it
+  // cannot absorb a strided view or a short buffer -- either would read OOB.
+  TORCH_CHECK(paged_kv_indptr.is_contiguous() && paged_kv_indices.is_contiguous() &&
+                  paged_kv_last_page_len.is_contiguous(),
+              "AITER PA v1 requires contiguous paged-KV index tensors");
+  TORCH_CHECK(paged_kv_indptr.numel() == num_seqs + 1, "paged_kv_indptr must have num_seqs+1 (",
+              num_seqs + 1, ") elements; got ", paged_kv_indptr.numel());
+  TORCH_CHECK(paged_kv_last_page_len.numel() == num_seqs,
+              "paged_kv_last_page_len must have num_seqs (", num_seqs, ") elements; got ",
+              paged_kv_last_page_len.numel());
+
   // empty, not zeros: the kernel writes every slot including the padding.
   at::Tensor block_tables = at::empty({num_seqs, max_blocks_per_seq}, int32_opts);
   at::Tensor context_lens = at::empty({num_seqs}, int32_opts);
