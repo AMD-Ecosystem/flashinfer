@@ -355,6 +355,47 @@ def test_mla_prefill_vs_ref(
 
 
 @requires_aiter
+def test_mla_plan_rejects_non_causal_multi_token():
+    """causal=False with multi-token queries must raise, not mask silently.
+
+    aiter.mla.mla_prefill_fwd has no causal parameter; it always dispatches
+    mla_prefill_asm_fwd, so the flag cannot be honoured.
+    """
+    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+
+    device = torch.device("cuda:0")
+    ckv, kpe, kv_indptr, kv_indices, _ = _build_paged_kv(
+        1, [8], 1, 512, 64, torch.bfloat16, device
+    )
+    ws = torch.empty(1, dtype=torch.float32, device=device)
+    wrapper = BatchMLAPagedAttentionWrapper(ws, backend="aiter")
+
+    kwargs = dict(
+        kv_indptr=kv_indptr,
+        kv_indices=kv_indices,
+        kv_len_arr=torch.tensor([8], dtype=torch.int32, device=device),
+        num_heads=16,
+        head_dim_ckv=512,
+        head_dim_kpe=64,
+        page_size=1,
+        sm_scale=1.0 / math.sqrt(576),
+        q_data_type=torch.bfloat16,
+        kv_data_type=torch.bfloat16,
+    )
+    multi = torch.tensor([0, 4], dtype=torch.int32, device=device)
+    with pytest.raises(ValueError, match="causal"):
+        wrapper.plan(qo_indptr=multi, causal=False, **kwargs)
+
+    # Same shape with causal=True, and single-token with causal=False, both fine.
+    wrapper.plan(qo_indptr=multi, causal=True, **kwargs)
+    wrapper.plan(
+        qo_indptr=torch.tensor([0, 1], dtype=torch.int32, device=device),
+        causal=False,
+        **kwargs,
+    )
+
+
+@requires_aiter
 def test_mla_decode_out_tensor():
     """run() respects a pre-allocated out= tensor."""
     from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper

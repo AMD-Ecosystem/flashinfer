@@ -242,7 +242,9 @@ class BatchMLAPagedAttentionWrapper:
         page_size : int
             Page size of the paged KV-cache.
         causal : bool
-            Whether to apply causal masking (no-op for single-token decode).
+            Whether to apply causal masking. No-op for single-token decode.
+            Multi-token queries are always masked causally by AITER, so
+            ``causal=False`` raises rather than silently masking.
         sm_scale : float
             Softmax scale (typically ``1 / sqrt(head_dim_ckv + head_dim_kpe)``).
         q_data_type : torch.dtype
@@ -296,6 +298,17 @@ class BatchMLAPagedAttentionWrapper:
         self._sm_scale = sm_scale
         qo_lens = qo_host[1:] - qo_host[:-1]
         self._max_seqlen_q = int(qo_lens.max()) if qo_lens.numel() > 0 else 1
+
+        # AITER's mla_prefill_fwd takes no causal flag -- it always dispatches
+        # the causal ASM kernel -- so honouring causal=False is impossible here.
+        # Single-token decode masks nothing either way, hence the length guard.
+        if self._max_seqlen_q > 1 and not causal:
+            raise ValueError(
+                "AITER MLA applies causal masking unconditionally for "
+                f"multi-token queries (max_seqlen_q={self._max_seqlen_q}); "
+                "causal=False cannot be honoured. Pass causal=True, or use "
+                "single-token queries where the distinction does not arise."
+            )
 
     def run(
         self,
