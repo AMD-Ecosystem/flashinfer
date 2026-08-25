@@ -26,6 +26,7 @@ import functools
 import os
 import re
 import shutil
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple, Union
@@ -47,6 +48,9 @@ _ARCH_RE = re.compile(r"^gfx[0-9a-f]+$")
 # in a path separator or a flag-looking prefix. \Z, not $: $ also matches before a
 # trailing newline, which would reach the ninja link line intact.
 _LIB_NAME_RE = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9_.+-]*\Z")
+
+# Guards the env-mutating build in _build_aiter_lib; see ensure_aiter_lib.
+_BUILD_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -311,11 +315,14 @@ def ensure_aiter_lib(module: Union[str, AiterModule]) -> Path:
     if lib_path.exists():
         return lib_path
 
-    # Serialize the build across processes. `pytest -n auto` shares one cache dir,
-    # and a CK module takes minutes -- long enough that concurrent builders writing
-    # into the same AITER build tree is the expected case, not a rare race. The
-    # os.replace below makes *publishing* atomic; this makes producing safe.
-    with FileLock(str(libs_dir / f".{md_name}.build.lock"), thread_local=False):
+    # One lock for every module, not one per module. _build_aiter_lib mutates
+    # process-global env (AITER_JIT_DIR, GPU_ARCHS, ROCM_HOME) and restores a
+    # snapshot taken on entry, so two builds of *different* modules in one process
+    # interleave: the first to finish rolls the environment back under the one
+    # still running. The thread lock covers that; the file lock covers `pytest
+    # -n auto`, which shares a cache dir across processes. os.replace below makes
+    # publishing atomic; these make producing safe.
+    with _BUILD_LOCK, FileLock(str(libs_dir / ".aiter-build.lock"), thread_local=False):
         if lib_path.exists():
             return lib_path
         return _build_aiter_lib(module_name, md_name, module.blob_gen_cmd, lib_path)
