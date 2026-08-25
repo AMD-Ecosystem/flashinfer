@@ -116,10 +116,14 @@ _counters = _bench_args.counters
 _auto_label = "mla" if _counters == "roofline" else f"mla_{_counters}"
 if _bench_args.mode != "all":
     _auto_label += f"_{_bench_args.mode}"
-# Only a non-default --batches is encoded. --heads deliberately is not: it
-# predates this flag, so suffixing it would orphan already-published CSVs from
+# Only a non-default --batches, and only where it is actually consumed: pool
+# mode sweeps _POOL_PAGES at the fixed _POOL_BATCH, so encoding a batch list
+# there would name a sweep the rows do not contain. --heads deliberately is not
+# encoded: it predates this flag, so a suffix would orphan published CSVs from
 # --replot.
-if _bench_args.batches != _bench_parser.get_default("batches"):
+if _bench_args.mode != "pool" and _bench_args.batches != _bench_parser.get_default(
+    "batches"
+):
     _auto_label += f"_b{_bench_args.batches.replace(',', '-')}"
 if _bench_args.separate:
     _auto_label += "_separate"

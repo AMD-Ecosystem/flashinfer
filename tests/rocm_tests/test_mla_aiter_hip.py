@@ -361,7 +361,7 @@ def test_mla_plan_rejects_non_causal_multi_token():
     from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
 
     device = torch.device("cuda:0")
-    ckv, kpe, kv_indptr, kv_indices, _ = _build_paged_kv(
+    _, _, kv_indptr, kv_indices, _ = _build_paged_kv(
         1, [8], 1, 512, 64, torch.bfloat16, device
     )
     ws = torch.empty(1, dtype=torch.float32, device=device)
