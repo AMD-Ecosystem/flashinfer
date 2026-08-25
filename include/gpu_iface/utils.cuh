@@ -5,8 +5,10 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <type_traits>
 #include <vector>
 
@@ -63,6 +65,38 @@ inline void DebugPrintCUDAArray(T* device_ptr, size_t size, std::string prefix =
   std::cout << std::endl;
 }
 
+/*!
+ * \brief CTA_TILE_Q override from FLASHINFER_ROCM_FORCE_CTA_TILE_Q, or 0 when unset.
+ *
+ * The HIP heuristic never selects 128, so that arm is compiled into every ROCm
+ * build but unreachable and cannot otherwise be benchmarked. Forcing bypasses the
+ * heuristic's guards and can therefore produce configurations it exists to avoid:
+ * 128 at head_dim >= 256 raises from IsInvalid(); 16 at head_dim >= 256 needs 72 KB
+ * of smem, which only the single-prefill path range-checks; and 128 can exceed the
+ * workspace PrefillPlan sized from its own conservative_cta_tile_q estimate.
+ */
+inline uint32_t FA2ForcedCtaTileQ() {
+  static const uint32_t forced = [] {
+    const char* env = std::getenv("FLASHINFER_ROCM_FORCE_CTA_TILE_Q");
+    if (env == nullptr || *env == '\0') return 0u;
+    char* end = nullptr;
+    const unsigned long value = std::strtoul(env, &end, 10);
+    // Digits only, end to end: "64,128" must not silently benchmark 64, and strtoul
+    // would otherwise skip leading space and a '+' while still rejecting "64 ".
+    const bool digits_only = (env[0] >= '0' && env[0] <= '9');
+    if (!digits_only || *end != '\0' || (value != 16ul && value != 64ul && value != 128ul)) {
+      // Throw std:: directly: gpu_iface/exception.h shares the FLASHINFER_EXCEPTION_H_
+      // guard with flashinfer/exception.h, so including it here could suppress that
+      // header's variadic FLASHINFER_CHECK.
+      std::ostringstream err_msg;
+      err_msg << "FLASHINFER_ROCM_FORCE_CTA_TILE_Q must be 16, 64, or 128, got \"" << env << "\"";
+      throw std::invalid_argument(err_msg.str());
+    }
+    return static_cast<uint32_t>(value);
+  }();
+  return forced;
+}
+
 inline uint32_t FA2DetermineCtaTileQ(int64_t avg_packed_qo_len, uint32_t head_dim) {
 #if defined(PLATFORM_CUDA_DEVICE)
   if (avg_packed_qo_len > 64 && head_dim < 256) {
@@ -85,21 +119,14 @@ inline uint32_t FA2DetermineCtaTileQ(int64_t avg_packed_qo_len, uint32_t head_di
     }
   }
 #elif defined(PLATFORM_HIP_DEVICE)
-  // CDNA3 (MI300X) occupancy-aware tile selection.
+  if (const uint32_t forced = FA2ForcedCtaTileQ(); forced != 0u) return forced;
+  // 64 is measured-optimal on gfx942 and gfx950 alike, not a CDNA3 leftover: at
+  // head_dim=128 the 128 tile is slower on both, by up to 51% (gfx942, causal,
+  // seq 4096). Re-measure with FLASHINFER_ROCM_FORCE_CTA_TILE_Q before changing.
   //
-  // LDS per CU on gfx942 is 64 KB. SharedStorageQKVO with CTA_TILE_Q=128 and
-  // head_dim=128 occupies 48 KB, fitting only 1 block/CU → 4 wavefronts/CU
-  // (12.5% of the 32-wavefront HW maximum), leaving MFMA units idle >93% of
-  // the time.
-  //
-  // CTA_TILE_Q=64 with head_dim=128 → 32 KB smem → 2 blocks/CU → 8 wavefronts,
-  // doubling latency-hiding capacity and MFMA utilization.
-  //
-  // For head_dim >= 256, CTA_TILE_Q=16 is non-viable on CDNA3: get_num_warps_q(16)=1
-  // forces NUM_WARPS_KV=4, so even the minimum NUM_MMA_KV=1 configuration produces
-  // smem = Q(8 KB) + K(32 KB) + V(32 KB) = 72 KB, exceeding the 64 KB LDS ceiling.
-  // 2 blocks/CU is also impossible since the Q tile alone occupies 32 KB = half of LDS,
-  // so CTA_TILE_Q=64 is the correct choice for all sequence lengths at head_dim >= 256.
+  // head_dim >= 256 must return 64 for structural reasons, not measured ones:
+  // CTA_TILE_Q=16 forces NUM_WARPS_KV=4 and 72 KB of smem, over gfx942's 64 KB,
+  // and 128 gives NUM_MMA_Q=2 with NUM_MMA_D_VO=16, which IsInvalid() rejects.
   if (head_dim >= 256) return 64;
   // CTA_TILE_Q=16 is retained for very short sequences (avg ≤ 16 rows) with head_dim < 256
   // to avoid launching an excessive number of near-empty threadblocks.
