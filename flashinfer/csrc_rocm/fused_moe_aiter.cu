@@ -128,6 +128,9 @@ void fused_moe_aiter(at::Tensor out, at::Tensor hidden_states, at::Tensor w1, at
               "fused_moe_aiter: topk_ids/topk_weights must have ", num_tokens, " rows");
   TORCH_CHECK(topk_weights.size(1) == topk, "fused_moe_aiter: topk_weights has ",
               topk_weights.size(1), " columns but topk_ids has ", topk);
+  // topk==0 reaches a division by zero inside AITER and raises SIGFPE, which
+  // kills the process rather than surfacing as an exception.
+  TORCH_CHECK(topk >= 1, "fused_moe_aiter: topk must be at least 1, got ", topk);
   TORCH_CHECK(topk <= num_experts, "fused_moe_aiter: topk=", topk,
               " exceeds num_experts=", num_experts);
   TORCH_CHECK(out.size(0) == num_tokens && out.size(1) == model_dim,

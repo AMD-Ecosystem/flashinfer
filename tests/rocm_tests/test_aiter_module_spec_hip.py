@@ -16,18 +16,19 @@ lib silently reused -- a wrong-dtype or wrong-activation kernel, with correct
 shapes and no error.
 """
 
-import importlib.util
-
 import pytest
 import torch
 
+from flashinfer.aiter_utils import _aiter_importable
 from flashinfer.jit.aiter_source import AiterModule, aiter_jitspec_flags
 from flashinfer.jit.fused_moe_rocm import _ck2stages_module
 
 # _ck2stages_module reads aiter.jit.core.AITER_CSRC_DIR. A ROCm box without the
 # aiter package is a supported state, so skip rather than error there.
+# _aiter_importable actually imports aiter, aiter_meta and aiter.jit.core, so a
+# half-installed aiter -- which find_spec reports as present -- skips too.
 requires_aiter_import = pytest.mark.skipif(
-    importlib.util.find_spec("aiter") is None, reason="needs the aiter package"
+    not _aiter_importable(), reason="needs a working aiter install"
 )
 
 

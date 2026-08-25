@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Tests for flashinfer.fused_moe, the AITER CK two-stage MoE backend on ROCm.
+# Tests for flashinfer.aiter_fused_moe, the AITER CK two-stage MoE backend on ROCm.
 #
 # Note on tolerances: the reference accumulates in float32 while the kernel
 # accumulates a K-long and then an inter_dim-long dot product in bf16/fp16
@@ -235,6 +235,17 @@ def test_fused_moe_rejects_bad_arguments(kwargs, cast, match):
         (lambda t: {"w2": t["w2"][:, :, : t["w2"].shape[2] // 2]}, "expected w1"),
         (lambda t: {"w1": t["w1"][:-1]}, "experts"),
         (lambda t: {"x": t["x"].unsqueeze(0)}, "must be 2-D"),
+        # topk=0 divides by zero inside AITER: without this check the process
+        # dies on SIGFPE, which no caller can catch. The upper bound below is
+        # the other half of the same range check.
+        (
+            lambda t: {
+                "ids": t["ids"][:, :0].contiguous(),
+                "weights": t["weights"][:, :0].contiguous(),
+            },
+            "topk must be at least 1",
+        ),
+        (lambda t: {"w1": t["w1"][:1], "w2": t["w2"][:1]}, "exceeds num_experts"),
     ],
 )
 def test_fused_moe_rejects_bad_tensors(mutate, match):

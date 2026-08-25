@@ -123,8 +123,10 @@ def aiter_fused_moe(
         ``[num_tokens, model_dim]``, same dtype as ``hidden_states``.
 
     Raises:
-        ValueError: The device or the aiter install cannot serve this op, or an
-            argument is out of range.
+        ValueError: The device or the aiter install cannot serve this op, or
+            ``activation``/``block_m``/the dtype is unsupported.
+        RuntimeError: A tensor fails the shim's shape, dtype, device,
+            contiguity, or aliasing checks.
     """
     require_aiter(hidden_states.device, "fused_moe")
 
