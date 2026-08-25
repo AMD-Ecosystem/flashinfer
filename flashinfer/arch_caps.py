@@ -214,6 +214,9 @@ class Capability:
     op: str
     backend: str
     archs: Mapping[str, ArchSupport] = field(default_factory=dict)
+    # One line, rendered as the README matrix Notes column; anything longer
+    # belongs in docs/rocm/backends.md. The generator rejects a note carrying
+    # a pipe, a bare URL, inline HTML, or a newline.
     note: str = ""
     # The public ``backend=`` string to suggest when this row is unavailable.
     # Declared per row because it is not derivable: the table keys backends as
@@ -301,8 +304,20 @@ _HIP_950 = ArchSupport(Support.SUPPORTED)
 
 CAPABILITIES: Tuple[Capability, ...] = (
     # --- AITER backends: measured on both architectures --------------------
-    Capability("batch_decode", "aiter", _archs(_OK_942, _OK_950), fallback="fa2"),
-    Capability("single_prefill", "aiter", _archs(_OK_942, _OK_950), fallback="fa2"),
+    Capability(
+        "batch_decode",
+        "aiter",
+        _archs(_OK_942, _OK_950),
+        note='MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Graph capture is opt-in via `backend="aiter"`.',
+        fallback="fa2",
+    ),
+    Capability(
+        "single_prefill",
+        "aiter",
+        _archs(_OK_942, _OK_950),
+        note="MHA / GQA / MQA; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP.",
+        fallback="fa2",
+    ),
     Capability(
         "batch_prefill",
         "aiter",
@@ -315,6 +330,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
                 known_bad=(_ROCM72_CAUSAL_PREFILL,),
             ),
         ),
+        note="Paged and ragged. Page sizes 128/256/1024 are native on amd-aiter >= 0.1.10; others take a flat gather.",
         fallback="fa2",
     ),
     # No alternative backend -- hence no fallback=.
@@ -322,34 +338,141 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "mla",
         "aiter",
         _archs(_OK_942, ArchSupport(Support.SUPPORTED, evidence=_MEASURED_950_MLA)),
+        note="DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here.",
     ),
-    Capability("rope", "aiter", _archs(_OK_942, _OK_950), fallback="native"),
     Capability(
-        "append_paged_kv_cache", "aiter", _archs(_OK_942, _OK_950), fallback="native"
+        "rope",
+        "aiter",
+        _archs(_OK_942, _OK_950),
+        note="`apply_rope_with_cos_sin_cache` and its inplace variant, linked at the C++ level. Opt-in.",
+        fallback="native",
     ),
-    Capability("rmsnorm", "aiter", _archs(_OK_942, _OK_950), fallback="native"),
     Capability(
-        "fused_add_rmsnorm", "aiter", _archs(_OK_942, _OK_950), fallback="native"
+        "append_paged_kv_cache",
+        "aiter",
+        _archs(_OK_942, _OK_950),
+        note="fp16/bf16 + NHD. Bit-exact with the in-tree kernel but slower, so `auto` picks `native`.",
+        fallback="native",
     ),
-    Capability("silu_and_mul", "aiter", _archs(_OK_942, _OK_950), fallback="native"),
+    Capability(
+        "rmsnorm",
+        "aiter",
+        _archs(_OK_942, _OK_950),
+        note="CK `rmsnorm2d`. `auto` routes only 2-D fp16/bf16 with a matching weight dtype here.",
+        fallback="native",
+    ),
+    Capability(
+        "fused_add_rmsnorm",
+        "aiter",
+        _archs(_OK_942, _OK_950),
+        note="CK `rmsnorm2d_with_add`; 2-D only. Slightly lower precision at hidden_size >= 1024.",
+        fallback="native",
+    ),
+    Capability(
+        "silu_and_mul",
+        "aiter",
+        _archs(_OK_942, _OK_950),
+        note="`aiter::silu_and_mul`, linked at the C++ level. Opt-in; matches native in fp16, lower in bf16.",
+        fallback="native",
+    ),
     # No HIP MoE kernel, so no fallback.
-    Capability("fused_moe", "aiter", _archs(_OK_942_MOE, _OK_950_MOE)),
+    Capability(
+        "fused_moe",
+        "aiter",
+        _archs(_OK_942_MOE, _OK_950_MOE),
+        note="`aiter_fused_moe`; bf16/fp16. Weights must be pre-shuffled with `shuffle_moe_weight` or results are silently wrong.",
+    ),
     # --- HIP backends: declared; per-op evidence not yet recorded ----------
-    Capability("single_decode", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("batch_decode", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("single_prefill", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("batch_prefill", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("cascade", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("pod", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("rope", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("append_paged_kv_cache", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("rmsnorm", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("fused_add_rmsnorm", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("layernorm", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("sampling", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("logits_processor", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("silu_and_mul", "hip", _archs(_HIP_942, _HIP_950)),
-    Capability("quantization", "hip", _archs(_HIP_942, _HIP_950)),
+    Capability(
+        "single_decode",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="MHA / GQA / MQA.",
+    ),
+    Capability(
+        "batch_decode",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ) and CUDA-graph capture.",
+    ),
+    Capability(
+        "single_prefill",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="MHA / GQA / MQA, including custom attention masks.",
+    ),
+    Capability(
+        "batch_prefill",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="Paged and ragged; MHA / GQA / MQA, including custom attention masks.",
+    ),
+    Capability(
+        "cascade",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="Two-level shared-prefix attention; a fused single-kernel variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`.",
+    ),
+    Capability(
+        "pod",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="`PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream.",
+    ),
+    Capability(
+        "rope",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="LLaMA and LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ).",
+    ),
+    Capability(
+        "append_paged_kv_cache",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="fp8 KV-cache supported. Sustains 3.62 TB/s against AITER's 2.86 on gfx942, so `auto` picks this.",
+    ),
+    Capability(
+        "rmsnorm",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="The fallback for 3-D inputs, fp32, or a weight dtype that does not match the input.",
+    ),
+    Capability(
+        "fused_add_rmsnorm",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="The fallback whenever the AITER path is unavailable.",
+    ),
+    Capability(
+        "layernorm",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="`layernorm` plus the Gemma RMSNorm variants. No AITER path.",
+    ),
+    Capability(
+        "sampling",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits.",
+    ),
+    Capability(
+        "logits_processor",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="Composable processor pipeline (cap, mask, temperature, ...).",
+    ),
+    Capability(
+        "silu_and_mul",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="SiLU and GELU with fused gating; the default for `auto`.",
+    ),
+    Capability(
+        "quantization",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="`packbits` and `segment_packbits`.",
+    ),
 )
 
 
@@ -438,7 +561,7 @@ def _blocking_reason(op: str, backend: str, arch: str) -> Optional[str]:
     if entry.support is Support.UNSUPPORTED:
         return f"{backend} {op} is not supported on {arch}"
     if not entry.known_bad:
-        # The common case: 23 of 24 rows have no window, so they never pay for
+        # The common case: 24 of 25 rows have no window, so they never pay for
         # version detection at all.
         return None
 

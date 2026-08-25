@@ -11,6 +11,7 @@ lets it run as a hardware-less CI job on every pull request
 (``.github/workflows/arch-caps-conformance.yml``).
 """
 
+import dataclasses
 import importlib.util
 import pathlib
 import subprocess
@@ -467,7 +468,7 @@ class TestVersionProbeIsCheap:
     with a timeout). A per-routing-decision query must not pay that repeatedly."""
 
     def test_rows_without_a_window_never_probe(self, as_arch, monkeypatch):
-        """23 of 24 rows have no ``known_bad``, so the probe is skipped outright
+        """24 of 25 rows have no ``known_bad``, so the probe is skipped outright
         rather than merely being fast the second time."""
         calls = []
 
@@ -513,3 +514,84 @@ class TestArchCapabilityError:
         """A missing aiter package is a different condition and keeps its own
         exception type."""
         assert not isinstance(arch_caps.ArchCapabilityError("x"), ImportError)
+
+
+# --------------------------------------------------------------------------
+# The README renderer. Loaded the same way and for the same reason: it also
+# refuses to import the flashinfer package, so it runs in the hardware-less job.
+# --------------------------------------------------------------------------
+
+_GEN_PATH = pathlib.Path(__file__).resolve().parents[2] / "scripts"
+_GEN_PATH = _GEN_PATH / "gen_arch_support_matrix.py"
+
+
+def _load_generator():
+    spec = importlib.util.spec_from_file_location("_arch_matrix_gen", _GEN_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+gen = _load_generator()
+
+
+class TestNoteValidation:
+    """``Capability.note`` is rendered into a markdown table cell.
+
+    Escaping was tried and lost, so the generator rejects instead. Each case
+    below is a markdownlint failure reproduced against the repo config.
+    """
+
+    @pytest.mark.parametrize(
+        "note",
+        [
+            "fp16 | bf16",  # MD056, and it has no autofix
+            r"fp16 \| bf16",  # pre-escaped: escaping again re-breaks it
+            "one\ntwo",  # splits the row
+            "see https://example.com/a",  # MD034 autofix rewrites the block
+            "see https://example.com/a. Next",
+            "see (https://example.com/a) here",
+            "use `https://example.com/a` as index",
+            "returns Tensor<T> per head",  # MD033, no autofix
+        ],
+    )
+    def test_rejects_content_markdownlint_would_break_on(self, note):
+        with pytest.raises(SystemExit):
+            gen._note("op/backend", note)
+
+    @pytest.mark.parametrize(
+        "note",
+        [
+            "Slightly lower precision at hidden_size >= 1024.",
+            "`aiter_fused_moe`; bf16/fp16.",
+            "See [the backends doc](docs/rocm/backends.md).",
+            "Sustains 3.62 TB/s against AITER's 2.86 on gfx942.",
+        ],
+    )
+    def test_accepts_ordinary_prose(self, note):
+        assert gen._note("op/backend", note) == note
+
+    def test_every_row_carries_a_valid_note(self):
+        for cap in arch_caps.CAPABILITIES:
+            assert cap.note, f"{cap.op}/{cap.backend} has no note"
+            gen._note(f"{cap.op}/{cap.backend}", cap.note)
+
+
+class TestLegend:
+    """The legend explains the symbols the table uses, and only those."""
+
+    def test_a_symbol_named_only_in_a_note_gets_no_legend_entry(self):
+        rows = list(arch_caps.CAPABILITIES)
+        rows[-1] = dataclasses.replace(
+            rows[-1], note="not available on pre-CDNA3 (marked ❌)"
+        )
+        rendered = gen.render(types.SimpleNamespace(CAPABILITIES=tuple(rows)))
+        assert "**not available**" not in rendered
+
+    def test_a_symbol_used_in_a_status_cell_gets_one(self):
+        rows = list(arch_caps.CAPABILITIES)
+        archs = dict(rows[-1].archs)
+        archs["gfx942"] = arch_caps.ArchSupport(arch_caps.Support.UNSUPPORTED)
+        rows[-1] = dataclasses.replace(rows[-1], archs=archs)
+        rendered = gen.render(types.SimpleNamespace(CAPABILITIES=tuple(rows)))
+        assert "**not available**" in rendered

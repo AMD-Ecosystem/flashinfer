@@ -90,38 +90,37 @@ the routing decisions the library makes. Do not edit it by hand; run
 
 <!-- BEGIN GENERATED: arch support matrix -- scripts/gen_arch_support_matrix.py -->
 
-| Op | Backend | gfx942 (CDNA3) | gfx950 (CDNA4) |
-| :--- | :--- | :---: | :---: |
-| `batch_decode` | `aiter` | ✅ | ✅ |
-| `single_prefill` | `aiter` | ✅ | ✅ |
-| `batch_prefill` | `aiter` | ✅ | ⚠️[^kb1] |
-| `mla` | `aiter` | ✅ | ✅ |
-| `rope` | `aiter` | ✅ | ✅ |
-| `append_paged_kv_cache` | `aiter` | ✅ | ✅ |
-| `rmsnorm` | `aiter` | ✅ | ✅ |
-| `fused_add_rmsnorm` | `aiter` | ✅ | ✅ |
-| `silu_and_mul` | `aiter` | ✅ | ✅ |
-| `fused_moe` | `aiter` | ✅ | ✅ |
-| `single_decode` | `hip` | ◻️ | ◻️ |
-| `batch_decode` | `hip` | ◻️ | ◻️ |
-| `single_prefill` | `hip` | ◻️ | ◻️ |
-| `batch_prefill` | `hip` | ◻️ | ◻️ |
-| `cascade` | `hip` | ◻️ | ◻️ |
-| `pod` | `hip` | ◻️ | ◻️ |
-| `rope` | `hip` | ◻️ | ◻️ |
-| `append_paged_kv_cache` | `hip` | ◻️ | ◻️ |
-| `rmsnorm` | `hip` | ◻️ | ◻️ |
-| `fused_add_rmsnorm` | `hip` | ◻️ | ◻️ |
-| `layernorm` | `hip` | ◻️ | ◻️ |
-| `sampling` | `hip` | ◻️ | ◻️ |
-| `logits_processor` | `hip` | ◻️ | ◻️ |
-| `silu_and_mul` | `hip` | ◻️ | ◻️ |
-| `quantization` | `hip` | ◻️ | ◻️ |
+| Op | Backend | gfx942 (CDNA3) | gfx950 (CDNA4) | Notes |
+| :--- | :--- | :---: | :---: | :--- |
+| `batch_decode` | `aiter` | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Graph capture is opt-in via `backend="aiter"`. |
+| `single_prefill` | `aiter` | ✅ | ✅ | MHA / GQA / MQA; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. |
+| `batch_prefill` | `aiter` | ✅ | ⚠️[^kb1] | Paged and ragged. Page sizes 128/256/1024 are native on amd-aiter >= 0.1.10; others take a flat gather. |
+| `mla` | `aiter` | ✅ | ✅ | DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here. |
+| `rope` | `aiter` | ✅ | ✅ | `apply_rope_with_cos_sin_cache` and its inplace variant, linked at the C++ level. Opt-in. |
+| `append_paged_kv_cache` | `aiter` | ✅ | ✅ | fp16/bf16 + NHD. Bit-exact with the in-tree kernel but slower, so `auto` picks `native`. |
+| `rmsnorm` | `aiter` | ✅ | ✅ | CK `rmsnorm2d`. `auto` routes only 2-D fp16/bf16 with a matching weight dtype here. |
+| `fused_add_rmsnorm` | `aiter` | ✅ | ✅ | CK `rmsnorm2d_with_add`; 2-D only. Slightly lower precision at hidden_size >= 1024. |
+| `silu_and_mul` | `aiter` | ✅ | ✅ | `aiter::silu_and_mul`, linked at the C++ level. Opt-in; matches native in fp16, lower in bf16. |
+| `fused_moe` | `aiter` | ✅ | ✅ | `aiter_fused_moe`; bf16/fp16. Weights must be pre-shuffled with `shuffle_moe_weight` or results are silently wrong. |
+| `single_decode` | `hip` | ◻️ | ◻️ | MHA / GQA / MQA. |
+| `batch_decode` | `hip` | ◻️ | ◻️ | MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ) and CUDA-graph capture. |
+| `single_prefill` | `hip` | ◻️ | ◻️ | MHA / GQA / MQA, including custom attention masks. |
+| `batch_prefill` | `hip` | ◻️ | ◻️ | Paged and ragged; MHA / GQA / MQA, including custom attention masks. |
+| `cascade` | `hip` | ◻️ | ◻️ | Two-level shared-prefix attention; a fused single-kernel variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`. |
+| `pod` | `hip` | ◻️ | ◻️ | `PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream. |
+| `rope` | `hip` | ◻️ | ◻️ | LLaMA and LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). |
+| `append_paged_kv_cache` | `hip` | ◻️ | ◻️ | fp8 KV-cache supported. Sustains 3.62 TB/s against AITER's 2.86 on gfx942, so `auto` picks this. |
+| `rmsnorm` | `hip` | ◻️ | ◻️ | The fallback for 3-D inputs, fp32, or a weight dtype that does not match the input. |
+| `fused_add_rmsnorm` | `hip` | ◻️ | ◻️ | The fallback whenever the AITER path is unavailable. |
+| `layernorm` | `hip` | ◻️ | ◻️ | `layernorm` plus the Gemma RMSNorm variants. No AITER path. |
+| `sampling` | `hip` | ◻️ | ◻️ | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits. |
+| `logits_processor` | `hip` | ◻️ | ◻️ | Composable processor pipeline (cap, mask, temperature, ...). |
+| `silu_and_mul` | `hip` | ◻️ | ◻️ | SiLU and GELU with fused gating; the default for `auto`. |
+| `quantization` | `hip` | ◻️ | ◻️ | `packbits` and `segment_packbits`. |
 
 * ✅ **validated** — a suite was run on that board, and the evidence is recorded below.
 * ◻️ **declared** — supported, but no per-op measurement has been recorded on that architecture.
 * ⚠️ **broken on some toolchains** — usable, but not on every ROCm/AITER version; see the footnote.
-* ❌ **not available** on that architecture.
 
 [^kb1]: `batch_prefill/aiter` on gfx950, ROCm [7.2, 7.3): ROCm 7.2.x miscompiles AITER's causal batch-prefill kernel on gfx950: causal=True with logits_soft_cap=0.0 returns wrong numbers (not an error), 97.6% of elements off. Use ROCm 7.1, or backend='fa2'. Override with `FLASHINFER_ARCH_ALLOW_KNOWN_BAD=1` if you have validated it yourself. <https://github.com/ROCm/aiter/blob/main/op_tests/test_batch_prefill.py>
 
