@@ -31,8 +31,9 @@ from typing import Dict, List, NamedTuple, Optional, Set, Tuple
 
 EXIT_OK, EXIT_RATCHET, EXIT_ERROR = 0, 1, 2
 
-# Conflicts here say nothing about design: the port keeps its own docs, build
-# metadata, and regenerated sample output.
+# The port's own docs, packaging metadata, and regenerated sample output. Not a
+# general "docs and config" exemption: an edit to .github/workflows/ or docker/
+# is a real in-place edit to an upstream file, so it stays in the count.
 _EXPECTED_BASENAME_GLOBS = ("*.md", "*.toml")
 _EXPECTED_EXACT = (".gitignore", ".pre-commit-config.yaml", "version.txt")
 _EXPECTED_PREFIXES = ("benchmarks/samples/",)
@@ -133,7 +134,10 @@ def _churn_map(
             continue
         parts = record.split("\t")
         if len(parts) < 3:
-            continue
+            raise ToolError(
+                f"malformed numstat -z record at field {i - 1}: {record!r}; "
+                "expected added, deleted and path"
+            )
         added = int(parts[0]) if parts[0].isdigit() else 0  # "-" marks a binary file
         deleted = int(parts[1]) if parts[1].isdigit() else 0
         if parts[2]:
@@ -370,7 +374,8 @@ def main() -> int:
         type=int,
         default=None,
         metavar="N",
-        help="exit 1 if more than N code files conflict, ignoring docs and build config",
+        help="exit 1 if more than N conflicts are outside the port's own docs "
+        "and packaging metadata",
     )
     try:
         return run(parser.parse_args())
