@@ -322,7 +322,11 @@ def _run_prefill(
 
 @requires_aiter
 @pytest.mark.parametrize("dtype", [torch.bfloat16])
-@pytest.mark.parametrize("num_heads,head_dim_ckv,head_dim_kpe", [(16, 512, 64)])
+# AITER's prefill ASM accepts gqa_ratio 16 or 128 only -- 32/48/64 raise
+# "only support num_q_heads/num_kv_heads==16 or 128". 16 is TP8, 128 is TP1.
+@pytest.mark.parametrize(
+    "num_heads,head_dim_ckv,head_dim_kpe", [(16, 512, 64), (128, 512, 64)]
+)
 @pytest.mark.parametrize(
     "qo_lens,kv_lens",
     [
