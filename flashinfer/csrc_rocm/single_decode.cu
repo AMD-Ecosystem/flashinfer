@@ -15,7 +15,7 @@
  */
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 
-#include <flashinfer/attention/generic/pos_enc.cuh>
+#include <flashinfer/generic/attention/pos_enc.cuh>
 #include <optional>
 
 #include "pytorch_extension_utils.h"

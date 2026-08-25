@@ -7,7 +7,7 @@
 
 Prints how far the fork and upstream have moved from the merge base, the
 conflicts a merge would raise, and upstream churn on the headers that
-``attention/generic/`` forked -- those conflict with nothing and go stale silently.
+``generic/`` forked -- those conflict with nothing and go stale silently.
 
 Usage::
 
@@ -37,10 +37,10 @@ _EXPECTED_BASENAME_GLOBS = ("*.md", "*.toml")
 _EXPECTED_EXACT = (".gitignore", ".pre-commit-config.yaml", "version.txt")
 _EXPECTED_PREFIXES = ("benchmarks/samples/",)
 
-_GENERIC_DIR = "include/flashinfer/attention/generic"
+_GENERIC_DIR = "include/flashinfer/generic"
 
-# generic/ flattens one level: it holds headers upstream keeps in attention/
-# and others it keeps directly under flashinfer/.
+# generic/ mirrors upstream's layout but flattens one level: generic/attention/
+# holds headers upstream keeps both in attention/ and directly under flashinfer/.
 _UPSTREAM_HEADER_DIRS = ("include/flashinfer/attention", "include/flashinfer")
 _HEADER_SUFFIXES = (".cuh", ".hpp", ".h")
 
