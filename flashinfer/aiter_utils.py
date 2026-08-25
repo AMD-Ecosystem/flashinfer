@@ -30,6 +30,25 @@ def is_aiter_supported(device: torch.device) -> bool:
 
 
 @functools.lru_cache(maxsize=1)
+def _ensure_aiter_gpu_archs() -> None:
+    """Give AITER's JIT a GPU_ARCHS, since from 0.1.16 it requires one.
+
+    Unset reaches AITER's validator as ``['']`` and every JIT build asserts. Our
+    own shim build sets this for its own scope, but AITER's Python ops (decode,
+    paged-append, fused MoE) build outside it. Only fills a missing value, so an
+    operator-set GPU_ARCHS still wins.
+    """
+    if os.environ.get("GPU_ARCHS"):
+        return
+    # Imported lazily: flashinfer.jit pulls in the compilation context, and
+    # importing it at module scope here would be circular.
+    from .jit.aiter_source import resolve_aiter_build_arch
+
+    arch = resolve_aiter_build_arch()
+    if arch:
+        os.environ["GPU_ARCHS"] = arch
+
+
 def _aiter_importable() -> bool:
     """True when the AITER packages needed for the C++ backends actually import.
 
@@ -39,6 +58,7 @@ def _aiter_importable() -> bool:
     that raises at build/load time.
     """
     try:
+        _ensure_aiter_gpu_archs()
         import aiter  # noqa: F401
         import aiter_meta  # noqa: F401
         from aiter.jit import core as _core  # noqa: F401
