@@ -1,91 +1,142 @@
 # FlashInfer+ROCm: An AMD ROCm port of FlashInfer
 
 FlashInfer+ROCm brings the
-[FlashInfer](https://github.com/flashinfer-ai/flashinfer) inference
-kernel library to AMD Instinct GPUs — currently
-[CDNA3](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/white-papers/amd-cdna-3-white-paper.pdf)
-(gfx942 — MI300X / MI325X) and
-[CDNA4](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/white-papers/amd-cdna-4-architecture-whitepaper.pdf)
-(gfx950 — MI350X / MI355X). It ships in-tree HIP ports of the attention,
-KV-cache, RoPE, normalization, sampling, and logits-processor kernels,
-and transparently dispatches a subset of attention paths to AMD's
-[AITER](https://github.com/ROCm/aiter) backend when its compatibility
-conditions hold (see [Feature Support Matrix](#feature-support-matrix)).
+[FlashInfer](https://github.com/flashinfer-ai/flashinfer) inference kernel
+library to AMD Instinct GPUs — CDNA3 (gfx942, MI300X / MI325X) and CDNA4
+(gfx950, MI350X / MI355X). It ships in-tree HIP ports of the attention,
+KV-cache, RoPE, normalization, sampling, and logits-processor kernels, and
+transparently dispatches a subset of ops to AMD's
+[AITER](https://github.com/ROCm/aiter) backend when that is the faster or
+only path.
 
 The port is in active development and is aimed at developers embedding
 FlashInfer kernels into their own training or serving stack. See
-[CHANGELOG.md](CHANGELOG.md) for the full release history.
+[CHANGELOG.md](CHANGELOG.md) for the release history.
 
-**Versioning:** The release tag format `<upstream_version>+amd.<n>` ties
-each FlashInfer+ROCm release to its corresponding upstream tag (e.g.
-`0.5.3+amd.1` is the first AMD release based on upstream `v0.5.3`).
+**Versioning.** Release tags are `<upstream_version>+amd.<n>`, tying each
+FlashInfer+ROCm release to the upstream tag it is based on — `0.5.3+amd.1`
+is the first AMD release based on upstream `v0.5.3`.
 
-## Table of Contents
+## Quick start
 
-* [Feature Support Matrix](#feature-support-matrix)
-* [GPU, ROCm, and PyTorch Support](#gpu-rocm-and-pytorch-support)
-* [Getting Started](#getting-started)
-  * [Option 1: Get a Pre-built Docker Image](#option-1-get-a-pre-built-docker-image)
-  * [Option 2: Install from a Wheel Package](#option-2-install-from-a-wheel-package)
-  * [Trying the Examples](#trying-the-examples)
-* [Install from Source](#install-from-source)
-  * [Setting up a Development Environment](#setting-up-a-development-environment)
-  * [Building and Installing a Wheel Package](#building-and-installing-a-wheel-package)
-  * [Running Tests](#running-tests)
-* [AITER Support](#aiter-support)
-  * [Install AITER from source](#install-aiter-from-source)
-  * [Install AITER wheel package](#install-aiter-wheel-package)
-  * [Known Limitations](#known-limitations)
-* [Environment Variables](#environment-variables)
-* [Runtime Helpers](#runtime-helpers)
-* [Basic Usage](#basic-usage)
-* [License and Acknowledgements](#license-and-acknowledgements)
+### Docker
 
-## Feature Support Matrix
+AMD validates and publishes FlashInfer images on Docker Hub. The latest
+validated tag:
 
-Most kernels ship with an in-tree HIP implementation. A subset also has
-an AITER backend; for those, `backend="auto"` picks AITER when its
-compatibility conditions hold and falls back to HIP otherwise. The one
-AITER-only kernel today (MLA) has no HIP path — `backend="auto"`
-resolves directly to `"aiter"`.
+| Docker image | ROCm | FlashInfer | PyTorch | Ubuntu | Python | GPU |
+| ------------ | ---- | ---------- | ------- | ------ | ------ | --- |
+| `rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1` | 7.2.0 | v0.5.3 | 2.9.1 | 24.04 | 3.12 | MI355X, MI325X, MI300X |
 
-Legend: **HIP** = in-tree kernel (`fa2` for attention, `native` JIT
-kernel for non-attention ops). **AITER** = ROCm AITER backend.
+Older ROCm / PyTorch / FlashInfer combinations are at
+<https://hub.docker.com/r/rocm/flashinfer/tags>.
 
-| Kernel | HIP | AITER | `backend="auto"` resolves to | Notes |
-| :--- | :---: | :---: | :--- | :--- |
-| **Single decode attention** | ✅ `fa2` | — | HIP | MHA / GQA / MQA |
-| **Batch decode attention (paged)** | ✅ `fa2` | ✅ | **AITER** when `fp16/bf16` + `NHD` + `pos_encoding_mode="NONE"` + no CUDA-graph + `use_tensor_cores=False`; else **HIP** | MHA / GQA / MQA; **fp8 KV-cache (E4M3FNUZ)** on the HIP path; sliding-window on the AITER path; CUDA-graph capture on the AITER path is **opt-in via `backend="aiter"`** (grid + `.so` fixed at capture-time shapes — capture at max seq len); `backend="auto"` uses HIP `fa2` under capture |
-| **Single prefill attention** | ✅ `fa2` | ✅ | **AITER** when `fp16/bf16` + `NHD` + no custom mask + equal Q/KV dtypes & head dims + `pos_encoding_mode="NONE"`; else **HIP** | MHA / GQA / MQA; fp8 WIP |
-| **Batch prefill attention (paged + ragged)** | ✅ `fa2` | ✅ | Same auto criteria as single prefill | MHA / GQA / MQA; fp8 WIP. AITER native page sizes: `{16, 1024}` (`{128, 256, 1024}` on `amd-aiter >= 0.1.10`); other sizes — and any "native" size the installed AITER turns out not to serve — go through a gather on the AITER path |
-| **Cascade attention** | ✅ | — | HIP | Two-level shared-prefix attention; a fused single-kernel HIP variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1` |
-| **MLA (Multi-Latent Attention)** | — | ✅ | **AITER** (no HIP fallback) | DeepSeek-style 192/128 head-dim split; bf16 + `page_size=1`; `backend="auto"` (default) resolves to `"aiter"` |
-| **POD attention** | ✅ `fa2` | — | HIP | MHA / GQA / MQA; single + batch variants (`PODWithPagedKVCacheWrapper`, `BatchPODWithPagedKVCacheWrapper`); JIT-only (excluded from AOT, same as upstream CUDA) |
-| **RoPE (positional encoding)** | ✅ `native` | ✅ | **HIP `native`** (AITER is opt-in via `backend="aiter"`) | LLaMA-style + LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). The AITER backend covers `apply_rope_with_cos_sin_cache` and its inplace variant via AITER's C++ `rope_cached_positions_2c_fwd_impl` (linked at the C++ level, no runtime `import aiter`); cos/sin passed as float32. `backend="auto"` resolves to HIP `native` — the in-tree kernel is the better default; request AITER explicitly with `backend="aiter"` |
-| **Paged KV-cache append** | ✅ `native` | ✅ | **HIP `native`** (AITER is opt-in via `backend="aiter"`) | `append_paged_kv_cache`; fp8 KV-cache supported on the HIP path. `backend="auto"` resolves to HIP `native` — the in-tree kernel sustains 3.62 TB/s against AITER's 2.86 on identical work (gfx942), so AITER is slower at every size measured; request it explicitly with `backend="aiter"` (`fp16/bf16` + `NHD` only) |
-| **RMSNorm** | ✅ `native` | ✅ | **AITER** for 2-D fp16/bf16 inputs on gfx942/gfx950; else **HIP `native`** (3-D inputs, fp32, or AITER unavailable) | `rmsnorm`; AITER's C++ CK `rmsnorm2d` (the `rmsnorm2d_fwd` entry point, linked at the C++ level, no runtime `import aiter`); fp16/bf16, 2-D only, weight dtype must match input, slightly lower precision at `hidden_size >= 1024` |
-| **Fused add RMSNorm** | ✅ `native` | ✅ | **AITER** on gfx942/gfx950; else **HIP `native`** | `fused_add_rmsnorm`; AITER's C++ CK `rmsnorm2d_with_add` (linked at the C++ level, no runtime `import aiter`); 2-D only, slightly lower precision at `hidden_size >= 1024` |
-| **LayerNorm / Gemma RMSNorm** | ✅ | — | HIP | |
-| **Sampling** | ✅ | — | HIP | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits |
-| **Logits processor** | ✅ | — | HIP | Composable processor pipeline (cap, mask, temperature, …) |
-| **Activation** | ✅ `native` | ✅ | **HIP `native`** (AITER is opt-in via `backend="aiter"`) | SiLU / GELU with fused gating. AITER path (`silu_and_mul` only) via AITER's C++ `aiter::silu_and_mul` (linked at the C++ level, no runtime `import aiter`); matches native precision in fp16, lower in bf16. `backend="auto"` resolves to HIP `native` — the in-tree kernel is the better default; request AITER explicitly with `backend="aiter"` |
-| **Quantization** | ✅ | — | HIP | `packbits`, `segment_packbits` |
-| **`torch.compile`** | ✅ (opt-in) | n/a | n/a | Set `FLASHINFER_USE_TORCH_CUSTOM_OPS=1` **before** importing `flashinfer`; requires PyTorch ≥ 2.4. Without it, `torch.compile` raises a clear error if it traces into a flashinfer op |
+```bash
+docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
+  --group-add video --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
+  --shm-size 128G --name=flashinfer-rocm \
+  rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1
+```
 
-Every ✅ row above is exercised by a matching `tests/rocm_tests/test_*_hip.py`.
-The full set of conditions that cause AITER auto-routing to fall back to
-HIP is documented in [Known Limitations](#known-limitations) below.
+Then, inside the container:
 
-## GPU, ROCm, and PyTorch Support
+```bash
+python -c "import flashinfer; print(flashinfer.__version__)"
+```
 
-**Supported GPUs:** gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI350X, MI355X).
+The container's micromamba environment activates on shell start — no
+manual `micromamba activate`.
 
-### Per-architecture support matrix
+### pip
 
-The two architectures are not interchangeable for every op. The table below is
-generated from [`flashinfer/arch_caps.py`](flashinfer/arch_caps.py), which is
-what `backend="auto"` actually consults at runtime — so it cannot drift from
-the routing decisions the library makes. Do not edit it by hand; run
+```bash
+pip install amd-flashinfer --index-url https://pypi.amd.com/simple/
+pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
+```
+
+**Torch must come from `repo.radeon.com`, via `-f` and not `--index-url`.**
+That repo is a flat wheel listing rather than a PEP 503 index, so
+`--index-url` fails with "No matching distribution found". pip still
+prefers the ROCm wheel over a same-version PyPI wheel because its
+`+rocm<X.Y>` local version ranks higher. Confirm you got one:
+
+```bash
+python -c "import torch; assert torch.version.hip, 'not a ROCm build'"
+```
+
+Kernels are JIT-compiled on first use, which takes a few minutes. The
+optional [`amd-flashinfer-jit-cache`](amd-flashinfer-jit-cache/README.md)
+package ships them prebuilt for gfx942.
+
+## Basic usage
+
+```python
+import torch
+import flashinfer
+
+# PyTorch+ROCm still uses device="cuda" for AMD GPUs.
+q = torch.randn(1024, 32, 128, dtype=torch.float16, device="cuda")
+k = torch.randn(1024,  8, 128, dtype=torch.float16, device="cuda")  # GQA 4:1
+v = torch.randn(1024,  8, 128, dtype=torch.float16, device="cuda")
+
+# backend="auto" (default) routes to AITER when supported and falls back
+# to the in-tree fa2 HIP kernel otherwise.
+output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True)
+```
+
+Runnable scripts for single/batch prefill and batch decode, plus
+`amd_flashinfer_rocm_tutorial.ipynb` walking through the public API on
+ROCm, are in
+[`examples/`](https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/examples):
+
+```bash
+python examples/single_prefill_example.py
+```
+
+## Supported hardware and toolchain
+
+| | Supported |
+| :--- | :--- |
+| GPUs | gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI350X, MI355X) |
+| ROCm | 7.0.2, 7.1.1, 7.2 |
+| PyTorch+ROCm | 2.8.0, 2.9.1 |
+| Python | 3.10+ (the published images and devcontainer use 3.12) |
+
+Other versions may work but are untested. Replace `7.2` in the torch
+install command with the ROCm version you need; see
+<https://repo.radeon.com/rocm/manylinux/> for what is available.
+
+## Support matrix
+
+Every op has an in-tree HIP kernel unless noted; a subset also has an
+AITER backend, selected by a `backend=` argument that defaults to
+`"auto"`. There are four policies for what `auto` picks:
+
+| `backend="auto"` picks | Ops |
+| :--- | :--- |
+| AITER when the call is compatible, else the in-tree kernel | `single_prefill`, `batch_prefill`, `batch_decode`, `fused_add_rmsnorm` |
+| AITER for 2-D fp16/bf16 whose weight dtype matches, else `native` | `rmsnorm` |
+| Always the in-tree `native` kernel — AITER is opt-in | `silu_and_mul`, `rope`, `append_paged_kv_cache` |
+| AITER only — no HIP kernel exists | `mla` |
+
+To override, pass `backend="aiter"`, or name the in-tree kernel:
+`backend="fa2"` for the attention wrappers, `backend="native"` for
+everything else.
+
+Two ops take no `backend=` argument: `single_decode_with_kv_cache` is
+HIP-only, and `aiter_fused_moe` is AITER-only. On gfx950 with ROCm 7.2.x,
+`batch_prefill` never resolves to AITER — see the footnote under the
+table.
+
+**The full routing rules, per-op constraints, and AITER install
+instructions are in [`docs/rocm/backends.md`](docs/rocm/backends.md).**
+Read it before relying on an AITER path — several attention kwargs are
+silently ignored there rather than rejected.
+
+The table below is generated from
+[`flashinfer/arch_caps.py`](flashinfer/arch_caps.py), which is what
+`backend="auto"` consults at runtime, so it cannot drift from the routing
+decisions the library makes. Do not edit it by hand; run
 `python3 scripts/gen_arch_support_matrix.py`.
 
 <!-- BEGIN GENERATED: arch support matrix -- scripts/gen_arch_support_matrix.py -->
@@ -134,404 +185,56 @@ Measured on:
 
 <!-- END GENERATED: arch support matrix -->
 
-**Supported ROCm versions:** 7.0.2, 7.1.1, 7.2.
+Most rows have a matching `tests/rocm_tests/test_*_hip.py`; `single_decode`
+and `quantization` are covered incidentally from other files rather than
+by one of their own.
 
-**Supported PyTorch+ROCm versions:** 2.8.0, 2.9.1.
+## `torch.compile`
 
-Install the matching ROCm-enabled PyTorch wheel from
-<https://repo.radeon.com>:
+Set `FLASHINFER_USE_TORCH_CUSTOM_OPS=1` **before** importing `flashinfer`
+to wrap the kernels in `torch.library.custom_op` so Dynamo can trace them.
+Requires PyTorch ≥ 2.4 and adds a small per-call dispatch overhead.
+Without it, `torch.compile` raises a clear error if it traces into a
+FlashInfer op rather than silently producing a wrong graph.
 
-```bash
-pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
-```
+## Benchmarking
 
-Other versions may work but have not been tested. Replace `7.2` with the
-ROCm version you need; refer to
-<https://repo.radeon.com/rocm/manylinux/rocm-rel-{rocm-version}/> for
-available wheels.
-
-## Getting Started
-
-### Option 1: Get a Pre-built Docker Image
-
-AMD validates and publishes FlashInfer images with ROCm backends on
-Docker Hub. The latest validated tag is:
-
-| Docker image | ROCm | FlashInfer | PyTorch | Ubuntu | Python | GPU |
-| ------------ | ---- | ---------- | ------- | ------ | ------ | --- |
-| `rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1` | 7.2.0 | v0.5.3 | 2.9.1 | 24.04 | 3.12 | MI355X, MI325X, MI300X |
-
-For older releases (earlier ROCm / PyTorch / FlashInfer combinations),
-see the full tag list at
-<https://hub.docker.com/r/rocm/flashinfer/tags>.
-
-**Start a container:**
+The unified runner drives every ROCm attention path from one testlist:
 
 ```bash
-docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
-  --group-add video --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
-  --ipc=host --shm-size 128G --name=flashinfer-rocm \
-  rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1
+cd benchmarks
+python flashinfer_benchmark.py --testlist rocm_benchmarks/testlist_rocm.txt \
+    --output_path run-$(date +%F).csv
 ```
 
-**Verify the installation:**
-
-```bash
-python -c "import flashinfer; print(flashinfer.__version__)"
-```
-
-Expected output: `0.5.3+amd.1` (with a possible JIT backend message).
-The container's micromamba environment is activated automatically on
-shell start — no manual `micromamba activate` is required.
-
-### Option 2: Install from a Wheel Package
-
-Install from AMD's package repository:
-
-```bash
-pip install amd-flashinfer --index-url https://pypi.amd.com/simple/
-```
-
-Install the matching ROCm-enabled torch package from <https://repo.radeon.com>:
-
-```bash
-pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
-```
-
-**NOTE:** The radeon repo is a flat wheel listing, not a PEP 503 index, so
-`--index-url` fails with "No matching distribution found" — use `-f`
-(`--find-links`). pip still prefers the ROCm wheel over a same-version PyPI
-wheel because its `+rocm<X.Y>` local version ranks higher. Confirm the result
-with `python -c "import torch; assert torch.version.hip, 'not a ROCm build'"`.
-
-### Trying the Examples
-
-Runnable scripts live in the [`examples/`](examples/) directory of this
-repository (single/batch prefill, batch decode, plus an
-`amd_flashinfer_rocm_tutorial.ipynb` Jupyter notebook). After cloning,
-run any of them directly, for example:
-
-```bash
-python examples/single_prefill_example.py
-```
-
-## Install from Source
-
-### Setting up a Development Environment
-
-Build the development Docker image with the repository's Dockerfile:
-
-```bash
-docker build \
-  --build-arg ROCM_VERSION=7.2 \
-  --build-arg PY_VERSION=3.12 \
-  --build-arg TORCH_VERSION=2.9.1 \
-  --build-arg USERNAME=$USER \
-  --build-arg USER_UID=$(id -u) \
-  --build-arg USER_GID=$(id -g) \
-  -t flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1 \
-  -f .devcontainer/rocm/Dockerfile .
-```
-
-<!-- markdownlint-disable MD033 -->
-<details>
-<summary>Build argument descriptions</summary>
-
-* `ROCM_VERSION`: ROCm version (default: 7.2)
-* `PY_VERSION`: Python version (default: 3.12)
-* `TORCH_VERSION`: PyTorch version (default: 2.9.1)
-* `USERNAME`: Username inside container (default: devuser)
-* `USER_UID`: User ID for matching host permissions
-* `USER_GID`: Group ID for matching host permissions
-
-</details>
-<!-- markdownlint-enable MD033 -->
-
-**Run the development container:**
-
-```bash
-docker run -it \
-  --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
-  --ipc=host --privileged --shm-size=128G --network=host \
-  --device=/dev/kfd --device=/dev/dri \
-  --group-add video --group-add render \
-  -v $PWD:/workspace \
-  --name flashinfer-dev-container \
-  flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1
-```
-
-<!-- markdownlint-disable MD033 -->
-<details>
-<summary>Docker run argument descriptions</summary>
-
-* `--cap-add=SYS_PTRACE`: Enables debugging
-* `--security-opt seccomp=unconfined`: Relaxes security for development
-* `--ipc=host`: Shares host IPC for better performance
-* `--privileged`: Required for GPU access
-* `--shm-size=128G`: Shared memory size (adjust as needed)
-* `--network=host`: Uses host networking
-* `--device=/dev/kfd --device=/dev/dri`: Exposes AMD GPU devices
-* `--group-add video --group-add render`: GPU access groups
-* `-v <host-path>:<container-path>`: Mounts source code
-
-</details>
-<!-- markdownlint-enable MD033 -->
-
-### Building and Installing a Wheel Package
-
-**Build with JIT (Just-in-Time) compilation only:**
-
-```bash
-python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
-cd dist && pip install amd_flashinfer-*.whl
-```
-
-**Editable install for development:**
-
-```bash
-python -m pip install --no-build-isolation -ve .
-```
-
-**Note:** The `--no-deps` flag assumes dependencies are pre-installed.
-Omit it to download dependencies during build. AOT builds take longer
-and use more disk space but avoid JIT compilation at runtime.
-
-### Running Tests
-
-Run the Python test suite with pytest:
-
-```bash
-# Run default tests (configured in pyproject.toml)
-pytest
-
-# Run specific test file
-pytest tests/rocm_tests/test_batch_decode_kernels_hip.py
-
-# Run with pattern matching
-pytest -k "test_batch_decode_kernels_hip"
-
-# Verbose output
-pytest -v
-
-# Run tests in parallel across multiple GPUs
-pytest -n auto  # Uses all available GPUs
-pytest -n 2     # Use only two GPUs
-```
-
-The default test configuration is specified in [pyproject.toml](pyproject.toml)
-under the `testpaths` setting.
-
-#### Recommended invocation on AMD CPX systems
-
-`pytest-rerunfailures` (declared in the `dev` extra — `pip install -e ".[dev]"`)
-absorbs the residual transient HIP runtime crashes. Then for the full suite:
-
-```bash
-# Fast path — skips heavy 1M-trial sampling-frequency tests and 4 GB
-# speculative-sampling cases (~7 min on a CPX 8-card host):
-pytest -n auto --reruns 2 -m "not slow"
-
-# Full coverage — including the slow tests (~20 min):
-pytest -n auto --reruns 2
-
-# Slow path only (~13 min):
-pytest -n auto --reruns 2 -m "slow"
-```
-
-**Notes**
-
-* **Worker count.** `pytest -n auto` for the `tests/rocm_tests/` suite
-  spawns **half as many xdist workers as physical AMD cards** (e.g. 4
-  workers on a CPX-mode 8-card MI308X / MI325X host) and pins each
-  worker to its card via `HIP_VISIBLE_DEVICES`. One worker per physical
-  card was tried first but produced sporadic failures across rope,
-  single_prefill, and logits_cap under residual concurrent load.
-  Pass an explicit `-n N` to override the halving.
-* **Reruns.** `--reruns 2` (from `pytest-rerunfailures`) absorbs the
-  residual ~0.01 % of transient HIP runtime crashes (HSA exceptions,
-  HIPBLAS handle-pool exhaustion, intermittent generator
-  non-determinism) that worker pinning cannot fully eliminate. Only
-  failed tests are retried.
-* **`slow` marker.** Registered in [pyproject.toml](pyproject.toml). It
-  tags the 1M-trial sampling-frequency tests, the 4 GB-tensor
-  speculative-sampling cases, and the entire `TestLogitsPipeCompilationHIP`
-  class (each test runs the sampling kernel twice for compile=True/False).
-* **HIPBLAS retry.** The reference attention helper in
-  `tests/attention_reference.py` wraps `torch.matmul` in a
-  `_hipblas_safe_matmul` retry that catches `HIPBLAS_STATUS_ALLOC_FAILED`
-  and retries with a short back-off — needed under heavy concurrent
-  xdist load.
-
-## AITER Support
-
-FlashInfer+ROCm can dispatch the `single_prefill`, `batch_prefill`
-(paged and ragged), `batch_decode`, `append_paged_kv_cache`, `rmsnorm`,
-`fused_add_rmsnorm`, `silu_and_mul`, `rope` (cos/sin-cache path), and
-`MLA` paths to [AITER](https://github.com/ROCm/aiter). MLA on ROCm
-is **AITER-only** — there is no in-tree HIP MLA kernel yet, so
-`backend="auto"` (the default for the MLA wrapper) resolves directly
-to `"aiter"`.
-
-On gfx942/gfx950, `backend="auto"` (the default) selects AITER when the
-call is compatible (see [Known Limitations](#known-limitations) for the
-full list) and otherwise falls back to the in-tree HIP kernel, emitting
-a one-time `logger.warning`. Pass `backend="aiter"` to require AITER
-explicitly, or pass the in-tree backend string to skip it:
-`backend="fa2"` for the attention wrappers (single/batch
-prefill/decode), `backend="native"` for non-attention ops
-(`append_paged_kv_cache`, `rmsnorm`, `fused_add_rmsnorm`,
-`silu_and_mul`, `rope`).
-
-The `rmsnorm`, `fused_add_rmsnorm`, `silu_and_mul`, and `rope`
-(cos/sin-cache) AITER backends are integrated at the **C++ level**:
-FlashInfer's JIT compiles a small HIP shim that calls AITER's C++ kernels
-(`rmsnorm2d`, `rmsnorm2d_with_add`, `aiter::silu_and_mul`,
-`rope_cached_positions_2c_fwd_impl`) directly and links a symbol-visible
-AITER `.so` — there is no runtime `import aiter` on these paths. The first
-JIT build of each op builds the corresponding AITER module once with
-`AITER_SYMBOL_VISIBLE=1` and caches it under
-`~/.cache/flashinfer/aiter_libs/` (the CK `module_rmsnorm` build is large
-and can take many minutes the first time). Auto-routing differs per op:
-for `rmsnorm` and `fused_add_rmsnorm`, `backend="auto"` resolves to AITER
-on gfx942/gfx950 (subject to op-specific constraints — `rmsnorm` auto only
-routes 2-D fp16/bf16 inputs to AITER) and to HIP `native` elsewhere. For
-`silu_and_mul` and `rope` (cos/sin-cache), experimentation found the
-in-tree HIP `native` kernel to be the better default, so `backend="auto"`
-resolves to `native` on all platforms; the AITER C++ path for these two
-ops is opt-in via an explicit `backend="aiter"`.
-
-Backend-specific exceptions to "auto picks AITER when supported":
-
-* `silu_and_mul` and `rope` (cos/sin-cache): `backend="auto"` always resolves
-  to the HIP `native` kernel — experimentation found it the better default.
-  The AITER C++ path is reachable only via an explicit `backend="aiter"`.
-* `append_paged_kv_cache`: same, and for the same reason. AITER's
-  `reshape_and_cache_flash` is bit-exact against the in-tree kernel but
-  sustains 2.86 TB/s to its 3.62 on identical work (gfx942, nnz=262144), so
-  `backend="auto"` always resolves to `native`. Explicit `backend="aiter"`
-  additionally requires `fp16`/`bf16` and `NHD`.
-* `rmsnorm`: `backend="auto"` picks the AITER C++ path (CK `rmsnorm2d`) only
-  for 2-D fp16/bf16 inputs whose weight dtype matches; 3-D inputs, fp32, or a
-  mismatched weight dtype fall back to the HIP `native` kernel.
-* `batch_decode`: `use_cuda_graph=True` or `use_tensor_cores=True` force `auto`
-  back to `fa2`, and `pos_encoding_mode != "NONE"` raises under
-  `backend="aiter"`. CUDA-graph capture on the AITER decode path is available
-  via an explicit `backend="aiter"` (not `auto`): capture at your maximum
-  sequence length — the grid and `.so` variant are fixed at capture-time shapes
-  and the kernel early-exits per sequence, so replays *shorter* than captured
-  are correct but *longer* ones are not. fa2's graph path is capacity-based and
-  carries no such constraint.
-
-Unless you are using the prebuilt Docker image, install AITER separately
-via one of the options below.
-
-### Install AITER from source
-
-```bash
-git clone --recursive https://github.com/ROCm/aiter.git
-cd aiter
-python3 setup.py develop
-```
-
-### Install AITER wheel package
-
-Wheel packages are published per ROCm release on AMD's PyPI index. `amd-aiter`
-is **not** on the top-level `pypi.amd.com/simple` index — use the ROCm-versioned
-channel:
-
-```bash
-pip install amd-aiter==0.1.10 --extra-index-url https://pypi.amd.com/rocm-7.1.1/simple
-```
-
-Use `--extra-index-url`, not `--index-url`, so that AITER's own dependencies
-still resolve from PyPI.
-
-Pin `0.1.10`: it is the version this repo is built and tested against, and
-currently the only one published on that channel. FlashInfer links AITER's C++
-symbols by mangled name (`flashinfer/csrc_rocm/aiter_loader.cc`) and vendors its
-argument structs (`include/flashinfer/attention/aiter/`), so a different AITER
-build can fail at `dlsym` — or, if a struct layout changed, misinterpret kernel
-arguments silently. Both the CI image (`docker/Dockerfile.rocm_ci`) and the
-devcontainer install this exact version.
-
-### Known Limitations
-
-AITER constraints fall into two groups: hard incompatibilities (the call
-errors with `backend="aiter"` and triggers fallback under
-`backend="auto"`, for the ops whose `auto` can pick AITER at all), and
-silently-ignored kwargs (the call runs but the flag has no effect on
-AITER — pass the in-tree backend explicitly if you need any of them:
-`backend="fa2"` for attention wrappers, or `backend="native"` for
-`rmsnorm`). `append_paged_kv_cache` is outside both groups: its `auto`
-already resolves to `native`, so there is no fallback to trigger, and
-none of the ignored kwargs below are parameters of it.
-
-**Conditions that fall back to the in-tree HIP kernel under
-`backend="auto"`** (and raise under `backend="aiter"`):
-
-* GPU is not gfx942 or gfx950
-* `kv_layout` is not `NHD`
-* a custom attention mask tensor is supplied
-* `q_dtype` is not `float16` / `bfloat16` (no fp32, fp8, or int8)
-* `q_dtype != kv_dtype` (mixed-precision Q/KV is unsupported)
-* `head_dim_qk != head_dim_vo` (e.g. DeepSeek-style MLA with 192/128 head dims)
-* `pos_encoding_mode != "NONE"` (AITER attention paths only support `"NONE"`)
-* batch decode: `use_tensor_cores=True`
-* the `aiter` Python package is not importable
-
-**Features silently ignored on the AITER path** (kwargs are accepted by
-the FlashInfer wrapper but not forwarded to AITER, which can produce
-wrong results):
-
-* ALiBi slopes (`maybe_alibi_slopes`)
-* RoPE scaling kwargs (`rope_scale`, `rope_theta`) — these are only
-  consumed alongside `pos_encoding_mode != "NONE"`, which AITER
-  attention rejects outright; the kwargs themselves pass through
-  silently when the mode is `"NONE"`
-* attention sinks (`sinks`)
-* multi-modal / prefix-cache helpers (`maybe_prefix_len_ptr`,
-  `maybe_token_pos_in_items_ptr`, `maybe_max_item_len_ptr`)
-* FP8 dequant scales (`scale_q` / `scale_k` / `scale_v`)
-* `use_fp16_qk_reduction`, `enable_pdl`
-
-**Other notes:**
-
-* Batch prefill: AITER's CK FMHA kernels natively support page sizes
-  `{16, 1024}` (or `{128, 256, 1024}` on `amd-aiter >= 0.1.10`). Other page
-  sizes still work but go through an extra GPU gather to flatten paged KV
-  before the AITER call. That list is a starting point, not a guarantee —
-  `plan()` confirms it by building the kernel, and a page size the installed
-  AITER cannot actually serve also falls back to the gather, with a warning
-  naming the reason. Builds installed from an AITER source commit (as SGLang
-  and vLLM do) are the usual case where a "native" page size is rejected. Set
-  `FLASHINFER_AITER_STRICT=1` to raise instead of falling back.
-* Ragged (non-paged) batch prefill via AITER is supported through
-  `BatchPrefillWithRaggedKVCacheWrapper`. The wrapper auto-routes to
-  AITER under `backend="auto"` when the standard AITER compatibility
-  conditions are met and falls back to `fa2` otherwise.
-* MLA on ROCm currently supports only `bfloat16` and `page_size=1`
-  through the AITER backend.
-
-## Environment Variables
-
-FlashInfer+ROCm reads the following environment variables at runtime
-or import time. Build-time variables (`FLASHINFER_ROCM_ARCH_LIST`,
-`FLASHINFER_JIT_VERBOSE`, `FLASHINFER_JIT_DEBUG`, `MAX_JOBS`, …) are
-documented in [CLAUDE.md](CLAUDE.md).
+Each line requests both `fa2` and `auto`, so `--refcheck` compares them
+side by side. **Read the `backend_resolved` column** — `auto` is a
+request, not a result, and `backend_fallback_reason` says why AITER was
+declined. Per-op drivers live in
+[`benchmarks/rocm_benchmarks/`](https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/benchmarks/rocm_benchmarks).
+
+## Environment variables
+
+Read at runtime or import time:
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
-| `FLASHINFER_USE_TORCH_CUSTOM_OPS` | `0` | Set to `1` **before** importing `flashinfer` to wrap kernels in `torch.library.custom_op` so `torch.compile` / Dynamo can trace them. Requires PyTorch ≥ 2.4. Adds a small per-call dispatch overhead. |
-| `FLASHINFER_HIP_FUSED_CASCADE` | `0` | Set to `1` to use a fused single-kernel HIP cascade attention path instead of the default two-level merge-based path. Experimental on ROCm. |
-| `FLASHINFER_AITER_STRICT` | `0` | Set to `1` to raise instead of degrading when AITER cannot serve a page size natively. By default batch prefill falls back to the slower flat-gather path (with a warning); set this in CI to catch AITER kernel-coverage regressions rather than absorb them as a slowdown. |
-| `FLASHINFER_LOGGING_LEVEL` | `INFO` | Logger verbosity (e.g. `DEBUG`, `INFO`, `WARNING`). Affects AITER auto-fallback warnings and JIT build messages. |
-| `FLASHINFER_DISABLE_JIT` | unset | Set to any non-empty value to skip JIT compilation. Useful when running an AOT-built wheel and you want to fail loudly on missing kernels rather than trigger a build. |
-| `ROCM_PATH` / `ROCM_HOME` | `/opt/rocm` | Used by `flashinfer.hip_utils` to locate the ROCm install. Override only for non-standard ROCm layouts. |
+| `FLASHINFER_USE_TORCH_CUSTOM_OPS` | `0` | Wrap kernels for `torch.compile`; set before importing `flashinfer`. See above. |
+| `FLASHINFER_AITER_STRICT` | `0` | Raise instead of degrading when AITER cannot serve a page size natively. Set in CI to catch AITER coverage regressions rather than absorb them as a slowdown. |
+| `FLASHINFER_ARCH_ALLOW_KNOWN_BAD` | `0` | Run an (op, backend, arch) combination the capability table marks known-broken on your toolchain. Only if you have validated it yourself. |
+| `FLASHINFER_HIP_FUSED_CASCADE` | `0` | Use the fused single-kernel HIP cascade path instead of the two-level merge. Experimental. |
+| `FLASHINFER_WORKSPACE_BASE` | `~` | Parent of the JIT cache directory (`.cache/flashinfer/`). Point it at fast local disk when `$HOME` is on NFS. |
+| `FLASHINFER_DISABLE_JIT` | unset | Set to **any non-empty value** — including `0` — to skip JIT compilation. Useful with an AOT-built install, to fail loudly on a missing kernel rather than trigger a build. |
+| `FLASHINFER_DISABLE_VERSION_CHECK` | unset | Any non-empty value skips the JIT-cache package version check. |
+| `FLASHINFER_LOGGING_LEVEL` | `INFO` | Logger verbosity (`DEBUG`, `INFO`, `WARNING`, …). Affects AITER fallback warnings and JIT build messages. |
+| `ROCM_PATH` / `ROCM_HOME` | `/opt/rocm` | Where `flashinfer.hip_utils` looks for ROCm. Override only for non-standard layouts. |
 
-## Runtime Helpers
+Build-time variables — `FLASHINFER_ROCM_ARCH_LIST`, `FLASHINFER_JIT_VERBOSE`,
+`FLASHINFER_EXTRA_LDFLAGS`, `MAX_JOBS` — are documented in
+[CLAUDE.md](CLAUDE.md). Note `FLASHINFER_JIT_DEBUG` is a **no-op on
+ROCm/HIP**; CLAUDE.md explains how to get a debug build instead.
 
-`flashinfer` ships a few ROCm-specific helpers that are useful when
-guarding code paths or diagnosing setup issues:
+## Runtime helpers
 
 ```python
 import torch
@@ -539,46 +242,27 @@ import torch
 from flashinfer.aiter_utils import is_aiter_supported
 from flashinfer.hip_utils import check_torch_rocm_compatibility
 
-# True on gfx942/gfx950 (a ROCm build + supported GPU arch). Does *not*
-# verify the `aiter` Python package is importable — wrap the actual
-# AITER call in a try/except ImportError if you need that guarantee.
+# True on gfx942/gfx950 with a ROCm torch build. Does *not* verify the
+# `aiter` package is importable — wrap the call in try/except ImportError
+# if you need that guarantee.
 if is_aiter_supported(torch.device("cuda")):
     ...
 
-# Raises a clear error if PyTorch + ROCm versions are incompatible
-# (e.g. a CPU-only torch wheel was picked up from PyPI).
+# Raises a clear error if PyTorch + ROCm are incompatible, e.g. a CPU-only
+# torch wheel was picked up from PyPI.
 check_torch_rocm_compatibility()
 ```
 
-`flashinfer.hip_utils.validate_flashinfer_rocm_arch` is a related
-build-time validator used by `setup.py` to cross-check
-`FLASHINFER_ROCM_ARCH_LIST` against ROCm and PyTorch — not typically
-called from application code.
+## Building from source
 
-## Basic Usage
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development container, the
+editable and wheel builds, the ahead-of-time kernel build, and how to run
+the test suite.
 
-```python
-import torch
-import flashinfer
+## License and acknowledgements
 
-# PyTorch+ROCm still uses device="cuda" for AMD GPUs.
-q = torch.randn(1024, 32, 128, dtype=torch.float16, device="cuda")
-k = torch.randn(1024,  8, 128, dtype=torch.float16, device="cuda")  # GQA 4:1
-v = torch.randn(1024,  8, 128, dtype=torch.float16, device="cuda")
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Upstream
+project: [flashinfer-ai/flashinfer](https://github.com/flashinfer-ai/flashinfer).
 
-# backend="auto" (default) routes to AITER when supported on gfx942/gfx950
-# and falls back to the in-tree fa2 HIP kernel otherwise.
-output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True)
-```
-
-See [`examples/`](examples/) for batch prefill, batch decode, and a
-Jupyter tutorial that walks through the full public API on ROCm.
-
-## License and Acknowledgements
-
-FlashInfer+ROCm is released under the Apache-2.0 License — see
-[LICENSE](LICENSE) and [NOTICE](NOTICE). Upstream project:
-[flashinfer-ai/flashinfer](https://github.com/flashinfer-ai/flashinfer).
-
-Contributions are welcome. Please run `pre-commit run -a` and the
-relevant `pytest` selection before opening a PR.
+Contributions are welcome. Please run `pre-commit run -a` and the relevant
+`pytest` selection before opening a PR.
