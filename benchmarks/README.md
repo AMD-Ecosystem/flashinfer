@@ -268,14 +268,20 @@ them reports "not supported" rather than failing at import.
 
 | Routine | gfx942 | gfx950 |
 |---|---|---|
-| **BatchDecodeWithPagedKVCacheWrapper** | fa2, auto, aiter | fa2, auto, aiter |
-| **BatchPrefillWithPagedKVCacheWrapper** | fa2, auto, aiter | fa2, auto (AITER gated on ROCm 7.2.x) |
-| **BatchPrefillWithRaggedKVCacheWrapper** | fa2, auto, aiter | fa2, auto (AITER gated on ROCm 7.2.x) |
+| **BatchDecodeWithPagedKVCacheWrapper** | fa2, auto | fa2, auto |
+| **BatchPrefillWithPagedKVCacheWrapper** | fa2, auto | fa2, auto |
+| **BatchPrefillWithRaggedKVCacheWrapper** | fa2, auto | fa2, auto |
 
 - **fa2** — the in-tree HIP kernel.
-- **aiter** — the [AITER](https://github.com/ROCm/aiter) backend, requires `amd-aiter`.
-- **auto** — what the library picks in production: AITER when the call satisfies
-  its constraints, otherwise fa2.
+- **auto** — what the library picks in production: [AITER](https://github.com/ROCm/aiter)
+  when `amd-aiter` is installed and the call satisfies its constraints, otherwise fa2.
+  `backend_resolved` records which one ran.
+
+`--backends aiter` is deliberately not offered. AITER is reached through `auto`,
+which reports what it resolved to, so an explicit name would add no coverage —
+and on gfx950 under ROCm 7.2.x `auto` resolves to fa2 for both prefill routines
+anyway, because `arch_caps` gates AITER off there for the causal-miscompile
+known-bad entry.
 
 ### Running
 
