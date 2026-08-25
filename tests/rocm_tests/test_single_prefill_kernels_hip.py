@@ -367,6 +367,9 @@ def test_auto_backend_avoids_aiter_softcap_defect(
         has_custom_mask=False,
         head_dim_qk=head_dim,
         head_dim_vo=head_dim,
+        # Capability gates differ per op, so the row asserted here has to be the
+        # one single prefill actually consults.
+        op="single_prefill",
         causal=causal,
         logits_soft_cap=soft_cap,
         kv_len=kv_len,
