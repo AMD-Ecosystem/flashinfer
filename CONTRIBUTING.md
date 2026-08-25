@@ -16,35 +16,25 @@ building from source and everything else specific to contributing code.
 Build the development image with the repository's Dockerfile:
 
 ```bash
-docker build \
-  --build-arg ROCM_VERSION=7.2 \
-  --build-arg PY_VERSION=3.12 \
-  --build-arg TORCH_VERSION=2.9.1 \
-  --build-arg USERNAME=$USER \
-  --build-arg USER_UID=$(id -u) \
-  --build-arg USER_GID=$(id -g) \
-  -t flashinfer-dev:rocm7.2 \
-  -f .devcontainer/rocm/Dockerfile .
+docker build -t flashinfer-dev:rocm7.2 -f .devcontainer/rocm/Dockerfile .
 ```
 
-The `ROCM_VERSION`, `PY_VERSION`, and `TORCH_VERSION` defaults are 7.2,
-3.12, and 2.9.1. The `USER*` args match container file ownership to your
-host user; without them, build artifacts come out root-owned.
+`ROCM_VERSION`, `PY_VERSION`, and `TORCH_VERSION` default to 7.2, 3.12, and
+2.9.1; override with `--build-arg` if you need a different combination. Pass
+`--build-arg USERNAME=$USER --build-arg USER_UID=$(id -u) --build-arg
+USER_GID=$(id -g)` to match container file ownership to your host user —
+without them, build artifacts come out root-owned.
 
 ```bash
 docker run -it \
   --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
-  --privileged --shm-size=128G --network=host \
+  --privileged --ipc=host --network=host \
   --device=/dev/kfd --device=/dev/dri \
   --group-add video --group-add render \
   -v $PWD:/workspace \
   --name flashinfer-dev-container \
   flashinfer-dev:rocm7.2
 ```
-
-Note the absence of `--ipc=host`: it shares the host IPC namespace, which
-silently overrides `--shm-size` and leaves the container able to exhaust
-host memory under a parallel test run.
 
 # Building and Installing
 

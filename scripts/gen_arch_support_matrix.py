@@ -67,11 +67,13 @@ UNSUPPORTED = "❌"
 LEGEND = (
     (
         VALIDATED,
-        "**validated** — a suite was run on that board, and the evidence is recorded below.",
+        "**validated** — this op was exercised on this architecture, and the board, ROCm, "
+        "AITER, and date are recorded in `flashinfer/arch_caps.py`.",
     ),
     (
         DECLARED,
-        "**declared** — supported, but no per-op measurement has been recorded on that architecture.",
+        "**supported** — the op runs here and the test suite covers it, but no run has been "
+        "recorded against this specific op and architecture.",
     ),
     (
         KNOWN_BAD,
@@ -225,19 +227,9 @@ def render(arch_caps) -> str:
             f"validated it yourself.{link}"
         )
 
-    # Evidence lines last: they are the provenance for every ✅ above, and are
-    # what makes "validated" a checkable claim rather than a badge.
-    evidence = sorted(
-        {
-            f"`{arch}` — {entry.evidence}"
-            for cap in arch_caps.CAPABILITIES
-            for arch, entry in cap.archs.items()
-            if entry.evidence
-        }
-    )
-    if evidence:
-        lines += ["", "Measured on:", ""]
-        lines += [f"{BULLET} {item}" for item in evidence]
+    # `evidence` is deliberately not rendered. It is the provenance behind a ✅
+    # and stays readable in arch_caps.py; a board-and-date list in the README
+    # dates the whole page the moment a run is not repeated.
 
     lines += ["", END]
     return "\n".join(lines)

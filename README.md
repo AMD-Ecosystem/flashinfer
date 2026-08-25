@@ -34,7 +34,7 @@ Older ROCm / PyTorch / FlashInfer combinations are at
 ```bash
 docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
   --group-add video --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
-  --shm-size 128G --name=flashinfer-rocm \
+  --ipc=host --name=flashinfer-rocm \
   rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1
 ```
 
@@ -169,19 +169,11 @@ decisions the library makes. Do not edit it by hand; run
 | `silu_and_mul` | `hip` | ◻️ | ◻️ | SiLU and GELU with fused gating; the default for `auto`. |
 | `quantization` | `hip` | ◻️ | ◻️ | `packbits` and `segment_packbits`. |
 
-* ✅ **validated** — a suite was run on that board, and the evidence is recorded below.
-* ◻️ **declared** — supported, but no per-op measurement has been recorded on that architecture.
+* ✅ **validated** — this op was exercised on this architecture, and the board, ROCm, AITER, and date are recorded in `flashinfer/arch_caps.py`.
+* ◻️ **supported** — the op runs here and the test suite covers it, but no run has been recorded against this specific op and architecture.
 * ⚠️ **broken on some toolchains** — usable, but not on every ROCm/AITER version; see the footnote.
 
 [^kb1]: `batch_prefill/aiter` on gfx950, ROCm [7.2, 7.3): ROCm 7.2.x miscompiles AITER's causal batch-prefill kernel on gfx950: causal=True with logits_soft_cap=0.0 returns wrong numbers (not an error), 97.6% of elements off. Use ROCm 7.1, or backend='fa2'. Override with `FLASHINFER_ARCH_ALLOW_KNOWN_BAD=1` if you have validated it yourself. <https://github.com/ROCm/aiter/blob/main/op_tests/test_batch_prefill.py>
-
-Measured on:
-
-* `gfx942` — MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-19
-* `gfx942` — fused_moe: MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-24
-* `gfx950` — MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-19
-* `gfx950` — fused_moe: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-24
-* `gfx950` — mla: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-24 (decode + prefill, heads 16/128)
 
 <!-- END GENERATED: arch support matrix -->
 
@@ -197,6 +189,7 @@ Requires PyTorch ≥ 2.4 and adds a small per-call dispatch overhead.
 Without it, `torch.compile` raises a clear error if it traces into a
 FlashInfer op rather than silently producing a wrong graph.
 
+<!--
 ## Benchmarking
 
 The unified runner drives every ROCm attention path from one testlist:
@@ -212,6 +205,7 @@ side by side. **Read the `backend_resolved` column** — `auto` is a
 request, not a result, and `backend_fallback_reason` says why AITER was
 declined. Per-op drivers live in
 [`benchmarks/rocm_benchmarks/`](https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/benchmarks/rocm_benchmarks).
+-->
 
 ## Environment variables
 
