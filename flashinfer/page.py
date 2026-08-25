@@ -353,6 +353,10 @@ def append_paged_mla_kv_cache(
     r"""Append a batch of key-value pairs to a paged key-value cache,
     Note: current only support ckv=512 and kpe=64
 
+    On ROCm this accepts fp8 caches, but
+    :class:`~flashinfer.mla_rocm.BatchMLAPagedAttentionWrapper` takes only
+    fp16/bf16 -- an fp8 MLA cache is currently write-only.
+
     Parameters
     ----------
     append_ckv : torch.Tensor
