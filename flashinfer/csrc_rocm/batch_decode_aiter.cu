@@ -42,7 +42,7 @@ static at::Tensor get_unit_scale(at::Device device) {
 
 // Convert flat (paged_kv_indices, paged_kv_indptr, paged_kv_last_page_len) into:
 //   block_tables  [num_seqs, max_blocks_per_seq] int32 (right-padded with 0)
-//   context_lens  [num_seqs] int32  = (npages-1) * page_size + last_page_len
+//   context_lens  [num_seqs] int32  = npages > 0 ? (npages-1)*page_size + last_page_len : 0
 // page_size is taken from the paged cache layout (size(1) for NHD).
 // One fused kernel, not a chain of ATen ops. The tensors are tiny -- 128 KB at the
 // largest shape benchmarked -- so this is launch-bound, and the ATen form cost
@@ -110,6 +110,13 @@ void batch_decode_with_paged_kv_cache_aiter(
   TORCH_CHECK(paged_kv_indptr.scalar_type() == at::kInt);
   TORCH_CHECK(paged_kv_indices.scalar_type() == at::kInt);
   TORCH_CHECK(paged_kv_last_page_len.scalar_type() == at::kInt);
+  // The block-table kernel dereferences these directly, so a CPU or cross-device
+  // tensor becomes an invalid device pointer rather than an ATen dispatch error.
+  TORCH_CHECK(paged_kv_indptr.device() == device && paged_kv_indices.device() == device &&
+                  paged_kv_last_page_len.device() == device,
+              "paged-KV index tensors must be on ", device,
+              "; got indptr=", paged_kv_indptr.device(), " indices=", paged_kv_indices.device(),
+              " last_page_len=", paged_kv_last_page_len.device());
 
   const int64_t num_seqs = q.size(0);
   const int64_t num_heads = q.size(1);
