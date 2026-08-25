@@ -16,14 +16,20 @@ helper rebuilds the needed AITER module once with ``AITER_SYMBOL_VISIBLE=1`` via
 AITER's own ``aiter.jit.core.build_module`` (which also runs CK blob codegen for CK
 ops), caches the result under FlashInfer's cache dir as ``lib<module>.so``, and
 hands back the include/link flags for ``gen_jit_spec``.
+
+A shim may link more than one AITER module (fused MoE needs both ``moe_sorting``
+and a CK GEMM module), and a module may be built in a *specialized* form -- see
+:class:`AiterModule`.
 """
 
 import functools
 import os
 import re
 import shutil
+import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Sequence, Tuple, Union
 
 from filelock import FileLock
 
@@ -37,6 +43,58 @@ _DEFAULT_BUILD_ARCH = "gfx942"
 # An architecture name and nothing else: "gfx942", "gfx950", "gfx90a". Anchored
 # so a token that merely starts with "gfx" cannot smuggle in a path separator.
 _ARCH_RE = re.compile(r"^gfx[0-9a-f]+$")
+
+# The linked library name becomes an -l flag and a filename, so it may not smuggle
+# in a path separator or a flag-looking prefix. \Z, not $: $ also matches before a
+# trailing newline, which would reach the ninja link line intact.
+_LIB_NAME_RE = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9_.+-]*\Z")
+
+# Guards the env-mutating build in _build_aiter_lib; see ensure_aiter_lib.
+_BUILD_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class AiterModule:
+    """One AITER module to build symbol-visible and link into a FlashInfer shim.
+
+    ``name`` keys AITER's ``optCompilerConfig.json``, which supplies the sources
+    and compile flags. ``md_name`` and ``blob_gen_cmd`` override the two fields
+    that select *which instances* that source tree generates.
+
+    Specialization is not an optimization. ``module_moe_ck2stages`` builds every
+    dtype/activation/quant combination by default -- 280 MB and far past a
+    tolerable first-call build -- while one configuration needs a handful of
+    instances. AITER specializes it the same way (``get_moe_stage_module`` in
+    ``aiter/ops/moe_op.py``).
+
+    ``md_name`` also names the cached ``lib<md_name>.so``, so two specializations
+    of one module cannot overwrite each other.
+    """
+
+    name: str
+    md_name: Optional[str] = None
+    blob_gen_cmd: Optional[Union[str, Tuple[str, ...]]] = None
+
+    @property
+    def lib_name(self) -> str:
+        """The library basename: ``lib<lib_name>.so``, linked as ``-l<lib_name>``."""
+        # `is None`, not falsiness: an empty md_name must not silently resolve to
+        # the unspecialized name, which is how two specializations would collide.
+        return self.name if self.md_name is None else self.md_name
+
+    def __post_init__(self) -> None:
+        for label, value in (("name", self.name), ("md_name", self.md_name)):
+            if value is not None and not _LIB_NAME_RE.match(value):
+                raise ValueError(
+                    f"AITER {label} {value!r} is not usable as a library name; "
+                    "expected something like 'module_moe_sorting'"
+                )
+
+
+def _as_modules(
+    modules: Sequence[Union[str, AiterModule]],
+) -> Tuple[AiterModule, ...]:
+    return tuple(AiterModule(m) if isinstance(m, str) else m for m in modules)
 
 
 def _env_arch_list() -> List[str]:
@@ -240,24 +298,51 @@ def _aiter_csrc_include_dir() -> Path:
     )
 
 
-def ensure_aiter_lib(module_name: str) -> Path:
+def ensure_aiter_lib(module: Union[str, AiterModule]) -> Path:
     """
     Build (once, cached) a symbol-visible AITER module and return the path to the
-    linkable ``lib<module_name>.so`` under FlashInfer's cache.
+    linkable ``lib<name>.so`` under FlashInfer's cache.
 
     Idempotent: if the cached lib already exists it is returned without rebuilding.
     """
+    if isinstance(module, str):
+        module = AiterModule(module)
+    module_name = module.name
+    md_name = module.lib_name
+
     libs_dir = _aiter_libs_dir()
-    lib_path = libs_dir / f"lib{module_name}.so"
+    lib_path = libs_dir / f"lib{md_name}.so"
     if lib_path.exists():
         return lib_path
 
+    # One lock for every module, not one per module. _build_aiter_lib mutates
+    # process-global env (AITER_JIT_DIR, GPU_ARCHS, ROCM_HOME) and restores a
+    # snapshot taken on entry, so two builds of *different* modules in one process
+    # interleave: the first to finish rolls the environment back under the one
+    # still running. The thread lock covers that; the file lock covers `pytest
+    # -n auto`, which shares a cache dir across processes. os.replace below makes
+    # publishing atomic; these make producing safe.
+    with _BUILD_LOCK, FileLock(str(libs_dir / ".aiter-build.lock"), thread_local=False):
+        if lib_path.exists():
+            return lib_path
+        return _build_aiter_lib(module_name, md_name, module.blob_gen_cmd, lib_path)
+
+
+def _build_aiter_lib(
+    module_name: str,
+    md_name: str,
+    blob_gen_cmd_override: Optional[Union[str, Tuple[str, ...]]],
+    lib_path: Path,
+) -> Path:
+    libs_dir = lib_path.parent
     # Build into a FlashInfer-owned dir so we never mutate the AITER install.
+    # Deliberately one dir for every module, not one per md_name: AITER_JIT_DIR
+    # is process-global, and a shim now builds two modules per spec. A per-module
+    # value makes concurrent builders overwrite each other's env; a constant one
+    # makes that write benign. AITER already isolates each build under
+    # {bd_dir}/{md_name} anyway.
     aiter_build_dir = libs_dir / "build"
     aiter_build_dir.mkdir(parents=True, exist_ok=True)
-
-    # AITER reads these from the environment at build time.
-    from ..hip_utils import get_rocm_home
 
     prev = {
         "AITER_SYMBOL_VISIBLE": os.environ.get("AITER_SYMBOL_VISIBLE"),
@@ -265,17 +350,23 @@ def ensure_aiter_lib(module_name: str) -> Path:
         "GPU_ARCHS": os.environ.get("GPU_ARCHS"),
         "ROCM_HOME": os.environ.get("ROCM_HOME"),
     }
-    os.environ["AITER_SYMBOL_VISIBLE"] = "1"
-    os.environ["AITER_JIT_DIR"] = str(aiter_build_dir)
-    # AITER splits GPU_ARCHS on ';' and validates each entry, so a comma-joined
-    # list reaches it as one unparseable token. A single architecture sidesteps
-    # the separator entirely -- and is required regardless; see
-    # resolve_aiter_build_arch.
-    os.environ["GPU_ARCHS"] = resolve_aiter_build_arch()
-    os.environ["ROCM_HOME"] = get_rocm_home()
 
     built: Optional[Path] = None
     try:
+        # Inside the try so a failure here still restores the environment: a
+        # leaked AITER_JIT_DIR sends the *next* module's .so hunt to the wrong
+        # directory.
+        from ..hip_utils import get_rocm_home
+
+        os.environ["AITER_SYMBOL_VISIBLE"] = "1"
+        os.environ["AITER_JIT_DIR"] = str(aiter_build_dir)
+        # AITER splits GPU_ARCHS on ';' and validates each entry, so a
+        # comma-joined list reaches it as one unparseable token. A single
+        # architecture sidesteps the separator entirely -- and is required
+        # regardless; see resolve_aiter_build_arch.
+        os.environ["GPU_ARCHS"] = resolve_aiter_build_arch()
+        os.environ["ROCM_HOME"] = get_rocm_home()
+
         from aiter.jit import core as aiter_core
         from aiter.jit.core import build_module, get_args_of_build
 
@@ -288,12 +379,25 @@ def ensure_aiter_lib(module_name: str) -> Path:
         # link with "undefined symbol".
         a = get_args_of_build(module_name)
         flags_extra_hip = list(a["flags_extra_hip"]) + ["-fvisibility=default"]
+        blob_gen_cmd = a["blob_gen_cmd"]
+        if blob_gen_cmd_override is not None:
+            blob_gen_cmd = (
+                blob_gen_cmd_override
+                if isinstance(blob_gen_cmd_override, str)
+                else list(blob_gen_cmd_override)
+            )
+        logger.info(
+            "Building symbol-visible AITER module %s for %s (first use; this can "
+            "take several minutes for CK modules)",
+            md_name,
+            os.environ["GPU_ARCHS"],
+        )
         build_module(
-            md_name=module_name,
+            md_name=md_name,
             srcs=a["srcs"],
             flags_extra_cc=a["flags_extra_cc"],
             flags_extra_hip=flags_extra_hip,
-            blob_gen_cmd=a["blob_gen_cmd"],
+            blob_gen_cmd=blob_gen_cmd,
             extra_include=a["extra_include"],
             extra_ldflags=a["extra_ldflags"],
             verbose=os.environ.get("FLASHINFER_JIT_VERBOSE", "0") == "1",
@@ -309,7 +413,7 @@ def ensure_aiter_lib(module_name: str) -> Path:
         # Resolve the produced file from AITER's own get_user_jit_dir() (which
         # re-reads the env), falling back to a recursive search of our build dir.
         built = _find_built_so(
-            module_name, aiter_build_dir, Path(aiter_core.get_user_jit_dir())
+            md_name, aiter_build_dir, Path(aiter_core.get_user_jit_dir())
         )
     finally:
         for k, v in prev.items():
@@ -320,7 +424,7 @@ def ensure_aiter_lib(module_name: str) -> Path:
 
     if built is None:
         raise RuntimeError(
-            f"AITER build for {module_name!r} did not produce a {module_name}.so. "
+            f"AITER build for {module_name!r} did not produce a {md_name}.so. "
             "Check that aiter is installed and ROCm is available."
         )
     # Copy (not symlink) the artifact into our arch-keyed cache so it survives
@@ -332,9 +436,9 @@ def ensure_aiter_lib(module_name: str) -> Path:
     return lib_path
 
 
-def _find_built_so(module_name: str, *search_dirs: Path) -> Optional[Path]:
-    """Locate the freshly built ``<module_name>.so`` across AITER's output dirs."""
-    name = f"{module_name}.so"
+def _find_built_so(md_name: str, *search_dirs: Path) -> Optional[Path]:
+    """Locate the freshly built ``<md_name>.so`` across AITER's output dirs."""
+    name = f"{md_name}.so"
     for d in search_dirs:
         candidate = d / name
         if candidate.is_file():
@@ -348,19 +452,25 @@ def _find_built_so(module_name: str, *search_dirs: Path) -> Optional[Path]:
 
 
 def aiter_jitspec_flags(
-    module_name: str,
+    *modules: Union[str, AiterModule],
 ) -> Tuple[List[Union[str, Path]], List[str]]:
     """
-    Build the AITER lib if needed and return ``(extra_include_paths, extra_ldflags)``
-    to pass to ``gen_jit_spec`` so the FlashInfer shim can find AITER's header and
-    link the kernel.
+    Build the AITER libs if needed and return ``(extra_include_paths, extra_ldflags)``
+    to pass to ``gen_jit_spec`` so the FlashInfer shim can find AITER's headers and
+    link the kernels.
+
+    Accepts more than one module: a shim that spans two AITER modules (fused MoE
+    calls ``moe_sorting`` and a CK GEMM module) links them all against the one
+    ``-L``/``-rpath`` pair, since every lib lands in the same arch-keyed cache dir.
     """
-    ensure_aiter_lib(module_name)
+    if not modules:
+        raise ValueError("aiter_jitspec_flags needs at least one AITER module")
+    resolved = _as_modules(modules)
+    for module in resolved:
+        ensure_aiter_lib(module)
     libs_dir = _aiter_libs_dir()
     extra_include_paths: List[Union[str, Path]] = [str(_aiter_csrc_include_dir())]
-    extra_ldflags = [
-        f"-L{libs_dir}",
-        f"-l{module_name}",
-        f"-Wl,-rpath,{libs_dir}",
-    ]
+    extra_ldflags = [f"-L{libs_dir}"]
+    extra_ldflags += [f"-l{module.lib_name}" for module in resolved]
+    extra_ldflags.append(f"-Wl,-rpath,{libs_dir}")
     return extra_include_paths, extra_ldflags
