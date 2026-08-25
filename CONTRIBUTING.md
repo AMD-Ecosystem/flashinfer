@@ -6,9 +6,118 @@ AMD Instinct GPUs — gfx942 (MI300X / MI325X, CDNA3) and gfx950
 <https://github.com/flashinfer-ai/flashinfer> uses different env vars,
 paths, and toolchains; its contribution guide does not transfer here.
 
-For project overview, install steps, running tests, AITER setup, and
-environment variables, see [`README.md`](README.md). This document
-covers only what's specific to contributing code.
+For the project overview, quick-start install, and the support matrix,
+see [`README.md`](README.md); for backend routing and AITER setup, see
+[`docs/rocm/backends.md`](docs/rocm/backends.md). This document covers
+building from source and everything else specific to contributing code.
+
+# Setting up a Development Environment
+
+Build the development image with the repository's Dockerfile:
+
+```bash
+docker build \
+  --build-arg ROCM_VERSION=7.2 \
+  --build-arg PY_VERSION=3.12 \
+  --build-arg TORCH_VERSION=2.9.1 \
+  --build-arg USERNAME=$USER \
+  --build-arg USER_UID=$(id -u) \
+  --build-arg USER_GID=$(id -g) \
+  -t flashinfer-dev:rocm7.2 \
+  -f .devcontainer/rocm/Dockerfile .
+```
+
+The `ROCM_VERSION`, `PY_VERSION`, and `TORCH_VERSION` defaults are 7.2,
+3.12, and 2.9.1. The `USER*` args match container file ownership to your
+host user; without them, build artifacts come out root-owned.
+
+```bash
+docker run -it \
+  --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
+  --privileged --shm-size=128G --network=host \
+  --device=/dev/kfd --device=/dev/dri \
+  --group-add video --group-add render \
+  -v $PWD:/workspace \
+  --name flashinfer-dev-container \
+  flashinfer-dev:rocm7.2
+```
+
+Note the absence of `--ipc=host`: it shares the host IPC namespace, which
+silently overrides `--shm-size` and leaves the container able to exhaust
+host memory under a parallel test run.
+
+# Building and Installing
+
+**Editable install** — what you want for day-to-day work:
+
+```bash
+python -m pip install --no-build-isolation -ve .
+```
+
+**Wheel:**
+
+```bash
+python -m pip wheel . --wheel-dir=./dist/ --no-deps --no-build-isolation -v
+pip install dist/amd_flashinfer-*.whl
+```
+
+`--no-deps` assumes dependencies are already present; omit it to resolve
+them during the build. Nothing is compiled at build time — kernels are
+JIT-compiled on first use and cached under `~/.cache/flashinfer/`.
+
+**Ahead-of-time kernel build.** AOT is a separate step, not a flag on the
+wheel build. It compiles the kernel set up front so the first call does
+not pay for JIT:
+
+```bash
+python -m flashinfer.aot_hip --help
+```
+
+Pair an AOT-built install with `FLASHINFER_DISABLE_JIT=1` to fail loudly
+on a missing kernel instead of silently triggering a build.
+
+# Running Tests
+
+```bash
+# Fast path -- skips 1M-trial sampling-frequency tests and 4 GB
+# speculative-sampling cases (~7 min on a CPX 8-card host):
+pytest -n auto --reruns 2 -m "not slow"
+
+# Full coverage (~20 min):
+pytest -n auto --reruns 2
+
+# Slow tests only (~13 min):
+pytest -n auto --reruns 2 -m "slow"
+
+# One file, or a pattern:
+pytest tests/rocm_tests/test_batch_decode_kernels_hip.py
+pytest -k "test_batch_decode_kernels_hip"
+```
+
+`testpaths` in [pyproject.toml](pyproject.toml) sets the default
+selection. `pytest-rerunfailures` comes from the `dev` extra
+(`pip install -e ".[dev]"`).
+
+**Worker count.** `pytest -n auto` spawns **half as many xdist workers as
+physical AMD cards** (4 workers on a CPX-mode 8-card host) and pins each
+to its card via `HIP_VISIBLE_DEVICES`. One worker per card was tried first
+and produced sporadic failures across rope, single_prefill, and logits_cap
+under concurrent load. Pass an explicit `-n N` to override the halving.
+
+**Reruns.** `--reruns 2` absorbs the residual ~0.01% of transient HIP
+runtime crashes — HSA exceptions, HIPBLAS handle-pool exhaustion,
+intermittent generator non-determinism — that worker pinning cannot
+eliminate. Only failed tests are retried.
+
+**`slow` marker.** Registered in [pyproject.toml](pyproject.toml). It tags
+the 1M-trial sampling-frequency tests, the 4 GB-tensor speculative-sampling
+cases, and the whole `TestLogitsPipeCompilationHIP` class (each test runs
+the sampling kernel twice, for `compile=True` and `False`).
+
+**HIPBLAS retry.** The reference attention helper in
+`tests/attention_reference.py` wraps `torch.matmul` in a
+`_hipblas_safe_matmul` retry that catches `HIPBLAS_STATUS_ALLOC_FAILED`
+and backs off — needed under heavy concurrent xdist load.
 
 # Code Structure
 
