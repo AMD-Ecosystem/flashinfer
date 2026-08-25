@@ -163,6 +163,10 @@ class HardwareCeilings:
 
 
 KNOWN_HW: dict[str, HardwareCeilings] = {
+    # gfx950 covers both MI350X (1 kW air) and MI355X (1.4 kW liquid); they
+    # differ only in clock, so the lower MI350X matrix peak is used and a
+    # roofline taken on an MI355X reads slightly optimistic.
+    "gfx950": HardwareCeilings(2300.0, 8.0, "MI350X"),
     "gfx942": HardwareCeilings(1307.4, 5.3, "MI300X"),
     "gfx90a": HardwareCeilings(383.0, 3.277, "MI250X"),
     "gfx908": HardwareCeilings(185.0, 1.228, "MI100"),
