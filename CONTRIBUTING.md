@@ -64,8 +64,8 @@ might plausibly create.
    `flashinfer/csrc_rocm/` on ROCm (see `flashinfer/jit/env.py` and
    `flashinfer/get_include_paths.py`), so a shared JIT generator naming
    `sampling.cu` picks up the HIP source with **zero Python diff**. This is why
-   `flashinfer/sampling.py` and `quantization.py` contain no HIP references at
-   all. Use it whenever only the kernel differs.
+   `flashinfer/sampling.py` and `flashinfer/quantization.py` contain no HIP
+   references at all. Use it whenever only the kernel differs.
 2. **A ROCm module beside the upstream one**, swapped into `sys.modules` in
    `flashinfer/__init__.py` — how `prefill_rocm.py` and `decode_rocm.py` are
    reached.
@@ -151,4 +151,5 @@ Open PRs against the `amd-integration` branch of
 never against `flashinfer-ai/flashinfer`, which `gh pr create` will otherwise
 pick as the default base. For PR
 description conventions (sections, benchmarks, test plan), see the
-"PR Description" section of [`CLAUDE.md`](CLAUDE.md).
+"PR Description" section of the `pr-workflow` skill
+(`.claude/skills/pr-workflow/SKILL.md`).

@@ -184,7 +184,10 @@ def _merge_tree(repo: str, ours: str, theirs: str) -> List[Tuple[str, str]]:
         paths = fields[idx + 1 : idx + 1 + n_paths]
         type_idx = idx + 1 + n_paths
         if type_idx >= len(fields):
-            break
+            raise ToolError(
+                f"truncated merge-tree -z record at field {idx}: expected a conflict "
+                f"type after {n_paths} path(s) but the stream ended"
+            )
         kind = fields[type_idx]
         idx = type_idx + 2  # skip the human-readable message
         if not kind.startswith("CONFLICT"):
