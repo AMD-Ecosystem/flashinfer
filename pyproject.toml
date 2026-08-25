@@ -170,7 +170,7 @@ filterwarnings = [
 # avoids __init__.py package-root walk.
 addopts = "-q -rfE --tb=short --import-mode=importlib"
 norecursedirs = ["test_helpers"]
-pythonpath = ["tests", "tests/test_helpers"]
+pythonpath = ["tests", "tests/test_helpers", "benchmarks"]
 # AMD/HIP test suite: rocm_tests/ directory for all AMD-authored tests,
 # plus explicit upstream test paths that are verified HIP-compatible.
 # Running 'pytest' with no args runs exactly these tests.
