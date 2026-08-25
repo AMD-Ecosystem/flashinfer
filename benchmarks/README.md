@@ -253,3 +253,78 @@ Backend Legend:
 - trtllm: TensorRT-LLM
 - trtllm-gen: TensorRT-LLM
 - trtllm-native: TensorRT-LLM (out-of-wrapper)
+
+## ROCm (gfx942 / gfx950)
+
+On AMD the supported-backend table above does not apply: gfx942 and gfx950 report
+compute capability 9.4 and 9.5, which match no entry in it. The ROCm branch keys
+off the GPU architecture instead and derives the backend list from
+[`flashinfer/arch_caps.py`](../flashinfer/arch_caps.py), so it tracks the
+arch-support matrix rather than restating it.
+
+Only the attention routines are available. `gemm` and `moe` are not built on
+ROCm, and `BatchMLAPagedAttentionWrapper` is not wired up yet; requesting any of
+them reports "not supported" rather than failing at import.
+
+| Routine | gfx942 | gfx950 |
+|---|---|---|
+| **BatchDecodeWithPagedKVCacheWrapper** | fa2, auto | fa2, auto |
+| **BatchPrefillWithPagedKVCacheWrapper** | fa2, auto | fa2, auto |
+| **BatchPrefillWithRaggedKVCacheWrapper** | fa2, auto | fa2, auto |
+
+- **fa2** — the in-tree HIP kernel.
+- **auto** — what the library picks in production: [AITER](https://github.com/ROCm/aiter)
+  when `amd-aiter` is installed and the call satisfies its constraints, otherwise fa2.
+  `backend_resolved` records which one ran.
+
+`--backends aiter` is deliberately not offered. AITER is reached through `auto`,
+which reports what it resolved to, so an explicit name would add no coverage —
+and on gfx950 under ROCm 7.2.x `auto` resolves to fa2 for both prefill routines
+anyway, because `arch_caps` gates AITER off there for the causal-miscompile
+known-bad entry.
+
+### Running
+
+```bash
+cd benchmarks
+python flashinfer_benchmark.py --testlist rocm_benchmarks/testlist_rocm.txt \
+    --output_path run-$(date +%F).csv
+```
+
+Diff successive CSVs **by column name**, not position — the ROCm columns below
+were appended and shift the index of everything after them.
+
+### Reading the output
+
+Two columns are present in every CSV, but only ever populated on ROCm — the
+schema is the same on both platforms, so a CUDA run leaves them empty rather
+than omitting them:
+
+- **`backend_resolved`** — what `auto` actually became (`aiter` or `fa2`). Without
+  it an `auto` row is uninterpretable, since both possibilities look identical.
+- **`backend_fallback_reason`** — why `auto` declined AITER. This is what separates
+  "AITER correctly rejected this shape" from "the benchmark got in the way".
+
+A row with `backend_resolved=fa2` and an **empty** reason came from neither: it
+means `auto` was short-circuited because `use_tensor_cores` was set or CUDA-graph
+capture was enabled. The testlist avoids both, so treat it as worth investigating.
+
+`auto` rows are always timed eagerly. Under graph capture `auto` stays on fa2 by
+design — AITER's launch grid is fixed at the shapes seen during capture, so
+replaying at a longer sequence is silently wrong. Graph-mode AITER decode is the
+explicit capture-at-max path in
+[`rocm_benchmarks/bench_decode_graph_hip.py`](rocm_benchmarks/bench_decode_graph_hip.py).
+
+### Two tiers
+
+This runner answers "did anything regress" across model-shaped configs. For
+"why is this kernel slow", use [`rocm_profiler`](../rocm_profiler/rocm_profiler.py)
+and the per-op drivers in [`rocm_benchmarks/`](rocm_benchmarks/), which collect
+`rocprofv3` hardware counters and plot a roofline.
+
+### Comparing numbers
+
+Record the architecture and toolchain with every result — `gcnArchName`,
+`torch.version.hip`, and the `amd-aiter` version. A gfx942 / ROCm 7.2 number is
+not comparable to a gfx950 / ROCm 7.1 one, and the AITER prefill path in
+particular is gated differently between them.

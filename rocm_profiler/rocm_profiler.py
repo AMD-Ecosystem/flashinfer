@@ -162,6 +162,9 @@ class HardwareCeilings:
         return self.peak_tflops_fp16 / self.peak_bw_tbs
 
 
+# Peak FP16 matrix TFLOPS (dense) and HBM bandwidth. An arch key cannot separate
+# SKUs sharing it, so each entry is its arch's slower member -- utilisation
+# against these ceilings is an upper bound on the faster part.
 KNOWN_HW: dict[str, HardwareCeilings] = {
     # gfx950 covers both MI350X (1 kW air) and MI355X (1.4 kW liquid); they
     # differ only in clock, so the lower MI350X matrix peak is used and a
@@ -1015,8 +1018,44 @@ def _detect_rocm_lib_path() -> str | None:
     return None
 
 
+def _report_ceilings(arch: str) -> HardwareCeilings | None:
+    """Announce the ceilings for ``arch``, or warn that there are none."""
+    hw = KNOWN_HW.get(arch)
+    if hw is None:
+        print(
+            f"[rocm_profiler] WARNING: GPU arch '{arch}' not in KNOWN_HW. "
+            "Roofline will not show hardware ceilings.",
+            file=sys.stderr,
+        )
+        return None
+    print(
+        f"[rocm_profiler] Detected GPU: {hw.gpu_name} ({arch})  "
+        f"peak={hw.peak_tflops_fp16:.0f} TFLOPS  "
+        f"BW={hw.peak_bw_tbs:.1f} TB/s  "
+        f"ridge≈{hw.ridge_flops_per_byte:.0f} FLOPs/B"
+    )
+    return hw
+
+
 def _detect_hw_ceilings() -> HardwareCeilings | None:
-    """Query rocminfo to identify GPU arch and return matching hardware ceilings."""
+    """Identify the GPU arch and return matching hardware ceilings.
+
+    Prefers torch's device properties over rocminfo: it reports the device this
+    process will actually run on, whereas the rocminfo scrape takes whichever
+    agent is listed first and ignores HIP_VISIBLE_DEVICES.
+    """
+    try:
+        import torch
+
+        from flashinfer.arch_caps import normalize_arch
+
+        arch = normalize_arch(torch.cuda.get_device_properties(0).gcnArchName)
+    except Exception:
+        arch = None
+
+    if arch in KNOWN_HW:
+        return _report_ceilings(arch)
+
     try:
         result = subprocess.run(
             ["rocminfo"],
@@ -1026,21 +1065,7 @@ def _detect_hw_ceilings() -> HardwareCeilings | None:
         )
         match = re.search(r"(gfx\w+)", result.stdout)
         if match:
-            arch = match.group(1)
-            if arch in KNOWN_HW:
-                hw = KNOWN_HW[arch]
-                print(
-                    f"[rocm_profiler] Detected GPU: {hw.gpu_name} ({arch})  "
-                    f"peak={hw.peak_tflops_fp16:.0f} TFLOPS  "
-                    f"BW={hw.peak_bw_tbs:.1f} TB/s  "
-                    f"ridge≈{hw.ridge_flops_per_byte:.0f} FLOPs/B"
-                )
-                return hw
-            print(
-                f"[rocm_profiler] WARNING: GPU arch '{arch}' not in KNOWN_HW. "
-                "Roofline will not show hardware ceilings.",
-                file=sys.stderr,
-            )
+            return _report_ceilings(match.group(1))
     except FileNotFoundError:
         print(
             "[rocm_profiler] WARNING: rocminfo not found. "
