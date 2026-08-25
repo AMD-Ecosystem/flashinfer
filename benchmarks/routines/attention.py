@@ -1899,7 +1899,11 @@ def testBatchMLAPagedAttentionWrapper(args):
             **bench_timing_kwargs(args, device),
             sleep_after_run=False,
             enable_cupti=args.use_cupti,
-            use_cuda_graph=(is_cuda_graph_compatible and cur_backend != "fa2"),
+            # "auto" may have resolved to AITER, whose launch grid is fixed at
+            # capture shapes; time it eagerly like fa2 rather than under a graph.
+            use_cuda_graph=(
+                is_cuda_graph_compatible and cur_backend not in ("fa2", "auto")
+            ),
         )
 
     # Perform reference check
