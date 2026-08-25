@@ -36,6 +36,7 @@ Run:
     python benchmarks/rocm_benchmarks/bench_mla_hip.py --timing-only --separate
     python benchmarks/rocm_benchmarks/bench_mla_hip.py --mode pool --timing-only
     python benchmarks/rocm_benchmarks/bench_mla_hip.py --heads 16,128
+    python benchmarks/rocm_benchmarks/bench_mla_hip.py --batches 1,8,32,64,128,256
     python benchmarks/rocm_benchmarks/bench_mla_hip.py                 # + roofline
 
 Bench flags are parsed at module level because rocprofv3 re-executes this script
@@ -90,6 +91,14 @@ _bench_parser.add_argument(
     help="Comma-separated num_heads per GPU (AITER MLA: multiples of 16, <=128). Default: 16.",
 )
 _bench_parser.add_argument(
+    "--batches",
+    default="1,8,32",
+    help=(
+        "Comma-separated batch sizes. Default: 1,8,32. AITER picks split-k depth "
+        "from the CU count, so the architectures only diverge above 32."
+    ),
+)
+_bench_parser.add_argument(
     "--separate",
     action="store_true",
     help=(
@@ -107,6 +116,12 @@ _counters = _bench_args.counters
 _auto_label = "mla" if _counters == "roofline" else f"mla_{_counters}"
 if _bench_args.mode != "all":
     _auto_label += f"_{_bench_args.mode}"
+# Only non-default sweeps are encoded, so the invocations in the docstring keep
+# the filenames the CDNA3 numbers were published under.
+if _bench_args.heads != _bench_parser.get_default("heads"):
+    _auto_label += f"_h{_bench_args.heads.replace(',', '-')}"
+if _bench_args.batches != _bench_parser.get_default("batches"):
+    _auto_label += f"_b{_bench_args.batches.replace(',', '-')}"
 if _bench_args.separate:
     _auto_label += "_separate"
 _label = _bench_args.label if _bench_args.label is not None else _auto_label
@@ -119,7 +134,7 @@ _HEAD_DIM_KPE = 64  # qk_rope_head_dim
 _QK_HEAD_DIM = _HEAD_DIM_CKV + _HEAD_DIM_KPE  # 576
 _DTYPE = torch.bfloat16
 _PAGE_SIZE = 1  # what vLLM's AITER MLA backend requires
-_BATCHES = [1, 8, 32]
+_BATCHES = [int(b) for b in _bench_args.batches.split(",") if b.strip()]
 _KV_LENS = [1024, 8192, 32768]
 
 # --mode pool: fixed (small) active set, growing page pool. Not in --mode all
