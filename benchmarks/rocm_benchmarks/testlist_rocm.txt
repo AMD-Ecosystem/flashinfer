@@ -4,10 +4,15 @@
 #   python flashinfer_benchmark.py --testlist rocm_benchmarks/testlist_rocm.txt \
 #       --output_path run-$(date +%F).csv
 #
-# Every line runs `fa2` and `auto`. `fa2` is the in-tree HIP kernel and, being
+# Every line requests `fa2` and `auto`. `fa2` is the in-tree HIP kernel and, being
 # listed first, is also the reference that --refcheck compares against; `auto` is
 # whatever the library would pick in production. Read backend_resolved to see
 # which one `auto` became and backend_fallback_reason for why it declined AITER.
+#
+# A requested backend can still be dropped before it runs when the kernel cannot
+# serve the shape -- the Llama-3.1-405B rows below lose `fa2` that way. Those
+# rows have no reference and are therefore NOT refcheck-verified, so count the
+# rows per config in the CSV rather than assuming two.
 # A row with backend_resolved=fa2 and an EMPTY reason did not come from a
 # constraint -- investigate rather than assume.
 #
