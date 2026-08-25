@@ -190,10 +190,13 @@ def _merge_tree(repo: str, ours: str, theirs: str) -> List[Tuple[str, str]]:
             ) from exc
         paths = fields[idx + 1 : idx + 1 + n_paths]
         type_idx = idx + 1 + n_paths
-        if type_idx >= len(fields):
+        # A slice silently truncates, so check the count rather than infer it.
+        # Every record is <n-paths> <path>... <type> <message>; a short one means
+        # the stream was cut, and continuing would under-report.
+        if len(paths) != n_paths or type_idx + 1 >= len(fields):
             raise ToolError(
-                f"truncated merge-tree -z record at field {idx}: expected a conflict "
-                f"type after {n_paths} path(s) but the stream ended"
+                f"truncated merge-tree -z record at field {idx}: expected {n_paths} "
+                f"path(s), a conflict type and a message, but the stream ended"
             )
         kind = fields[type_idx]
         idx = type_idx + 2  # skip the human-readable message
