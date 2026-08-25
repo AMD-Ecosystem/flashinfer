@@ -20,6 +20,7 @@ from .flashinfer_benchmark_utils import (
     record_backend_resolution,
     bench_timing_kwargs,
     HIP_DECODE_GQA_GROUP_SIZES,
+    fa2_backed_backends,
 )
 from flashinfer.device_utils import IS_HIP
 
@@ -279,26 +280,27 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
 
     backends = filter_backends_by_compute_capability(backends, args.routine, device)
     # Check for backend-specific constraints
+    head_grp_size = num_qo_heads // num_kv_heads  # If 5, FA2 backend is not supported.
     if "fa2" in backends:
         remove_fa2 = False
-        head_grp_size = (
-            num_qo_heads // num_kv_heads
-        )  # If 5, FA2 backend is not supported.
         if head_grp_size == 5:
             print(
                 "[INFO] FA2 backend is not supported for this configuration. Skipping."
             )
             remove_fa2 = True
-        if IS_HIP and head_grp_size not in HIP_DECODE_GQA_GROUP_SIZES:
-            # DISPATCH_GQA_GROUP_SIZE covers {1,2,3,4,8}; anything else raises
-            # from inside the kernel and takes the whole row down with it.
-            print(
-                f"[INFO] FA2 backend does not support GQA group size "
-                f"{head_grp_size} on ROCm. Skipping."
-            )
-            remove_fa2 = True
         if remove_fa2:
             backends.remove("fa2")
+    if IS_HIP:
+        # DISPATCH_GQA_GROUP_SIZE covers a fixed set; anything else raises from
+        # inside the kernel and takes the whole test case down. "auto" inherits
+        # the constraint because it resolves to fa2 whenever AITER is declined.
+        for name in fa2_backed_backends(backends, device, "batch_decode"):
+            if head_grp_size not in HIP_DECODE_GQA_GROUP_SIZES:
+                print(
+                    f"[INFO] {name} runs the HIP kernel, which does not support "
+                    f"GQA group size {head_grp_size}. Skipping."
+                )
+                backends.remove(name)
 
     if "fa2_tc" in backends:
         remove_fa2_tc = False
@@ -517,9 +519,11 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
             v_fp8 = (v_data / v_scale).to(kv_dtype)
             kv_cache_for_trt = torch.cat([k_fp8, v_fp8], dim=1)
 
+    nhd_kv_cache = as_nhd_paged_kv_cache(kv_cache)
+
     def run_backend_wrapper(backend):
         if backend in ["fa2", "fa2_tc", "trtllm-gen", "auto"]:
-            cache = as_nhd_paged_kv_cache(kv_cache) if backend == "auto" else kv_cache
+            cache = nhd_kv_cache if backend == "auto" else kv_cache
             return backend_wrappers[backend].run(
                 q, cache, k_scale=k_scale, v_scale=v_scale
             )
@@ -981,9 +985,11 @@ def testBatchPrefillWithPagedKVCacheWrapper(args):
         v_fp8 = (v_data / v_scale).to(kv_dtype)
         kv_cache = torch.cat([k_fp8, v_fp8], dim=1)
 
+    nhd_kv_cache = as_nhd_paged_kv_cache(kv_cache)
+
     def run_backend_wrapper(backend):
         if backend in ["fa2", "fa3", "trtllm-gen", "auto"]:
-            cache = as_nhd_paged_kv_cache(kv_cache) if backend == "auto" else kv_cache
+            cache = nhd_kv_cache if backend == "auto" else kv_cache
             return backend_wrappers[backend].run(
                 q, cache, k_scale=k_scale, v_scale=v_scale
             )
@@ -1893,11 +1899,7 @@ def testBatchMLAPagedAttentionWrapper(args):
             **bench_timing_kwargs(args, device),
             sleep_after_run=False,
             enable_cupti=args.use_cupti,
-            # "auto" may have resolved to AITER, whose launch grid is fixed at
-            # capture shapes; time it eagerly like fa2 rather than under a graph.
-            use_cuda_graph=(
-                is_cuda_graph_compatible and cur_backend not in ("fa2", "auto")
-            ),
+            use_cuda_graph=(is_cuda_graph_compatible and cur_backend != "fa2"),
         )
 
     # Perform reference check

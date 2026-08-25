@@ -956,9 +956,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
     def backend_fallback_reason(self) -> Optional[str]:
         """Why ``auto`` declined AITER, or ``None`` if it did not.
 
-        Only set by the ``auto`` constraint check. An explicit ``backend=`` leaves
-        it ``None``, as do the short-circuits that keep ``auto`` on fa2 under
-        ``use_tensor_cores`` or CUDA-graph capture.
+        Set only by the ``auto`` constraint check; an explicit ``backend=`` and
+        the ``use_tensor_cores`` / graph-capture short-circuits leave it ``None``.
         """
         return self._backend_fallback_reason
 

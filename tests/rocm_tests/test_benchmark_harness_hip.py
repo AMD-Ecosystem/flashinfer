@@ -142,6 +142,35 @@ def test_hip_gqa_group_sizes_match_the_kernel_dispatch():
     assert 128 // 8 not in from_kernel
 
 
+def test_auto_inherits_fa2_constraints_when_aiter_cannot_serve():
+    """`auto` resolves to fa2 when AITER is declined, so it inherits fa2's limits.
+
+    Guarding only the literal "fa2" leaves `auto` to reach a kernel that aborts
+    the whole test case -- exactly the crash the group-size guard prevents.
+    """
+    u = _utils()
+    device = torch.device("cuda")
+    for op in ("batch_decode", "batch_prefill"):
+        backed = u.fa2_backed_backends(["fa2", "auto"], device, op)
+        assert "fa2" in backed
+        assert ("auto" in backed) is not u.aiter_serves(device, op)
+
+
+def test_resolution_is_recorded_only_for_auto():
+    """An explicit backend resolves to itself; filling the column for it would
+    make every fa2 row match the README's "investigate this" signature."""
+    u = _utils()
+
+    class _Wrapper:
+        backend = "fa2"
+        backend_fallback_reason = None
+
+    for requested, expected in (("fa2", ""), ("auto", "fa2")):
+        row = {"backend": requested, "backend_resolved": "", "fallback": ""}
+        u.record_backend_resolution(row, _Wrapper())
+        assert row["backend_resolved"] == expected
+
+
 def test_timing_kwargs_default_to_iteration_counts():
     """Passing no time budget must reproduce the previous behaviour exactly."""
     u = _utils()

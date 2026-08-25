@@ -1018,6 +1018,25 @@ def _detect_rocm_lib_path() -> str | None:
     return None
 
 
+def _report_ceilings(arch: str) -> HardwareCeilings | None:
+    """Announce the ceilings for ``arch``, or warn that there are none."""
+    hw = KNOWN_HW.get(arch)
+    if hw is None:
+        print(
+            f"[rocm_profiler] WARNING: GPU arch '{arch}' not in KNOWN_HW. "
+            "Roofline will not show hardware ceilings.",
+            file=sys.stderr,
+        )
+        return None
+    print(
+        f"[rocm_profiler] Detected GPU: {hw.gpu_name} ({arch})  "
+        f"peak={hw.peak_tflops_fp16:.0f} TFLOPS  "
+        f"BW={hw.peak_bw_tbs:.1f} TB/s  "
+        f"ridge≈{hw.ridge_flops_per_byte:.0f} FLOPs/B"
+    )
+    return hw
+
+
 def _detect_hw_ceilings() -> HardwareCeilings | None:
     """Identify the GPU arch and return matching hardware ceilings.
 
@@ -1034,22 +1053,8 @@ def _detect_hw_ceilings() -> HardwareCeilings | None:
     except Exception:
         arch = None
 
-    if arch is not None:
-        if arch in KNOWN_HW:
-            hw = KNOWN_HW[arch]
-            print(
-                f"[rocm_profiler] Detected GPU: {hw.gpu_name} ({arch})  "
-                f"peak={hw.peak_tflops_fp16:.0f} TFLOPS  "
-                f"BW={hw.peak_bw_tbs:.1f} TB/s  "
-                f"ridge≈{hw.ridge_flops_per_byte:.0f} FLOPs/B"
-            )
-            return hw
-        print(
-            f"[rocm_profiler] WARNING: GPU arch '{arch}' not in KNOWN_HW. "
-            "Roofline will not show hardware ceilings.",
-            file=sys.stderr,
-        )
-        return None
+    if arch in KNOWN_HW:
+        return _report_ceilings(arch)
 
     try:
         result = subprocess.run(
@@ -1060,21 +1065,7 @@ def _detect_hw_ceilings() -> HardwareCeilings | None:
         )
         match = re.search(r"(gfx\w+)", result.stdout)
         if match:
-            arch = match.group(1)
-            if arch in KNOWN_HW:
-                hw = KNOWN_HW[arch]
-                print(
-                    f"[rocm_profiler] Detected GPU: {hw.gpu_name} ({arch})  "
-                    f"peak={hw.peak_tflops_fp16:.0f} TFLOPS  "
-                    f"BW={hw.peak_bw_tbs:.1f} TB/s  "
-                    f"ridge≈{hw.ridge_flops_per_byte:.0f} FLOPs/B"
-                )
-                return hw
-            print(
-                f"[rocm_profiler] WARNING: GPU arch '{arch}' not in KNOWN_HW. "
-                "Roofline will not show hardware ceilings.",
-                file=sys.stderr,
-            )
+            return _report_ceilings(match.group(1))
     except FileNotFoundError:
         print(
             "[rocm_profiler] WARNING: rocminfo not found. "
