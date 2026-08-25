@@ -52,7 +52,7 @@ def _run(source, **env):
         env={k: v for k, v in child.items() if v is not None},
         capture_output=True,
         text=True,
-        timeout=1800,
+        timeout=900,
     )
 
 

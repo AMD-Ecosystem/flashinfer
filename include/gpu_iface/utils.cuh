@@ -66,7 +66,7 @@ inline void DebugPrintCUDAArray(T* device_ptr, size_t size, std::string prefix =
 }
 
 /*!
- * \brief CTA_TILE_Q override from FLASHINFER_ROCM_FORCE_CTA_TILE_Q, or 0 when unset.
+ * \brief CTA_TILE_Q override from FLASHINFER_ROCM_FORCE_CTA_TILE_Q, or 0 when unset/empty.
  *
  * The HIP heuristic never selects 128, so that arm is compiled into every ROCm
  * build but unreachable and cannot otherwise be benchmarked. Forcing bypasses the
