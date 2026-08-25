@@ -76,8 +76,10 @@ static __global__ void AiterPaV1BuildBlockTablesKernel(
     const int32_t npages = indptr[seq + 1] - begin;
 
     if (slot < max_blocks_per_seq) {
-      // The ATen index_select this replaced bounds-checked the gather; reading
-      // indices[] directly means a malformed indptr walks off the end instead.
+      // Out-of-range slots read as 0 rather than off the end of indices[]. The
+      // ATen index_select this replaced raised instead, but indptr is device
+      // memory and checking it host-side would cost a sync every run(); a
+      // defined value beats an OOB read, at the cost of masking a bad indptr.
       const int64_t src = static_cast<int64_t>(begin) + slot;
       const bool in_range = slot < npages && src >= 0 && src < indices_numel;
       block_tables[static_cast<int64_t>(seq) * max_blocks_per_seq + slot] =
