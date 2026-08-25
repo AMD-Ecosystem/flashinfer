@@ -85,8 +85,11 @@ LEGEND = (
 # by rewriting the generated block -- which fails --check on the very next run.
 _NOTE_BARE_URL = re.compile(r"(?<!\]\()\bhttps?://")
 _NOTE_INLINE_HTML = re.compile(r"<[A-Za-z][^>]*>")
+# MD033 and MD034 exempt code spans; MD056 does not, because GFM splits table
+# cells on `|` before it ever parses backticks.
+_CODE_SPAN = re.compile(r"`[^`]*`")
 _NOTE_RULES = (
-    ("|", "MD056: a literal pipe adds a table column. Reword, or use a comma"),
+    ("|", "MD056: a literal pipe adds a table column, even inside backticks. Reword"),
     ("\n", "the row must stay on one line"),
 )
 
@@ -170,13 +173,14 @@ def _note(where: str, text: str) -> str:
     for bad, why in _NOTE_RULES:
         if bad in text:
             raise SystemExit(f"{where}: {why}\n  note: {text!r}")
-    if _NOTE_BARE_URL.search(text):
+    prose = _CODE_SPAN.sub("", text)
+    if _NOTE_BARE_URL.search(prose):
         raise SystemExit(
             f"{where}: MD034 would rewrite a bare URL and break --check. "
-            f"Use [text](url), or move the detail to docs/rocm/backends.md\n"
-            f"  note: {text!r}"
+            f"Use [text](url) or backticks, or move the detail to "
+            f"docs/rocm/backends.md\n  note: {text!r}"
         )
-    if _NOTE_INLINE_HTML.search(text):
+    if _NOTE_INLINE_HTML.search(prose):
         raise SystemExit(
             f"{where}: MD033: wrap inline HTML in backticks\n  note: {text!r}"
         )

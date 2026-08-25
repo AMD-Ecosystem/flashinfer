@@ -11,7 +11,7 @@ only path.
 
 The port is in active development and is aimed at developers embedding
 FlashInfer kernels into their own training or serving stack. See
-[CHANGELOG.md](CHANGELOG.md) for the release history.
+[CHANGELOG.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CHANGELOG.md) for the release history.
 
 **Versioning.** Release tags are `<upstream_version>+amd.<n>`, tying each
 FlashInfer+ROCm release to the upstream tag it is based on — `0.5.3+amd.1`
@@ -65,7 +65,7 @@ python -c "import torch; assert torch.version.hip, 'not a ROCm build'"
 ```
 
 Kernels are JIT-compiled on first use, which takes a few minutes. The
-optional [`amd-flashinfer-jit-cache`](amd-flashinfer-jit-cache/README.md)
+optional [`amd-flashinfer-jit-cache`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/amd-flashinfer-jit-cache/README.md)
 package ships them prebuilt for gfx942.
 
 ## Basic usage
@@ -129,12 +129,12 @@ HIP-only, and `aiter_fused_moe` is AITER-only. On gfx950 with ROCm 7.2.x,
 table.
 
 **The full routing rules, per-op constraints, and AITER install
-instructions are in [`docs/rocm/backends.md`](docs/rocm/backends.md).**
+instructions are in [`docs/rocm/backends.md`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md).**
 Read it before relying on an AITER path — several attention kwargs are
 silently ignored there rather than rejected.
 
 The table below is generated from
-[`flashinfer/arch_caps.py`](flashinfer/arch_caps.py), which is what
+[`flashinfer/arch_caps.py`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/flashinfer/arch_caps.py), which is what
 `backend="auto"` consults at runtime, so it cannot drift from the routing
 decisions the library makes. Do not edit it by hand; run
 `python3 scripts/gen_arch_support_matrix.py`.
@@ -150,7 +150,7 @@ decisions the library makes. Do not edit it by hand; run
 | `rope` | `aiter` | ✅ | ✅ | `apply_rope_with_cos_sin_cache` and its inplace variant, linked at the C++ level. Opt-in. |
 | `append_paged_kv_cache` | `aiter` | ✅ | ✅ | fp16/bf16 + NHD. Bit-exact with the in-tree kernel but slower, so `auto` picks `native`. |
 | `rmsnorm` | `aiter` | ✅ | ✅ | CK `rmsnorm2d`. `auto` routes only 2-D fp16/bf16 with a matching weight dtype here. |
-| `fused_add_rmsnorm` | `aiter` | ✅ | ✅ | CK `rmsnorm2d_with_add`; 2-D only. Slightly lower precision at hidden_size >= 1024. |
+| `fused_add_rmsnorm` | `aiter` | ✅ | ✅ | CK `rmsnorm2d_with_add`; 2-D only. `auto` does NOT check weight dtype — a mismatch silently yields garbage. |
 | `silu_and_mul` | `aiter` | ✅ | ✅ | `aiter::silu_and_mul`, linked at the C++ level. Opt-in; matches native in fp16, lower in bf16. |
 | `fused_moe` | `aiter` | ✅ | ✅ | `aiter_fused_moe`; bf16/fp16. Weights must be pre-shuffled with `shuffle_moe_weight` or results are silently wrong. |
 | `single_decode` | `hip` | ◻️ | ◻️ | MHA / GQA / MQA. |
@@ -177,9 +177,10 @@ decisions the library makes. Do not edit it by hand; run
 
 <!-- END GENERATED: arch support matrix -->
 
-Most rows have a matching `tests/rocm_tests/test_*_hip.py`; `single_decode`
-and `quantization` are covered incidentally from other files rather than
-by one of their own.
+Every row is covered by the default `pytest` selection. Most have a
+matching `tests/rocm_tests/test_*_hip.py`; `single_decode` is exercised
+from the batch-decode, sliding-window, and logits-cap files, and
+`quantization` by `tests/utils/test_quantization.py`.
 
 ## `torch.compile`
 
@@ -225,7 +226,7 @@ Read at runtime or import time:
 
 Build-time variables — `FLASHINFER_ROCM_ARCH_LIST`, `FLASHINFER_JIT_VERBOSE`,
 `FLASHINFER_EXTRA_LDFLAGS`, `MAX_JOBS` — are documented in
-[CLAUDE.md](CLAUDE.md). Note `FLASHINFER_JIT_DEBUG` is a **no-op on
+[CLAUDE.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CLAUDE.md). Note `FLASHINFER_JIT_DEBUG` is a **no-op on
 ROCm/HIP**; CLAUDE.md explains how to get a debug build instead.
 
 ## Runtime helpers
@@ -249,13 +250,13 @@ check_torch_rocm_compatibility()
 
 ## Building from source
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the development container, the
+See [CONTRIBUTING.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md) for the development container, the
 editable and wheel builds, the ahead-of-time kernel build, and how to run
 the test suite.
 
 ## License and acknowledgements
 
-Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Upstream
+Apache-2.0 — see [LICENSE](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/LICENSE) and [NOTICE](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/NOTICE). Upstream
 project: [flashinfer-ai/flashinfer](https://github.com/flashinfer-ai/flashinfer).
 
 Contributions are welcome. Please run `pre-commit run -a` and the relevant

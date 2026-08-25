@@ -551,13 +551,24 @@ class TestNoteValidation:
             "see https://example.com/a",  # MD034 autofix rewrites the block
             "see https://example.com/a. Next",
             "see (https://example.com/a) here",
-            "use `https://example.com/a` as index",
             "returns Tensor<T> per head",  # MD033, no autofix
         ],
     )
     def test_rejects_content_markdownlint_would_break_on(self, note):
         with pytest.raises(SystemExit):
             gen._note("op/backend", note)
+
+    @pytest.mark.parametrize(
+        "note",
+        [
+            "use `https://example.com/a` as index",
+            "returns `Tensor<T>` per head",
+        ],
+    )
+    def test_allows_inside_a_code_span(self, note):
+        """MD033 and MD034 exempt code spans, so rejecting these would be
+        over-strict -- and would make the error messages' own advice false."""
+        assert gen._note("op/backend", note) == note
 
     @pytest.mark.parametrize(
         "note",

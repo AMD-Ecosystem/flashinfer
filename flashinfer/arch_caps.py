@@ -364,7 +364,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "fused_add_rmsnorm",
         "aiter",
         _archs(_OK_942, _OK_950),
-        note="CK `rmsnorm2d_with_add`; 2-D only. Slightly lower precision at hidden_size >= 1024.",
+        note="CK `rmsnorm2d_with_add`; 2-D only. `auto` does NOT check weight dtype — a mismatch silently yields garbage.",
         fallback="native",
     ),
     Capability(

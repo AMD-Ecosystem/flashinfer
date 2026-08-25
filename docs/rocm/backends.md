@@ -265,8 +265,10 @@ fp8 on the AITER attention paths is work in progress.
 
 ## Tests
 
-Most rows in the README matrix have a matching
-`tests/rocm_tests/test_*_hip.py`. Two do not: `single_decode` is covered
-from `test_batch_decode_kernels_hip.py`, `test_sliding_window_hip.py`, and
-`test_logits_cap_hip.py`; `quantization` (`packbits`,
-`segment_packbits`) has no direct ROCm coverage.
+Every row in the README matrix is covered by the default `pytest`
+selection (`testpaths` in `pyproject.toml`). Most have a matching
+`tests/rocm_tests/test_*_hip.py`. Two are covered from elsewhere:
+`single_decode` from `test_batch_decode_kernels_hip.py`,
+`test_sliding_window_hip.py`, and `test_logits_cap_hip.py`; `quantization`
+(`packbits`, `segment_packbits`) from `tests/utils/test_quantization.py`,
+which is shared with the CUDA suite rather than ROCm-specific.
