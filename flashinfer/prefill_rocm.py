@@ -25,6 +25,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 import torch
+from .aiter_utils import handle_aiter_probe_failure
 from .arch_caps import capability_reason, require_capability
 from .jit.core import logger
 from .jit import (
@@ -634,6 +635,67 @@ def _aiter_native_paging_available(
         )
         return False
     return True
+
+
+# The two probes below answer a different question from _aiter_native_paging_available:
+# not "which AITER kernel", but "can this AITER install produce any kernel for this
+# variant". They return the fallback reason instead of a bool because it feeds
+# backend_fallback_reason, and it has to be memoized with the outcome or the second
+# plan() reports a demotion it cannot explain. Same lru_cache rationale as above:
+# exceptions are not memoized, so a failing build must not be retried per plan().
+
+
+@functools.lru_cache(maxsize=None)
+def _aiter_single_prefill_available(
+    dtype: torch.dtype,
+    causal: bool,
+    has_lse: bool,
+    has_logits_cap: bool,
+    head_dim: int,
+    device_idx: int,
+) -> Optional[str]:
+    """Probe whether AITER can serve single prefill here; None means it can.
+
+    amd-aiter ships no prebuilt mha_fwd .so, so this variant is JIT-built on
+    first use and can fail for reasons that are the install's, not the caller's
+    — e.g. a site-packages AITER cannot write its built module into.
+    """
+    torch.cuda.synchronize(device_idx)
+    try:
+        if has_logits_cap:
+            _aiter_bootstrap_single_prefill_varlen(dtype, causal, head_dim, device_idx)
+        else:
+            _aiter_bootstrap_single_prefill_mha_fwd(
+                dtype, causal, has_lse, head_dim, device_idx
+            )
+        torch.cuda.synchronize(device_idx)
+    except Exception as e:
+        return handle_aiter_probe_failure(e, op="single_prefill")
+    return None
+
+
+@functools.lru_cache(maxsize=None)
+def _aiter_batch_ragged_available(
+    dtype: torch.dtype,
+    has_logits_cap: bool,
+    causal: bool,
+    head_dim: int,
+    device_idx: int,
+) -> Optional[str]:
+    """Probe whether AITER can serve the varlen batch-prefill path; None means it can.
+
+    Keyed exactly like _aiter_bootstrap_batch_ragged_prefill, so the paged and
+    ragged wrappers share one cache entry per variant.
+    """
+    torch.cuda.synchronize(device_idx)
+    try:
+        _aiter_bootstrap_batch_ragged_prefill(
+            dtype, has_logits_cap, causal, head_dim, device_idx
+        )
+        torch.cuda.synchronize(device_idx)
+    except Exception as e:
+        return handle_aiter_probe_failure(e, op="batch_prefill")
+    return None
 
 
 @functools.cache
@@ -1436,6 +1498,7 @@ def single_prefill_with_kv_cache(
         if scale_v is None:
             scale_v = torch.ones(v.shape[1], dtype=torch.float32, device=q.device)
 
+    resolved_from_auto = backend == "auto"
     if backend == "auto":
         backend, _ = _auto_select_prefill_backend(
             q.device,
@@ -1450,6 +1513,8 @@ def single_prefill_with_kv_cache(
         )
 
     if backend == "aiter":
+        # Outside the probe on purpose: this raises ArchCapabilityError, which
+        # gates known-bad toolchains and must never be demoted to a silent fa2.
         _require_aiter_runtime(q.device, "single_prefill")
         if pos_encoding_mode != "NONE":
             raise ValueError(
@@ -1462,14 +1527,29 @@ def single_prefill_with_kv_cache(
         # logits_soft_cap == 0 takes the mha_fwd .so, none of whose variants are
         # pre-shipped — JIT-build the exact (dtype, causal, has_lse) we need.
         with _aiter_bootstrap_lock:
-            if logits_soft_cap > 0:
-                _aiter_bootstrap_single_prefill_varlen(
-                    q.dtype, causal, q.shape[-1], q.device.index or 0
+            if resolved_from_auto:
+                # auto promised "AITER when possible, otherwise fa2", and whether
+                # AITER can build this variant is only knowable here.
+                reason = _aiter_single_prefill_available(
+                    q.dtype,
+                    causal,
+                    return_lse,
+                    logits_soft_cap > 0,
+                    q.shape[-1],
+                    q.device.index or 0,
                 )
             else:
-                _aiter_bootstrap_single_prefill_mha_fwd(
-                    q.dtype, causal, return_lse, q.shape[-1], q.device.index or 0
-                )
+                reason = None
+                if logits_soft_cap > 0:
+                    _aiter_bootstrap_single_prefill_varlen(
+                        q.dtype, causal, q.shape[-1], q.device.index or 0
+                    )
+                else:
+                    _aiter_bootstrap_single_prefill_mha_fwd(
+                        q.dtype, causal, return_lse, q.shape[-1], q.device.index or 0
+                    )
+        if reason is not None:
+            backend = "fa2"
 
     # o_dtype should be provided for FP8 attention
     if o_dtype is None:
@@ -1799,6 +1879,11 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._mask_indptr_buf = mask_indptr_buf
         self._max_total_num_rows = None
         self._backend = backend
+        # plan() overwrites _backend with the concrete choice, so it cannot say
+        # whether the *caller* asked for auto. Later plan() calls need that: the
+        # probe key varies per call (causal, dtype), so a wrapper that planned
+        # once on AITER can still meet an unbuildable variant later.
+        self._backend_requested = backend
         self._backend_fallback_reason: Optional[str] = None
         self._plan_info: Optional[torch.Tensor] = None
         self._cached_module = None
@@ -2131,6 +2216,22 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._cached_q_data_type = q_data_type
         self._cached_kv_data_type = kv_data_type
 
+        # Hoisted above the jit-module split: backend-independent, and the fa2
+        # re-get on an AITER demotion below needs it too.
+        get_module_args = (
+            q_data_type,
+            kv_data_type,
+            q_data_type,
+            paged_kv_indptr.dtype,
+            head_dim_qk,
+            head_dim_vo,
+            PosEncodingMode[pos_encoding_mode].value,
+            window_left >= 0,  # use_sliding_window
+            logits_soft_cap > 0,  # use_logits_soft_cap
+            use_fp16_qk_reduction,
+        )
+
+        resolved_from_auto = self._backend_requested == "auto"
         if self._jit_module is not None:
             self._cached_module = self._jit_module
         else:
@@ -2159,22 +2260,63 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     "use backend='fa2' or backend='auto' instead."
                 )
             if self._backend != "cudnn":
-                get_module_args = (
-                    q_data_type,
-                    kv_data_type,
-                    q_data_type,
-                    paged_kv_indptr.dtype,
-                    head_dim_qk,
-                    head_dim_vo,
-                    PosEncodingMode[pos_encoding_mode].value,
-                    window_left >= 0,  # use_sliding_window
-                    logits_soft_cap > 0,  # use_logits_soft_cap
-                    use_fp16_qk_reduction,
-                )
-
                 self._cached_module = get_batch_prefill_module(
                     self._backend, *get_module_args
                 )
+
+        # Decide native-paged vs flat-gather ONCE. run() dispatches on whether
+        # self._aiter_flat_gather_idx is set, so a single decision here is what
+        # keeps the bootstrapped .so and the kernel run() reaches in agreement.
+        # Bootstrapping AITER's lazy JIT is also the probe: it launches the real
+        # kernel, so a config the installed AITER cannot serve fails here, at
+        # plan() time, and degrades to flat-gather instead of killing run().
+        # Runs before _plan_info below, so a demotion to fa2 cannot strand plan
+        # bookkeeping built against the AITER module.
+        use_native_paging = False
+        if self._backend == "aiter":
+            dev_idx = self.device.index if self.device.index is not None else 0
+            has_logits = logits_soft_cap > 0
+            reason = None
+            with _aiter_bootstrap_lock:
+                if page_size in _aiter_native_page_sizes():
+                    use_native_paging = _aiter_native_paging_available(
+                        q_data_type,
+                        has_logits,
+                        causal,
+                        page_size,
+                        head_dim_qk,
+                        dev_idx,
+                    )
+                if not use_native_paging:
+                    # The flat-gather route dispatches through
+                    # get_aiter_mha_varlen_fwd_handle, whose .so variant is keyed on
+                    # (dtype, causal, has_lse, has_logits_cap).  AITER pre-ships only
+                    # a subset of that family, so bootstrap the rest here rather than
+                    # let the C++ dlopen fail inside run().  The helper compiles both
+                    # has_lse variants because plan() can't know which one run() will
+                    # request; causal is fixed per plan() call.
+                    # Demoting after a graph capture would null the flat-gather
+                    # buffers the captured graph still points at, so once they
+                    # exist under capture the failure has to stay an exception.
+                    if resolved_from_auto and not (
+                        self.is_cuda_graph_enabled
+                        and self._aiter_flat_gather_idx is not None
+                    ):
+                        reason = _aiter_batch_ragged_available(
+                            q_data_type, has_logits, causal, head_dim_qk, dev_idx
+                        )
+                    else:
+                        _aiter_bootstrap_batch_ragged_prefill(
+                            q_data_type,
+                            has_logits,
+                            causal,
+                            head_dim_qk,
+                            dev_idx,
+                        )
+            if reason is not None:
+                self._backend = "fa2"
+                self._backend_fallback_reason = reason
+                self._cached_module = get_batch_prefill_module("fa2", *get_module_args)
 
         self._block_tables = block_tables
 
@@ -2210,42 +2352,6 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._rope_theta = rope_theta
         self._seq_lens_kv = seq_lens
         self._seq_lens_q = seq_lens_q if seq_lens_q is not None else seq_lens
-
-        # Decide native-paged vs flat-gather ONCE. run() dispatches on whether
-        # self._aiter_flat_gather_idx is set, so a single decision here is what
-        # keeps the bootstrapped .so and the kernel run() reaches in agreement.
-        # Bootstrapping AITER's lazy JIT is also the probe: it launches the real
-        # kernel, so a config the installed AITER cannot serve fails here, at
-        # plan() time, and degrades to flat-gather instead of killing run().
-        use_native_paging = False
-        if self._backend == "aiter":
-            dev_idx = self.device.index if self.device.index is not None else 0
-            has_logits = logits_soft_cap > 0
-            with _aiter_bootstrap_lock:
-                if page_size in _aiter_native_page_sizes():
-                    use_native_paging = _aiter_native_paging_available(
-                        q_data_type,
-                        has_logits,
-                        causal,
-                        page_size,
-                        head_dim_qk,
-                        dev_idx,
-                    )
-                if not use_native_paging:
-                    # The flat-gather route dispatches through
-                    # get_aiter_mha_varlen_fwd_handle, whose .so variant is keyed on
-                    # (dtype, causal, has_lse, has_logits_cap).  AITER pre-ships only
-                    # a subset of that family, so bootstrap the rest here rather than
-                    # let the C++ dlopen fail inside run().  The helper compiles both
-                    # has_lse variants because plan() can't know which one run() will
-                    # request; causal is fixed per plan() call.
-                    _aiter_bootstrap_batch_ragged_prefill(
-                        q_data_type,
-                        has_logits,
-                        causal,
-                        head_dim_qk,
-                        dev_idx,
-                    )
 
         # Pre-compute flat-KV gather indices whenever AITER is not serving this
         # page size natively.  These are stored as GPU tensors so that the
@@ -2855,6 +2961,9 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         self._mask_indptr_buf = mask_indptr_buf
         self._max_total_num_rows = None
         self._backend = backend
+        # See the paged wrapper: _backend goes concrete after the first plan(),
+        # so the caller's original request has to be kept separately.
+        self._backend_requested = backend
         self._backend_fallback_reason: Optional[str] = None
         self._plan_info: Optional[torch.Tensor] = None
         self._cached_module = None
@@ -3107,6 +3216,22 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         self._token_pos_in_items_len = token_pos_in_items_len
         self._max_item_len_ptr = max_item_len_ptr
 
+        # Hoisted above the jit-module split: backend-independent, and the fa2
+        # re-get on an AITER demotion below needs it too.
+        get_module_args = (
+            q_data_type,
+            kv_data_type,
+            q_data_type,
+            kv_indptr.dtype,
+            head_dim_qk,
+            head_dim_vo,
+            PosEncodingMode[pos_encoding_mode].value,
+            window_left >= 0,  # use_sliding_window
+            logits_soft_cap > 0,  # use_logits_soft_cap
+            use_fp16_qk_reduction,
+        )
+
+        resolved_from_auto = self._backend_requested == "auto"
         if self._jit_module is not None:
             self._cached_module = self._jit_module
         else:
@@ -3134,21 +3259,39 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                     f"AITER backend only supports kv_layout='NHD'; got {self._kv_layout!r}. "
                     "use backend='fa2' or backend='auto' instead."
                 )
-            get_module_args = (
-                q_data_type,
-                kv_data_type,
-                q_data_type,
-                kv_indptr.dtype,
-                head_dim_qk,
-                head_dim_vo,
-                PosEncodingMode[pos_encoding_mode].value,
-                window_left >= 0,  # use_sliding_window
-                logits_soft_cap > 0,  # use_logits_soft_cap
-                use_fp16_qk_reduction,
-            )
             self._cached_module = get_batch_prefill_module(
                 self._backend, *get_module_args
             )
+
+        # Bootstrap AITER's lazy JIT so the C++ dlopen finds mha_varlen_fwd_*.so
+        # for the (dtype, causal, has_logits) combo this plan() call will use.
+        # Stays outside the jit-module split above -- jit_args with an explicit
+        # backend="aiter" still needs the .so -- and runs before _plan_info below
+        # so a demotion to fa2 cannot strand plan bookkeeping built for AITER.
+        if self._backend == "aiter":
+            dev_idx = self.device.index if self.device.index is not None else 0
+            reason = None
+            with _aiter_bootstrap_lock:
+                if resolved_from_auto:
+                    reason = _aiter_batch_ragged_available(
+                        q_data_type,
+                        logits_soft_cap > 0,
+                        causal,
+                        head_dim_qk,
+                        dev_idx,
+                    )
+                else:
+                    _aiter_bootstrap_batch_ragged_prefill(
+                        q_data_type,
+                        logits_soft_cap > 0,
+                        causal,
+                        head_dim_qk,
+                        dev_idx,
+                    )
+            if reason is not None:
+                self._backend = "fa2"
+                self._backend_fallback_reason = reason
+                self._cached_module = get_batch_prefill_module("fa2", *get_module_args)
 
         assert self._cached_module is not None, "cached module is not initialized"
         self._plan_info = self._cached_module.plan(
@@ -3180,19 +3323,6 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         self._sm_scale: float = sm_scale
         self._rope_scale: float = rope_scale
         self._rope_theta: float = rope_theta
-
-        # Bootstrap AITER's lazy JIT so the C++ dlopen finds mha_varlen_fwd_*.so
-        # for the (dtype, causal, has_logits) combo this plan() call will use.
-        if self._backend == "aiter":
-            dev_idx = self.device.index if self.device.index is not None else 0
-            with _aiter_bootstrap_lock:
-                _aiter_bootstrap_batch_ragged_prefill(
-                    q_data_type,
-                    logits_soft_cap > 0,
-                    causal,
-                    head_dim_qk,
-                    dev_idx,
-                )
 
     begin_forward = plan
 
