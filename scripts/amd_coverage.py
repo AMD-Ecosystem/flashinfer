@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
@@ -165,8 +166,12 @@ def _diff_status(repo: str, base: str) -> Tuple[Dict[str, str], Dict[str, str]]:
             old, new = fields[i], fields[i + 1]
             i += 2
             if new.endswith(".py"):
-                status[new] = "R"
-                renames[new] = old
+                # Only a .py that was already .py carries upstream lines we do not
+                # own. Anything else becomes Python here for the first time, so
+                # every line is ours and it is scored whole.
+                status[new] = "R" if old.endswith(".py") else "A"
+                if old.endswith(".py"):
+                    renames[new] = old
             continue
         path = fields[i]
         i += 1
@@ -371,6 +376,26 @@ def score(
     return scores
 
 
+def _stale_sources(repo: Path, data_file: Path, owned: Sequence[str]) -> List[str]:
+    """Owned files edited after the coverage data was written.
+
+    Scoring an old .coverage otherwise reports a confident number for code that
+    never ran, and exits 0 -- the same false green the other guards exist for.
+    """
+    try:
+        recorded = data_file.stat().st_mtime
+    except OSError:
+        return []
+    newer = []
+    for rel in owned:
+        try:
+            if (repo / rel).stat().st_mtime > recorded:
+                newer.append(rel)
+        except OSError:
+            continue
+    return sorted(newer)
+
+
 def _junit_counts(path: Path) -> Optional[Dict[str, int]]:
     """Test outcome counts, so a skipped-heavy run cannot read as untested code."""
     if not path.exists():
@@ -428,12 +453,19 @@ def _report(
     unowned: List[str],
     tests: Optional[Dict[str, int]],
     reach: Optional[Tuple[int, List[str]]],
+    stale: List[str],
     show_files: bool,
 ) -> float:
     print("== amd coverage ==")
     print(f"base  : {base_desc}")
     print(f"tree  : {repo}{' (uncommitted changes)' if dirty else ''}")
     print(f"arch  : {arch}")
+    if stale:
+        head = ", ".join(stale[:3]) + (
+            f", +{len(stale) - 3} more" if len(stale) > 3 else ""
+        )
+        print(f"STALE : {len(stale)} owned files changed after this run: {head}")
+        print("        re-run with --run; the number below describes the older code")
     if tests:
         print(
             f"tests : {tests['passed']} passed, {tests['skipped']} skipped, "
@@ -536,7 +568,7 @@ def _detect_arch() -> str:
     return ",".join(archs) or "unknown"
 
 
-def _capture_baseline(repo: Path, out: Path) -> Optional[Path]:
+def _capture_baseline(repo: Path, out: Path) -> Path:
     """Record the lines that run merely from `import flashinfer`.
 
     tests/conftest.py imports the package at collection, so without this every
@@ -558,16 +590,24 @@ def _capture_baseline(repo: Path, out: Path) -> Optional[Path]:
             cwd=repo,
             capture_output=True,
             text=True,
+            # `coverage run <script>` puts the script's directory on sys.path,
+            # not the cwd, so with --out-dir the repo is not importable.
+            env={
+                **os.environ,
+                "PYTHONPATH": os.pathsep.join(
+                    [str(repo), os.environ.get("PYTHONPATH", "")]
+                ).rstrip(os.pathsep),
+            },
         )
     finally:
         probe.unlink(missing_ok=True)
     if proc.returncode != 0:
-        print(
-            f"warning: import baseline failed, reporting without the split:\n"
-            f"{proc.stderr.strip()[-800:]}",
-            file=sys.stderr,
+        raise ToolError(
+            "could not capture the import-time baseline, so the headline would "
+            "silently include lines that run at import. Fix the import, or pass "
+            f"--no-baseline to accept the conventional number:\n"
+            f"{proc.stderr.strip()[-800:]}"
         )
-        return None
     return out
 
 
@@ -587,13 +627,23 @@ def _run_pytest(repo: Path, out_dir: Path, pytest_args: Sequence[str]) -> Path:
         *pytest_args,
     ]
     print(f"+ {' '.join(cmd)}", file=sys.stderr)
+    started = time.time()
     proc = subprocess.run(
         cmd, cwd=repo, env={**os.environ, _JIT_REACH_ENV: str(out_dir)}
     )
-    # pytest exits non-zero on test failures; the coverage data is still valid
-    # and a partially-failing run is worth scoring, so only a usage error stops us.
+    # pytest exits non-zero on test failures; a partially-failing run is still
+    # worth scoring. But exit 1 also covers a plugin ImportError, which runs no
+    # tests and writes nothing -- and leftover artifacts would then be scored as
+    # if they were this run's. Trust the artifacts, not the exit code.
     if proc.returncode >= 4:
         raise ToolError(f"pytest could not run (exit {proc.returncode})")
+    for artefact in (junit, repo / ".coverage"):
+        if not artefact.exists() or artefact.stat().st_mtime < started:
+            raise ToolError(
+                f"pytest exited {proc.returncode} without writing {artefact.name}; "
+                "it collected no tests (a plugin import error looks like this). "
+                "Refusing to score the previous run's data."
+            )
     return junit
 
 
@@ -635,6 +685,8 @@ def run(args: argparse.Namespace) -> int:
     base_desc = _git(str(repo), "log", "-1", "--format=%h %ad %s", "--date=short", base)
     tests = _junit_counts(junit)
     reach = _jit_reach(repo, out_dir)
+    # --run has just written the data, so any mtime skew there is noise.
+    stale = [] if args.run else _stale_sources(repo, data_file, list(owned))
 
     pct = _report(
         repo,
@@ -646,6 +698,7 @@ def run(args: argparse.Namespace) -> int:
         unowned,
         tests,
         reach,
+        stale,
         args.show_files,
     )
 
@@ -655,6 +708,7 @@ def run(args: argparse.Namespace) -> int:
             "base_desc": base_desc,
             "dirty": dirty,
             "arch": arch,
+            "stale_sources": stale,
             "tests": tests,
             "execution_percent": round(pct, 2),
             "csrc_reach": (

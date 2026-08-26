@@ -43,6 +43,21 @@ def _git(repo, *args):
     )
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _repo_coverage_data_is_untouched():
+    """No test here may write the repo's own .coverage.
+
+    Constructing `coverage.Coverage(config_file=<repo pyproject>)` without an
+    explicit data_file initializes ./.coverage and erases it -- which once
+    destroyed a full suite run. Any data file a test needs goes in tmp_path.
+    """
+    data = _REPO_ROOT / ".coverage"
+    before = data.read_bytes() if data.exists() else None
+    yield
+    after = data.read_bytes() if data.exists() else None
+    assert after == before, "a test wrote the repo's .coverage"
+
+
 @pytest.fixture
 def repo(tmp_path):
     """A repo whose base commit stands in for the upstream merge base."""
@@ -123,6 +138,24 @@ class TestTierAssignment:
         assert owned["flashinfer/new.py"].tier == "B"
         assert owned["flashinfer/new.py"].changed == {4}
         assert "flashinfer/new.py" not in unowned
+
+    def test_file_that_becomes_python_by_rename_is_scored_whole(self, repo):
+        """A .sh promoted to .py has no upstream Python lines, so all of it is ours."""
+        body = "\n".join(f"# line {i}" for i in range(20)) + "\n"
+        _write(repo, "scripts/helper.txt", body)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "upstream")
+        base = _base(repo)
+
+        _git(repo, "mv", "scripts/helper.txt", "scripts/helper.py")
+        _write(repo, "scripts/helper.py", body + "VALUE = 1\n")
+        _git(repo, "add", "-A")
+
+        owned, _, _ = ac.classify(str(repo), base, {})
+
+        # Tier B would score only the one appended line and drop the other 20.
+        assert owned["scripts/helper.py"].tier == "A"
+        assert owned["scripts/helper.py"].changed is None
 
     def test_uncommitted_new_file_is_still_ours(self, repo):
         """`git ls-files` alone hides it, and it is exactly what someone is writing."""
@@ -270,7 +303,11 @@ class TestCudaGuardExclusion:
             encoding="utf-8",
         )
 
-        cov = coverage.Coverage(config_file=str(cfg))
+        # data_file must point into tmp_path: constructing Coverage against the
+        # repo config otherwise initializes ./.coverage and erases a real run.
+        cov = coverage.Coverage(
+            data_file=str(tmp_path / ".coverage"), config_file=str(cfg)
+        )
         _, statements, excluded, _, _ = cov.analysis2(str(src))
 
         assert set(excluded) == {3, 4}
@@ -307,6 +344,79 @@ class TestHunkParsing:
         _write(repo, "flashinfer/s.py", "a = 1\nb = 22\nc = 3\n")
 
         assert ac._changed_lines(str(repo), base, "flashinfer/s.py", None) == {2}
+
+
+class TestStaleArtifacts:
+    """Guards against reporting a confident number for code that never ran."""
+
+    def test_sources_newer_than_the_data_are_named(self, tmp_path):
+        (tmp_path / "flashinfer").mkdir()
+        data = tmp_path / ".coverage"
+        old = tmp_path / "flashinfer" / "old.py"
+        new = tmp_path / "flashinfer" / "new.py"
+        for path in (data, old, new):
+            path.write_text("a = 1\n", encoding="utf-8")
+        # Explicit stamps: written in the same instant, mtimes compare equal.
+        os.utime(old, (1000, 1000))
+        os.utime(data, (2000, 2000))
+        os.utime(new, (3000, 3000))
+
+        stale = ac._stale_sources(
+            tmp_path, data, ["flashinfer/old.py", "flashinfer/new.py"]
+        )
+
+        assert stale == ["flashinfer/new.py"]
+
+    def test_a_run_that_wrote_nothing_is_refused(self, tmp_path, monkeypatch):
+        """A plugin ImportError exits 1, exactly like ordinary test failures."""
+        (tmp_path / "junit.xml").write_text("<testsuites/>", encoding="utf-8")
+        (tmp_path / ".coverage").write_text("stale", encoding="utf-8")
+        os.utime(tmp_path / "junit.xml", (1, 1))
+        os.utime(tmp_path / ".coverage", (1, 1))
+
+        class _Dead:
+            returncode = 1  # pytest's "tests failed" *and* "plugin failed to import"
+
+        monkeypatch.setattr(ac.subprocess, "run", lambda *a, **k: _Dead())
+
+        with pytest.raises(ac.ToolError, match="without writing"):
+            ac._run_pytest(tmp_path, tmp_path, [])
+
+
+class TestImportBaseline:
+    def test_failure_is_an_error_not_a_silent_downgrade(self, tmp_path, monkeypatch):
+        """Losing the baseline silently folds import-time lines into the headline."""
+
+        class _Failed:
+            returncode = 1
+            stderr = "ModuleNotFoundError: No module named 'flashinfer'"
+
+        monkeypatch.setattr(ac.subprocess, "run", lambda *a, **k: _Failed())
+
+        with pytest.raises(ac.ToolError, match="--no-baseline"):
+            ac._capture_baseline(tmp_path, tmp_path / ".coverage.baseline")
+
+        assert not (tmp_path / "_import_probe.py").exists(), "probe left behind"
+
+    def test_repo_is_importable_by_the_probe(self, tmp_path, monkeypatch):
+        """`coverage run <script>` puts the script's dir on sys.path, not the cwd."""
+        seen = {}
+
+        class _Ok:
+            returncode = 0
+            stderr = ""
+
+        def _capture(*args, **kwargs):
+            seen.update(kwargs.get("env") or {})
+            return _Ok()
+
+        monkeypatch.setattr(ac.subprocess, "run", _capture)
+        out = tmp_path / "cov" / ".coverage.baseline"
+        out.parent.mkdir()
+
+        ac._capture_baseline(tmp_path, out)
+
+        assert str(tmp_path) in seen.get("PYTHONPATH", "").split(os.pathsep)
 
 
 class TestReportInputs:
