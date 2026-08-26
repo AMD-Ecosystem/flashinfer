@@ -7,7 +7,7 @@
 
 Prints how far the fork and upstream have moved from the merge base, the
 conflicts a merge would raise, and upstream churn on the headers that
-``generic/`` forked -- those conflict with nothing and go stale silently.
+``rocm/`` forked -- those conflict with nothing and go stale silently.
 
 Usage::
 
@@ -247,10 +247,10 @@ def _report_conflicts(conflicts: List[Conflict]) -> int:
 
 
 def _report_drift(repo: str, ours: str, theirs: str, churn: Dict[str, Churn]) -> None:
-    """Upstream churn on the headers that generic/ forked.
+    """Upstream churn on the headers that rocm/ forked.
 
     Read from `ours`, not the working tree, so --ours means what it says and a
-    checkout that predates or relocates generic/ still reports correctly.
+    checkout that predates or relocates rocm/ still reports correctly.
     """
     print("== forked-header drift ==")
     forked = sorted(
