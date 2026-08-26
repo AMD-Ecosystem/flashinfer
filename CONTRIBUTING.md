@@ -109,6 +109,27 @@ the sampling kernel twice, for `compile=True` and `False`).
 `_hipblas_safe_matmul` retry that catches `HIPBLAS_STATUS_ALLOC_FAILED`
 and backs off — needed under heavy concurrent xdist load.
 
+# Measuring Coverage of the Port
+
+`scripts/amd_coverage.py` reports line coverage for the code this fork added or changed, rather than for the whole inherited upstream tree. Ownership is recomputed on every run from the diff against `merge-base(HEAD, upstream/main)`, so there is no list to refresh and a module added yesterday is picked up today.
+
+```bash
+git fetch upstream main
+pip install -e ".[dev]"                                   # brings pytest-cov
+python3 scripts/amd_coverage.py --run --show-files -- -n auto --reruns 2 -m "not slow"
+python3 scripts/amd_coverage.py                           # re-score an existing .coverage
+```
+
+**What gets counted.** Files we added are scored whole. Upstream files we merely edited are scored **only on the lines our diff touched**, so upstream's untested code neither flatters nor penalises the number. A third tier covers files with a zero-line Python diff whose implementation is ours anyway through the `FLASHINFER_CSRC_DIR` redirect — `sampling.py` and friends — which no diff can discover; they are declared in `scripts/coverage_ownership.toml`, one entry per file with a reason.
+
+**What is deliberately left out, and why the report says so.** Lines inside `if IS_CUDA:` are excluded and counted in the output: the port re-indented upstream code under those guards, so git attributes it to us even though no ROCm box can execute it — in `flashinfer/jit/env.py` that is about half the owned lines. Lines that run at `import flashinfer` are reported as their own bucket rather than in the headline, because `tests/conftest.py` imports the package at collection and would otherwise credit every module-level statement before a test body runs. C++ under `csrc_rocm/` is JIT-compiled and has no line data at all; instead the report counts how many of its translation units a run actually built and loaded, labelled as reach, not coverage.
+
+**There is no GPU CI**, so nobody produces this number for you — every `.github/workflows` job runs on `ubuntu-latest` or a CPU self-hosted runner, and the `Jenkinsfile` is upstream's unused CUDA pipeline. Run it on a GPU box and say which architecture it came from: `arch_caps.py` gates behaviour per gfx942/gfx950, so a single-arch run leaves the other's branches unexecuted. The honest union is `coverage combine` across both, which needs `[tool.coverage.paths]` **and** must run from a checkout containing the sources — coverage only aliases onto a path that exists on disk, and is otherwise a silent no-op that halves the number.
+
+**Running it in a container against a worktree** needs the *parent* repository mounted, not just the worktree: a linked worktree's `.git` is a file pointing into the main checkout, so git — and therefore the whole classifier — fails without it. Mount the repo root at its host path and set `git config --global --add safe.directory '*'` inside the container.
+
+The classifier itself is covered by `tests/rocm_tests/test_amd_coverage.py`, which needs no GPU and runs in the CPU conformance workflow.
+
 # Code Structure
 
 ```text
@@ -175,12 +196,11 @@ might plausibly create.
 **Last resort: an `if IS_HIP:` branch inside an upstream file.** Every one of
 these is a recurring merge conflict, so it needs a reason that the three
 mechanisms above cannot serve. `scripts/upstream_canary.py` is the authoritative
-list — it reports exactly which files a merge would conflict on. The
-`[tool.coverage.run].include` block in `pyproject.toml` is *not* that list: it is
-generated for coverage, contains ROCm-only additions such as `prefill_rocm.py`
-that are not edits to anything, and its workflow only watches
-`flashinfer/**/*.py`, so an in-place edit under `csrc/` or `include/` never
-appears there at all.
+list — it reports exactly which files a merge would conflict on. The ownership
+tiers that `scripts/amd_coverage.py` reports are *not* that list: they cover
+`flashinfer/**/*.py` plus the build backend and `scripts/`, they count ROCm-only
+additions such as `prefill_rocm.py` that are not edits to anything, and an
+in-place edit under `csrc/` or `include/` never appears there at all.
 
 **Forked headers are exempt from conflicts and therefore from warnings.**
 `include/flashinfer/attention/generic/` is a fork of the upstream attention
