@@ -1578,6 +1578,11 @@ def single_prefill_with_kv_cache(
                 f"AITER backend does not support pos_encoding_mode={pos_encoding_mode!r}; "
                 "use backend='fa2' or backend='auto' instead."
             )
+        if kv_layout != "NHD":
+            raise ValueError(
+                f"AITER backend only supports kv_layout='NHD'; got {kv_layout!r}. "
+                "use backend='fa2' or backend='auto' instead."
+            )
         # logits_soft_cap > 0 forces the varlen .so (mha_fwd template has no _logits
         # arm); the logits .so is split by causality (mask vs nmask) and neither is
         # pre-shipped by AITER, so bootstrap the variant matching the request.
