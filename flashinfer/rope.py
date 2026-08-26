@@ -29,51 +29,6 @@ def get_rope_module():
     return gen_rope_module().build_and_load()
 
 
-if IS_HIP:
-
-    @functools.cache
-    def get_rope_aiter_module():
-        from .jit.rope import gen_rope_aiter_module
-
-        return gen_rope_aiter_module().build_and_load()
-
-    def _auto_select_rope_backend(query: torch.Tensor, key: torch.Tensor) -> str:
-        # Experimentation found the in-tree native kernel to be the better default
-        # for the cos/sin-cache rope, so auto always resolves to native. The C++
-        # AITER kernel remains reachable via an explicit backend="aiter".
-        return "native"
-
-    def _apply_rope_cos_sin_cache_aiter(
-        query: torch.Tensor,
-        key: torch.Tensor,
-        query_out: torch.Tensor,
-        key_out: torch.Tensor,
-        cos_sin_cache: torch.Tensor,
-        positions: torch.Tensor,
-        head_size: int,
-        is_neox: bool,
-    ) -> None:
-        r"""Dispatch the cos/sin-cache rope to AITER's C++ rope_cached_positions_2c kernel."""
-        from .aiter_utils import require_aiter
-
-        require_aiter(query.device, "rope")
-        if key.dtype != query.dtype:
-            raise ValueError(
-                "AITER rope backend requires query and key to share a dtype; "
-                f"got query={query.dtype}, key={key.dtype}. Use backend='native'."
-            )
-        get_rope_aiter_module().apply_rope_pos_ids_cos_sin_cache_aiter(
-            query,
-            key,
-            query_out,
-            key_out,
-            cos_sin_cache,
-            positions,
-            head_size,
-            is_neox,
-        )
-
-
 @register_custom_op("flashinfer::apply_rope", mutates_args=("q_rope", "k_rope"))
 def _apply_rope(
     q: torch.Tensor,
@@ -1249,20 +1204,19 @@ def apply_rope_with_cos_sin_cache(
     key_out = torch.empty_like(key)
 
     if IS_HIP:
-        _backend = (
-            backend if backend != "auto" else _auto_select_rope_backend(query, key)
-        )
-        if _backend == "aiter":
-            _apply_rope_cos_sin_cache_aiter(
-                query=query,
-                key=key,
-                query_out=query_out,
-                key_out=key_out,
-                cos_sin_cache=cos_sin_cache,
-                positions=positions,
-                head_size=head_size,
-                is_neox=is_neox,
-            )
+        from ._rocm.rope import maybe_apply_rope_cos_sin_cache
+
+        if maybe_apply_rope_cos_sin_cache(
+            query,
+            key,
+            query_out,
+            key_out,
+            cos_sin_cache,
+            positions,
+            head_size,
+            is_neox,
+            backend,
+        ):
             return query_out, key_out
 
     _apply_rope_pos_ids_cos_sin_cache(
@@ -1341,20 +1295,19 @@ def apply_rope_with_cos_sin_cache_inplace(
         require_aiter(query.device, "rope")
 
     if IS_HIP:
-        _backend = (
-            backend if backend != "auto" else _auto_select_rope_backend(query, key)
-        )
-        if _backend == "aiter":
-            _apply_rope_cos_sin_cache_aiter(
-                query=query,
-                key=key,
-                query_out=query,
-                key_out=key,
-                cos_sin_cache=cos_sin_cache,
-                positions=positions,
-                head_size=head_size,
-                is_neox=is_neox,
-            )
+        from ._rocm.rope import maybe_apply_rope_cos_sin_cache
+
+        if maybe_apply_rope_cos_sin_cache(
+            query,
+            key,
+            query,
+            key,
+            cos_sin_cache,
+            positions,
+            head_size,
+            is_neox,
+            backend,
+        ):
             return
 
     # pass q_rope and k_rope as q and k to perform inplace operation

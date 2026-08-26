@@ -29,49 +29,6 @@ def get_norm_module():
     return gen_norm_module().build_and_load()
 
 
-if IS_HIP:
-
-    @functools.cache
-    def get_norm_aiter_module():
-        from .jit.norm import gen_norm_aiter_module
-
-        return gen_norm_aiter_module().build_and_load()
-
-    def _auto_select_norm_backend(input: torch.Tensor, weight: torch.Tensor) -> str:
-        # auto routes plain rmsnorm to the C++ AITER kernel only when the input is
-        # 2D fp16/bf16 with a matching weight dtype (the CK rmsnorm2d kernel rejects
-        # other ranks/dtypes and reads weight with the input dtype) and AITER is
-        # available; everything else falls back to native. (fp32 is unsupported by
-        # both the AITER and native ROCm kernels, so it still raises downstream —
-        # routing it to native just keeps the error consistent with the default
-        # kernel rather than exposing a CK-specific message.) Note: AITER's CK
-        # rmsnorm2d uses lower-precision reductions that exceed the flashinfer test
-        # tolerance at hidden_size >= 1024 (fp16 atol ~4e-3, bf16 ~7e-2).
-        from .aiter_utils import is_aiter_available
-
-        if (
-            input.ndim == 2
-            and input.dtype in (torch.float16, torch.bfloat16)
-            and weight.dtype == input.dtype
-            and is_aiter_available(input.device, "rmsnorm")
-        ):
-            return "aiter"
-        return "native"
-
-    def _auto_select_fused_add_rmsnorm_backend(input: torch.Tensor) -> str:
-        # auto routes fused_add_rmsnorm to the C++ AITER CK kernel on supported
-        # devices and falls back to native everywhere else (incl. when AITER is not
-        # installed, so auto never raises). (Shape/precision tuning is deferred to
-        # a later performance pass.)
-        from .aiter_utils import is_aiter_available
-
-        return (
-            "aiter"
-            if is_aiter_available(input.device, "fused_add_rmsnorm")
-            else "native"
-        )
-
-
 def rmsnorm(
     input: torch.Tensor,
     weight: torch.Tensor,
@@ -111,37 +68,10 @@ def rmsnorm(
         Normalized tensor, 2D shape (batch_size, hidden_size) or 3D shape (batch_size, num_heads, hidden_size).
     """
     if IS_HIP:
-        _backend = (
-            backend if backend != "auto" else _auto_select_norm_backend(input, weight)
-        )
-        if _backend == "aiter":
-            from .aiter_utils import require_aiter
+        from ._rocm.norm import maybe_rmsnorm
 
-            require_aiter(input.device, "rmsnorm")
-            if input.ndim != 2:
-                raise ValueError(
-                    f"AITER rmsnorm only supports 2D inputs; got {input.ndim}D. "
-                    "Use backend='native' for 3D inputs."
-                )
-            if input.dtype not in (torch.float16, torch.bfloat16):
-                raise ValueError(
-                    f"AITER rmsnorm only supports float16/bfloat16 inputs; got {input.dtype}."
-                )
-            if weight.dtype != input.dtype:
-                # CK rmsnorm2d derives a single dtype from input and reads weight
-                # bytes with it; a mismatched weight dtype silently yields NaN/garbage.
-                raise ValueError(
-                    f"AITER rmsnorm requires weight.dtype == input.dtype; got "
-                    f"weight {weight.dtype} vs input {input.dtype}."
-                )
-            if out is None:
-                out = torch.empty_like(input)
-            get_norm_aiter_module().rmsnorm_aiter(out, input, weight, eps)
-            return out
-        if _backend not in ("native",):
-            raise ValueError(
-                f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
-            )
+        if (result := maybe_rmsnorm(out, input, weight, eps, backend)) is not None:
+            return result
     if enable_pdl is None:
         enable_pdl = device_support_pdl(input.device)
     if out is None:
@@ -220,23 +150,10 @@ def fused_add_rmsnorm(
             f"fused_add_rmsnorm only supports 2D inputs; got {input.ndim}D."
         )
     if IS_HIP:
-        _backend = (
-            backend
-            if backend != "auto"
-            else _auto_select_fused_add_rmsnorm_backend(input)
-        )
-        if _backend == "aiter":
-            from .aiter_utils import require_aiter
+        from ._rocm.norm import maybe_fused_add_rmsnorm
 
-            require_aiter(input.device, "fused_add_rmsnorm")
-            get_norm_aiter_module().fused_add_rmsnorm_aiter(
-                input, residual, weight, eps
-            )
+        if maybe_fused_add_rmsnorm(input, residual, weight, eps, backend):
             return
-        if _backend != "native":
-            raise ValueError(
-                f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
-            )
     _fused_add_rmsnorm(input, residual, weight, eps, enable_pdl)
 
 
