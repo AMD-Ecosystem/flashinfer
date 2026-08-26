@@ -35,6 +35,7 @@ import argparse
 import difflib
 import importlib.util
 import pathlib
+import re
 import sys
 import types
 
@@ -62,6 +63,35 @@ VALIDATED = "✅"
 DECLARED = "◻️"
 KNOWN_BAD = "⚠️"
 UNSUPPORTED = "❌"
+
+LEGEND = (
+    (
+        VALIDATED,
+        "**validated** — this op has been exercised on this architecture.",
+    ),
+    (
+        DECLARED,
+        "**supported** — the op runs here and the test suite covers it, but no run has been "
+        "recorded against this specific op and architecture.",
+    ),
+    (
+        KNOWN_BAD,
+        "**broken on some toolchains** — usable, but not on every ROCm/AITER version; see the footnote.",
+    ),
+    (UNSUPPORTED, "**not available** on that architecture."),
+)
+
+# Note content that markdownlint would either reject with no autofix, or "fix"
+# by rewriting the generated block -- which fails --check on the very next run.
+_NOTE_BARE_URL = re.compile(r"(?<!\]\()\bhttps?://")
+_NOTE_INLINE_HTML = re.compile(r"<[A-Za-z][^>]*>")
+# MD033 and MD034 exempt code spans; MD056 does not, because GFM splits table
+# cells on `|` before it ever parses backticks.
+_CODE_SPAN = re.compile(r"`[^`]*`")
+_NOTE_RULES = (
+    ("|", "MD056: a literal pipe adds a table column, even inside backticks. Reword"),
+    ("\n", "the row must stay on one line"),
+)
 
 
 def _load_arch_caps():
@@ -134,6 +164,29 @@ def _cell(entry, footnote_ids: dict[int, int]) -> str:
     return VALIDATED if entry.evidence else DECLARED
 
 
+def _note(where: str, text: str) -> str:
+    """Reject a note markdownlint would reject or silently rewrite.
+
+    Escaping was tried first and lost: MD034 exempts code spans, MD033/MD056
+    have no autofix, and an autolinked URL swallows trailing punctuation.
+    """
+    for bad, why in _NOTE_RULES:
+        if bad in text:
+            raise SystemExit(f"{where}: {why}\n  note: {text!r}")
+    prose = _CODE_SPAN.sub("", text)
+    if _NOTE_BARE_URL.search(prose):
+        raise SystemExit(
+            f"{where}: MD034 would rewrite a bare URL and break --check. "
+            f"Use [text](url) or backticks, or move the detail to "
+            f"docs/rocm/backends.md\n  note: {text!r}"
+        )
+    if _NOTE_INLINE_HTML.search(prose):
+        raise SystemExit(
+            f"{where}: MD033: wrap inline HTML in backticks\n  note: {text!r}"
+        )
+    return text.strip()
+
+
 def render(arch_caps) -> str:
     archs = _archs_in_order(arch_caps)
 
@@ -154,24 +207,19 @@ def render(arch_caps) -> str:
     lines = [
         BEGIN,
         "",
-        f"| Op | Backend | {' | '.join(ARCH_LABELS.get(a, a) for a in archs)} |",
-        f"| :--- | :--- | {' | '.join(':---:' for _ in archs)} |",
+        f"| Op | Backend | {' | '.join(ARCH_LABELS.get(a, a) for a in archs)} | Notes |",
+        f"| :--- | :--- | {' | '.join(':---:' for _ in archs)} | :--- |",
     ]
+    # Collected from the status cells, not the rendered row: a note mentioning
+    # a symbol must not resurrect a legend entry no row is actually in.
+    used = set()
     for cap in arch_caps.CAPABILITIES:
-        cells = " | ".join(_cell(cap.archs.get(a), footnote_ids) for a in archs)
-        lines.append(f"| `{cap.op}` | `{cap.backend}` | {cells} |")
+        cells = [_cell(cap.archs.get(a), footnote_ids) for a in archs]
+        used.update(s for s, _ in LEGEND for c in cells if c.startswith(s))
+        note = _note(f"{cap.op}/{cap.backend}", cap.note)
+        lines.append(f"| `{cap.op}` | `{cap.backend}` | {' | '.join(cells)} | {note} |")
 
-    lines += [
-        "",
-        f"{BULLET} {VALIDATED} **validated** — a suite was run on that board, and the "
-        "evidence is recorded below.",
-        f"{BULLET} {DECLARED} **declared** — supported, but no per-op measurement has "
-        "been recorded on that architecture.",
-        f"{BULLET} {KNOWN_BAD} **broken on some toolchains** — usable, but not on every "
-        "ROCm/AITER version; see the footnote.",
-        f"{BULLET} {UNSUPPORTED} **not available** on that architecture.",
-        "",
-    ]
+    lines += ["", *(f"{BULLET} {s} {t}" for s, t in LEGEND if s in used), ""]
 
     for number, bad, where, arch in footnotes:
         detail = bad.detail.rstrip(".")
@@ -182,19 +230,9 @@ def render(arch_caps) -> str:
             f"validated it yourself.{link}"
         )
 
-    # Evidence lines last: they are the provenance for every ✅ above, and are
-    # what makes "validated" a checkable claim rather than a badge.
-    evidence = sorted(
-        {
-            f"`{arch}` — {entry.evidence}"
-            for cap in arch_caps.CAPABILITIES
-            for arch, entry in cap.archs.items()
-            if entry.evidence
-        }
-    )
-    if evidence:
-        lines += ["", "Measured on:", ""]
-        lines += [f"{BULLET} {item}" for item in evidence]
+    # `evidence` is deliberately not rendered. It is the provenance behind a ✅
+    # and stays readable in arch_caps.py; a board-and-date list in the README
+    # dates the whole page the moment a run is not repeated.
 
     lines += ["", END]
     return "\n".join(lines)

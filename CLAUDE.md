@@ -53,14 +53,26 @@ Details: `pr-workflow` skill.
 | Set target arch | `export FLASHINFER_ROCM_ARCH_LIST="gfx942,gfx950"` |
 | Limit parallel build | `export MAX_JOBS=4` |
 | Verbose JIT output | `export FLASHINFER_JIT_VERBOSE=1` |
+| Extra JIT link flags | `export FLASHINFER_EXTRA_LDFLAGS="-L/path -lfoo"` |
 | Run linting | `pre-commit run -a` |
 
 ## Installing Torch
 
-Torch must come from AMD's ROCm repo via `--index-url` (not `-f`, which can
-silently install a CPU-only wheel from PyPI). See the
-[GPU, ROCm, and PyTorch Support](README.md#gpu-rocm-and-pytorch-support) table
-in `README.md` for the version and command.
+Torch must come from AMD's ROCm repo at `repo.radeon.com`, via `-f`
+(`--find-links`) and **not** `--index-url` — that repo is a flat wheel listing
+rather than a PEP 503 index, so `--index-url` fails with "No matching
+distribution found".
+
+```bash
+pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
+```
+
+`-f` also lets pip see PyPI, so verify you did not get the CPU-only wheel:
+`python -c "import torch; assert torch.version.hip, 'not a ROCm build'"`.
+In practice the ROCm wheel wins anyway, because its `+rocm<X.Y>` local version
+ranks higher than a same-version PyPI wheel. Supported versions are in the
+[Supported hardware and toolchain](README.md#supported-hardware-and-toolchain)
+table in `README.md`.
 
 ## Non-Obvious Gotchas
 
@@ -94,13 +106,13 @@ pip install amd-aiter==0.1.10 --extra-index-url https://pypi.amd.com/rocm-7.1.1/
 ```
 
 `0.1.10` is what this repo is built and tested against —
-`prefill_rocm.py` records it as `_AITER_LAST_VALIDATED`, and the README's
-[Install AITER wheel package](README.md#install-aiter-wheel-package) section
-explains the index choice. Note `amd-aiter` is **not** on the top-level
+`prefill_rocm.py` records it as `_AITER_LAST_VALIDATED`, and
+[`docs/rocm/backends.md`](docs/rocm/backends.md) explains the index choice.
+Note `amd-aiter` is **not** on the top-level
 `pypi.amd.com/simple` index, and it must be `--extra-index-url` rather than
 `--index-url` so AITER's own dependencies still resolve from PyPI.
 
-**Only cp310 and cp312 wheels exist** on that channel (verified 2026-08-20).
+**Only cp310 and cp312 wheels exist** on that channel.
 On any other interpreter — 3.11, 3.13, 3.14 — the command fails with
 `No matching distribution found`, and there is no pinned-version fallback:
 public PyPI tops out at a stale `0.1.7.post2.dev18`, and the nightlies index

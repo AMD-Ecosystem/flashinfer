@@ -455,8 +455,8 @@ def _aiter_bootstrap_single_prefill_mha_fwd(
 
     Unlike mha_varlen_fwd, mha_fwd ships no prebuilt .so files in the aiter
     package; every (dtype, causal, has_lse) combination is JIT-built on first
-    use (~90s per variant). Bootstrapping here surfaces the build at plan time
-    rather than as a dlopen failure inside the C++ path.
+    use, which takes 20+ minutes per variant. Bootstrapping here surfaces the
+    build at plan time rather than as a dlopen failure inside the C++ path.
     """
     from aiter.ops.mha import mha_fwd
 
