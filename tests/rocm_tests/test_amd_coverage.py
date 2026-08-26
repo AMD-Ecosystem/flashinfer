@@ -94,7 +94,7 @@ class TestTierAssignment:
         _write(repo, "flashinfer/new_rocm.py", "a = 1\nb = 2\n")
         _git(repo, "add", "-A")
 
-        owned, _, unowned = ac.classify(str(repo), base, {})
+        owned, _, unowned, _ = ac.classify(str(repo), base, {})
 
         assert owned["flashinfer/new_rocm.py"].tier == "A"
         # None means "whole file"; scoring narrows it to statements.
@@ -114,7 +114,7 @@ class TestTierAssignment:
         lines.insert(7, "inserted = 1")  # new line 8
         _write(repo, "flashinfer/up.py", "\n".join(lines) + "\n")
 
-        owned, _, _ = ac.classify(str(repo), base, {})
+        owned, _, _, _ = ac.classify(str(repo), base, {})
         entry = owned["flashinfer/up.py"]
 
         assert entry.tier == "B"
@@ -131,7 +131,7 @@ class TestTierAssignment:
         _write(repo, "flashinfer/new.py", body.replace("y3 = 3", "y3 = 300"))
         _git(repo, "add", "-A")
 
-        owned, _, unowned = ac.classify(str(repo), base, {})
+        owned, _, unowned, _ = ac.classify(str(repo), base, {})
 
         # Without an R row this file would land in unowned and stop being measured.
         assert "flashinfer/new.py" in owned
@@ -151,7 +151,7 @@ class TestTierAssignment:
         _write(repo, "scripts/helper.py", body + "VALUE = 1\n")
         _git(repo, "add", "-A")
 
-        owned, _, _ = ac.classify(str(repo), base, {})
+        owned, _, _, _ = ac.classify(str(repo), base, {})
 
         # Tier B would score only the one appended line and drop the other 20.
         assert owned["scripts/helper.py"].tier == "A"
@@ -162,7 +162,7 @@ class TestTierAssignment:
         base = _base(repo)
         _write(repo, "flashinfer/wip_rocm.py", "a = 1\n")  # never `git add`ed
 
-        owned, _, unowned = ac.classify(str(repo), base, {})
+        owned, _, unowned, _ = ac.classify(str(repo), base, {})
 
         assert owned["flashinfer/wip_rocm.py"].tier == "A"
         assert owned["flashinfer/wip_rocm.py"].reason == "untracked"
@@ -172,7 +172,7 @@ class TestTierAssignment:
         _write(repo, ".gitignore", "flashinfer/generated.py\n")
         _write(repo, "flashinfer/generated.py", "a = 1\n")
 
-        owned, _, unowned = ac.classify(str(repo), base, {})
+        owned, _, unowned, _ = ac.classify(str(repo), base, {})
 
         assert "flashinfer/generated.py" not in owned
         assert "flashinfer/generated.py" not in unowned
@@ -183,7 +183,7 @@ class TestTierAssignment:
         _git(repo, "commit", "-qm", "upstream")
         base = _base(repo)
 
-        owned, _, unowned = ac.classify(str(repo), base, {})
+        owned, _, unowned, _ = ac.classify(str(repo), base, {})
 
         assert "flashinfer/untouched.py" not in owned
         assert "flashinfer/untouched.py" in unowned
@@ -199,7 +199,7 @@ class TestTierAssignment:
             "excluded": [{"path": "flashinfer/gen.py", "reason": "e"}],
         }
 
-        owned, excluded, unowned = ac.classify(str(repo), base, manifest)
+        owned, excluded, unowned, ruled = ac.classify(str(repo), base, manifest)
         tracked = ac._surface_python(str(repo))[0]
 
         assert set(owned) | set(excluded) | set(unowned) == tracked
@@ -227,6 +227,22 @@ class TestManifest:
 
         with pytest.raises(ac.ToolError, match="both redirect_owned and unowned"):
             ac.classify(str(repo), base, manifest)
+
+    def test_ruled_unowned_reasons_survive_classification(self, repo):
+        """The manifest demands a reason; dropping it makes the ruling unauditable."""
+        base = _base(repo)
+        _write(repo, "flashinfer/theirs.py", "a = 1\n")
+        _git(repo, "add", "-A")
+        manifest = {
+            "unowned": [
+                {"path": "flashinfer/theirs.py", "reason": "upstream, untouched"}
+            ]
+        }
+
+        _, _, unowned, ruled = ac.classify(str(repo), base, manifest)
+
+        assert "flashinfer/theirs.py" in unowned
+        assert ruled == {"flashinfer/theirs.py": "upstream, untouched"}
 
     def test_shipped_manifest_matches_the_tree(self):
         """Catches a manifest entry left behind by a rename or deletion."""
@@ -452,6 +468,27 @@ class TestDataFileHygiene:
         # Without the stamp, score-only mode cannot tell this run's reach shards
         # from a previous run's and reports nothing.
         assert ac._stamp_matches(tmp_path, tmp_path / "chosen.cov")
+
+    def test_a_rewrite_inside_one_clock_tick_is_still_accepted(self, tmp_path):
+        """Coarse mtime granularity must not read as "pytest wrote nothing"."""
+        junit, data = tmp_path / "junit.xml", tmp_path / ".coverage"
+        for f in (junit, data):
+            f.write_text("old", encoding="utf-8")
+            os.utime(f, (5000, 5000))
+
+        class _Ok:
+            returncode = 0
+
+        def _rewrite(cmd, **kwargs):
+            for f in (junit, data):
+                f.write_text("new content, different length", encoding="utf-8")
+                os.utime(f, (5000, 5000))  # same timestamp, as on a coarse clock
+            return _Ok()
+
+        import unittest.mock
+
+        with unittest.mock.patch.object(ac.subprocess, "run", _rewrite):
+            ac._run_pytest(tmp_path, tmp_path, data, [])  # must not raise
 
     def test_reach_needs_a_stamp_tying_shards_to_this_data_file(self, tmp_path):
         """Shards are always fractionally older than .coverage, so mtime cannot decide.

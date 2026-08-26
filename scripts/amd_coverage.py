@@ -223,11 +223,13 @@ def _surface_python(repo: str) -> Tuple[Set[str], Set[str]]:
 
 def classify(
     repo: str, base: str, manifest: dict
-) -> Tuple[Dict[str, Owned], Dict[str, str], List[str]]:
+) -> Tuple[Dict[str, Owned], Dict[str, str], List[str], Dict[str, str]]:
     """Assign every tracked file on the surface to a tier, or to unowned.
 
-    Returns the owned map, a path->reason map for deliberate exclusions, and the
-    sorted list of unowned paths so the report can show what it did not count.
+    Returns the owned map, path->reason for deliberate exclusions, the sorted
+    unowned paths, and path->reason for the ones ruled unowned by the manifest.
+    The last is separate because "we decided this is upstream's" and "no diff
+    ever touched it" are different claims, and only the first was reviewed.
     """
     tracked, untracked = _surface_python(repo)
     root = Path(repo)
@@ -283,7 +285,7 @@ def classify(
         )
         owned[path] = Owned(path, tier, changed, reason)
 
-    return owned, excluded, sorted(unowned)
+    return owned, excluded, sorted(unowned), ruled_unowned
 
 
 def _canonical(measured: str, repo: Path, owned: Sequence[str]) -> Optional[str]:
@@ -502,6 +504,7 @@ def _report(
     scores: List[Score],
     excluded: Dict[str, str],
     unowned: List[str],
+    ruled: Dict[str, str],
     tests: Optional[Dict[str, int]],
     reach: Optional[Tuple[int, List[str]]],
     stale: List[str],
@@ -595,7 +598,7 @@ def _report(
             f"  {excl_tot} lines in {excl_files} files excluded by "
             "[tool.coverage.report], mostly `if IS_CUDA:` arms"
         )
-    for path, reason in sorted(excluded.items()):
+    for path, reason in sorted({**excluded, **ruled}.items()):
         print(f"  {path} -- {reason}")
     print(
         f"  {len(unowned)} upstream files on the measured surface, attributed to no tier"
@@ -689,14 +692,18 @@ def _run_pytest(
 
     # Compare against a snapshot rather than a wall-clock stamp: NFS mtime
     # granularity can make a file written moments after `time.time()` look older
-    # than it, which would reject a perfectly good run.
-    def _stamp(p: Path) -> Optional[float]:
+    # than it, which would reject a perfectly good run. Size as well as
+    # nanoseconds for the same reason -- on a coarse clock a rewrite inside one
+    # tick leaves the timestamp identical, and that would read as "wrote
+    # nothing". Same identity tuple as the reach stamp.
+    def _identity(p: Path) -> Optional[Tuple[int, int]]:
         try:
-            return p.stat().st_mtime
+            st = p.stat()
         except OSError:
             return None
+        return st.st_size, st.st_mtime_ns
 
-    before = {p: _stamp(p) for p in (junit, data_file)}
+    before = {p: _identity(p) for p in (junit, data_file)}
     proc = subprocess.run(
         cmd,
         cwd=repo,
@@ -714,7 +721,7 @@ def _run_pytest(
     if proc.returncode >= 4:
         raise ToolError(f"pytest could not run (exit {proc.returncode})")
     for artefact, was in before.items():
-        now = _stamp(artefact)
+        now = _identity(artefact)
         if now is None or now == was:
             raise ToolError(
                 f"pytest exited {proc.returncode} without writing {artefact.name}; "
@@ -731,7 +738,9 @@ def run(args: argparse.Namespace) -> int:
     manifest_path = repo / _MANIFEST
     if not manifest_path.exists():
         raise ToolError(f"missing {_MANIFEST}")
-    owned, excluded, unowned = classify(str(repo), base, _load_toml(manifest_path))
+    owned, excluded, unowned, ruled = classify(
+        str(repo), base, _load_toml(manifest_path)
+    )
     if not owned:
         raise ToolError("no owned files found -- is this the amd-integration fork?")
 
@@ -777,6 +786,7 @@ def run(args: argparse.Namespace) -> int:
         scores,
         excluded,
         unowned,
+        ruled,
         tests,
         reach,
         stale,
@@ -812,6 +822,7 @@ def run(args: argparse.Namespace) -> int:
             ],
             "excluded": excluded,
             "unowned": unowned,
+            "ruled_unowned": ruled,
         }
         Path(args.json_out).write_text(
             json.dumps(payload, indent=2) + "\n", encoding="utf-8"
