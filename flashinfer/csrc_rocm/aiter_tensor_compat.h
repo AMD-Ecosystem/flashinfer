@@ -10,6 +10,7 @@
 
 #include <ATen/ATen.h>
 #include <aiter_enum.h>
+#include <aiter_stream.h>
 #include <aiter_tensor.h>
 
 namespace flashinfer::aiter_compat {
@@ -60,5 +61,26 @@ inline aiter_tensor_t to_aiter(const at::Tensor& t) {
   out.device_id = t.is_cpu() ? -1 : static_cast<int>(t.device().index());
   return out;
 }
+
+// Point AITER's thread_local stream at ours for the duration of a call.
+//
+// The POD entry points launch on aiter::getCurrentHIPStream(), which defaults
+// to nullptr and is otherwise set only by AITER's Python layer. Scoped, because
+// the value outlives the call otherwise: a caller inside a temporary
+// torch.cuda.Stream would strand a freed handle for the next AITER call on this
+// thread. c10's device guard restores the device, not the stream.
+class StreamGuard {
+ public:
+  explicit StreamGuard(hipStream_t stream) : prev_(aiter::getCurrentHIPStream()) {
+    aiter::setCurrentHIPStream(stream);
+  }
+  ~StreamGuard() { aiter::setCurrentHIPStream(prev_); }
+
+  StreamGuard(const StreamGuard&) = delete;
+  StreamGuard& operator=(const StreamGuard&) = delete;
+
+ private:
+  hipStream_t prev_;
+};
 
 }  // namespace flashinfer::aiter_compat
