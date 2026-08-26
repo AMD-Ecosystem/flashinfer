@@ -4,6 +4,7 @@
 
 import functools
 import os
+from typing import Optional
 
 import torch
 
@@ -48,6 +49,40 @@ def _ensure_aiter_gpu_archs() -> None:
         os.environ["GPU_ARCHS"] = arch
 
 
+# The vendored structs in include/flashinfer/attention/aiter/ follow the 0.1.16
+# layout. They travel by value through dlsym'd pointers, so an older AITER
+# mismatches offsets silently instead of failing to load -- hence a hard floor
+# rather than a warning.
+AITER_MIN_VERSION = "0.1.16"
+
+
+def _aiter_installed_version() -> Optional[str]:
+    """The installed amd-aiter version, or None when it is not installed."""
+    try:
+        import importlib.metadata as _md
+
+        return _md.version("amd-aiter")
+    except Exception:
+        return None
+
+
+def _aiter_version_supported() -> bool:
+    """True when amd-aiter is installed and new enough for our vendored ABI."""
+    installed = _aiter_installed_version()
+    if installed is None:
+        return False
+    try:
+        from packaging.version import Version
+
+        # Compare on base_version: the nightly wheels carry a local '+g<sha>'
+        # segment, and a '.dev0' pre-release segment that PEP 440 sorts *below*
+        # the release it is built from -- 0.1.16.post3.dev0 must still pass a
+        # 0.1.16 floor. Re-wrap in Version; base_version is a str.
+        return Version(Version(installed).base_version) >= Version(AITER_MIN_VERSION)
+    except Exception:
+        return False
+
+
 @functools.lru_cache(maxsize=1)
 def _aiter_importable() -> bool:
     """True when the AITER packages needed for the C++ backends actually import.
@@ -55,7 +90,8 @@ def _aiter_importable() -> bool:
     Uses a real import (not ``find_spec``) so a broken or partially-installed AITER
     — where the spec exists but importing the compiled extension fails, e.g. missing
     ROCm deps — is reported as unavailable rather than routing ``auto`` into a path
-    that raises at build/load time.
+    that raises at build/load time. Too-old AITER counts as unavailable for the same
+    reason: ``auto`` must not route into an ABI it would corrupt.
     """
     try:
         _ensure_aiter_gpu_archs()
@@ -64,7 +100,7 @@ def _aiter_importable() -> bool:
         from aiter.jit import core as _core  # noqa: F401
     except Exception:
         return False
-    return True
+    return _aiter_version_supported()
 
 
 def is_aiter_available(device: torch.device, op: str) -> bool:
@@ -102,6 +138,14 @@ def require_aiter(device: torch.device, op: str) -> None:
     """
     require_capability(device, op, "aiter")
     if not _aiter_importable():
+        installed = _aiter_installed_version()
+        if installed is not None and not _aiter_version_supported():
+            raise ValueError(
+                f"backend='aiter' for {op} requires amd-aiter >= {AITER_MIN_VERSION}, "
+                f"but {installed} is installed; the vendored struct layouts do not "
+                "match older releases and would corrupt arguments silently. Upgrade "
+                "amd-aiter or use backend='native'."
+            )
         raise ValueError(
             f"backend='aiter' for {op} requires the aiter package, which is not "
             "installed or failed to import. Install it (see the AITER Support "
