@@ -10,6 +10,7 @@ is set.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 from pathlib import Path
@@ -41,6 +42,7 @@ def pytest_configure(config) -> None:
 
     original = JitSpec.load
 
+    @functools.wraps(original)
     def load(self, *args, **kwargs):
         _record(getattr(self, "sources", None))
         return original(self, *args, **kwargs)

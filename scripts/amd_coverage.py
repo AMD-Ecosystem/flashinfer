@@ -234,21 +234,38 @@ def classify(
     tracked, untracked = _surface_python(repo)
     root = Path(repo)
 
-    def _entries(key: str) -> Dict[str, str]:
+    def _entries(key: str, must_be_on_surface: bool) -> Dict[str, str]:
         out: Dict[str, str] = {}
         for item in manifest.get(key, []):
             path, reason = item["path"], item.get("reason", "")
-            if path not in tracked and not (root / path).exists():
+            if not (root / path).exists():
                 raise ToolError(
                     f"{_MANIFEST}: [{key}] names '{path}', which does not exist. "
                     "Remove the entry or fix the path."
                 )
+            # A tier ruling only takes effect inside classify()'s loop over the
+            # surface, so one naming a file outside it is a silent no-op.
+            # `excluded` is different: it documents a file coverage measures but
+            # git does not track -- a generated, gitignored module is the case
+            # it exists for -- so requiring it on the surface would reject the
+            # very entries it is meant to carry.
+            if must_be_on_surface and path not in tracked:
+                raise ToolError(
+                    f"{_MANIFEST}: [{key}] names '{path}', which exists but is "
+                    f"not on the measured surface, so the ruling would do "
+                    f"nothing. Surface: {', '.join(_SURFACE)}."
+                )
+            if not reason.strip():
+                raise ToolError(
+                    f"{_MANIFEST}: [{key}] entry '{path}' has no reason. Every "
+                    "ruling is hand-made, so it has to say why."
+                )
             out[path] = reason
         return out
 
-    redirect = _entries("redirect_owned")
-    ruled_unowned = _entries("unowned")
-    excluded = _entries("excluded")
+    redirect = _entries("redirect_owned", must_be_on_surface=True)
+    ruled_unowned = _entries("unowned", must_be_on_surface=True)
+    excluded = _entries("excluded", must_be_on_surface=False)
 
     overlap = set(redirect) & set(ruled_unowned)
     if overlap:
@@ -354,7 +371,13 @@ def score(
     # line missing. Statement lists still come from analysis2, which parses the
     # file and needs no data.
     executed, foreign = _executed(data_file, repo, list(owned))
-    import_lines = _executed(baseline, repo, list(owned))[0] if baseline else {}
+    # The baseline's foreign roots matter as much as the run's: import-time
+    # lines are *subtracted*, so a baseline captured against a different
+    # checkout quietly shrinks the numerator with no warning at all.
+    import_lines: Dict[str, Set[int]] = {}
+    if baseline:
+        import_lines, baseline_foreign = _executed(baseline, repo, list(owned))
+        foreign |= baseline_foreign
 
     scores: List[Score] = []
     for path, entry in sorted(owned.items()):
@@ -395,6 +418,15 @@ def score(
             "Point PYTHONPATH at this tree and re-run."
         )
     return scores, foreign
+
+
+def _is_dirty(repo: str) -> bool:
+    """Whether the tree differs from HEAD, untracked files included.
+
+    Untracked files are scored as tier A, so ignoring them would let a tree
+    whose only change is a new owned module report itself as clean.
+    """
+    return bool(_git(repo, "status", "--porcelain"))
 
 
 def _stale_sources(repo: Path, data_file: Path, owned: Sequence[str]) -> List[str]:
@@ -750,9 +782,17 @@ def run(args: argparse.Namespace) -> int:
     if not owned:
         raise ToolError("no owned files found -- is this the amd-integration fork?")
 
-    out_dir = Path(args.out_dir) if args.out_dir else repo
+    # Anchored to the repo, not the caller's cwd: pytest runs with cwd=repo, so
+    # a relative path would be written in one place and read from another.
+    def _anchored(value: Optional[str], default: Path) -> Path:
+        if not value:
+            return default
+        given = Path(value)
+        return given if given.is_absolute() else repo / given
+
+    out_dir = _anchored(args.out_dir, repo)
     out_dir.mkdir(parents=True, exist_ok=True)
-    data_file = Path(args.data_file) if args.data_file else repo / ".coverage"
+    data_file = _anchored(args.data_file, repo / ".coverage")
     # Not ".coverage.import-baseline": that matches coverage's parallel-data
     # glob `.coverage.*`, so pytest-cov's combine() absorbs and unlinks it, and
     # the import-time split silently vanishes into the headline.
@@ -776,7 +816,7 @@ def run(args: argparse.Namespace) -> int:
         )
 
     scores, foreign = score(repo, owned, data_file, baseline_result)
-    dirty = bool(_git(str(repo), "status", "--porcelain", "--untracked-files=no"))
+    dirty = _is_dirty(str(repo))
     arch = _detect_arch()
     base_desc = _git(str(repo), "log", "-1", "--format=%h %ad %s", "--date=short", base)
     tests = _junit_counts(junit)

@@ -23,9 +23,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load_tool():
-    spec = importlib.util.spec_from_file_location(
-        "_fi_amd_coverage", _REPO_ROOT / "scripts" / "amd_coverage.py"
-    )
+    target = _REPO_ROOT / "scripts" / "amd_coverage.py"
+    spec = importlib.util.spec_from_file_location("_fi_amd_coverage", target)
+    # A None spec or loader would surface as an AttributeError on the next line,
+    # hiding which file failed to load.
+    assert spec is not None and spec.loader is not None, f"cannot load {target}"
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -216,6 +218,51 @@ class TestManifest:
         with pytest.raises(ac.ToolError, match="does not exist"):
             ac.classify(str(repo), base, manifest)
 
+    @pytest.mark.parametrize("key", ["redirect_owned", "unowned"])
+    def test_tier_ruling_outside_the_measured_surface_is_rejected(self, repo, key):
+        """It exists, so the old check passed -- and then classify never saw it."""
+        base = _base(repo)
+        _write(repo, "docs/notes.py", "a = 1\n")
+        _git(repo, "add", "-A")
+        manifest = {key: [{"path": "docs/notes.py", "reason": "r"}]}
+
+        with pytest.raises(ac.ToolError, match="not on the measured surface"):
+            ac.classify(str(repo), base, manifest)
+
+    def test_excluded_may_name_a_gitignored_file(self, repo):
+        """The case the section exists for: coverage measures generated modules
+        that git never tracks, and the entry records why they are not counted.
+        Requiring them on the surface rejected the shipped manifest outright."""
+        base = _base(repo)
+        _write(repo, ".gitignore", "flashinfer/_version.py\n")
+        _write(repo, "flashinfer/_version.py", "__version__ = '1'\n")
+        _git(repo, "add", "-A")
+        manifest = {
+            "excluded": [{"path": "flashinfer/_version.py", "reason": "generated"}]
+        }
+
+        _, excluded, _, _ = ac.classify(str(repo), base, manifest)
+
+        assert excluded == {"flashinfer/_version.py": "generated"}
+
+    def test_entry_naming_a_missing_file_is_still_rejected(self, repo):
+        base = _base(repo)
+        manifest = {"excluded": [{"path": "flashinfer/gone.py", "reason": "r"}]}
+
+        with pytest.raises(ac.ToolError, match="does not exist"):
+            ac.classify(str(repo), base, manifest)
+
+    def test_entry_without_a_reason_is_rejected(self, repo):
+        """Every ruling is hand-made, so it has to say why."""
+        base = _base(repo)
+        _write(repo, "flashinfer/x.py", "a = 1\n")
+        _git(repo, "add", "-A")
+
+        for reason in ("", "   "):
+            manifest = {"unowned": [{"path": "flashinfer/x.py", "reason": reason}]}
+            with pytest.raises(ac.ToolError, match="no reason"):
+                ac.classify(str(repo), base, manifest)
+
     def test_contradictory_entry_is_rejected(self, repo):
         base = _base(repo)
         _write(repo, "flashinfer/both.py", "a = 1\n")
@@ -243,6 +290,21 @@ class TestManifest:
 
         assert "flashinfer/theirs.py" in unowned
         assert ruled == {"flashinfer/theirs.py": "upstream, untouched"}
+
+    def test_shipped_manifest_actually_classifies(self):
+        """Run classify() against the real manifest, not just check the paths.
+
+        A validation change once made this raise on every invocation while the
+        path-existence test above still passed, so the tool has to be exercised.
+        """
+        repo = ac._git(None, "rev-parse", "--show-toplevel")
+        base = ac._resolve_base(repo, "upstream/main")
+        manifest = ac._load_toml(Path(repo) / ac._MANIFEST)
+
+        owned, excluded, unowned, ruled = ac.classify(repo, base, manifest)
+
+        assert owned, "the shipped manifest must not empty the owned set"
+        assert set(excluded) | set(ruled), "its rulings must survive validation"
 
     def test_shipped_manifest_matches_the_tree(self):
         """Catches a manifest entry left behind by a rename or deletion."""
@@ -360,6 +422,25 @@ class TestHunkParsing:
         _write(repo, "flashinfer/s.py", "a = 1\nb = 22\nc = 3\n")
 
         assert ac._changed_lines(str(repo), base, "flashinfer/s.py", None) == {2}
+
+
+class TestDirtyTree:
+    def test_clean_tree_is_clean(self, repo):
+        assert ac._is_dirty(str(repo)) is False
+
+    def test_untracked_owned_file_counts_as_dirty(self, repo):
+        """It is scored as tier A, so the header cannot call the tree clean."""
+        _write(repo, "flashinfer/wip.py", "a = 1\n")
+
+        assert ac._is_dirty(str(repo)) is True
+
+    def test_modified_tracked_file_counts_as_dirty(self, repo):
+        _write(repo, "flashinfer/m.py", "a = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "add")
+        _write(repo, "flashinfer/m.py", "a = 2\n")
+
+        assert ac._is_dirty(str(repo)) is True
 
 
 class TestStaleArtifacts:
@@ -556,6 +637,31 @@ class TestExclusionAccounting:
         # Whole-file counting would report 4 (both guards and both bodies);
         # only line 6 is inside our diff.
         assert entry.excluded == 1
+
+    def test_foreign_baseline_root_is_reported_too(self, repo, tmp_path):
+        """Import-time lines are subtracted, so a baseline from a different
+        checkout shrinks the numerator -- silently, unless its root surfaces."""
+        coverage = pytest.importorskip("coverage")
+        base = _base(repo)
+        _write(repo, "flashinfer/m.py", "a = 1\nb = 2\n")
+        # score() passes this to coverage as an explicit config; it must exist.
+        _write(repo, "pyproject.toml", "[tool.coverage.run]\nsource = ['.']\n")
+        _git(repo, "add", "-A")
+        owned, _, _, _ = ac.classify(str(repo), base, {})
+
+        data = tmp_path / ".coverage"
+        run = coverage.CoverageData(basename=str(data))
+        run.add_lines({str(repo / "flashinfer" / "m.py"): [1, 2]})
+        run.write()
+
+        stale = tmp_path / "baseline.coverage"
+        old = coverage.CoverageData(basename=str(stale))
+        old.add_lines({"/elsewhere/checkout/flashinfer/m.py": [1]})
+        old.write()
+
+        _, foreign = ac.score(repo, owned, data, stale)
+
+        assert "/elsewhere/checkout" in foreign
 
     def test_lines_from_another_checkout_are_reported(self, tmp_path):
         """The main checkout's editable install shadows a worktree without PYTHONPATH."""
