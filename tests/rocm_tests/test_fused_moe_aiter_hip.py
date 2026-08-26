@@ -189,6 +189,18 @@ def test_select_block_m_only_returns_supported_tiles():
     assert returned <= set(_SUPPORTED_BLOCK_M)
 
 
+def test_public_api_is_reachable_from_the_package():
+    """Everything in the module's __all__ must also be a flashinfer.* attribute.
+
+    The re-export is a separate line in __init__.py, so adding a helper and
+    forgetting it leaves the documented fp8 workflow half-reachable.
+    """
+    from flashinfer import fused_moe_rocm
+
+    missing = [n for n in fused_moe_rocm.__all__ if not hasattr(flashinfer, n)]
+    assert not missing, missing
+
+
 def test_select_block_m_never_divides_by_zero():
     """A degenerate weight is the shim's error to report, not ours to crash on."""
     assert _select_block_m(64, 2, 0) in _SUPPORTED_BLOCK_M
