@@ -380,7 +380,7 @@ class TestStaleArtifacts:
         monkeypatch.setattr(ac.subprocess, "run", lambda *a, **k: _Dead())
 
         with pytest.raises(ac.ToolError, match="without writing"):
-            ac._run_pytest(tmp_path, tmp_path, [])
+            ac._run_pytest(tmp_path, tmp_path, tmp_path / ".coverage", [])
 
 
 class TestImportBaseline:
@@ -417,6 +417,80 @@ class TestImportBaseline:
         ac._capture_baseline(tmp_path, out)
 
         assert str(tmp_path) in seen.get("PYTHONPATH", "").split(os.pathsep)
+
+
+class TestDataFileHygiene:
+    def test_baseline_is_not_named_like_parallel_coverage_data(self):
+        """`.coverage.*` is coverage's parallel glob; pytest-cov combine() eats it."""
+        src = (_REPO_ROOT / "scripts" / "amd_coverage.py").read_text(encoding="utf-8")
+        name = re.search(r'baseline = out_dir / "([^"]+)"', src).group(1)
+
+        assert not name.startswith(".coverage."), (
+            f"{name} would be absorbed and unlinked by combine(), "
+            "silently removing the import-time split"
+        )
+
+    def test_run_writes_the_file_it_scores(self, tmp_path, monkeypatch):
+        """--run --data-file X wrote repo/.coverage and then scored X."""
+        seen = {}
+
+        class _Ok:
+            returncode = 0
+
+        def _capture(cmd, **kwargs):
+            seen.update(kwargs.get("env") or {})
+            for name in ("junit.xml", "chosen.cov"):
+                (tmp_path / name).write_text("x", encoding="utf-8")
+                os.utime(tmp_path / name, (9000, 9000))  # distinct from "absent"
+            return _Ok()
+
+        monkeypatch.setattr(ac.subprocess, "run", _capture)
+
+        ac._run_pytest(tmp_path, tmp_path, tmp_path / "chosen.cov", [])
+
+        assert seen.get("COVERAGE_FILE") == str(tmp_path / "chosen.cov")
+
+    def test_reach_shards_older_than_the_data_are_ignored(self, tmp_path):
+        """Score-only mode does no cleanup, so an old run's shards linger."""
+        (tmp_path / "flashinfer" / "csrc_rocm").mkdir(parents=True)
+        (tmp_path / "flashinfer" / "csrc_rocm" / "a.cu").write_text("x")
+        data = tmp_path / ".coverage"
+        data.write_text("x", encoding="utf-8")
+        shard = tmp_path / "jit-reach.gw0.json"
+        shard.write_text('["a.cu"]', encoding="utf-8")
+        os.utime(shard, (1000, 1000))
+        os.utime(data, (2000, 2000))
+
+        assert ac._jit_reach(tmp_path, tmp_path, data) is None
+
+        os.utime(shard, (3000, 3000))
+        assert ac._jit_reach(tmp_path, tmp_path, data) == (1, [])
+
+
+class TestForeignSourceRoots:
+    def test_lines_from_another_checkout_are_reported(self, tmp_path):
+        """The main checkout's editable install shadows a worktree without PYTHONPATH."""
+        coverage = pytest.importorskip("coverage")
+        data = tmp_path / ".coverage"
+        d = coverage.CoverageData(basename=str(data))
+        d.add_lines({"/elsewhere/main-checkout/flashinfer/page.py": [1, 2]})
+        d.write()
+
+        executed, foreign = ac._executed(data, tmp_path, ["flashinfer/page.py"])
+
+        assert executed["flashinfer/page.py"] == {1, 2}
+        assert foreign == {"/elsewhere/main-checkout"}
+
+    def test_in_tree_paths_are_not_flagged(self, tmp_path):
+        coverage = pytest.importorskip("coverage")
+        data = tmp_path / ".coverage"
+        d = coverage.CoverageData(basename=str(data))
+        d.add_lines({str(tmp_path / "flashinfer" / "page.py"): [1]})
+        d.write()
+
+        _, foreign = ac._executed(data, tmp_path, ["flashinfer/page.py"])
+
+        assert foreign == set()
 
 
 class TestReportInputs:

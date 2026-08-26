@@ -27,7 +27,6 @@ import os
 import re
 import subprocess
 import sys
-import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
@@ -300,8 +299,17 @@ def _canonical(measured: str, repo: Path, owned: Sequence[str]) -> Optional[str]
     return None
 
 
-def _executed(data_file: Path, repo: Path, owned: Sequence[str]) -> Dict[str, Set[int]]:
-    """Executed lines per owned path, from a coverage data file."""
+def _executed(
+    data_file: Path, repo: Path, owned: Sequence[str]
+) -> Tuple[Dict[str, Set[int]], Set[str]]:
+    """Executed lines per owned path, plus the source roots outside this tree.
+
+    A suffix match is what makes a site-packages or bind-mounted run scorable,
+    but it also silently accepts a *different* checkout -- the main one, whose
+    editable install shadows the worktree when PYTHONPATH is unset. Statements
+    would come from here and executed lines from there, so the roots are
+    returned for the report to name rather than being quietly folded in.
+    """
     import coverage
 
     data = coverage.CoverageData(basename=str(data_file))
@@ -311,12 +319,16 @@ def _executed(data_file: Path, repo: Path, owned: Sequence[str]) -> Dict[str, Se
         raise ToolError(f"cannot read coverage data {data_file}: {exc}") from exc
 
     out: Dict[str, Set[int]] = {}
+    foreign: Set[str] = set()
     for measured in data.measured_files():
         rel = _canonical(measured, repo, owned)
         if rel is None:
             continue
+        posix = Path(measured).as_posix()
+        if posix.endswith("/" + rel) and not posix.startswith(f"{repo.as_posix()}/"):
+            foreign.add(posix[: -len(rel) - 1])
         out.setdefault(rel, set()).update(data.lines(measured) or ())
-    return out
+    return out, foreign
 
 
 def score(
@@ -324,7 +336,7 @@ def score(
     owned: Dict[str, Owned],
     data_file: Path,
     baseline: Optional[Path],
-) -> List[Score]:
+) -> Tuple[List[Score], Set[str]]:
     import coverage
 
     cov = coverage.Coverage(
@@ -338,8 +350,8 @@ def score(
     # never resolve against this checkout, and analysis2 would then report every
     # line missing. Statement lists still come from analysis2, which parses the
     # file and needs no data.
-    executed = _executed(data_file, repo, list(owned))
-    import_lines = _executed(baseline, repo, list(owned)) if baseline else {}
+    executed, foreign = _executed(data_file, repo, list(owned))
+    import_lines = _executed(baseline, repo, list(owned))[0] if baseline else {}
 
     scores: List[Score] = []
     for path, entry in sorted(owned.items()):
@@ -373,7 +385,7 @@ def score(
             "package from site-packages measures nothing and still exits 0. "
             "Point PYTHONPATH at this tree and re-run."
         )
-    return scores
+    return scores, foreign
 
 
 def _stale_sources(repo: Path, data_file: Path, owned: Sequence[str]) -> List[str]:
@@ -418,13 +430,26 @@ def _junit_counts(path: Path) -> Optional[Dict[str, int]]:
     }
 
 
-def _jit_reach(repo: Path, out_dir: Path) -> Optional[Tuple[int, List[str]]]:
+def _jit_reach(
+    repo: Path, out_dir: Path, data_file: Path
+) -> Optional[Tuple[int, List[str]]]:
     """(reached, unreached) csrc_rocm translation units, merged across xdist workers.
 
     Not a coverage figure: the HIP sources are JIT-compiled and have no line
     data. It says only which of them the Python tests caused to be built at all.
     """
-    shards = sorted(out_dir.glob("jit-reach.*.json"))
+    # Only shards from the run that produced this data. Score-only mode does no
+    # cleanup, so an older, narrower run's shards would otherwise be reported
+    # next to a fresh score.
+    try:
+        cutoff = data_file.stat().st_mtime
+    except OSError:
+        cutoff = 0.0
+    shards = [
+        s
+        for s in sorted(out_dir.glob("jit-reach.*.json"))
+        if s.stat().st_mtime >= cutoff
+    ]
     if not shards:
         return None
     reached: Set[str] = set()
@@ -454,6 +479,7 @@ def _report(
     tests: Optional[Dict[str, int]],
     reach: Optional[Tuple[int, List[str]]],
     stale: List[str],
+    foreign: Set[str],
     show_files: bool,
 ) -> float:
     print("== amd coverage ==")
@@ -466,6 +492,9 @@ def _report(
         )
         print(f"STALE : {len(stale)} owned files changed after this run: {head}")
         print("        re-run with --run; the number below describes the older code")
+    for root in sorted(foreign):
+        print(f"NOTE  : executed lines came from {root}, not this tree")
+        print("        set PYTHONPATH if that is a different checkout")
     if tests:
         print(
             f"tests : {tests['passed']} passed, {tests['skipped']} skipped, "
@@ -574,7 +603,9 @@ def _capture_baseline(repo: Path, out: Path) -> Path:
     tests/conftest.py imports the package at collection, so without this every
     module-level line counts as covered before a test body runs.
     """
-    probe = out.parent / "_import_probe.py"
+    # pid-namespaced: two concurrent runs (the documented cross-arch recipe)
+    # would otherwise truncate and unlink each other's probe.
+    probe = out.parent / f"_import_probe_{os.getpid()}.py"
     probe.write_text("import flashinfer  # noqa: F401\n", encoding="utf-8")
     try:
         proc = subprocess.run(
@@ -611,7 +642,9 @@ def _capture_baseline(repo: Path, out: Path) -> Path:
     return out
 
 
-def _run_pytest(repo: Path, out_dir: Path, pytest_args: Sequence[str]) -> Path:
+def _run_pytest(
+    repo: Path, out_dir: Path, data_file: Path, pytest_args: Sequence[str]
+) -> Path:
     junit = out_dir / "junit.xml"
     for stale in out_dir.glob("jit-reach.*.json"):
         stale.unlink()  # a previous run's shards would inflate the reach count
@@ -627,9 +660,26 @@ def _run_pytest(repo: Path, out_dir: Path, pytest_args: Sequence[str]) -> Path:
         *pytest_args,
     ]
     print(f"+ {' '.join(cmd)}", file=sys.stderr)
-    started = time.time()
+
+    # Compare against a snapshot rather than a wall-clock stamp: NFS mtime
+    # granularity can make a file written moments after `time.time()` look older
+    # than it, which would reject a perfectly good run.
+    def _stamp(p: Path) -> Optional[float]:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return None
+
+    before = {p: _stamp(p) for p in (junit, data_file)}
     proc = subprocess.run(
-        cmd, cwd=repo, env={**os.environ, _JIT_REACH_ENV: str(out_dir)}
+        cmd,
+        cwd=repo,
+        # COVERAGE_FILE, or --data-file would write one file and score another.
+        env={
+            **os.environ,
+            _JIT_REACH_ENV: str(out_dir),
+            "COVERAGE_FILE": str(data_file),
+        },
     )
     # pytest exits non-zero on test failures; a partially-failing run is still
     # worth scoring. But exit 1 also covers a plugin ImportError, which runs no
@@ -637,8 +687,9 @@ def _run_pytest(repo: Path, out_dir: Path, pytest_args: Sequence[str]) -> Path:
     # if they were this run's. Trust the artifacts, not the exit code.
     if proc.returncode >= 4:
         raise ToolError(f"pytest could not run (exit {proc.returncode})")
-    for artefact in (junit, repo / ".coverage"):
-        if not artefact.exists() or artefact.stat().st_mtime < started:
+    for artefact, was in before.items():
+        now = _stamp(artefact)
+        if now is None or now == was:
             raise ToolError(
                 f"pytest exited {proc.returncode} without writing {artefact.name}; "
                 "it collected no tests (a plugin import error looks like this). "
@@ -660,7 +711,10 @@ def run(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir) if args.out_dir else repo
     out_dir.mkdir(parents=True, exist_ok=True)
     data_file = Path(args.data_file) if args.data_file else repo / ".coverage"
-    baseline = out_dir / ".coverage.import-baseline"
+    # Not ".coverage.import-baseline": that matches coverage's parallel-data
+    # glob `.coverage.*`, so pytest-cov's combine() absorbs and unlinks it, and
+    # the import-time split silently vanishes into the headline.
+    baseline = out_dir / "import-baseline.coverage"
 
     junit = out_dir / "junit.xml"
     baseline_result: Optional[Path] = None
@@ -671,7 +725,7 @@ def run(args: argparse.Namespace) -> int:
     else:
         baseline_result = baseline
     if args.run:
-        junit = _run_pytest(repo, out_dir, args.pytest_args)
+        junit = _run_pytest(repo, out_dir, data_file, args.pytest_args)
 
     if not data_file.exists():
         raise ToolError(
@@ -679,12 +733,12 @@ def run(args: argparse.Namespace) -> int:
             '  python3 scripts/amd_coverage.py --run -- -n auto -m "not slow"'
         )
 
-    scores = score(repo, owned, data_file, baseline_result)
+    scores, foreign = score(repo, owned, data_file, baseline_result)
     dirty = bool(_git(str(repo), "status", "--porcelain", "--untracked-files=no"))
     arch = _detect_arch()
     base_desc = _git(str(repo), "log", "-1", "--format=%h %ad %s", "--date=short", base)
     tests = _junit_counts(junit)
-    reach = _jit_reach(repo, out_dir)
+    reach = _jit_reach(repo, out_dir, data_file)
     # --run has just written the data, so any mtime skew there is noise.
     stale = [] if args.run else _stale_sources(repo, data_file, list(owned))
 
@@ -699,6 +753,7 @@ def run(args: argparse.Namespace) -> int:
         tests,
         reach,
         stale,
+        foreign,
         args.show_files,
     )
 
@@ -709,6 +764,7 @@ def run(args: argparse.Namespace) -> int:
             "dirty": dirty,
             "arch": arch,
             "stale_sources": stale,
+            "foreign_source_roots": sorted(foreign),
             "tests": tests,
             "execution_percent": round(pct, 2),
             "csrc_reach": (
