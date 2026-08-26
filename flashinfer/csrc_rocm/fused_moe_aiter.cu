@@ -28,6 +28,10 @@
 // full pybind11, which clashes with FlashInfer's -DPy_LIMITED_API. torch::Tensor
 // is at::Tensor, so forward-declare the entry points; the linker resolves them
 // against the symbol-visible AITER .so. These three are at global namespace.
+//
+// They must track moe_ck.h exactly: a missing trailing parameter still compiles
+// and then fails at dlopen with a mangled-name mismatch. 0.1.16 added
+// `is_shuffled` to both CK stages.
 void moe_sorting_fwd(at::Tensor& topk_ids, at::Tensor& topk_weights, at::Tensor& sorted_token_ids,
                      at::Tensor& sorted_weights, at::Tensor& sorted_expert_ids,
                      at::Tensor& num_valid_ids, at::Tensor& moe_buf, int num_experts, int unit_size,
@@ -40,7 +44,7 @@ void ck_moe_stage1(at::Tensor& hidden_states, at::Tensor& w1, at::Tensor& w2,
                    std::optional<at::Tensor> w1_scale, std::optional<at::Tensor> a1_scale,
                    std::optional<int> block_m, std::optional<at::Tensor> sorted_weights,
                    int quant_type, int activation, std::optional<int> splitk, bool nt,
-                   std::optional<std::string> dst_type);
+                   std::optional<std::string> dst_type, bool is_shuffled);
 
 void ck_moe_stage2(at::Tensor& inter_states, at::Tensor& w1, at::Tensor& w2,
                    at::Tensor& sorted_token_ids, at::Tensor& sorted_expert_ids,
@@ -48,7 +52,7 @@ void ck_moe_stage2(at::Tensor& inter_states, at::Tensor& w1, at::Tensor& w2,
                    std::optional<at::Tensor> w2_scale, std::optional<at::Tensor> a2_scale,
                    std::optional<int> block_m, std::optional<at::Tensor> sorted_weights,
                    int quant_type, int activation, std::optional<int> splitk, bool nt,
-                   std::optional<std::string> dst_type);
+                   std::optional<std::string> dst_type, bool is_shuffled);
 
 #ifdef FLASHINFER_MOE_AITER_PER_TOKEN
 // Unlike the three above, this one AITER declares inside `namespace aiter`.
@@ -287,7 +291,7 @@ void fused_moe_aiter(at::Tensor out, at::Tensor hidden_states, at::Tensor w1, at
                 topk_i32, kernel_name, w1_scale, a1_scale, block_m_i32,
                 /*sorted_weights=*/std::nullopt, quant_type, activation_i32, /*splitk=*/1,
                 /*nt=*/false,
-                /*dst_type=*/std::nullopt);
+                /*dst_type=*/std::nullopt, /*is_shuffled=*/true);
 
   at::Tensor stage2_in = inter_states;
   std::optional<at::Tensor> a2_scale;
@@ -304,5 +308,5 @@ void fused_moe_aiter(at::Tensor out, at::Tensor hidden_states, at::Tensor w1, at
   ck_moe_stage2(stage2_in, w1, w2, sorted_token_ids, sorted_expert_ids, num_valid_ids, out,
                 topk_i32, kernel_name, w2_scale, a2_scale, block_m_i32, sorted_weights, quant_type,
                 activation_i32, /*splitk=*/1,
-                /*nt=*/false, /*dst_type=*/std::nullopt);
+                /*nt=*/false, /*dst_type=*/std::nullopt, /*is_shuffled=*/true);
 }
