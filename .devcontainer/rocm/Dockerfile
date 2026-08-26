@@ -112,8 +112,8 @@ RUN set -eu; \
 # clang via $ROCM_PATH/lib/llvm/bin, which only exists under the SDK.
 ENV ROCM_PATH="$ROCM_SDK"
 ENV ROCM_HOME="$ROCM_SDK"
-# Appended, not assigned: the base image sets these for torch's own bundled
-# ROCm libs (RCCL, MIOpen), and clobbering them surfaces far from here.
+# Appended rather than assigned so a future base image that sets these for
+# torch's own bundled ROCm libs is not clobbered. Today's base sets none of them.
 ENV LIBRARY_PATH="${LIBRARY_PATH:+$LIBRARY_PATH:}$ROCM_SDK/lib"
 ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$ROCM_SDK/lib"
 
