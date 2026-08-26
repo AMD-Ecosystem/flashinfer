@@ -3,6 +3,8 @@
 
 #include <ATen/ATen.h>
 
+#include <optional>
+
 #include "pytorch_extension_utils.h"
 
 void fused_moe_aiter(at::Tensor out, at::Tensor hidden_states, at::Tensor w1, at::Tensor w2,
