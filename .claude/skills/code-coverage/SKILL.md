@@ -94,6 +94,19 @@ tests (`tests/rocm_tests/test_amd_coverage.py`) do run there, via
 - **"no owned line was recorded as executed"** — the run imported flashinfer
   from somewhere other than this tree. `source` is a directory, so coverage
   measures nothing and would otherwise exit 0 with a clean 0%. Fix `PYTHONPATH`.
+- **"pytest exited N without writing junit.xml"** — pytest collected no tests.
+  Exit 1 means both "tests failed" and "a plugin failed to import", so the tool
+  trusts the artifacts rather than the exit code and refuses to score the
+  previous run's data.
+- **"could not capture the import-time baseline"** — the headline would
+  silently include lines that run at import, so this is an error rather than a
+  warning. Fix the import, or pass `--no-baseline` to accept the conventional
+  number.
+- **`STALE :` in the header** — you are scoring a `.coverage` older than the
+  sources it describes. Re-run with `--run`.
+- **Never construct `coverage.Coverage(config_file=<repo pyproject>)` without
+  an explicit `data_file`.** It initializes the configured data file, which
+  erases a completed run. A fixture in the test file enforces this.
 - **A file you just wrote shows up as tier A "untracked"** — expected; the tool
   includes untracked, non-ignored files so work in progress still counts.
 - **`--fail-under` is not wired into CI on purpose.** The base moves on every
