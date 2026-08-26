@@ -259,8 +259,51 @@ class TestUpstreamBase:
             ac._resolve_base(str(repo), None)
 
     def test_unknown_explicit_ref_names_the_fetch(self, repo):
-        with pytest.raises(ac.ToolError, match="fetch --depth=1 upstream tag"):
+        with pytest.raises(ac.ToolError, match="git fetch origin tag v0.0.0"):
             ac._resolve_base(str(repo), "v0.0.0")
+
+    def test_disconnected_history_is_not_reported_as_a_missing_ref(self, repo):
+        """`merge-base` can fail on a ref that resolved perfectly well.
+
+        Without its own check that reads as a bare "merge-base failed" with an
+        empty stderr, which names neither the ref nor anything to do about it.
+        """
+        self._tagged(repo, "v0.5.3+amd.1")
+        _git(repo, "checkout", "-q", "--orphan", "unrelated")
+        _write(repo, "flashinfer/d.py", "d = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "unrelated root")
+
+        with pytest.raises(ac.ToolError, match="shares no history with HEAD"):
+            ac._resolve_base(str(repo), "v0.5.3")
+
+    def test_shallow_clone_is_told_to_unshallow_not_to_fetch_tags(self, repo, tmp_path):
+        """The default path dies in `describe`, before `merge-base` is reached.
+
+        Fetching tags into a grafted clone leaves them unreachable, so advice to
+        do that sends people round a loop that cannot terminate.
+        """
+        self._tagged(repo, "v0.5.3+amd.1")
+        _write(repo, "flashinfer/later.py", "c = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "after the release")
+
+        # A sibling, not a child: `repo` *is* tmp_path, and cloning into it
+        # would leave the clone sitting inside its own origin.
+        shallow = tmp_path.parent / f"{tmp_path.name}-shallow"
+        subprocess.run(
+            ["git", "clone", "-q", "--depth=1", f"file://{repo}", str(shallow)],
+            check=True,
+            capture_output=True,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        _git(shallow, "fetch", "-q", "--tags", "origin")
+        assert ac._is_shallow(str(shallow)), "fixture did not produce a shallow clone"
+        tags = ac._git(str(shallow), "tag", "-l")
+        assert "v0.5.3+amd.1" in tags, "the tag is present, just not reachable"
+
+        with pytest.raises(ac.ToolError, match="unshallow"):
+            ac._resolve_base(str(shallow), None)
 
 
 class TestManifest:
@@ -364,7 +407,11 @@ class TestManifest:
         path-existence test above still passed, so the tool has to be exercised.
         """
         repo = ac._git(None, "rev-parse", "--show-toplevel")
-        base = ac._resolve_base(repo, "upstream/main")
+        try:
+            base = ac._resolve_base(repo, None)
+        except ac.ToolError as exc:
+            # A shallow clone reaches neither the release tag nor the fork point.
+            pytest.skip(f"no upstream base in this clone: {exc}")
         manifest = ac._load_toml(Path(repo) / ac._MANIFEST)
 
         owned, excluded, unowned, ruled = ac.classify(repo, base, manifest)

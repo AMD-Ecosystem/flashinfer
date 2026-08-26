@@ -122,6 +122,24 @@ def _load_toml(path: Path) -> dict:
         return tomllib.load(fh)
 
 
+def _is_shallow(repo: str) -> bool:
+    return _run(repo, "rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+
+
+def _unshallow_hint(repo: str) -> str:
+    """Why a ref is out of reach, when the repository is grafted.
+
+    Fetching tags into a shallow clone does not help: `describe` and `merge-base`
+    need the tag to be *reachable*, and the graft is what severs it.
+    """
+    if not _is_shallow(repo):
+        return ""
+    return (
+        "\nThis clone is shallow, so history stops before the fork point -- "
+        "fetching tags will not help:\n  git fetch --unshallow origin"
+    )
+
+
 def _upstream_release(repo: str) -> str:
     """The upstream tag this fork is based on, from its own release tag.
 
@@ -136,6 +154,7 @@ def _upstream_release(repo: str) -> str:
             "cannot tell which upstream release this fork is based on: no "
             "reachable tag matching '*+amd.*'. Fetch tags (`git fetch --tags "
             "origin`) or name the base explicitly with --upstream-ref."
+            + _unshallow_hint(repo)
         )
     return described.stdout.strip().split("+amd.")[0]
 
@@ -154,12 +173,21 @@ def _resolve_base(repo: str, upstream_ref: Optional[str]) -> str:
     )
     if probe.returncode:
         raise ToolError(
-            f"unknown ref '{ref}'. If it is an upstream tag this clone has not "
-            "fetched:\n"
-            "  git remote add upstream https://github.com/flashinfer-ai/flashinfer.git\n"
-            f"  git fetch --depth=1 upstream tag {ref}"
+            f"unknown ref '{ref}'. `origin` carries the upstream release tags, so "
+            "no second remote is needed:\n"
+            f"  git fetch origin tag {ref}" + _unshallow_hint(repo)
         )
-    return _git(repo, "merge-base", "HEAD", ref)
+    merge_base = _run(repo, "merge-base", "HEAD", ref, check=False)
+    if merge_base.returncode:
+        # rc 1 is the documented "no common ancestor"; anything else is a real
+        # git error whose stderr is the only clue, so do not bury it.
+        detail = (
+            _unshallow_hint(repo)
+            if merge_base.returncode == 1
+            else "\n" + merge_base.stderr.strip()
+        )
+        raise ToolError(f"'{ref}' shares no history with HEAD.{detail}")
+    return merge_base.stdout.strip()
 
 
 def _diff_status(repo: str, base: str) -> Tuple[Dict[str, str], Dict[str, str]]:

@@ -26,7 +26,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Full history and tags: the coverage tool derives its diff base from the
+      # fork's own release tag and then walks back to the fork point, neither of
+      # which a depth-1 checkout can reach.
       - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -44,22 +49,18 @@ jobs:
         run: pytest --noconftest tests/rocm_tests/test_arch_caps_hip.py
 
       # The other hardware-less suite: ownership classification for
-      # scripts/amd_coverage.py. It builds throwaway git repositories and never
-      # needs the upstream remote, so a shallow checkout is enough.
+      # scripts/amd_coverage.py. Mostly throwaway git repositories, but one case
+      # resolves the base against this checkout and skips when it cannot, so -rs
+      # keeps that from vanishing silently.
       - name: Coverage-ownership classification (no GPU, no torch)
-        run: pytest --noconftest tests/rocm_tests/test_amd_coverage.py
+        run: pytest -rs --noconftest tests/rocm_tests/test_amd_coverage.py
 
       # The unit tests once stayed green while the tool itself raised on every
-      # invocation, so CI has to actually invoke it. The base is the upstream
-      # release this fork is tagged against, so only that one tag is needed --
-      # no suite run, no GPU.
+      # invocation, so CI has to actually invoke it. This also fails loudly if
+      # the test above starts skipping for want of a base: no suite run, no GPU.
       - name: Coverage tool runs at all
         run: |
-          git fetch --depth=1 --tags origin '+refs/tags/*+amd.*:refs/tags/*+amd.*'
-          UPSTREAM=$(git describe --tags --abbrev=0 --match '*+amd.*' | cut -d+ -f1)
-          echo "fork is based on upstream $UPSTREAM"
-          git remote add upstream https://github.com/flashinfer-ai/flashinfer.git
-          git fetch --depth=1 upstream tag "$UPSTREAM"
+          echo "fork is based on upstream $(git describe --tags --abbrev=0 --match '*+amd.*' | cut -d+ -f1)"
           python -c "
           import importlib.util, pathlib, sys
           spec = importlib.util.spec_from_file_location('ac', 'scripts/amd_coverage.py')
