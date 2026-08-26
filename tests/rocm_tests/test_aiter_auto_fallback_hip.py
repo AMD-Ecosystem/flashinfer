@@ -305,6 +305,16 @@ def test_paged_prefill_auto_demotes_to_fa2(device, monkeypatch):
         page_size,
     ) = _paged_inputs(device)
 
+    # Patch the native-paging bootstrap too. page_size=16 is not native on
+    # amd-aiter 0.1.10, but _aiter_native_page_sizes() falls back to {16, 1024}
+    # when the version cannot be read -- e.g. an AITER source build installed as
+    # `aiter`. There the native probe would run first and win, and this test
+    # would fail on an assertion that has nothing to do with what it covers.
+    monkeypatch.setattr(
+        flashinfer.prefill_rocm,
+        "_aiter_bootstrap_batch_prefill",
+        _raiser(_INSTALL_FAILURE),
+    )
     monkeypatch.setattr(
         flashinfer.prefill_rocm,
         "_aiter_bootstrap_batch_ragged_prefill",
@@ -371,6 +381,16 @@ def test_ragged_prefill_auto_demotes_to_fa2(device, monkeypatch):
     )
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.int8, device=device)
 
+    # Patch the native-paging bootstrap too. page_size=16 is not native on
+    # amd-aiter 0.1.10, but _aiter_native_page_sizes() falls back to {16, 1024}
+    # when the version cannot be read -- e.g. an AITER source build installed as
+    # `aiter`. There the native probe would run first and win, and this test
+    # would fail on an assertion that has nothing to do with what it covers.
+    monkeypatch.setattr(
+        flashinfer.prefill_rocm,
+        "_aiter_bootstrap_batch_prefill",
+        _raiser(_INSTALL_FAILURE),
+    )
     monkeypatch.setattr(
         flashinfer.prefill_rocm,
         "_aiter_bootstrap_batch_ragged_prefill",
@@ -428,6 +448,16 @@ def test_paged_prefill_explicit_aiter_still_raises(device, monkeypatch):
         head_dim,
         page_size,
     ) = _paged_inputs(device)
+    # Patch the native-paging bootstrap too. page_size=16 is not native on
+    # amd-aiter 0.1.10, but _aiter_native_page_sizes() falls back to {16, 1024}
+    # when the version cannot be read -- e.g. an AITER source build installed as
+    # `aiter`. There the native probe would run first and win, and this test
+    # would fail on an assertion that has nothing to do with what it covers.
+    monkeypatch.setattr(
+        flashinfer.prefill_rocm,
+        "_aiter_bootstrap_batch_prefill",
+        _raiser(_INSTALL_FAILURE),
+    )
     monkeypatch.setattr(
         flashinfer.prefill_rocm,
         "_aiter_bootstrap_batch_ragged_prefill",
@@ -523,8 +553,10 @@ def test_decode_auto_demotes_to_fa2(device, monkeypatch):
     assert wrapper.backend_fallback_reason.startswith(
         "aiter batch_decode kernel bootstrap failed"
     )
-    # A demotion must leave no half-written AITER state for run() to trip over.
-    assert getattr(wrapper, "_aiter_so_path", None) is None
+    # A demotion must leave no half-written AITER state. hasattr, not getattr --
+    # the attribute is never defined at class level, so a `is None` check would
+    # pass no matter what plan() did.
+    assert not hasattr(wrapper, "_aiter_so_path")
     out = wrapper.run(q, kv_data)
 
     monkeypatch.undo()
@@ -533,6 +565,38 @@ def test_decode_auto_demotes_to_fa2(device, monkeypatch):
     )
     _plan_decode(ref_wrapper, args)
     torch.testing.assert_close(out, ref_wrapper.run(q, kv_data), rtol=1e-3, atol=1e-3)
+
+
+def test_decode_replan_demotes_instead_of_raising(device, monkeypatch):
+    """A wrapper that planned once on AITER must still demote on a later plan().
+
+    plan() overwrites _backend with the concrete choice, so deriving "did the
+    caller ask for auto" from _backend makes every plan() after the first take
+    the explicit path and raise. The probe key varies per plan (max_context_len
+    picks the AITER variant), so this is reachable, not theoretical.
+    """
+    _skip_if_op_gated(device, "batch_decode")
+    args = _decode_inputs(device)
+    q, kv_data, workspace = args[0], args[1], args[5]
+
+    wrapper = flashinfer.decode.BatchDecodeWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="auto", use_tensor_cores=False
+    )
+    _plan_decode(wrapper, args)
+    first_backend = wrapper._backend
+
+    # Only now does AITER become unable to build; re-plan must not propagate it.
+    _clear_probes()
+    monkeypatch.setattr(
+        flashinfer.decode_rocm, "_aiter_pa_v1_resolve", _raiser(_INSTALL_FAILURE)
+    )
+    _plan_decode(wrapper, args)
+
+    assert wrapper._backend == "fa2", (
+        f"re-plan kept backend {wrapper._backend!r} after the AITER build failed "
+        f"(first plan chose {first_backend!r})"
+    )
+    wrapper.run(q, kv_data)
 
 
 def test_decode_explicit_aiter_still_raises(device, monkeypatch):

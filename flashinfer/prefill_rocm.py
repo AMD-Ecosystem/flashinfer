@@ -1879,6 +1879,11 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._mask_indptr_buf = mask_indptr_buf
         self._max_total_num_rows = None
         self._backend = backend
+        # plan() overwrites _backend with the concrete choice, so it cannot say
+        # whether the *caller* asked for auto. Later plan() calls need that: the
+        # probe key varies per call (causal, dtype), so a wrapper that planned
+        # once on AITER can still meet an unbuildable variant later.
+        self._backend_requested = backend
         self._backend_fallback_reason: Optional[str] = None
         self._plan_info: Optional[torch.Tensor] = None
         self._cached_module = None
@@ -2226,12 +2231,11 @@ class BatchPrefillWithPagedKVCacheWrapper:
             use_fp16_qk_reduction,
         )
 
-        resolved_from_auto = False
+        resolved_from_auto = self._backend_requested == "auto"
         if self._jit_module is not None:
             self._cached_module = self._jit_module
         else:
             if self._backend == "auto":
-                resolved_from_auto = True
                 self._backend, self._backend_fallback_reason = (
                     _auto_select_prefill_backend(
                         self.device,
@@ -2291,7 +2295,13 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     # let the C++ dlopen fail inside run().  The helper compiles both
                     # has_lse variants because plan() can't know which one run() will
                     # request; causal is fixed per plan() call.
-                    if resolved_from_auto:
+                    # Demoting after a graph capture would null the flat-gather
+                    # buffers the captured graph still points at, so once they
+                    # exist under capture the failure has to stay an exception.
+                    if resolved_from_auto and not (
+                        self.is_cuda_graph_enabled
+                        and self._aiter_flat_gather_idx is not None
+                    ):
                         reason = _aiter_batch_ragged_available(
                             q_data_type, has_logits, causal, head_dim_qk, dev_idx
                         )
@@ -2951,6 +2961,9 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         self._mask_indptr_buf = mask_indptr_buf
         self._max_total_num_rows = None
         self._backend = backend
+        # See the paged wrapper: _backend goes concrete after the first plan(),
+        # so the caller's original request has to be kept separately.
+        self._backend_requested = backend
         self._backend_fallback_reason: Optional[str] = None
         self._plan_info: Optional[torch.Tensor] = None
         self._cached_module = None
@@ -3218,12 +3231,11 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             use_fp16_qk_reduction,
         )
 
-        resolved_from_auto = False
+        resolved_from_auto = self._backend_requested == "auto"
         if self._jit_module is not None:
             self._cached_module = self._jit_module
         else:
             if self._backend == "auto":
-                resolved_from_auto = True
                 self._backend, self._backend_fallback_reason = (
                     _auto_select_prefill_backend(
                         self.device,

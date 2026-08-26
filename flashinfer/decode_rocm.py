@@ -481,13 +481,16 @@ def _aiter_pa_v1_available(
     logits_soft_cap: float,
     sliding_window: int,
     partition_size: int,
+    device_idx: int,
 ) -> Tuple[Optional[Tuple[str, str]], Optional[str]]:
     """Resolve AITER PA v1 for this problem; returns ((so_path, func_name), None)
     or (None, reason) when this AITER install cannot build the variant.
 
-    Positional-only by convention: lru_cache keys kwargs by insertion order, so
-    keyword calls would make argument order a silent cache-miss hazard.
+    device_idx is in the key but unused: the resolved .so is arch-specific, and
+    this host can hold gfx942 and gfx950 at once. Positional-only by convention,
+    since lru_cache keys kwargs by insertion order.
     """
+    del device_idx
     try:
         resolved = _aiter_pa_v1_resolve(
             dtype_q=dtype_q,
@@ -979,6 +982,10 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     device=float_workspace_buffer.device,
                 )
         self._backend = backend
+        # plan() overwrites _backend with the concrete choice; a later plan()
+        # with a longer max_context_len needs a different AITER variant, so it
+        # still has to know the caller asked for auto.
+        self._backend_requested = backend
         self._backend_fallback_reason: Optional[str] = None
         # ROCm never supports PDL; cache once to avoid per-call device property lookup.
         self._pdl_supported = device_support_pdl(float_workspace_buffer.device)
@@ -1195,12 +1202,11 @@ class BatchDecodeWithPagedKVCacheWrapper:
         # capturing at the maximum sequence length. AITER decode under CUDA graph is
         # therefore opt-in via an explicit backend="aiter" (see the capture-at-max
         # warning below), not something `auto` selects silently.
-        resolved_from_auto = False
+        resolved_from_auto = self._backend_requested == "auto"
         if self._backend == "auto":
             if self.use_tensor_cores or self.is_cuda_graph_enabled:
                 self._backend = "fa2"
             else:
-                resolved_from_auto = True
                 self._backend, self._backend_fallback_reason = (
                     _auto_select_prefill_backend(
                         self.device,
@@ -1277,6 +1283,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
                         logits_soft_cap,
                         aiter_sliding_window,
                         _AITER_PA_V1_PARTITION_SIZE,
+                        self.device.index if self.device.index is not None else 0,
                     )
                 else:
                     resolved = _aiter_pa_v1_resolve(
