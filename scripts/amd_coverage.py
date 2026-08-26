@@ -367,6 +367,12 @@ def score(
         # hunks also drops the blank lines and comments a hunk spans.
         stmts = set(statements)
         selected = stmts if entry.changed is None else stmts & entry.changed
+        # Scope the exclusion count to the lines we own, not the whole file: for
+        # tier B, a guard outside our diff was never in our denominator, so
+        # counting it claims the exclusion removed more than it did. Intersect
+        # with `changed` rather than `selected` -- excluded lines are not
+        # statements, so they were already taken out of `stmts`.
+        dropped = excluded if entry.changed is None else set(excluded) & entry.changed
         scores.append(
             Score(
                 path=path,
@@ -375,7 +381,7 @@ def score(
                 owned=selected,
                 covered=executed.get(path, set()) & selected,
                 import_time=import_lines.get(path, set()) & selected,
-                excluded=len(excluded),
+                excluded=len(dropped),
             )
         )
 

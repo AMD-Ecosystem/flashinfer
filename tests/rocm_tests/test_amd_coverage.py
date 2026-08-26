@@ -517,7 +517,46 @@ class TestDataFileHygiene:
         assert ac._jit_reach(tmp_path, tmp_path, data) is None
 
 
-class TestForeignSourceRoots:
+class TestExclusionAccounting:
+    def test_tier_b_counts_only_exclusions_inside_our_diff(self, repo, tmp_path):
+        """A guard outside our diff was never in our denominator to remove."""
+        coverage = pytest.importorskip("coverage")
+        body = [
+            "IS_CUDA = False",  # 1
+            "if IS_CUDA:",  # 2  guard upstream owns
+            "    THEIRS = 1",  # 3
+            "VALUE = 2",  # 4
+            "if IS_CUDA:",  # 5  guard inside our diff
+            "    OURS = 3",  # 6
+        ]
+        _write(repo, "flashinfer/up.py", "\n".join(body) + "\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "upstream")
+        base = _base(repo)
+        # Our diff touches an ordinary statement (4) and a guarded one (6).
+        edited = body[:3] + ["VALUE = 22", body[4], "    OURS = 99"]
+        _write(repo, "flashinfer/up.py", "\n".join(edited) + "\n")
+        (repo / "pyproject.toml").write_text(
+            "[tool.coverage.run]\nsource = ['.']\n\n"
+            # TOML literal strings do not escape, so this is the regex verbatim.
+            "[tool.coverage.report]\nexclude_also = ['^\\s*if IS_CUDA:\\s*$']\n",
+            encoding="utf-8",
+        )
+        data = tmp_path / ".coverage"
+        seeded = coverage.CoverageData(basename=str(data))
+        # One executed owned line, or score()'s empty-run guard fires first.
+        seeded.add_lines({str(repo / "flashinfer" / "up.py"): [4]})
+        seeded.write()
+
+        owned, _, _, _ = ac.classify(str(repo), base, {})
+        scores, _ = ac.score(repo, owned, data, None)
+        entry = next(s for s in scores if s.path == "flashinfer/up.py")
+
+        assert entry.owned == {4}, "the guarded line is excluded from the denominator"
+        # Whole-file counting would report 4 (both guards and both bodies);
+        # only line 6 is inside our diff.
+        assert entry.excluded == 1
+
     def test_lines_from_another_checkout_are_reported(self, tmp_path):
         """The main checkout's editable install shadows a worktree without PYTHONPATH."""
         coverage = pytest.importorskip("coverage")
