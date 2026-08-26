@@ -183,7 +183,7 @@ that are not edits to anything, and its workflow only watches
 appears there at all.
 
 **Forked headers are exempt from conflicts and therefore from warnings.**
-Everything under `include/flashinfer/generic/` is a fork of an upstream header
+Everything under `include/flashinfer/rocm/` is a fork of an upstream header
 re-expressed on `gpu_iface` — `generic/attention/` for the attention headers,
 plus `generic/sampling.cuh` and `generic/quantization.cuh`. Their upstream
 originals are byte-identical to the merge base and will merge cleanly forever,

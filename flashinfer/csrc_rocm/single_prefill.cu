@@ -15,7 +15,7 @@
  */
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 
-#include <flashinfer/generic/attention/pos_enc.cuh>
+#include <flashinfer/rocm/attention/pos_enc.cuh>
 #include <gpu_iface/enums.hpp>
 #include <gpu_iface/fastdiv.cuh>
 #include <optional>

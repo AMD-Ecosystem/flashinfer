@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include <flashinfer/generic/sampling.cuh>
+#include <flashinfer/rocm/sampling.cuh>
 
 #include "pytorch_extension_utils.h"
 

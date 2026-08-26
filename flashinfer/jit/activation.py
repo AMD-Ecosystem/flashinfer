@@ -15,7 +15,7 @@ from ..device_utils import IS_HIP
 if IS_HIP:
     activation_templ = r"""
   #include <gpu_iface/platform.hpp>
-  #include <flashinfer/generic/attention/activation.cuh>
+  #include <flashinfer/rocm/attention/activation.cuh>
   #include "pytorch_extension_utils.h"
   #include <hip/hip_runtime.h>
 
