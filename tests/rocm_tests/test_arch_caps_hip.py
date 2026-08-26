@@ -526,7 +526,19 @@ _GEN_PATH = _GEN_PATH / "gen_arch_support_matrix.py"
 
 
 def _load_generator():
+    # The generator's own _load_arch_caps() guards the same two cases, but
+    # raises SystemExit -- right inside a pre-commit hook, wrong here, where it
+    # turns a collection error into a pytest INTERNALERROR with no test summary.
+    #
+    # A missing file already fails readably (FileNotFoundError names the path);
+    # this guard only improves the wording. A path importlib has no source
+    # loader for is the one that needs catching: spec is None, and
+    # module_from_spec(None) raises AttributeError from inside importlib.
+    if not _GEN_PATH.is_file():
+        raise RuntimeError(f"cannot read the matrix generator at {_GEN_PATH}")
     spec = importlib.util.spec_from_file_location("_arch_matrix_gen", _GEN_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"no Python source loader for {_GEN_PATH}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -591,32 +603,29 @@ class TestNoteValidation:
 class TestLegend:
     """The legend explains the symbols the table uses, and only those.
 
-    Both cases edit one named row rather than a positional one: keyed by
-    ``(op, backend)`` these stay meaningful however the table is reordered or
-    extended, and an appended row that is genuinely ❌ cannot make the first
-    case pass or fail for the wrong reason.
+    Each case renders a **one-row** table. ``used`` is accumulated across every
+    row, so rendering the full table would let an unrelated row answer for the
+    row under test -- and a future CDNA4-only row would do exactly that, since
+    a missing arch entry renders as ❌.
     """
 
     ROW = ("quantization", "hip")
 
-    def _render_with(self, **changes):
-        rows = [
-            dataclasses.replace(cap, **changes)
-            if (cap.op, cap.backend) == self.ROW
-            else cap
-            for cap in arch_caps.CAPABILITIES
-        ]
-        assert any((c.op, c.backend) == self.ROW for c in rows), (
-            f"{self.ROW} is no longer in CAPABILITIES; pick another row"
-        )
-        return gen.render(types.SimpleNamespace(CAPABILITIES=tuple(rows)))
+    def _row(self):
+        for cap in arch_caps.CAPABILITIES:
+            if (cap.op, cap.backend) == self.ROW:
+                return cap
+        raise AssertionError(f"{self.ROW} left CAPABILITIES; pick another row")
+
+    def _render_only(self, **changes):
+        cap = dataclasses.replace(self._row(), **changes)
+        return gen.render(types.SimpleNamespace(CAPABILITIES=(cap,)))
 
     def test_a_symbol_named_only_in_a_note_gets_no_legend_entry(self):
-        rendered = self._render_with(note="not available on pre-CDNA3 (marked ❌)")
+        rendered = self._render_only(note="not available on pre-CDNA3 (marked ❌)")
         assert "**not available**" not in rendered
 
     def test_a_symbol_used_in_a_status_cell_gets_one(self):
-        cap = arch_caps._BY_KEY[self.ROW]
-        archs = dict(cap.archs)
+        archs = dict(self._row().archs)
         archs["gfx942"] = arch_caps.ArchSupport(arch_caps.Support.UNSUPPORTED)
-        assert "**not available**" in self._render_with(archs=archs)
+        assert "**not available**" in self._render_only(archs=archs)
