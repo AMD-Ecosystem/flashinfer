@@ -6,6 +6,7 @@
 # Adapted from https://github.com/pytorch/pytorch/blob/v2.7.0/torch/utils/cpp_extension.py
 
 import os
+import shlex
 import subprocess
 import sys
 import sysconfig
@@ -37,6 +38,54 @@ def join_multiline(vs: List[str]) -> str:
     return " $\n    ".join(vs)
 
 
+def _env_flags(name: str) -> List[str]:
+    """Split an env var of extra compiler flags, tolerating unbalanced quotes."""
+    raw = os.environ.get(name)
+    if not raw:
+        return []
+    try:
+        return shlex.split(raw)
+    except ValueError as exc:
+        print(
+            f"Warning: Could not parse {name} with shlex: {exc}. "
+            "Falling back to simple split.",
+            file=sys.stderr,
+        )
+        return raw.split()
+
+
+def _own_headers_non_system() -> bool:
+    """True when this fork's own headers should be -I rather than -isystem."""
+    return os.environ.get("FLASHINFER_OWN_HEADERS_NON_SYSTEM", "0") == "1"
+
+
+def _for_host(flags: List[str]) -> List[str]:
+    """Rewrite compile flags for the plain host compiler.
+
+    Drops `--offload-arch`, which only the HIP driver understands, and unwraps
+    `-Xarch_host X` to `X` -- the host rule is not an offload compile, so the
+    driver rejects the prefixed form outright. A dropped flag takes its argument
+    with it; leaving a bare `gfx942` behind reads as a missing linker input.
+    """
+    out: List[str] = []
+    i = 0
+    while i < len(flags):
+        flag = flags[i]
+        if flag.startswith("--offload-arch="):
+            i += 1
+        elif flag == "--offload-arch":
+            i += 2  # separate-argument form; past the end is a no-op
+        elif flag == "-Xarch_host" and i + 1 < len(flags):
+            out.append(flags[i + 1])
+            i += 2
+        elif flag == "-Xarch_device" and i + 1 < len(flags):
+            i += 2
+        else:
+            out.append(flag)
+            i += 1
+    return out
+
+
 def generate_ninja_build_for_op(
     name: str,
     sources: List[Path],
@@ -51,6 +100,11 @@ def generate_ninja_build_for_op(
         "$torch_home/include",
         "$torch_home/include/torch/csrc/api/include",
         "$cuda_home/include",
+    ]
+    # Ours, and normally also -isystem to keep third-party warnings quiet -- which
+    # silences them in our own headers too, and suppresses instrumentation there.
+    # FLASHINFER_OWN_HEADERS_NON_SYSTEM=1 makes them -I so both apply.
+    own_includes = [
         jit_env.FLASHINFER_INCLUDE_DIR.resolve(),
         jit_env.FLASHINFER_CSRC_DIR.resolve(),
     ]
@@ -67,6 +121,9 @@ def generate_ninja_build_for_op(
             common_cflags.append(f"-I{extra_dir.resolve()}")
     for sys_dir in system_includes:
         common_cflags.append(f"-isystem {sys_dir}")
+    own_include_flag = "-I" if _own_headers_non_system() else "-isystem "
+    for own_dir in own_includes:
+        common_cflags.append(f"{own_include_flag}{own_dir}")
 
     cflags = [
         "$common_cflags",
@@ -82,6 +139,7 @@ def generate_ninja_build_for_op(
     ]
     if extra_cuda_cflags is not None:
         cuda_cflags += extra_cuda_cflags
+    cuda_cflags += _env_flags("FLASHINFER_EXTRA_CUDAFLAGS")
 
     ldflags = [
         "-shared",
@@ -97,18 +155,7 @@ def generate_ninja_build_for_op(
         "-lamdhip64",
     ]
 
-    env_extra_ldflags = os.environ.get("FLASHINFER_EXTRA_LDFLAGS")
-    if env_extra_ldflags:
-        try:
-            import shlex
-
-            ldflags += shlex.split(env_extra_ldflags)
-        except ValueError as e:
-            print(
-                f"Warning: Could not parse FLASHINFER_EXTRA_LDFLAGS with shlex: {e}. Falling back to simple split.",
-                file=sys.stderr,
-            )
-            ldflags += env_extra_ldflags.split()
+    ldflags += _env_flags("FLASHINFER_EXTRA_LDFLAGS")
 
     if extra_ldflags is not None:
         ldflags += extra_ldflags
@@ -117,8 +164,14 @@ def generate_ninja_build_for_op(
     rocm_home = ROCM_HOME
     amdclang = os.environ.get("PYTORCH_AMDCLANG", "$rocm_home/bin/amdclang++")
 
-    # host_cflags: strip flags the host c++ compiler doesn't understand (--offload-arch)
-    host_cflags = [f for f in cflags if not f.startswith("--offload-arch")]
+    # Mirrors FLASHINFER_EXTRA_CFLAGS/CUDAFLAGS on the CUDA path (cpp_ext.py);
+    # the HIP path previously had a hook for link flags only.
+    #
+    # CFLAGS lands here, on the host rule alone, rather than in `cflags`: the
+    # hip_compile rule below ends with `$cflags`, so anything put there would
+    # also reach device codegen and, being last, would outrank both -O3 and
+    # FLASHINFER_EXTRA_CUDAFLAGS. On CUDA the var is host-only; keep it so.
+    host_cflags = _for_host(cflags) + _env_flags("FLASHINFER_EXTRA_CFLAGS")
 
     lines = [
         "ninja_required_version = 1.3",
