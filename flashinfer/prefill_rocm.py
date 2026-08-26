@@ -304,6 +304,13 @@ def _aiter_noop_plan(*args, **kwargs):
 @functools.cache
 def _aiter_ops_importable() -> bool:
     try:
+        # AITER 0.1.16+ freezes arch state at import, so GPU_ARCHS has to be set
+        # before this import, not before the first build. This is the second
+        # entry point that imports aiter; aiter_utils._aiter_importable is the
+        # other, and prefill/decode reach this one first.
+        from .aiter_utils import _ensure_aiter_gpu_archs
+
+        _ensure_aiter_gpu_archs()
         import aiter.ops  # noqa: F401
 
         return True
@@ -2312,6 +2319,14 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         ),
                     )
                 )
+            if self._backend == "aiter" and _aiter_softcap_defect(
+                causal, logits_soft_cap, head_dim_qk, self._max_kv_len
+            ):
+                raise ValueError(
+                    "AITER miscomputes logits_soft_cap for causal head_dim=128 prefill "
+                    f"with kv_len >= 512 (through amd-aiter {_AITER_SOFTCAP_DEFECT_THROUGH}); "
+                    "use backend='fa2' or backend='auto' instead."
+                )
             if self._backend == "aiter" and pos_encoding_mode != "NONE":
                 raise ValueError(
                     f"AITER backend does not support pos_encoding_mode={pos_encoding_mode!r}; "
@@ -3316,6 +3331,14 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                         logits_soft_cap=logits_soft_cap,
                         kv_len=self._max_kv_len,
                     )
+                )
+            if self._backend == "aiter" and _aiter_softcap_defect(
+                causal, logits_soft_cap, head_dim_qk, self._max_kv_len
+            ):
+                raise ValueError(
+                    "AITER miscomputes logits_soft_cap for causal head_dim=128 prefill "
+                    f"with kv_len >= 512 (through amd-aiter {_AITER_SOFTCAP_DEFECT_THROUGH}); "
+                    "use backend='fa2' or backend='auto' instead."
                 )
             if self._backend == "aiter" and pos_encoding_mode != "NONE":
                 raise ValueError(

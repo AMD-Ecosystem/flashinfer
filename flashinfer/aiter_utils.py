@@ -29,7 +29,6 @@ def is_aiter_supported(device: torch.device) -> bool:
     return arch in FLASHINFER_SUPPORTED_ROCM_ARCHS
 
 
-@functools.lru_cache(maxsize=1)
 def _ensure_aiter_gpu_archs() -> None:
     """Give AITER's JIT a GPU_ARCHS, since from 0.1.16 it requires one.
 
@@ -37,6 +36,10 @@ def _ensure_aiter_gpu_archs() -> None:
     own shim build sets this for its own scope, but AITER's Python ops (decode,
     paged-append, fused MoE) build outside it. Only fills a missing value, so an
     operator-set GPU_ARCHS still wins.
+
+    Deliberately uncached: ``_build_aiter_lib`` sets GPU_ARCHS for its own scope
+    and pops it again, so a cached "already done" taken while that value was
+    live would leave the variable unset for the rest of the process.
     """
     if os.environ.get("GPU_ARCHS"):
         return
@@ -49,6 +52,7 @@ def _ensure_aiter_gpu_archs() -> None:
         os.environ["GPU_ARCHS"] = arch
 
 
+@functools.lru_cache(maxsize=1)
 def _aiter_importable() -> bool:
     """True when the AITER packages needed for the C++ backends actually import.
 

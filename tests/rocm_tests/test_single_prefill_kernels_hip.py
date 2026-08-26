@@ -359,7 +359,7 @@ def test_auto_backend_avoids_aiter_softcap_defect(
 
     from flashinfer.prefill_rocm import _auto_select_prefill_backend
 
-    chosen = _auto_select_prefill_backend(
+    chosen, reason = _auto_select_prefill_backend(
         device,
         dtype_q=torch.float16,
         dtype_kv=torch.float16,
@@ -374,7 +374,11 @@ def test_auto_backend_avoids_aiter_softcap_defect(
         logits_soft_cap=soft_cap,
         kv_len=kv_len,
     )
-    assert chosen == ("aiter" if expect_aiter else "fa2")
+    assert chosen == ("aiter" if expect_aiter else "fa2"), reason
+    # Assert on the reason too, so a fallback for some unrelated cause cannot
+    # masquerade as the soft-cap guard working.
+    if not expect_aiter:
+        assert reason is not None and "logits_soft_cap" in reason, reason
 
 
 def test_explicit_aiter_backend_rejects_softcap_defect():

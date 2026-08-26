@@ -94,7 +94,7 @@ ENV ROCM_SDK="/opt/venv/lib/python${PY_VERSION}/site-packages/_rocm_sdk_core"
 COPY --from=rocmdev /opt/rocm/core-${ROCM_VERSION}/include /opt/rocm-headers/include
 
 #  1. Headers, from the donor stage above.
-ENV CPATH="/opt/rocm-headers/include"
+ENV CPATH="/opt/rocm-headers/include${CPATH:+:$CPATH}"
 #  2. Link names: the SDK ships only versioned libs (libamdhip64.so.7), so
 #     -lamdhip64 cannot resolve without an unversioned symlink.
 #  3. Compiler name: flashinfer invokes $ROCM_HOME/bin/amdclang++, and the SDK
@@ -112,8 +112,10 @@ RUN set -eu; \
 # clang via $ROCM_PATH/lib/llvm/bin, which only exists under the SDK.
 ENV ROCM_PATH="$ROCM_SDK"
 ENV ROCM_HOME="$ROCM_SDK"
-ENV LIBRARY_PATH="$ROCM_SDK/lib"
-ENV LD_LIBRARY_PATH="$ROCM_SDK/lib"
+# Appended, not assigned: the base image sets these for torch's own bundled
+# ROCm libs (RCCL, MIOpen), and clobbering them surfaces far from here.
+ENV LIBRARY_PATH="${LIBRARY_PATH:+$LIBRARY_PATH:}$ROCM_SDK/lib"
+ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$ROCM_SDK/lib"
 
 # setuptools and setuptools-scm are the in-tree backend's build requirements.
 # They must be in the image because the documented install passes
