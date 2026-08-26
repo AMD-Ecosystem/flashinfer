@@ -122,23 +122,44 @@ def _load_toml(path: Path) -> dict:
         return tomllib.load(fh)
 
 
-def _resolve_base(repo: str, upstream_ref: str) -> str:
+def _upstream_release(repo: str) -> str:
+    """The upstream tag this fork is based on, from its own release tag.
+
+    Releases are tagged `<upstream_version>+amd.<n>`, so `v0.5.3+amd.2` means
+    the port is based on upstream `v0.5.3`.
+    """
+    described = _run(
+        repo, "describe", "--tags", "--abbrev=0", "--match", "*+amd.*", check=False
+    )
+    if described.returncode:
+        raise ToolError(
+            "cannot tell which upstream release this fork is based on: no "
+            "reachable tag matching '*+amd.*'. Fetch tags (`git fetch --tags "
+            "origin`) or name the base explicitly with --upstream-ref."
+        )
+    return described.stdout.strip().split("+amd.")[0]
+
+
+def _resolve_base(repo: str, upstream_ref: Optional[str]) -> str:
+    """The commit this fork diverged from.
+
+    Defaults to the upstream *release* the port is based on, not to a moving
+    branch: `upstream/main` advances independently, which silently reclassifies
+    files and makes two runs weeks apart incomparable. The release tag is fixed
+    for the life of a port, so the number means the same thing each time.
+    """
+    ref = upstream_ref or _upstream_release(repo)
     probe = _run(
-        repo,
-        "rev-parse",
-        "--verify",
-        "--quiet",
-        f"{upstream_ref}^{{commit}}",
-        check=False,
+        repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False
     )
     if probe.returncode:
         raise ToolError(
-            f"unknown ref '{upstream_ref}'. If it names a remote you have not "
-            "configured, add it first:\n"
+            f"unknown ref '{ref}'. If it is an upstream tag this clone has not "
+            "fetched:\n"
             "  git remote add upstream https://github.com/flashinfer-ai/flashinfer.git\n"
-            "  git fetch upstream main"
+            f"  git fetch --depth=1 upstream tag {ref}"
         )
-    return _git(repo, "merge-base", "HEAD", upstream_ref)
+    return _git(repo, "merge-base", "HEAD", ref)
 
 
 def _diff_status(repo: str, base: str) -> Tuple[Dict[str, str], Dict[str, str]]:
@@ -238,7 +259,11 @@ def classify(
         out: Dict[str, str] = {}
         for item in manifest.get(key, []):
             path, reason = item["path"], item.get("reason", "")
-            if not (root / path).exists():
+            # Existence is only required of rulings that must be on the surface.
+            # `excluded` routinely names build artifacts -- a generated,
+            # gitignored module is the case it exists for -- which are simply
+            # absent in a fresh checkout, as CI proved.
+            if must_be_on_surface and not (root / path).exists():
                 raise ToolError(
                     f"{_MANIFEST}: [{key}] names '{path}', which does not exist. "
                     "Remove the entry or fix the path."
@@ -899,8 +924,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--upstream-ref",
-        default="upstream/main",
-        help="ref to take the merge base against",
+        default=None,
+        help="ref to take the merge base against (default: the upstream "
+        "release this fork is tagged against, e.g. v0.5.3)",
     )
     parser.add_argument(
         "--data-file", default=None, help="coverage data file (default: ./.coverage)"

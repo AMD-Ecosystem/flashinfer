@@ -50,18 +50,22 @@ jobs:
         run: pytest --noconftest tests/rocm_tests/test_amd_coverage.py
 
       # The unit tests once stayed green while the tool itself raised on every
-      # invocation, so CI has to actually invoke it. Needs the upstream remote
-      # for the merge base, and only classifies -- no suite run, no GPU.
+      # invocation, so CI has to actually invoke it. The base is the upstream
+      # release this fork is tagged against, so only that one tag is needed --
+      # no suite run, no GPU.
       - name: Coverage tool runs at all
         run: |
+          git fetch --depth=1 --tags origin '+refs/tags/*+amd.*:refs/tags/*+amd.*'
+          UPSTREAM=$(git describe --tags --abbrev=0 --match '*+amd.*' | cut -d+ -f1)
+          echo "fork is based on upstream $UPSTREAM"
           git remote add upstream https://github.com/flashinfer-ai/flashinfer.git
-          git fetch --depth=1 upstream main
+          git fetch --depth=1 upstream tag "$UPSTREAM"
           python -c "
           import importlib.util, pathlib, sys
           spec = importlib.util.spec_from_file_location('ac', 'scripts/amd_coverage.py')
           ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
           repo = ac._git(None, 'rev-parse', '--show-toplevel')
-          base = ac._git(repo, 'merge-base', 'HEAD', 'upstream/main')
+          base = ac._resolve_base(repo, None)
           owned, excluded, unowned, ruled = ac.classify(
               repo, base, ac._load_toml(pathlib.Path(repo) / ac._MANIFEST))
           print(f'{len(owned)} owned, {len(excluded)} excluded, {len(unowned)} unowned')

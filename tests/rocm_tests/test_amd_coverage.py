@@ -210,6 +210,59 @@ class TestTierAssignment:
         assert owned["flashinfer/redirected.py"].tier == "C"
 
 
+class TestUpstreamBase:
+    """The base is the upstream *release* the port is built on, not a branch.
+
+    `upstream/main` moves on its own, which reclassifies files between runs and
+    makes two numbers weeks apart incomparable. A release tag never moves.
+    """
+
+    def _tagged(self, repo, amd_tag, upstream_tag="v0.5.3"):
+        """Both tags, as in the real fork: upstream's release, then ours on top."""
+        _write(repo, "flashinfer/a.py", "a = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "upstream release")
+        _git(repo, "tag", upstream_tag)
+        _write(repo, "flashinfer/port.py", "b = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "port work")
+        _git(repo, "tag", amd_tag)
+
+    def test_release_tag_yields_the_upstream_version(self, repo):
+        self._tagged(repo, "v0.5.3+amd.2")
+
+        assert ac._upstream_release(str(repo)) == "v0.5.3"
+
+    def test_release_candidate_suffix_is_handled(self, repo):
+        self._tagged(repo, "v0.5.3+amd.1rc1")
+
+        assert ac._upstream_release(str(repo)) == "v0.5.3"
+
+    def test_base_is_the_upstream_release_not_our_tip(self, repo):
+        """Everything after the upstream tag is the port, and all of it counts."""
+        self._tagged(repo, "v0.5.3+amd.1")
+        upstream_commit = ac._git(str(repo), "rev-parse", "v0.5.3^{commit}")
+        _write(repo, "flashinfer/c.py", "c = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "after the release")
+
+        assert ac._resolve_base(str(repo), None) == upstream_commit
+
+    def test_explicit_ref_overrides_the_derived_one(self, repo):
+        self._tagged(repo, "v0.5.3+amd.1")
+        _git(repo, "tag", "v9.9.9")
+
+        assert ac._resolve_base(str(repo), "v9.9.9") == _base(repo)
+
+    def test_missing_release_tag_says_how_to_fix_it(self, repo):
+        with pytest.raises(ac.ToolError, match="fetch --tags"):
+            ac._resolve_base(str(repo), None)
+
+    def test_unknown_explicit_ref_names_the_fetch(self, repo):
+        with pytest.raises(ac.ToolError, match="fetch --depth=1 upstream tag"):
+            ac._resolve_base(str(repo), "v0.0.0")
+
+
 class TestManifest:
     def test_stale_entry_fails_rather_than_being_skipped(self, repo):
         base = _base(repo)
@@ -245,12 +298,25 @@ class TestManifest:
 
         assert excluded == {"flashinfer/_version.py": "generated"}
 
-    def test_entry_naming_a_missing_file_is_still_rejected(self, repo):
+    @pytest.mark.parametrize("key", ["redirect_owned", "unowned"])
+    def test_tier_ruling_naming_a_missing_file_is_rejected(self, repo, key):
         base = _base(repo)
-        manifest = {"excluded": [{"path": "flashinfer/gone.py", "reason": "r"}]}
+        manifest = {key: [{"path": "flashinfer/gone.py", "reason": "r"}]}
 
         with pytest.raises(ac.ToolError, match="does not exist"):
             ac.classify(str(repo), base, manifest)
+
+    def test_excluded_may_name_a_file_that_is_not_built_yet(self, repo):
+        """`_version.py` is generated, so a fresh checkout does not have it --
+        which is exactly how this failed in CI."""
+        base = _base(repo)
+        manifest = {
+            "excluded": [{"path": "flashinfer/_version.py", "reason": "generated"}]
+        }
+
+        _, excluded, _, _ = ac.classify(str(repo), base, manifest)
+
+        assert excluded == {"flashinfer/_version.py": "generated"}
 
     def test_entry_without_a_reason_is_rejected(self, repo):
         """Every ruling is hand-made, so it has to say why."""
@@ -307,12 +373,18 @@ class TestManifest:
         assert set(excluded) | set(ruled), "its rulings must survive validation"
 
     def test_shipped_manifest_matches_the_tree(self):
-        """Catches a manifest entry left behind by a rename or deletion."""
+        """Catches a manifest entry left behind by a rename or deletion.
+
+        Existence is asserted only for the tier rulings. `excluded` names build
+        artifacts, which a checkout that has never been built does not have --
+        asserting on those failed in CI while passing on every dev machine.
+        """
         repo = ac._git(None, "rev-parse", "--show-toplevel")
         manifest = ac._load_toml(Path(repo) / ac._MANIFEST)
         for key in ("redirect_owned", "unowned", "excluded"):
             for item in manifest.get(key, []):
-                assert (Path(repo) / item["path"]).exists(), item["path"]
+                if key != "excluded":
+                    assert (Path(repo) / item["path"]).exists(), item["path"]
                 assert item.get("reason"), f"{item['path']} has no reason"
 
 
