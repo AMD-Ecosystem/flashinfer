@@ -20,6 +20,9 @@ from typing import Optional
 import torch
 
 from .device_utils import IS_HIP
+
+if IS_HIP:
+    from ._rocm.norm import maybe_fused_add_rmsnorm, maybe_rmsnorm
 from .jit.norm import gen_norm_module
 from .utils import device_support_pdl, register_custom_op, register_fake_op
 
@@ -68,8 +71,6 @@ def rmsnorm(
         Normalized tensor, 2D shape (batch_size, hidden_size) or 3D shape (batch_size, num_heads, hidden_size).
     """
     if IS_HIP:
-        from ._rocm.norm import maybe_rmsnorm
-
         if (result := maybe_rmsnorm(out, input, weight, eps, backend)) is not None:
             return result
     if enable_pdl is None:
@@ -150,8 +151,6 @@ def fused_add_rmsnorm(
             f"fused_add_rmsnorm only supports 2D inputs; got {input.ndim}D."
         )
     if IS_HIP:
-        from ._rocm.norm import maybe_fused_add_rmsnorm
-
         if maybe_fused_add_rmsnorm(input, residual, weight, eps, backend):
             return
     _fused_add_rmsnorm(input, residual, weight, eps, enable_pdl)

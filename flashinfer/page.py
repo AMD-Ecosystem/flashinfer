@@ -29,6 +29,11 @@ from .utils import (
     register_fake_op,
 )
 
+if IS_HIP:
+    # Module scope: registers the AITER custom ops at import time, as the
+    # inline block did, and keeps the delegation off the per-call path.
+    from ._rocm.page import maybe_append_paged_kv_cache
+
 
 @functools.cache
 def get_page_module():
@@ -433,8 +438,6 @@ def append_paged_kv_cache(
     _check_kv_layout(kv_layout)
     paged_k_cache, paged_v_cache = _unpack_paged_kv_cache(paged_kv_cache, kv_layout)
     if IS_HIP:
-        from ._rocm.page import maybe_append_paged_kv_cache
-
         if maybe_append_paged_kv_cache(
             append_key,
             append_value,

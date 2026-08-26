@@ -21,6 +21,9 @@ from typing import Optional
 import torch
 
 from .device_utils import IS_CUDA, IS_HIP
+
+if IS_HIP:
+    from ._rocm.activation import maybe_silu_and_mul
 from .jit import gen_act_and_mul_module
 from .utils import (
     device_support_pdl,
@@ -125,8 +128,6 @@ def silu_and_mul(
             dtype=input.dtype,
         )
     if IS_HIP:
-        from ._rocm.activation import maybe_silu_and_mul
-
         if (result := maybe_silu_and_mul(out, input, backend)) is not None:
             return result
     if enable_pdl is None:

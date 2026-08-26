@@ -7,6 +7,7 @@ from flashinfer.utils import get_compute_capability
 # Re-exported: attention.py imports these from here.
 from .rocm_utils import (  # noqa: F401
     HIP_DECODE_GQA_GROUP_SIZES,
+    aiter_serves,
     fa2_backed_backends,
     get_device_arch,
     rocm_supported_backends,

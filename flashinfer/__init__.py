@@ -170,6 +170,8 @@ if IS_CUDA:
     from .xqa import xqa as xqa
     from .xqa import xqa_mla as xqa_mla
 elif IS_HIP:
+    # `import *` cannot carry a dunder; the IS_CUDA arm binds it directly too.
+    from ._version import __version__ as __version__
     from ._rocm.api import *  # noqa: F401,F403
 else:
     # CPU-only torch (no CUDA or HIP)

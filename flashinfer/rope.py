@@ -20,6 +20,9 @@ from typing import Optional, Tuple
 import torch
 
 from .device_utils import IS_HIP
+
+if IS_HIP:
+    from ._rocm.rope import maybe_apply_rope_cos_sin_cache
 from .jit.rope import gen_rope_module
 from .utils import register_custom_op, register_fake_op
 
@@ -1204,8 +1207,6 @@ def apply_rope_with_cos_sin_cache(
     key_out = torch.empty_like(key)
 
     if IS_HIP:
-        from ._rocm.rope import maybe_apply_rope_cos_sin_cache
-
         if maybe_apply_rope_cos_sin_cache(
             query,
             key,
@@ -1295,8 +1296,6 @@ def apply_rope_with_cos_sin_cache_inplace(
         require_aiter(query.device, "rope")
 
     if IS_HIP:
-        from ._rocm.rope import maybe_apply_rope_cos_sin_cache
-
         if maybe_apply_rope_cos_sin_cache(
             query,
             key,

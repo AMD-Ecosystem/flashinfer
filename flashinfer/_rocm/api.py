@@ -126,7 +126,3 @@ from ..pod import BatchPODWithPagedKVCacheWrapper as BatchPODWithPagedKVCacheWra
 
 from ..utils import next_positive_power_of_2 as next_positive_power_of_2
 from ..utils import use_torch_custom_ops_enabled as use_torch_custom_ops_enabled
-
-# Derived from what this module actually binds, so it cannot drift from the
-# import list above the way a hand-maintained copy would.
-__all__ = [_n for _n in dir() if not _n.startswith("_")]
