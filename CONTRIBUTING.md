@@ -111,10 +111,10 @@ and backs off — needed under heavy concurrent xdist load.
 
 # Measuring Coverage of the Port
 
-`scripts/amd_coverage.py` reports line coverage for the code this fork added or changed, rather than for the whole inherited upstream tree. Ownership is recomputed on every run from the diff against `merge-base(HEAD, upstream/main)`, so there is no list to refresh and a module added yesterday is picked up today.
+`scripts/amd_coverage.py` reports line coverage for the code this fork added or changed, rather than for the whole inherited upstream tree. Ownership is recomputed on every run from the diff against the upstream release the port is based on — read off this fork's own tag, so `v0.5.3+amd.2` scores against upstream `v0.5.3`. There is no list to refresh, and a module added yesterday is picked up today. `origin` carries upstream's release tags, so no second remote is needed; override the base with `--upstream-ref` if you need a different one.
 
 ```bash
-git fetch upstream main
+git fetch --tags origin                                   # the base is computed, not stored
 pip install -e ".[dev]"                                   # brings pytest-cov
 python3 scripts/amd_coverage.py --run --show-files -- -n auto --reruns 2 -m "not slow"
 python3 scripts/amd_coverage.py                           # re-score an existing .coverage

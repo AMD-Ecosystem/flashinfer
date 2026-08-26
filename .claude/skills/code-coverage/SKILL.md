@@ -6,14 +6,18 @@ description: Measure and interpret line coverage for the AMD-authored parts of a
 # Coverage for the port, not for upstream
 
 `scripts/amd_coverage.py` scores only the code this fork added or changed.
-Ownership is recomputed from `merge-base(HEAD, upstream/main)` on every run, so
-the answer is always current for the tree in front of you and there is no list
-to refresh.
+Ownership is recomputed on every run from the diff against the upstream release
+the port is based on, read off this fork's own tag (`v0.5.3+amd.2` scores
+against upstream `v0.5.3`), so the answer is always current for the tree in
+front of you and there is no list to refresh. A fixed release rather than a
+moving branch is what makes two runs weeks apart comparable.
 
 ## Run it
 
+`origin` carries upstream's release tags, so no second remote is needed.
+
 ```bash
-git fetch upstream main                       # the base is computed, not stored
+git fetch --tags origin                       # the base is computed, not stored
 pip install -e ".[dev]"                       # brings pytest-cov
 python3 scripts/amd_coverage.py --run --show-files \
     --json-out tmp/coverage/coverage-amd.json --out-dir tmp/coverage \
@@ -109,7 +113,13 @@ tests (`tests/rocm_tests/test_amd_coverage.py`) do run there, via
   erases a completed run. A fixture in the test file enforces this.
 - **A file you just wrote shows up as tier A "untracked"** — expected; the tool
   includes untracked, non-ignored files so work in progress still counts.
-- **`--fail-under` is not wired into CI on purpose.** The base moves on every
-  upstream rebase, which re-classifies files and resets the owned-line sets, so
-  two runs weeks apart are not comparable. The JSON pins the base SHA; compare
-  only against runs on the same base.
+- **"cannot tell which upstream release this fork is based on"** — no reachable
+  `*+amd.*` tag. `git fetch --tags origin`, unless the message also says the
+  clone is shallow, in which case only `git fetch --unshallow origin` helps:
+  `describe` needs the tag *reachable*, and the graft is what severs it.
+- **"shares no history with HEAD"** — the tag resolved but the fork point is not
+  in this clone. Same shallow cause, same fix.
+- **`--fail-under` is comparable across runs, but still not wired into CI.** The
+  base is a release tag, so it does not move between rebases and two runs weeks
+  apart do compare. What stops it is cost: the number needs the full GPU suite,
+  which no PR lane runs. The JSON pins the base SHA either way.
