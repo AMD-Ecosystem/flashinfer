@@ -8,13 +8,15 @@ No GPU and no build: these cover the naming and flag construction that decide
 *which* lib a shim links. The ``_ck2stages_module`` tests still need ``aiter``
 importable, because the codegen command embeds AITER's own csrc path.
 
-What is being protected. Two specializations of ``module_moe_ck2stages`` (bf16
-vs fp16, silu vs gelu) are separate builds of the same AITER source tree. They
-are distinguished only by ``md_name``, which names the cached ``lib*.so``. If
-they collided on one filename the second build would be skipped and the first
-lib silently reused -- a wrong-dtype or wrong-activation kernel, with correct
-shapes and no error.
+What is being protected. Each specialization of ``module_moe_ck2stages`` (bf16
+vs fp16, silu vs gelu, unquantized vs fp8) is a separate build of the same AITER
+source tree. They are distinguished only by ``md_name``, which names the cached
+``lib*.so``. If they collided on one filename the second build would be skipped
+and the first lib silently reused -- a wrong-dtype, wrong-activation or
+unquantized kernel, with correct shapes and no error.
 """
+
+import itertools
 
 import pytest
 import torch
@@ -22,6 +24,13 @@ import torch
 from flashinfer.aiter_utils import _aiter_importable
 from flashinfer.jit.aiter_source import AiterModule, aiter_jitspec_flags
 from flashinfer.jit.fused_moe_rocm import _ck2stages_module
+
+_ACTIVATION_DTYPES = (torch.bfloat16, torch.float16)
+_ACTIVATIONS = ("silu", "gelu")
+# The weight dtype is either the activation dtype (unquantized) or fp8. Both fp8
+# encodings generate the same "f8" instances, so one stands for the pair here;
+# which one is legal is the device's business, not the codegen's.
+_WEIGHT_DTYPES = (None, torch.float8_e4m3fn)
 
 # _ck2stages_module reads aiter.jit.core.AITER_CSRC_DIR. A ROCm box without the
 # aiter package is a supported state, so skip rather than error there.
@@ -58,46 +67,64 @@ def test_unusable_lib_names_are_rejected(bad):
 
 @requires_aiter_import
 def test_specializations_do_not_collide():
-    """Every (dtype, activation) must map to a distinct cached lib."""
-    combos = [
-        (dt, act) for dt in (torch.bfloat16, torch.float16) for act in ("silu", "gelu")
-    ]
-    names = [_ck2stages_module(dt, act).lib_name for dt, act in combos]
+    """Every (dtype, activation, weight dtype) must map to a distinct cached lib."""
+    combos = list(itertools.product(_ACTIVATION_DTYPES, _WEIGHT_DTYPES, _ACTIVATIONS))
+    names = [_ck2stages_module(dt, wt or dt, act).lib_name for dt, wt, act in combos]
     assert len(set(names)) == len(combos), names
     assert all(n != "module_moe_ck2stages" for n in names), names
 
 
 @requires_aiter_import
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-@pytest.mark.parametrize("activation", ["silu", "gelu"])
-def test_blob_gen_cmd_is_format_safe(dtype, activation):
+@pytest.mark.parametrize("dtype", _ACTIVATION_DTYPES)
+@pytest.mark.parametrize("weight_dtype", _WEIGHT_DTYPES)
+@pytest.mark.parametrize("activation", _ACTIVATIONS)
+def test_blob_gen_cmd_is_format_safe(dtype, weight_dtype, activation):
     """AITER runs ``blob_gen_cmd.format(blob_dir)``: exactly one ``{}``, no others."""
-    cmd = _ck2stages_module(dtype, activation).blob_gen_cmd
+    cmd = _ck2stages_module(dtype, weight_dtype or dtype, activation).blob_gen_cmd
     assert cmd.count("{") == 1 and cmd.count("}") == 1
     assert cmd.format("/tmp/blobs").endswith("--working_path /tmp/blobs")
 
 
 @requires_aiter_import
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-@pytest.mark.parametrize("activation", ["silu", "gelu"])
-def test_codegen_flags_match_the_shim(dtype, activation):
+@pytest.mark.parametrize("dtype", _ACTIVATION_DTYPES)
+@pytest.mark.parametrize("weight_dtype", _WEIGHT_DTYPES)
+@pytest.mark.parametrize("activation", _ACTIVATIONS)
+def test_codegen_flags_match_the_shim(dtype, weight_dtype, activation):
     """The generated instances must match what the C++ shim asks CK for.
 
-    ``-m 2`` because the shim passes sorted_weights to stage 2, ``-q no`` because
-    it passes QuantType::No, and the dtype tags because there is one build per
-    dtype. A mismatch is a lookup miss at runtime, not a build failure.
+    ``-m 2`` because the shim passes sorted_weights to stage 2, the quant tag
+    because that selects which QuantType the shim may pass, and the dtype tags
+    because there is one build per configuration. A mismatch is a lookup miss at
+    runtime, not a build failure.
     """
     tag = {torch.bfloat16: "b16", torch.float16: "f16"}[dtype]
-    cmd = _ck2stages_module(dtype, activation).blob_gen_cmd
+    weight_tag = "f8" if weight_dtype is not None else tag
+    quant = "per_token" if weight_dtype is not None else "no"
+    cmd = _ck2stages_module(dtype, weight_dtype or dtype, activation).blob_gen_cmd
     for flag in (
-        f"-a {tag}",
-        f"-b {tag}",
+        f"-b {weight_tag}",
         f"-c {tag}",
-        "-q no",
+        f"-q {quant}",
         f"-act {activation}",
         "-m 2",
     ):
         assert flag in cmd, f"{flag!r} missing from {cmd!r}"
+    # -a is dead: gen_instances.py derives the activation dtype from -b.
+    assert " -a " not in cmd
+
+
+@requires_aiter_import
+def test_both_fp8_encodings_share_one_build():
+    """e4m3fn and e4m3fnuz differ on the device, not in the generated code.
+
+    Two libs would double a multi-minute CK build for nothing -- and only one of
+    them is ever loadable on a given machine anyway.
+    """
+    names = {
+        _ck2stages_module(torch.bfloat16, wt, "silu").lib_name
+        for wt in (torch.float8_e4m3fn, torch.float8_e4m3fnuz)
+    }
+    assert len(names) == 1, names
 
 
 def test_flags_link_every_module_once(monkeypatch):
