@@ -74,9 +74,9 @@ def _dequantize(q, scale):
     return (q.float().view(-1, q.shape[-1]) * scale.view(-1, 1)).view(q.shape)
 
 
-def _make_fp8_case(M, E, K, I, topk, device, seed=0xA17E3):
-    """The bf16 case plus fp8 weights and the reference that dequantizes them."""
-    x, w1, w2, ids, weights = _make_case(M, E, K, I, topk, torch.bfloat16, device, seed)
+def _make_fp8_case(M, E, K, I, topk, device, seed=0xA17E3, *, dtype=torch.bfloat16):
+    """The unquantized case plus fp8 weights and a dequantized-weight reference."""
+    x, w1, w2, ids, weights = _make_case(M, E, K, I, topk, dtype, device, seed)
     w1q, w1s = quantize_moe_weight(w1)
     w2q, w2s = quantize_moe_weight(w2)
     ref = _moe_ref(
@@ -679,6 +679,31 @@ def test_fp8_auto_picks_a_tile_that_can_serve_the_shape():
 
 
 @requires_aiter
+def test_fp8_with_float16_activations():
+    """fp8 weights against fp16 activations are a distinct set of CK instances.
+
+    Same weight dtype, different C type, so a separate lib and a separate
+    dispatch-table entry from the bf16 case every other fp8 test covers.
+    """
+    device = torch.device("cuda:0")
+    x, w1q, w1s, w2q, w2s, ids, weights, ref = _make_fp8_case(
+        64, 8, 512, 256, 2, device, dtype=torch.float16
+    )
+
+    got = flashinfer.aiter_fused_moe(
+        x,
+        shuffle_moe_weight(w1q),
+        shuffle_moe_weight(w2q),
+        ids,
+        weights,
+        w1_scale=w1s,
+        w2_scale=w2s,
+    )
+
+    assert _rel_err(got, ref) < _FP8_TOL
+
+
+@requires_aiter
 def test_fp8_activation_scaling_is_per_token():
     """One token far outside fp8's exponent range, so the rest must not be crushed.
 
@@ -691,7 +716,9 @@ def test_fp8_activation_scaling_is_per_token():
     x = x.clone().float()
     x[0] *= 1e5
     x = x.bfloat16()
-    ref = _moe_ref(x, _dequantize(w1q, w1s), _dequantize(w2q, w2s), ids, weights, "silu")
+    ref = _moe_ref(
+        x, _dequantize(w1q, w1s), _dequantize(w2q, w2s), ids, weights, "silu"
+    )
 
     got = flashinfer.aiter_fused_moe(
         x,
