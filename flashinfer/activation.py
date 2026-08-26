@@ -33,21 +33,6 @@ if IS_CUDA:
     from .fp4_quantization import get_fp4_quantization_module
 
 
-if IS_HIP:
-
-    @functools.cache
-    def get_silu_and_mul_aiter_module():
-        from .jit.activation import gen_silu_and_mul_aiter_module
-
-        return gen_silu_and_mul_aiter_module().build_and_load()
-
-    def _auto_select_silu_and_mul_backend(input: torch.Tensor) -> str:
-        # Experimentation found the in-tree native kernel to be the better default
-        # for silu_and_mul, so auto always resolves to native. The C++ AITER kernel
-        # remains reachable via an explicit backend="aiter".
-        return "native"
-
-
 @functools.cache
 def get_act_and_mul_module(act_func_name: str):
     module = gen_act_and_mul_module(act_func_name).build_and_load()
@@ -140,12 +125,10 @@ def silu_and_mul(
             dtype=input.dtype,
         )
     if IS_HIP:
-        _backend = (
-            backend if backend != "auto" else _auto_select_silu_and_mul_backend(input)
-        )
-        if _backend == "aiter":
-            get_silu_and_mul_aiter_module().silu_and_mul_aiter(out, input)
-            return out
+        from ._rocm.activation import maybe_silu_and_mul
+
+        if (result := maybe_silu_and_mul(out, input, backend)) is not None:
+            return result
     if enable_pdl is None:
         enable_pdl = device_support_pdl(input.device)
     get_act_and_mul_module("silu").silu_and_mul(

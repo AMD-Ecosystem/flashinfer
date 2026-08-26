@@ -154,7 +154,7 @@ def test_append_paged_kv_cache_auto_always_routes_native(dtype, kv_layout):
     combination it does support is routed native too. backend='aiter' remains the
     way to reach it.
     """
-    from flashinfer.page import _auto_select_kv_append_backend
+    from flashinfer._rocm.page import _auto_select_kv_append_backend
 
     device = torch.device("cuda:0")
     assert (
@@ -509,7 +509,7 @@ def test_append_auto_never_builds_the_aiter_shim(monkeypatch):
     what makes this fail if the routing ever consults it again -- asserting only
     on the returned string would not.
     """
-    from flashinfer import page as page_mod
+    from flashinfer._rocm import page as page_mod
 
     device = torch.device("cuda:0")
     dtype = torch.bfloat16
@@ -642,8 +642,10 @@ def test_append_aiter_shim_rejects_mismatched_device_shape_dtype_and_length():
         num_pages, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
     )
     v_cache = torch.zeros_like(k_cache)
-    mod = flashinfer.page.get_page_aiter_module()
-    unit = flashinfer.page._aiter_unit_scale(device)
+    from flashinfer._rocm import page as page_mod
+
+    mod = page_mod.get_page_aiter_module()
+    unit = page_mod._aiter_unit_scale(device)
 
     with pytest.raises(RuntimeError, match="must be on a GPU"):
         mod.append_paged_kv_cache_aiter(
