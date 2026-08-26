@@ -2292,6 +2292,16 @@ class BatchPrefillWithPagedKVCacheWrapper:
         if self._jit_module is not None:
             self._cached_module = self._jit_module
         else:
+            # Only the flat-gather route carries the soft-cap defect; native
+            # paging uses mha_batch_prefill, which is exact. A page size outside
+            # the native set forces flat-gather, so that is the case we can rule
+            # out up front. When native paging is merely *claimed*, the run-time
+            # probe may still fall back to flat-gather -- see plan()'s
+            # use_native_paging. Shared by the auto route and the explicit-aiter
+            # guard below so the two cannot disagree about the same call.
+            softcap_kv_len = (
+                None if page_size in _aiter_native_page_sizes() else self._max_kv_len
+            )
             if self._backend == "auto":
                 self._backend, self._backend_fallback_reason = (
                     _auto_select_prefill_backend(
@@ -2306,21 +2316,11 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         op="batch_prefill",
                         causal=causal,
                         logits_soft_cap=logits_soft_cap,
-                        # Only the flat-gather route carries the soft-cap defect;
-                        # native paging uses mha_batch_prefill, which is exact. A
-                        # page size outside the native set forces flat-gather, so
-                        # that is the case we can rule out up front. When native
-                        # paging is merely *claimed*, the run-time probe may still
-                        # fall back to flat-gather -- see plan()'s use_native_paging.
-                        kv_len=(
-                            None
-                            if page_size in _aiter_native_page_sizes()
-                            else self._max_kv_len
-                        ),
+                        kv_len=softcap_kv_len,
                     )
                 )
             if self._backend == "aiter" and _aiter_softcap_defect(
-                causal, logits_soft_cap, head_dim_qk, self._max_kv_len
+                causal, logits_soft_cap, head_dim_qk, softcap_kv_len
             ):
                 raise ValueError(
                     "AITER miscomputes logits_soft_cap for causal head_dim=128 prefill "

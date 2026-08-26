@@ -1087,3 +1087,50 @@ def test_ragged_softcap_avoids_broken_aiter_kernel(kv_len, qo_len):
         kv_data_type=torch.float16,
     )
     torch.testing.assert_close(wrapper.run(q, k, v).float(), ref, rtol=1e-3, atol=1e-3)
+
+
+def test_paged_softcap_guard_tracks_the_paging_route():
+    """The explicit-aiter soft-cap guard must key on the route, not the shape.
+
+    Native page sizes dispatch to mha_batch_prefill, which is exact; only
+    flat-gather carries the defect. A guard that ignores page_size rejects
+    calls that backend='auto' happily serves.
+    """
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    native = sorted(_aiter_native_page_sizes())
+    if not native:
+        pytest.skip("no native AITER page size on this aiter build")
+
+    kv_len, qo_len, num_heads, head_dim, soft_cap = 512, 37, 4, 128, 8.0
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
+
+    def plan(page_size):
+        num_pages = kv_len // page_size
+        wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+            workspace, "NHD", backend="aiter"
+        )
+        wrapper.plan(
+            torch.tensor([0, qo_len], dtype=torch.int32, device=device),
+            torch.tensor([0, num_pages], dtype=torch.int32, device=device),
+            torch.arange(num_pages, dtype=torch.int32, device=device),
+            torch.tensor([page_size], dtype=torch.int32, device=device),
+            num_heads,
+            num_heads,
+            head_dim,
+            page_size,
+            causal=True,
+            logits_soft_cap=soft_cap,
+            q_data_type=torch.float16,
+            kv_data_type=torch.float16,
+        )
+
+    plan(native[0])
+
+    non_native = next(
+        (p for p in (16, 32, 64, 8) if p not in _aiter_native_page_sizes()), None
+    )
+    if non_native is not None:
+        with pytest.raises(ValueError, match="logits_soft_cap"):
+            plan(non_native)
