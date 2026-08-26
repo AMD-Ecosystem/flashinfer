@@ -430,7 +430,11 @@ def _build_aiter_lib(
     finally:
         for k, v in prev.items():
             if v is None:
-                os.environ.pop(k, None)
+                # GPU_ARCHS is the exception: AITER's own Python ops build
+                # outside this scope and assert on an unset value, and this is
+                # the arch _ensure_aiter_gpu_archs would resolve anyway.
+                if k != "GPU_ARCHS":
+                    os.environ.pop(k, None)
             else:
                 os.environ[k] = v
 
