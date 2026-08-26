@@ -22,6 +22,7 @@ Exit 0 clean, 1 if ``--fail-under`` is missed, 2 if the tool could not run.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -430,6 +431,36 @@ def _junit_counts(path: Path) -> Optional[Dict[str, int]]:
     }
 
 
+_REACH_STAMP = "jit-reach.stamp"
+
+
+def _stamp_of(data_file: Path) -> str:
+    """Identity of a data file: path, size and mtime.
+
+    Size as well as mtime because NFS timestamp granularity is coarse enough
+    that a rewrite moments later can keep the same mtime.
+    """
+    st = data_file.stat()
+    return f"{data_file.resolve()} {st.st_size} {st.st_mtime_ns}"
+
+
+def _write_stamp(out_dir: Path, data_file: Path) -> None:
+    """Tie the reach shards in `out_dir` to the data file this run just wrote."""
+    # Suppressed: the reach figure is optional and never worth failing a run.
+    with contextlib.suppress(OSError):
+        (out_dir / _REACH_STAMP).write_text(
+            _stamp_of(data_file) + "\n", encoding="utf-8"
+        )
+
+
+def _stamp_matches(out_dir: Path, data_file: Path) -> bool:
+    try:
+        recorded = (out_dir / _REACH_STAMP).read_text(encoding="utf-8").strip()
+        return recorded == _stamp_of(data_file)
+    except OSError:
+        return False
+
+
 def _jit_reach(
     repo: Path, out_dir: Path, data_file: Path
 ) -> Optional[Tuple[int, List[str]]]:
@@ -438,18 +469,13 @@ def _jit_reach(
     Not a coverage figure: the HIP sources are JIT-compiled and have no line
     data. It says only which of them the Python tests caused to be built at all.
     """
-    # Only shards from the run that produced this data. Score-only mode does no
-    # cleanup, so an older, narrower run's shards would otherwise be reported
-    # next to a fresh score.
-    try:
-        cutoff = data_file.stat().st_mtime
-    except OSError:
-        cutoff = 0.0
-    shards = [
-        s
-        for s in sorted(out_dir.glob("jit-reach.*.json"))
-        if s.stat().st_mtime >= cutoff
-    ]
+    # Report only shards from the run that produced this data. An mtime cutoff
+    # cannot express that -- pytest-cov combines .coverage after the workers
+    # write their shards, so the shards are always fractionally older -- hence
+    # the explicit stamp _run_pytest leaves behind.
+    if not _stamp_matches(out_dir, data_file):
+        return None
+    shards = sorted(out_dir.glob("jit-reach.*.json"))
     if not shards:
         return None
     reached: Set[str] = set()
@@ -695,6 +721,7 @@ def _run_pytest(
                 "it collected no tests (a plugin import error looks like this). "
                 "Refusing to score the previous run's data."
             )
+    _write_stamp(out_dir, data_file)
     return junit
 
 

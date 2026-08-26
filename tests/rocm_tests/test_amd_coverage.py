@@ -449,22 +449,35 @@ class TestDataFileHygiene:
         ac._run_pytest(tmp_path, tmp_path, tmp_path / "chosen.cov", [])
 
         assert seen.get("COVERAGE_FILE") == str(tmp_path / "chosen.cov")
+        # Without the stamp, score-only mode cannot tell this run's reach shards
+        # from a previous run's and reports nothing.
+        assert ac._stamp_matches(tmp_path, tmp_path / "chosen.cov")
 
-    def test_reach_shards_older_than_the_data_are_ignored(self, tmp_path):
-        """Score-only mode does no cleanup, so an old run's shards linger."""
+    def test_reach_needs_a_stamp_tying_shards_to_this_data_file(self, tmp_path):
+        """Shards are always fractionally older than .coverage, so mtime cannot decide.
+
+        pytest-cov combines the data file after the workers write their shards.
+        A cutoff on mtime therefore rejects every genuine run; the stamp is what
+        distinguishes "this run" from a previous one left in the same directory.
+        """
         (tmp_path / "flashinfer" / "csrc_rocm").mkdir(parents=True)
         (tmp_path / "flashinfer" / "csrc_rocm" / "a.cu").write_text("x")
         data = tmp_path / ".coverage"
-        data.write_text("x", encoding="utf-8")
         shard = tmp_path / "jit-reach.gw0.json"
         shard.write_text('["a.cu"]', encoding="utf-8")
-        os.utime(shard, (1000, 1000))
-        os.utime(data, (2000, 2000))
+        data.write_text("x", encoding="utf-8")  # written last, as in a real run
 
-        assert ac._jit_reach(tmp_path, tmp_path, data) is None
+        assert ac._jit_reach(tmp_path, tmp_path, data) is None, "no stamp, no reach"
 
-        os.utime(shard, (3000, 3000))
+        ac._write_stamp(tmp_path, data)
         assert ac._jit_reach(tmp_path, tmp_path, data) == (1, [])
+
+        # Same mtime, different content: NFS granularity makes this reachable,
+        # so the stamp carries size as well as the timestamp.
+        stamped = data.stat()
+        data.write_text("a different length entirely", encoding="utf-8")
+        os.utime(data, ns=(stamped.st_mtime_ns, stamped.st_mtime_ns))
+        assert ac._jit_reach(tmp_path, tmp_path, data) is None
 
 
 class TestForeignSourceRoots:
