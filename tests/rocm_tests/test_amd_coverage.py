@@ -434,6 +434,14 @@ class TestDirtyTree:
 
         assert ac._is_dirty(str(repo)) is True
 
+    def test_the_tools_own_artifacts_do_not_count(self, repo):
+        """run() writes these into the repo by default and only .coverage is
+        gitignored, so a blanket untracked check calls every run dirty."""
+        for name in ("junit.xml", "import-baseline.coverage", "jit-reach.gw0.json"):
+            _write(repo, name, "x")
+
+        assert ac._is_dirty(str(repo)) is False
+
     def test_modified_tracked_file_counts_as_dirty(self, repo):
         _write(repo, "flashinfer/m.py", "a = 1\n")
         _git(repo, "add", "-A")

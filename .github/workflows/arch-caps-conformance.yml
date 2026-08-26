@@ -48,3 +48,22 @@ jobs:
       # needs the upstream remote, so a shallow checkout is enough.
       - name: Coverage-ownership classification (no GPU, no torch)
         run: pytest --noconftest tests/rocm_tests/test_amd_coverage.py
+
+      # The unit tests once stayed green while the tool itself raised on every
+      # invocation, so CI has to actually invoke it. Needs the upstream remote
+      # for the merge base, and only classifies -- no suite run, no GPU.
+      - name: Coverage tool runs at all
+        run: |
+          git remote add upstream https://github.com/flashinfer-ai/flashinfer.git
+          git fetch --depth=1 upstream main
+          python -c "
+          import importlib.util, pathlib, sys
+          spec = importlib.util.spec_from_file_location('ac', 'scripts/amd_coverage.py')
+          ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+          repo = ac._git(None, 'rev-parse', '--show-toplevel')
+          base = ac._git(repo, 'merge-base', 'HEAD', 'upstream/main')
+          owned, excluded, unowned, ruled = ac.classify(
+              repo, base, ac._load_toml(pathlib.Path(repo) / ac._MANIFEST))
+          print(f'{len(owned)} owned, {len(excluded)} excluded, {len(unowned)} unowned')
+          sys.exit(0 if owned else 'classify() returned nothing')
+          "

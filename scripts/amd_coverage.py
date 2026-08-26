@@ -421,12 +421,17 @@ def score(
 
 
 def _is_dirty(repo: str) -> bool:
-    """Whether the tree differs from HEAD, untracked files included.
+    """Whether the tree differs from what the score describes.
 
-    Untracked files are scored as tier A, so ignoring them would let a tree
-    whose only change is a new owned module report itself as clean.
+    Untracked files on the measured surface count, because classify() scores
+    them as tier A -- a tree whose only change is a new owned module is not
+    clean. Untracked files elsewhere do not: this tool writes junit.xml, the
+    import baseline and the reach shards into the repo by default, and only
+    `.coverage` is gitignored, so a blanket check calls every run dirty.
     """
-    return bool(_git(repo, "status", "--porcelain"))
+    if _git(repo, "status", "--porcelain", "--untracked-files=no"):
+        return True
+    return bool(_surface_python(repo)[1])
 
 
 def _stale_sources(repo: Path, data_file: Path, owned: Sequence[str]) -> List[str]:
