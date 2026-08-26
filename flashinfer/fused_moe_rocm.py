@@ -4,8 +4,8 @@
 
 Routing is the caller's responsibility: pass the selected experts and their
 weights, as with upstream's ``cutlass_fused_moe``. Expert weights may be
-unquantized bfloat16/float16 or fp8 with per-token scales; the activations are
-quantized inside the shim.
+unquantized bfloat16/float16, or fp8 with one scale per output row; the
+activations are quantized per token inside the shim.
 
 The expert weights must be pre-shuffled with :func:`shuffle_moe_weight` -- see
 that function for why this cannot be checked for you.

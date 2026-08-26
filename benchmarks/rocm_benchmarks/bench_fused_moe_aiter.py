@@ -121,13 +121,15 @@ def _make_configs(block_m_sweep: bool = False, fp8: bool = False) -> list[Kernel
             # Two GEMMs per (token, expert): [1,K]x[K,2I] and [1,I]x[I,K].
             theo_flops = 2 * nt * topk * (K * 2 * I + I * K)
             # Weights dominate until every expert is hit by many tokens; count the
-            # experts actually touched rather than all E. Only the weight term is
-            # fp8 -- activations reach the kernel in bf16 either way.
+            # experts actually touched rather than all E.
             experts_hit = min(E, nt * topk)
-            theo_bytes = (
-                experts_hit * (2 * I * K + K * I) * itemsize
-                + nt * (K + topk * I + K) * _DTYPE.itemsize
-            )
+            # Activations cross the API boundary in bf16 either way. fp8 adds the
+            # shim's two quantization passes, each reading bf16 and writing fp8
+            # over the same elements -- timed, so counted.
+            act_bytes = nt * (K + topk * I + K) * _DTYPE.itemsize
+            if fp8:
+                act_bytes += nt * (K + topk * I) * (_DTYPE.itemsize + itemsize)
+            theo_bytes = experts_hit * (2 * I * K + K * I) * itemsize + act_bytes
 
             def add(name, fn, suffix=""):
                 configs.append(
