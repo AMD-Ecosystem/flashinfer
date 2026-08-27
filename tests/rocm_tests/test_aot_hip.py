@@ -354,3 +354,96 @@ def test_gen_modules_with_different_head_dims(head_dim):
     # Verify head dim is reflected in module names
     assert any(f"head_dim_qk_{head_dim[0]}" in spec.name for spec in jit_specs)
     assert any(f"head_dim_vo_{head_dim[1]}" in spec.name for spec in jit_specs)
+
+
+def _register_arch_list_undo(monkeypatch):
+    """Make monkeypatch unwind FLASHINFER_ROCM_ARCH_LIST, which the build publishes.
+
+    delenv records no undo entry when the name is already absent, so seed it
+    first -- otherwise the build's write survives into the rest of the worker.
+    """
+    monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "")
+    monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST")
+
+
+def _jit_env_paths():
+    """Everything _redirected_jit_env mutates, including the env var."""
+    from flashinfer.jit import env as jit_env
+
+    return (
+        jit_env.FLASHINFER_WORKSPACE_DIR,
+        jit_env.FLASHINFER_JIT_DIR,
+        jit_env.FLASHINFER_GEN_SRC_DIR,
+        os.environ.get("FLASHINFER_WORKSPACE_BASE"),
+    )
+
+
+def test_build_restores_the_jit_workspace_paths(monkeypatch, tmp_path):
+    """An AOT build must not repoint the JIT workspace for the rest of the process."""
+    import flashinfer.aot_hip as aot_hip
+
+    before = _jit_env_paths()
+    _register_arch_list_undo(monkeypatch)
+    monkeypatch.setattr(aot_hip, "gen_all_modules", lambda *a, **k: [])
+    monkeypatch.setattr("flashinfer.jit.build_jit_specs", lambda *a, **k: None)
+
+    aot_hip.compile_and_package_modules(
+        out_dir=None,
+        build_dir=tmp_path / "build",
+        project_root=Path(__file__).parent.parent,
+        config={
+            "fa2_head_dim": [(128, 128)],
+            "f16_dtype": [torch.float16],
+            "use_sliding_window": [False],
+            "use_logits_soft_cap": [False],
+        },
+        verbose=False,
+        skip_prebuilt=True,
+    )
+
+    assert _jit_env_paths() == before
+
+
+def test_unusable_build_dir_restores_the_jit_workspace_paths(tmp_path):
+    """The paths are repointed before the mkdirs, so a failing mkdir must unwind too."""
+    from flashinfer.aot_hip import _redirected_jit_env
+
+    before = _jit_env_paths()
+    not_a_dir = tmp_path / "file"
+    not_a_dir.write_text("")
+
+    with pytest.raises(OSError), _redirected_jit_env(not_a_dir):
+        pytest.fail("the context manager should not have yielded")
+
+    assert _jit_env_paths() == before
+
+
+def test_failed_build_restores_the_jit_workspace_paths(monkeypatch, tmp_path):
+    """The restore has to survive the error path too, not just a clean return."""
+    import flashinfer.aot_hip as aot_hip
+
+    before = _jit_env_paths()
+
+    class _Boom:
+        def __init__(self):
+            raise RuntimeError("ROCm version 0.0 is not recognized")
+
+    _register_arch_list_undo(monkeypatch)
+    monkeypatch.setattr("flashinfer.compilation_context_hip.CompilationContext", _Boom)
+
+    with pytest.raises(RuntimeError, match="not recognized"):
+        aot_hip.compile_and_package_modules(
+            out_dir=None,
+            build_dir=tmp_path / "build",
+            project_root=Path(__file__).parent.parent,
+            config={
+                "fa2_head_dim": [(128, 128)],
+                "f16_dtype": [torch.float16],
+                "use_sliding_window": [False],
+                "use_logits_soft_cap": [False],
+            },
+            verbose=False,
+            skip_prebuilt=True,
+        )
+
+    assert _jit_env_paths() == before

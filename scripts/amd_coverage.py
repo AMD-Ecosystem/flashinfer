@@ -90,8 +90,19 @@ class Score(NamedTuple):
 def _run(
     repo: Optional[str], *args: str, check: bool = True
 ) -> subprocess.CompletedProcess:
-    """Run git at the repo root, in the C locale, tolerating undecodable paths."""
-    cmd = ["git"] + (["-C", repo] if repo else []) + list(args)
+    """Run git at the repo root, in the C locale, tolerating undecodable paths.
+
+    ``safe.directory`` keeps this working under CI that bind-mounts the repo,
+    where the checkout is owned by a different uid than the one running git.
+    Naming ``repo`` rather than ``*`` trusts only the tree we were pointed at;
+    only the toplevel probe, which has no repo yet, has to widen it.
+    """
+    safe_dir = repo if repo else "*"
+    cmd = (
+        ["git", "-c", f"safe.directory={safe_dir}"]
+        + (["-C", repo] if repo else [])
+        + list(args)
+    )
     proc = subprocess.run(
         cmd,
         capture_output=True,
