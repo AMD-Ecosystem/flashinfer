@@ -4,6 +4,7 @@
 
 
 import argparse
+import contextlib
 import os
 import shutil
 from itertools import product
@@ -12,9 +13,9 @@ from typing import Iterator, List, Optional, Tuple
 
 import torch
 
-# NOTE: Do NOT import jit modules at top level!
-# They must be imported inside compile_and_package_modules() after setting
-# FLASHINFER_WORKSPACE_BASE env var, because jit/env.py reads this at import time.
+# NOTE: jit modules are imported lazily below. jit/env.py freezes
+# FLASHINFER_CACHE_DIR from FLASHINFER_WORKSPACE_BASE at import time, so an AOT
+# build redirects the workspace paths in place instead -- see _redirected_jit_env.
 
 
 def gen_fa2(
@@ -168,6 +169,45 @@ def copy_built_kernels(
         shutil.copy2(src, dst)
 
 
+@contextlib.contextmanager
+def _redirected_jit_env(build_dir: Path) -> Iterator[None]:
+    """Point the JIT workspace at ``build_dir`` for the duration of the block.
+
+    jit_env caches the workspace paths at import time, so an AOT build has to
+    overwrite them in place; restoring on exit keeps that invisible to whatever
+    runs next in the same process. FLASHINFER_CACHE_DIR is deliberately left
+    alone -- it is frozen at import and nothing here can move it.
+    """
+    from .jit import env as jit_env
+
+    saved_base = os.environ.get("FLASHINFER_WORKSPACE_BASE")
+    saved = (
+        jit_env.FLASHINFER_WORKSPACE_DIR,
+        jit_env.FLASHINFER_JIT_DIR,
+        jit_env.FLASHINFER_GEN_SRC_DIR,
+    )
+
+    # Inside the try: an mkdir that raises must still restore.
+    try:
+        os.environ["FLASHINFER_WORKSPACE_BASE"] = str(build_dir)
+        jit_env.FLASHINFER_WORKSPACE_DIR = build_dir
+        jit_env.FLASHINFER_JIT_DIR = build_dir / "cached_ops"
+        jit_env.FLASHINFER_GEN_SRC_DIR = build_dir / "generated"
+        jit_env.FLASHINFER_JIT_DIR.mkdir(parents=True, exist_ok=True)
+        jit_env.FLASHINFER_GEN_SRC_DIR.mkdir(parents=True, exist_ok=True)
+        yield
+    finally:
+        (
+            jit_env.FLASHINFER_WORKSPACE_DIR,
+            jit_env.FLASHINFER_JIT_DIR,
+            jit_env.FLASHINFER_GEN_SRC_DIR,
+        ) = saved
+        if saved_base is None:
+            os.environ.pop("FLASHINFER_WORKSPACE_BASE", None)
+        else:
+            os.environ["FLASHINFER_WORKSPACE_BASE"] = saved_base
+
+
 def compile_and_package_modules(
     out_dir: Optional[Path],
     build_dir: Path,
@@ -187,20 +227,21 @@ def compile_and_package_modules(
         verbose: Whether to print verbose build output
         skip_prebuilt: Whether to skip pre-built modules
     """
-    # Set environment variable (for potential subprocess spawns)
-    os.environ["FLASHINFER_WORKSPACE_BASE"] = str(build_dir)
+    with _redirected_jit_env(build_dir):
+        _compile_and_package_modules(
+            out_dir, build_dir, project_root, config, verbose, skip_prebuilt
+        )
 
-    # Import jit modules
+
+def _compile_and_package_modules(
+    out_dir: Optional[Path],
+    build_dir: Path,
+    project_root: Path,
+    config: Optional[dict],
+    verbose: bool,
+    skip_prebuilt: bool,
+) -> None:
     from .jit import build_jit_specs
-    from .jit import env as jit_env
-
-    # Override jit_env module variables directly (upstream pattern from v0.6.1)
-    # This allows AOT build to use custom build directories instead of user's cache
-    jit_env.FLASHINFER_WORKSPACE_DIR = build_dir
-    jit_env.FLASHINFER_JIT_DIR = build_dir / "cached_ops"
-    jit_env.FLASHINFER_GEN_SRC_DIR = build_dir / "generated"
-    jit_env.FLASHINFER_JIT_DIR.mkdir(parents=True, exist_ok=True)
-    jit_env.FLASHINFER_GEN_SRC_DIR.mkdir(parents=True, exist_ok=True)
 
     # Start with default config and override with user config
     final_config = get_default_config()
