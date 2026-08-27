@@ -89,8 +89,9 @@ selection. `pytest-rerunfailures` comes from the `dev` extra
 (`pip install -e ".[dev]"`).
 
 **Worker count.** `pytest -n auto` spawns **half as many xdist workers as
-physical AMD cards** (4 workers on a CPX-mode 8-card host) and pins each
-to its card via `HIP_VISIBLE_DEVICES`. One worker per card was tried first
+physical AMD cards** (4 workers on a CPX-mode 8-card host) and assigns each
+a card via `HIP_VISIBLE_DEVICES`, which is what scopes the subprocesses a
+test spawns. One worker per card was tried first
 and produced sporadic failures across rope, single_prefill, and logits_cap
 under concurrent load. Pass an explicit `-n N` to override the halving.
 

@@ -209,6 +209,15 @@ elif IS_HIP:
         try:
             import torch
 
+            if torch.cuda.device_count() == 0:
+                # Importing flashinfer must not require a live GPU. Keep the arch
+                # in the path anyway: build.ninja is only written when absent, so
+                # one shared directory would serve two ISAs the same objects.
+                from ..hip_utils import resolve_target_archs
+
+                archs = sorted(set(resolve_target_archs().split(",")))
+                return FLASHINFER_CACHE_DIR / flashinfer_version / "_".join(archs)
+
             props = torch.cuda.get_device_properties(torch.cuda.current_device())
             gcn_arch = props.gcnArchName
             # Extract gfx arch (e.g., "gfx942:sramecc+:xnack-" -> "gfx942").
