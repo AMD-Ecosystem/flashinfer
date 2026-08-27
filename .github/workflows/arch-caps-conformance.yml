@@ -26,7 +26,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Full history and tags: the coverage tool derives its diff base from the
+      # fork's own release tag and then walks back to the fork point, neither of
+      # which a depth-1 checkout can reach.
       - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -42,3 +47,28 @@ jobs:
       # test_suite_loads_without_torch is what keeps that true.
       - name: Capability-table conformance (no GPU, no torch)
         run: pytest --noconftest tests/rocm_tests/test_arch_caps_hip.py
+
+      # The other hardware-less suite: ownership classification for
+      # scripts/amd_coverage.py. Mostly throwaway git repositories, but one case
+      # resolves the base against this checkout and skips when it cannot, so -rs
+      # keeps that from vanishing silently.
+      - name: Coverage-ownership classification (no GPU, no torch)
+        run: pytest -rs --noconftest tests/rocm_tests/test_amd_coverage.py
+
+      # The unit tests once stayed green while the tool itself raised on every
+      # invocation, so CI has to actually invoke it. This also fails loudly if
+      # the test above starts skipping for want of a base: no suite run, no GPU.
+      - name: Coverage tool runs at all
+        run: |
+          echo "fork is based on upstream $(git describe --tags --abbrev=0 --match '*+amd.*' | cut -d+ -f1)"
+          python -c "
+          import importlib.util, pathlib, sys
+          spec = importlib.util.spec_from_file_location('ac', 'scripts/amd_coverage.py')
+          ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+          repo = ac._git(None, 'rev-parse', '--show-toplevel')
+          base = ac._resolve_base(repo, None)
+          owned, excluded, unowned, ruled = ac.classify(
+              repo, base, ac._load_toml(pathlib.Path(repo) / ac._MANIFEST))
+          print(f'{len(owned)} owned, {len(excluded)} excluded, {len(unowned)} unowned')
+          sys.exit(0 if owned else 'classify() returned nothing')
+          "
