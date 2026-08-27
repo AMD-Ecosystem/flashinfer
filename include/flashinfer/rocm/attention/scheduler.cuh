@@ -5,8 +5,6 @@
 #ifndef FLASHINFER_ATTENTION_SCHEDULER_CUH_
 #define FLASHINFER_ATTENTION_SCHEDULER_CUH_
 
-#include <hip/driver_types.h>
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
