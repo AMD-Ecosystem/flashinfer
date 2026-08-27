@@ -45,7 +45,7 @@ def test_rmsnorm_aiter_vs_ref(dtype, hidden_size, batch_size):
 def test_rmsnorm_auto_backend_selects_aiter_for_2d():
     """auto routes 2D fp16/bf16 (matching weight) to AITER; 3D, fp32, or a
     mismatched weight dtype to native."""
-    from flashinfer._rocm.norm import _auto_select_norm_backend
+    from flashinfer.rocm.norm import _auto_select_norm_backend
 
     device = torch.device("cuda:0")
     x2d = torch.randn(8, 128, dtype=torch.float16, device=device)

@@ -32,7 +32,7 @@ from .utils import (
 if IS_HIP:
     # Module scope: registers the AITER custom ops at import time, as the
     # inline block did, and keeps the delegation off the per-call path.
-    from ._rocm.page import maybe_append_paged_kv_cache
+    from .rocm.page import maybe_append_paged_kv_cache
 
 
 @functools.cache

@@ -173,10 +173,10 @@ elif IS_HIP:
     # `import *` cannot carry a dunder; the IS_CUDA arm binds it directly too.
     from ._version import __version__ as __version__
 
-    # Imported for its side effect first: _rocm.api runs
+    # Imported for its side effect first: rocm.api runs
     # check_torch_rocm_compatibility() before it pulls in any wrapper, so an
     # incompatible torch reports that rather than failing inside decode_rocm.
-    from ._rocm import api as _rocm_api  # noqa: F401
+    from .rocm import api as _rocm_api  # noqa: F401
 
     del _rocm_api  # the import ran the check; the alias is not part of the surface
 
@@ -204,7 +204,7 @@ elif IS_HIP:
     from .prefill_rocm import (  # type: ignore[no-redef]
         single_prefill_with_kv_cache as single_prefill_with_kv_cache,
     )
-    from ._rocm.api import *  # noqa: F401,F403
+    from .rocm.api import *  # noqa: F401,F403
 else:
     # CPU-only torch (no CUDA or HIP)
     raise RuntimeError(
