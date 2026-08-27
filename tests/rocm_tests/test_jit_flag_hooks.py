@@ -228,6 +228,19 @@ class TestGeneratedNinja:
         assert "-DHOSTONLY" not in _var(text, "cflags")
         assert "-DHOSTONLY" not in _var(text, "cuda_cflags")
 
+    def test_env_cflags_go_through_the_host_rewrite(self, tmp_path):
+        """Copying a flag list off a HIP driver line is how an -Xarch_host is
+        acquired, and the host rule is exactly the one that cannot take it."""
+        text = _ninja(
+            tmp_path,
+            FLASHINFER_EXTRA_CFLAGS="-Xarch_host -DHOSTONLY --offload-arch=gfx950",
+        )
+
+        host = _var(text, "host_cflags")
+        assert "-DHOSTONLY" in host
+        assert "-Xarch_host" not in host
+        assert "--offload-arch=gfx950" not in host
+
     def test_env_ldflags_still_reach_the_link_rule(self, tmp_path):
         """The one already-shipping hook this change refactored."""
         text = _ninja(tmp_path, FLASHINFER_EXTRA_LDFLAGS="-L/opt/x -lfoo")

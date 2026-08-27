@@ -167,11 +167,14 @@ def generate_ninja_build_for_op(
     # Mirrors FLASHINFER_EXTRA_CFLAGS/CUDAFLAGS on the CUDA path (cpp_ext.py);
     # the HIP path previously had a hook for link flags only.
     #
-    # CFLAGS lands here, on the host rule alone, rather than in `cflags`: the
-    # hip_compile rule below ends with `$cflags`, so anything put there would
-    # also reach device codegen and, being last, would outrank both -O3 and
-    # FLASHINFER_EXTRA_CUDAFLAGS. On CUDA the var is host-only; keep it so.
-    host_cflags = _for_host(cflags) + _env_flags("FLASHINFER_EXTRA_CFLAGS")
+    # CFLAGS is folded in here, on the host rule alone, rather than into
+    # `cflags`: the hip_compile rule below ends with `$cflags`, so anything put
+    # there would also reach device codegen and, being last, would outrank both
+    # -O3 and FLASHINFER_EXTRA_CUDAFLAGS. On CUDA the var is host-only; keep it
+    # so. It goes *through* _for_host rather than after it -- copying a flag
+    # list off a HIP driver line is the likeliest way to acquire an
+    # `-Xarch_host`, and this rule is the one that cannot take it.
+    host_cflags = _for_host(cflags + _env_flags("FLASHINFER_EXTRA_CFLAGS"))
 
     lines = [
         "ninja_required_version = 1.3",
