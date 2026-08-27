@@ -22,7 +22,7 @@ import torch
 from .device_utils import IS_HIP
 
 if IS_HIP:
-    from ._rocm.rope import maybe_apply_rope_cos_sin_cache
+    from .rocm.rope import maybe_apply_rope_cos_sin_cache
 from .jit.rope import gen_rope_module
 from .utils import register_custom_op, register_fake_op
 

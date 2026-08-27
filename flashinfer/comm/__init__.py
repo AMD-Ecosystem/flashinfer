@@ -52,7 +52,7 @@ if IS_CUDA:
     from .vllm_ar import register_buffer as vllm_register_buffer
     from .vllm_ar import register_graph_buffers as vllm_register_graph_buffers
 else:
-    from .._rocm import gate_cuda_only_modules
+    from ..rocm import gate_cuda_only_modules
 
     gate_cuda_only_modules()
 
