@@ -477,7 +477,7 @@ class TestValidateFlashinferRocmArch:
         torch_cpp_ext._get_rocm_arch_flags.return_value = ["--offload-arch=gfx950"]
         with (
             self._patch_validate_rocm_arch("gfx942"),
-            pytest.raises(RuntimeError, match="PyTorch does not support"),
+            pytest.raises(RuntimeError, match="PYTORCH_ROCM_ARCH excludes"),
         ):
             validate_flashinfer_rocm_arch(
                 arch_list="gfx942", torch_cpp_ext_module=torch_cpp_ext

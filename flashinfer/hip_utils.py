@@ -436,7 +436,8 @@ def validate_flashinfer_rocm_arch(
     Validates in order:
     1. System ROCm version supports the architectures (ROCM_COMPAT_MATRIX)
     2. FlashInfer has AMD ports for the architectures (FLASHINFER_SUPPORTED_ROCM_ARCHS)
-    3. PyTorch was compiled with the architectures (torch.utils.cpp_extension)
+    3. PYTORCH_ROCM_ARCH, if set, permits the architectures (skipped when unset,
+       where torch reports the visible cards rather than its build)
 
     Args:
         arch_list: Comma-separated list (e.g., "gfx942,gfx90a") or None for default
@@ -504,10 +505,9 @@ def validate_flashinfer_rocm_arch(
         ]
         if missing_in_pytorch:
             raise RuntimeError(
-                f"PyTorch does not support the following architectures: {', '.join(missing_in_pytorch)}.\n"
-                f"PyTorch was built for: {', '.join(pytorch_arch_flags)}\n"
-                "This is checked because PYTORCH_ROCM_ARCH is set; unset it to build "
-                "for whatever FLASHINFER_ROCM_ARCH_LIST requests."
+                f"PYTORCH_ROCM_ARCH excludes the following architectures: {', '.join(missing_in_pytorch)}.\n"
+                f"It restricts extension builds to: {', '.join(pytorch_arch_flags)}\n"
+                "Unset it to build for whatever FLASHINFER_ROCM_ARCH_LIST requests."
             )
 
     if verbose:

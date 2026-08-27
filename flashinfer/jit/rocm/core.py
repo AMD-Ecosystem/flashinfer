@@ -12,7 +12,7 @@ def check_rocm_arch() -> None:
     """Validate that this GPU, ROCm and torch can build FlashInfer's kernels.
 
     Delegates to hip_utils so the ROCm version, the ported-architecture list and
-    torch's build architectures are checked in one place.
+    PYTORCH_ROCM_ARCH (when set) are checked in one place.
     """
     import torch.utils.cpp_extension as torch_cpp_ext
 

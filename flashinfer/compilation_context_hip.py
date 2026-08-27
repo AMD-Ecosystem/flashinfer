@@ -47,7 +47,7 @@ class CompilationContext:
         Performs comprehensive validation:
         1. System ROCm version compatibility
         2. FlashInfer AMD port availability
-        3. PyTorch ROCm compilation support
+        3. PYTORCH_ROCM_ARCH, when it is set
         """
         import torch.utils.cpp_extension as torch_cpp_ext
 
