@@ -172,6 +172,31 @@ if IS_CUDA:
 elif IS_HIP:
     # `import *` cannot carry a dunder; the IS_CUDA arm binds it directly too.
     from ._version import __version__ as __version__
+
+    # These seven rebind names the IS_CUDA arm above already bound with a different
+    # type, and mypy analyses both arms. A star import gives it nowhere to attach a
+    # targeted ignore, so they are re-imported explicitly; the rest arrive via *.
+    from .decode_rocm import (  # type: ignore[assignment]
+        BatchDecodeWithPagedKVCacheWrapper as BatchDecodeWithPagedKVCacheWrapper,
+    )
+    from .decode_rocm import (  # type: ignore[assignment]
+        CUDAGraphBatchDecodeWithPagedKVCacheWrapper as CUDAGraphBatchDecodeWithPagedKVCacheWrapper,
+    )
+    from .decode_rocm import (  # type: ignore[no-redef]
+        single_decode_with_kv_cache as single_decode_with_kv_cache,
+    )
+    from .mla_rocm import (  # type: ignore[assignment]
+        BatchMLAPagedAttentionWrapper as BatchMLAPagedAttentionWrapper,
+    )
+    from .prefill_rocm import (  # type: ignore[assignment]
+        BatchPrefillWithPagedKVCacheWrapper as BatchPrefillWithPagedKVCacheWrapper,
+    )
+    from .prefill_rocm import (  # type: ignore[assignment]
+        BatchPrefillWithRaggedKVCacheWrapper as BatchPrefillWithRaggedKVCacheWrapper,
+    )
+    from .prefill_rocm import (  # type: ignore[no-redef]
+        single_prefill_with_kv_cache as single_prefill_with_kv_cache,
+    )
     from ._rocm.api import *  # noqa: F401,F403
 else:
     # CPU-only torch (no CUDA or HIP)
