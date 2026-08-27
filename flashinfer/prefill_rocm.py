@@ -1108,6 +1108,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
         mask_mode: int,
         layout: int,
         window_left: int,
+        enable_pdl: bool,
         *args,
     ) -> None:
         ragged_run_func(
@@ -1124,6 +1125,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
             mask_mode,
             layout,
             window_left,
+            # enable_pdl,  # Not supported by HIP kernels
             *args,
         )
 
@@ -1142,6 +1144,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
         mask_mode: int,
         layout: int,
         window_left: int,
+        enable_pdl: bool,
         *args,
     ) -> None:
         pass
@@ -1174,6 +1177,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
         mask_mode: int,
         layout: int,
         window_left: int,
+        enable_pdl: bool,
         *args,
     ) -> None:
         paged_run_func(
@@ -1192,6 +1196,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
             mask_mode,
             layout,
             window_left,
+            # enable_pdl,  # Not supported by HIP kernels
             *args,
         )
 
@@ -1212,6 +1217,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
         mask_mode: int,
         layout: int,
         window_left: int,
+        enable_pdl: bool,
         *args,
     ) -> None:
         pass
