@@ -19,8 +19,10 @@ from flashinfer import aiter_utils
 @pytest.mark.parametrize(
     "version,supported",
     [
+        # "0.1.9" > "0.1.16" as strings, so this row is the one that catches a
+        # comparison done on base_version without re-wrapping it in Version.
         ("0.1.9", False),
-        ("0.1.10", False),  # lexically ">= 0.1.16"; the pin this repo shipped before
+        ("0.1.10", False),  # the pin this repo shipped before the 0.1.16 floor
         ("0.1.15.post9", False),
         ("0.1.16", True),
         # The nightly wheel: PEP 440 sorts a .dev0 segment *below* its release,

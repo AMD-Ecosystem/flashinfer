@@ -4,6 +4,7 @@
 
 import functools
 import logging
+import os
 
 # arch_caps imports nothing (in particular, not torch), so importing it here
 # keeps this module importable without torch -- which the hardware-less
@@ -487,9 +488,16 @@ def validate_flashinfer_rocm_arch(
         )
         requested_archs = supported_in_request
 
-    # Step 3: Validate against PyTorch's available architectures (if module provided)
+    # Step 3: Validate against PyTorch's architectures -- but only when PyTorch was
+    # actually told which ones to build. With PYTORCH_ROCM_ARCH unset,
+    # _get_rocm_arch_flags() enumerates the *visible cards* rather than anything
+    # about the build: it yields ["--offload-arch=", ...] when no device is
+    # visible, and lists only the local card otherwise. Enforcing against that
+    # turns an import on a GPU-free host into a hard error, and rejects
+    # cross-compiling for gfx950 from a gfx942 box -- which is precisely what an
+    # ahead-of-time build is for.
     arch_flags = [f"--offload-arch={arch}" for arch in requested_archs]
-    if torch_cpp_ext_module is not None:
+    if torch_cpp_ext_module is not None and os.environ.get("PYTORCH_ROCM_ARCH"):
         pytorch_arch_flags = torch_cpp_ext_module._get_rocm_arch_flags()
         missing_in_pytorch = [
             flag for flag in arch_flags if flag not in pytorch_arch_flags
@@ -497,7 +505,9 @@ def validate_flashinfer_rocm_arch(
         if missing_in_pytorch:
             raise RuntimeError(
                 f"PyTorch does not support the following architectures: {', '.join(missing_in_pytorch)}.\n"
-                f"PyTorch was compiled with: {', '.join(pytorch_arch_flags)}"
+                f"PyTorch was built for: {', '.join(pytorch_arch_flags)}\n"
+                "This is checked because PYTORCH_ROCM_ARCH is set; unset it to build "
+                "for whatever FLASHINFER_ROCM_ARCH_LIST requests."
             )
 
     if verbose:
