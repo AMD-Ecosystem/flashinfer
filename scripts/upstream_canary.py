@@ -7,7 +7,7 @@
 
 Prints how far the fork and upstream have moved from the merge base, the
 conflicts a merge would raise, and upstream churn on the headers that
-``attention/generic/`` forked -- those conflict with nothing and go stale silently.
+``rocm/`` forked -- those conflict with nothing and go stale silently.
 
 Usage::
 
@@ -38,10 +38,10 @@ _EXPECTED_BASENAME_GLOBS = ("*.md", "*.toml")
 _EXPECTED_EXACT = (".gitignore", ".pre-commit-config.yaml", "version.txt")
 _EXPECTED_PREFIXES = ("benchmarks/samples/",)
 
-_GENERIC_DIR = "include/flashinfer/attention/generic"
+_FORKED_DIR = "include/flashinfer/rocm"
 
-# generic/ flattens one level: it holds headers upstream keeps in attention/
-# and others it keeps directly under flashinfer/.
+# rocm/ mirrors upstream's layout but flattens one level: rocm/attention/ holds
+# headers upstream keeps both in attention/ and directly under flashinfer/.
 _UPSTREAM_HEADER_DIRS = ("include/flashinfer/attention", "include/flashinfer")
 _HEADER_SUFFIXES = (".cuh", ".hpp", ".h")
 
@@ -247,17 +247,17 @@ def _report_conflicts(conflicts: List[Conflict]) -> int:
 
 
 def _report_drift(repo: str, ours: str, theirs: str, churn: Dict[str, Churn]) -> None:
-    """Upstream churn on the headers that generic/ forked.
+    """Upstream churn on the headers that rocm/ forked.
 
     Read from `ours`, not the working tree, so --ours means what it says and a
-    checkout that predates or relocates generic/ still reports correctly.
+    checkout that predates or relocates rocm/ still reports correctly.
     """
     print("== forked-header drift ==")
     forked = sorted(
-        p for p in _ls_tree(repo, ours, _GENERIC_DIR) if p.endswith(_HEADER_SUFFIXES)
+        p for p in _ls_tree(repo, ours, _FORKED_DIR) if p.endswith(_HEADER_SUFFIXES)
     )
     if not forked:
-        print(f"no forked headers under {_GENERIC_DIR} in {ours[:12]}")
+        print(f"no forked headers under {_FORKED_DIR} in {ours[:12]}")
         print()
         return
 
