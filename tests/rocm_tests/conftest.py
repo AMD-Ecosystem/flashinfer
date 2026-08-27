@@ -71,9 +71,9 @@ def _probe(fn, default=_UNKNOWN):
 def _devices() -> str:
     """Device indices this session runs on.
 
-    HIP_VISIBLE_DEVICES wins when set: tests/conftest.py pins each xdist worker
-    to a single card through it before torch loads, so it -- not the full card
-    list -- is what this process can actually see.
+    HIP_VISIBLE_DEVICES wins when set: tests/conftest.py assigns each xdist
+    worker a card through it, so it -- not the full card list -- is the card
+    this session is meant to be using.
     """
     visible = os.environ.get("HIP_VISIBLE_DEVICES", "").strip()
     if visible:

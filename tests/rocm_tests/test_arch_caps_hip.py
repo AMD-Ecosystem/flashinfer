@@ -109,10 +109,10 @@ class TestNormalizeArch:
 def test_suite_loads_without_torch():
     """Neither arch_caps nor hip_utils may import torch at module scope.
 
-    hip_utils sits on a path that must not touch torch: tests/conftest.py calls
-    it to choose a GPU *before* pinning HIP_VISIBLE_DEVICES, which is why it
-    probes with rocminfo rather than torch.cuda. arch_caps is imported by
-    hip_utils at module scope, so it inherits the same constraint.
+    hip_utils sits on a path that must not touch torch: it answers "which
+    architecture" for build hosts that have neither torch nor a GPU, which is
+    why it probes with rocminfo rather than torch.cuda. arch_caps is imported
+    by hip_utils at module scope, so it inherits the same constraint.
 
     Asserting it against *this file's* loader rather than against arch_caps
     alone covers both modules at once and pins the exact precondition the

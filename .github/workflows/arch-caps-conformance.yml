@@ -10,7 +10,7 @@
 # What this protects: a row added for one architecture but not the other, a
 # gate whose op name no longer matches any call site, a known-bad window that
 # stops matching the version it was written for, or a module-scope `import torch`
-# creeping into the pre-HIP_VISIBLE_DEVICES path. All of those are currently
+# creeping into the torch-free arch-resolution path. All of those are currently
 # caught only by someone remembering to run the GPU suite.
 name: arch-caps conformance
 
