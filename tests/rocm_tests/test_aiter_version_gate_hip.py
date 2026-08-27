@@ -24,9 +24,12 @@ from flashinfer import aiter_utils
         ("0.1.9", False),
         ("0.1.10", False),  # the pin this repo shipped before the 0.1.16 floor
         ("0.1.15.post9", False),
+        # A pre-release of the floor is below it. Comparing on base_version
+        # strips the segment and wrongly admits this one.
+        ("0.1.16.dev0", False),
         ("0.1.16", True),
-        # The nightly wheel: PEP 440 sorts a .dev0 segment *below* its release,
-        # so a naive Version(...) >= Version(floor) rejects the only cp314 wheel.
+        # The nightly wheel, and the only cp314 build: .dev0 *of post3*, which
+        # sorts above 0.1.16 rather than below it.
         ("0.1.16.post3.dev0+g620287969.d20260725", True),
         ("0.1.21", True),
         ("0.2.0", True),

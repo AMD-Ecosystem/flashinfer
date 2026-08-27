@@ -10,6 +10,7 @@ import torch
 
 from .arch_caps import (
     ArchCapabilityError,
+    aiter_fallback_backend,
     capability_available,
     normalize_arch,
     require_capability,
@@ -74,11 +75,12 @@ def _aiter_version_supported() -> bool:
     try:
         from packaging.version import Version
 
-        # Compare on base_version: the nightly wheels carry a local '+g<sha>'
-        # segment, and a '.dev0' pre-release segment that PEP 440 sorts *below*
-        # the release it is built from -- 0.1.16.post3.dev0 must still pass a
-        # 0.1.16 floor. Re-wrap in Version; base_version is a str.
-        return Version(Version(installed).base_version) >= Version(AITER_MIN_VERSION)
+        # Straight PEP 440 comparison, which already sorts the cases that matter:
+        # 0.1.16.post3.dev0+g<sha> (the nightly) is a dev build *of post3* and
+        # sorts above 0.1.16, while 0.1.16.dev0 is a pre-release of 0.1.16 and
+        # sorts below it. base_version would strip both segments and wrongly
+        # admit the latter.
+        return Version(installed) >= Version(AITER_MIN_VERSION)
     except Exception:
         return False
 
@@ -138,18 +140,23 @@ def require_aiter(device: torch.device, op: str) -> None:
     """
     require_capability(device, op, "aiter")
     if not _aiter_importable():
+        # The usable fallback is per-op -- "fa2" for attention, "native" for the
+        # rest -- so take it from the table rather than naming one that this op
+        # does not accept.
+        alt = aiter_fallback_backend(op)
+        advice = f"use backend={alt!r}" if alt else "use a non-AITER backend"
         installed = _aiter_installed_version()
         if installed is not None and not _aiter_version_supported():
             raise ValueError(
                 f"backend='aiter' for {op} requires amd-aiter >= {AITER_MIN_VERSION}, "
                 f"but {installed} is installed; the vendored struct layouts do not "
-                "match older releases and would corrupt arguments silently. Upgrade "
-                "amd-aiter or use backend='native'."
+                f"match older releases and would corrupt arguments silently. Upgrade "
+                f"amd-aiter or {advice}."
             )
         raise ValueError(
             f"backend='aiter' for {op} requires the aiter package, which is not "
-            "installed or failed to import. Install it (see the AITER Support "
-            "section in the README) or use backend='native'."
+            f"installed or failed to import. Install it (see the AITER Support "
+            f"section in the README) or {advice}."
         )
 
 
