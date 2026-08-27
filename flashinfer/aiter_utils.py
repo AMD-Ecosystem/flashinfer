@@ -3,11 +3,18 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import functools
+import os
 
 import torch
 
-from .arch_caps import capability_available, normalize_arch, require_capability
+from .arch_caps import (
+    ArchCapabilityError,
+    capability_available,
+    normalize_arch,
+    require_capability,
+)
 from .hip_utils import FLASHINFER_SUPPORTED_ROCM_ARCHS
+from .jit.core import MissingJITCacheError, logger
 
 
 @functools.lru_cache(maxsize=8)
@@ -87,3 +94,39 @@ def get_aiter_mha_module():
     from aiter.ops import mha as aiter_mha_module
 
     return aiter_mha_module
+
+
+# Failures that are never AITER's to own, so ``auto`` must not demote on them:
+# a wrong-numerics arch gate, our own missing AOT cache, a caller contract
+# violation, and a transient OOM that would otherwise cache as "unsupported".
+_AITER_PROBE_FATAL = (
+    ArchCapabilityError,
+    MissingJITCacheError,
+    ValueError,
+    torch.cuda.OutOfMemoryError,
+)
+
+
+def handle_aiter_probe_failure(exc: BaseException, *, op: str) -> str:
+    """Classify a failure raised while probing whether AITER can serve ``op``.
+
+    Re-raises when the failure is not a "this AITER install cannot build this
+    variant" condition; otherwise warns and returns the reason string for
+    ``backend_fallback_reason``. Callers must be ``lru_cache``d, since that —
+    not this function — is what stops a failing build being retried.
+    """
+    if isinstance(exc, _AITER_PROBE_FATAL):
+        raise exc
+    if os.environ.get("FLASHINFER_AITER_STRICT", "0") == "1":
+        raise exc
+
+    # Single-line and bounded: this string reaches a CSV column in the benchmark
+    # harness, where an embedded traceback would corrupt the row.
+    detail = " ".join(str(exc).split())[:200]
+    reason = (
+        f"aiter {op} kernel bootstrap failed on this install: "
+        f"{type(exc).__name__}: {detail} "
+        "(set FLASHINFER_AITER_STRICT=1 to raise instead)"
+    )
+    logger.warning("auto backend falling back to fa2: %s", reason)
+    return reason

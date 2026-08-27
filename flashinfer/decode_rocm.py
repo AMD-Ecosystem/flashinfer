@@ -31,6 +31,7 @@ from .jit import (
     get_batch_decode_uri,
     get_single_decode_uri,
 )
+from .aiter_utils import handle_aiter_probe_failure
 from .jit.core import logger
 from .page import get_seq_lens
 from .prefill_rocm import (
@@ -461,6 +462,52 @@ def _aiter_pa_v1_resolve(
     func_name = func.__name__
     so_path = f"{BUILD_DIR}/{func_name}/lib.so"
     return so_path, func_name
+
+
+# maxsize bounds a key that carries per-request max_context_len; only
+# ceil(max_context_len / (partition_size * warp_size)) reaches the compiler, so
+# the entries are near-duplicates. Caching the success also spares every later
+# plan() a round trip through AITER's compile() machinery.
+@functools.lru_cache(maxsize=128)
+def _aiter_pa_v1_available(
+    dtype_q: torch.dtype,
+    dtype_kv: torch.dtype,
+    dtype_o: torch.dtype,
+    head_dim: int,
+    num_qo_heads: int,
+    num_kv_heads: int,
+    page_size: int,
+    max_context_len: int,
+    logits_soft_cap: float,
+    sliding_window: int,
+    partition_size: int,
+    device_idx: int,
+) -> Tuple[Optional[Tuple[str, str]], Optional[str]]:
+    """Resolve AITER PA v1 for this problem; returns ((so_path, func_name), None)
+    or (None, reason) when this AITER install cannot build the variant.
+
+    device_idx is in the key but unused: the resolved .so is arch-specific, and
+    this host can hold gfx942 and gfx950 at once. Positional-only by convention,
+    since lru_cache keys kwargs by insertion order.
+    """
+    del device_idx
+    try:
+        resolved = _aiter_pa_v1_resolve(
+            dtype_q=dtype_q,
+            dtype_kv=dtype_kv,
+            dtype_o=dtype_o,
+            head_dim=head_dim,
+            num_qo_heads=num_qo_heads,
+            num_kv_heads=num_kv_heads,
+            page_size=page_size,
+            max_context_len=max_context_len,
+            logits_soft_cap=logits_soft_cap,
+            sliding_window=sliding_window,
+            partition_size=partition_size,
+        )
+    except Exception as e:
+        return None, handle_aiter_probe_failure(e, op="batch_decode")
+    return resolved, None
 
 
 def single_decode_with_kv_cache_with_jit_module(
@@ -935,6 +982,10 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     device=float_workspace_buffer.device,
                 )
         self._backend = backend
+        # plan() overwrites _backend with the concrete choice; a later plan()
+        # with a longer max_context_len needs a different AITER variant, so it
+        # still has to know the caller asked for auto.
+        self._backend_requested = backend
         self._backend_fallback_reason: Optional[str] = None
         # ROCm never supports PDL; cache once to avoid per-call device property lookup.
         self._pdl_supported = device_support_pdl(float_workspace_buffer.device)
@@ -1151,6 +1202,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
         # capturing at the maximum sequence length. AITER decode under CUDA graph is
         # therefore opt-in via an explicit backend="aiter" (see the capture-at-max
         # warning below), not something `auto` selects silently.
+        resolved_from_auto = self._backend_requested == "auto"
         if self._backend == "auto":
             if self.use_tensor_cores or self.is_cuda_graph_enabled:
                 self._backend = "fa2"
@@ -1195,72 +1247,105 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     "captured will be incorrect. Use backend='fa2' if you need "
                     "capture-order-independent CUDA-graph decode."
                 )
-            self._max_kv_len = int(max(kv_lens_arr_host).item())
+            max_kv_len = int(max(kv_lens_arr_host).item())
             # max blocks per seq across the batch — needed to size the dense block_tables.
             npages_arr = indptr_host[1:].to(torch.int64) - indptr_host[:-1].to(
                 torch.int64
             )
-            self._aiter_max_blocks_per_seq = (
+            aiter_max_blocks_per_seq = (
                 int(npages_arr.max().item()) if batch_size > 0 else 0
             )
-            self._aiter_partition_size = _AITER_PA_V1_PARTITION_SIZE
             # Convention mapping: flashinfer's window_left = W means the query at
             # position kv_len-1 sees kv positions [kv_len-1-W, kv_len-1] (W+1 tokens).
             # AITER's sliding_window = S masks positions where local_token_idx + i <
             # context_len - S, so it admits S tokens. Therefore S = W + 1. The sentinel
             # window_left == -1 (disabled) maps to S = 0, which is also AITER's compile-
             # time "disabled" flag (sliding_window_enabled = (S > 0)).
-            self._aiter_sliding_window = 0 if window_left == -1 else window_left + 1
+            aiter_sliding_window = 0 if window_left == -1 else window_left + 1
 
-            self._cached_module = get_batch_decode_aiter_module(
-                q_data_type, kv_data_type, q_data_type, head_dim, head_dim
-            )
             # Bootstrap & resolve (so_path, func_name) — this triggers AITER's own JIT
             # build of the variant .so on first call for this template-param combination.
+            # Held in locals and committed only on success: a demotion to fa2 below must
+            # leave no half-written _aiter_* state, since run() gates on _backend alone.
+            resolved = None
+            reason = None
             with _aiter_bootstrap_lock:
-                self._aiter_so_path, self._aiter_func_name = _aiter_pa_v1_resolve(
-                    dtype_q=q_data_type,
-                    dtype_kv=kv_data_type,
-                    dtype_o=q_data_type,
-                    head_dim=head_dim,
-                    num_qo_heads=num_qo_heads,
-                    num_kv_heads=num_kv_heads,
-                    page_size=page_size,
-                    max_context_len=self._max_kv_len,
-                    logits_soft_cap=logits_soft_cap,
-                    sliding_window=self._aiter_sliding_window,
-                    partition_size=self._aiter_partition_size,
+                if resolved_from_auto:
+                    resolved, reason = _aiter_pa_v1_available(
+                        q_data_type,
+                        kv_data_type,
+                        q_data_type,
+                        head_dim,
+                        num_qo_heads,
+                        num_kv_heads,
+                        page_size,
+                        max_kv_len,
+                        logits_soft_cap,
+                        aiter_sliding_window,
+                        _AITER_PA_V1_PARTITION_SIZE,
+                        self.device.index if self.device.index is not None else 0,
+                    )
+                else:
+                    resolved = _aiter_pa_v1_resolve(
+                        dtype_q=q_data_type,
+                        dtype_kv=kv_data_type,
+                        dtype_o=q_data_type,
+                        head_dim=head_dim,
+                        num_qo_heads=num_qo_heads,
+                        num_kv_heads=num_kv_heads,
+                        page_size=page_size,
+                        max_context_len=max_kv_len,
+                        logits_soft_cap=logits_soft_cap,
+                        sliding_window=aiter_sliding_window,
+                        partition_size=_AITER_PA_V1_PARTITION_SIZE,
+                    )
+
+            if reason is None:
+                self._max_kv_len = max_kv_len
+                self._aiter_max_blocks_per_seq = aiter_max_blocks_per_seq
+                self._aiter_partition_size = _AITER_PA_V1_PARTITION_SIZE
+                self._aiter_sliding_window = aiter_sliding_window
+                self._cached_module = get_batch_decode_aiter_module(
+                    q_data_type, kv_data_type, q_data_type, head_dim, head_dim
                 )
-            # Skip FA2-style plan_info; AITER kernel doesn't use it.
-            self._plan_info = plan_info_vec_as_tensor(
-                [], device=self._float_workspace_buffer.device
-            )
+                self._aiter_so_path, self._aiter_func_name = resolved
+                # Skip FA2-style plan_info; AITER kernel doesn't use it.
+                self._plan_info = plan_info_vec_as_tensor(
+                    [], device=self._float_workspace_buffer.device
+                )
 
-            # FA2 shadow plan for return_lse=True; built lazily (AITER PA v1 has no LSE).
-            self._fa2_lse_module: Optional[Any] = None
-            self._fa2_lse_plan_info: Optional[torch.Tensor] = None
-            self._fa2_lse_build_args = (
-                q_data_type,
-                kv_data_type,
-                indptr.dtype,
-                head_dim,
-                pos_encoding_mode,
-                window_left,
-                logits_soft_cap,
-                indptr_host,
-                batch_size,
-                num_qo_heads,
-                num_kv_heads,
-                page_size,
-            )
+                # FA2 shadow plan for return_lse=True; built lazily (AITER PA v1 has no LSE).
+                self._fa2_lse_module: Optional[Any] = None
+                self._fa2_lse_plan_info: Optional[torch.Tensor] = None
+                self._fa2_lse_build_args = (
+                    q_data_type,
+                    kv_data_type,
+                    indptr.dtype,
+                    head_dim,
+                    pos_encoding_mode,
+                    window_left,
+                    logits_soft_cap,
+                    indptr_host,
+                    batch_size,
+                    num_qo_heads,
+                    num_kv_heads,
+                    page_size,
+                )
 
-            self._pos_encoding_mode = pos_encoding_mode
-            self._window_left = window_left
-            self._logits_soft_cap = logits_soft_cap
-            self._sm_scale = sm_scale
-            self._rope_scale = rope_scale
-            self._rope_theta = rope_theta
-            return
+                self._pos_encoding_mode = pos_encoding_mode
+                self._window_left = window_left
+                self._logits_soft_cap = logits_soft_cap
+                self._sm_scale = sm_scale
+                self._rope_scale = rope_scale
+                self._rope_theta = rope_theta
+                return
+
+            # auto promised fa2 when AITER cannot serve; fall through to it below.
+            # Reachable only from the auto path, which already excludes
+            # use_tensor_cores and CUDA graphs, so the landing site is the plain
+            # decode branch.
+            self._backend = "fa2"
+            self._backend_fallback_reason = reason
 
         if self.use_tensor_cores:
             self._max_kv_len = max(kv_lens_arr_host).item()

@@ -349,7 +349,7 @@ def test_append_empty_batch_is_a_noop_under_aiter():
 
     backend='native' is deliberately not exercised: it raises
     hipErrorInvalidConfiguration for the same input, because
-    include/flashinfer/attention/generic/page.cuh:398 computes nblks(0). That is
+    include/flashinfer/rocm/attention/page.cuh:398 computes nblks(0). That is
     upstream CUDA code this port does not modify, so the shim is simply better
     here rather than at parity.
     """

@@ -9,8 +9,7 @@
 //
 // FlashInfer's paged KV layout (flat indices + indptr + last_page_len) is
 // converted in-line to PA v1's expected dense [num_seqs, max_blocks_per_seq]
-// block_tables + per-seq context_lens. This conversion is small (O(batch))
-// and runs on GPU via torch ops; correctness-first, optimize later if needed.
+// block_tables + per-seq context_lens, by a single fused kernel per run().
 
 #include <ATen/ATen.h>
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
@@ -42,8 +41,11 @@ static at::Tensor get_unit_scale(at::Device device) {
 
 // Convert flat (paged_kv_indices, paged_kv_indptr, paged_kv_last_page_len) into:
 //   block_tables  [num_seqs, max_blocks_per_seq] int32 (right-padded with 0)
-//   context_lens  [num_seqs] int32  = (npages-1) * page_size + last_page_len
+//   context_lens  [num_seqs] int32  = npages > 0 ? (npages-1)*page_size + last_page_len : 0
 // page_size is taken from the paged cache layout (size(1) for NHD).
+// One fused kernel, not a chain of ATen ops. The tensors are tiny -- 128 KB at the
+// largest shape benchmarked -- so this is launch-bound, and the ATen form cost
+// ~11 launches per run() against 1-2 for the attention kernel itself.
 static std::pair<at::Tensor, at::Tensor> build_block_tables_and_ctxlens(
     const at::Tensor& paged_kv_indices, const at::Tensor& paged_kv_indptr,
     const at::Tensor& paged_kv_last_page_len, int64_t page_size, int64_t num_seqs,
@@ -51,36 +53,35 @@ static std::pair<at::Tensor, at::Tensor> build_block_tables_and_ctxlens(
   auto device = paged_kv_indices.device();
   auto int32_opts = at::TensorOptions().dtype(at::kInt).device(device);
 
-  // Per-seq npages = indptr[i+1] - indptr[i]
-  at::Tensor npages =
-      paged_kv_indptr.slice(0, 1, num_seqs + 1) - paged_kv_indptr.slice(0, 0, num_seqs);
-  // context_lens = (npages - 1) * page_size + last_page_len
-  at::Tensor context_lens = (npages - 1) * static_cast<int32_t>(page_size) + paged_kv_last_page_len;
-  context_lens = context_lens.to(at::kInt);
+  // The kernel indexes these as flat int32 arrays, so unlike the ATen form it
+  // cannot absorb a strided view or a short buffer -- either would read OOB.
+  TORCH_CHECK(paged_kv_indptr.is_contiguous() && paged_kv_indices.is_contiguous() &&
+                  paged_kv_last_page_len.is_contiguous(),
+              "AITER PA v1 requires contiguous paged-KV index tensors");
+  TORCH_CHECK(paged_kv_indptr.dim() == 1 && paged_kv_indices.dim() == 1 &&
+                  paged_kv_last_page_len.dim() == 1,
+              "AITER PA v1 requires 1-D paged-KV index tensors; got indptr.dim()=",
+              paged_kv_indptr.dim(), " indices.dim()=", paged_kv_indices.dim(),
+              " last_page_len.dim()=", paged_kv_last_page_len.dim());
+  TORCH_CHECK(paged_kv_indptr.numel() == num_seqs + 1, "paged_kv_indptr must have num_seqs+1 (",
+              num_seqs + 1, ") elements; got ", paged_kv_indptr.numel());
+  TORCH_CHECK(paged_kv_last_page_len.numel() == num_seqs,
+              "paged_kv_last_page_len must have num_seqs (", num_seqs, ") elements; got ",
+              paged_kv_last_page_len.numel());
 
-  // Build dense block_tables via index_copy from flat indices.
-  at::Tensor block_tables = at::zeros({num_seqs, max_blocks_per_seq}, int32_opts);
+  // empty, not zeros: the kernel writes every slot including the padding.
+  at::Tensor block_tables = at::empty({num_seqs, max_blocks_per_seq}, int32_opts);
+  at::Tensor context_lens = at::empty({num_seqs}, int32_opts);
 
-  // For each seq i and page-slot j < npages[i], block_tables[i, j] = indices[indptr[i] + j].
-  // Vectorized: build a (num_seqs, max_blocks_per_seq) mask of valid slots, then a flat
-  // gather index = indptr[i] + j, scattered into block_tables.
-  at::Tensor slot_ids = at::arange(max_blocks_per_seq, int32_opts)
-                            .unsqueeze(0)
-                            .expand({num_seqs, max_blocks_per_seq});
-  at::Tensor npages_2d = npages.to(at::kInt).unsqueeze(1).expand({num_seqs, max_blocks_per_seq});
-  at::Tensor valid = slot_ids < npages_2d;
-
-  at::Tensor indptr_2d = paged_kv_indptr.slice(0, 0, num_seqs)
-                             .to(at::kInt)
-                             .unsqueeze(1)
-                             .expand({num_seqs, max_blocks_per_seq});
-  at::Tensor flat_gather = indptr_2d + slot_ids;
-  // Clamp to 0 for invalid slots so the gather is safe; mask back to 0 afterwards.
-  at::Tensor safe_gather = at::where(valid, flat_gather, at::zeros_like(flat_gather));
-  at::Tensor gathered = paged_kv_indices.to(at::kInt)
-                            .index_select(0, safe_gather.flatten())
-                            .reshape({num_seqs, max_blocks_per_seq});
-  block_tables = at::where(valid, gathered, block_tables);
+  const hipStream_t stream = c10::hip::getCurrentHIPStream();
+  const hipError_t status = flashinfer::AiterPaV1BuildBlockTables(
+      paged_kv_indptr.data_ptr<int32_t>(), paged_kv_indices.data_ptr<int32_t>(),
+      paged_kv_last_page_len.data_ptr<int32_t>(), block_tables.data_ptr<int32_t>(),
+      context_lens.data_ptr<int32_t>(), static_cast<int>(num_seqs),
+      static_cast<int>(max_blocks_per_seq), static_cast<int>(page_size), paged_kv_indices.numel(),
+      stream);
+  TORCH_CHECK(status == hipSuccess,
+              "AiterPaV1BuildBlockTables failed: ", hipGetErrorString(status));
 
   return {block_tables, context_lens};
 }
@@ -114,6 +115,13 @@ void batch_decode_with_paged_kv_cache_aiter(
   TORCH_CHECK(paged_kv_indptr.scalar_type() == at::kInt);
   TORCH_CHECK(paged_kv_indices.scalar_type() == at::kInt);
   TORCH_CHECK(paged_kv_last_page_len.scalar_type() == at::kInt);
+  // The block-table kernel dereferences these directly, so a CPU or cross-device
+  // tensor becomes an invalid device pointer rather than an ATen dispatch error.
+  TORCH_CHECK(paged_kv_indptr.device() == device && paged_kv_indices.device() == device &&
+                  paged_kv_last_page_len.device() == device,
+              "paged-KV index tensors must be on ", device,
+              "; got indptr=", paged_kv_indptr.device(), " indices=", paged_kv_indices.device(),
+              " last_page_len=", paged_kv_last_page_len.device());
 
   const int64_t num_seqs = q.size(0);
   const int64_t num_heads = q.size(1);

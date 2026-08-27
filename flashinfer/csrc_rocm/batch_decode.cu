@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <flashinfer/attention/generic/pos_enc.cuh>
-#include <flashinfer/attention/generic/scheduler.cuh>
+#include <flashinfer/rocm/attention/pos_enc.cuh>
+#include <flashinfer/rocm/attention/scheduler.cuh>
 #include <gpu_iface/utils.cuh>
 #include <optional>
 

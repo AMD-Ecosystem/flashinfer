@@ -261,7 +261,7 @@ def gen_single_decode_module(
         ],  # additional_scalar_names
         ["double", "double", "double", "double"],  # additional_scalar_dtypes
         f"DefaultAttention<false, {str(use_sliding_window).lower()}, {str(use_logits_soft_cap).lower()}, {str(pos_encoding_mode == 2).lower()}>",  # variant_name
-        "#include<flashinfer/attention/generic/variants.cuh>",  # variant_decl
+        "#include<flashinfer/rocm/attention/variants.cuh>",  # variant_decl
         pos_encoding_mode=pos_encoding_mode,
         use_sliding_window=use_sliding_window,
         use_logits_soft_cap=use_logits_soft_cap,
@@ -305,7 +305,7 @@ def gen_single_prefill_module(
         ]
         additional_scalar_dtypes = ["double", "double", "double", "double"]
         variant_name = f"DefaultAttention<use_custom_mask, {str(use_sliding_window).lower()}, {str(use_logits_soft_cap).lower()}, {str(pos_encoding_mode == 2).lower()}>"
-        variant_decl = "#include<flashinfer/attention/generic/variants.cuh>"
+        variant_decl = "#include<flashinfer/rocm/attention/variants.cuh>"
     else:
         additional_tensor_names = []
         additional_tensor_dtypes = []
@@ -436,7 +436,7 @@ def gen_batch_decode_module(
         ],  # additional_scalar_names
         ["double", "double", "double", "double"],  # additional_scalar_dtypes
         f"DefaultAttention<false, {str(use_sliding_window).lower()}, {str(use_logits_soft_cap).lower()}, {str(pos_encoding_mode == 2).lower()}>",  # variant_name
-        "#include<flashinfer/attention/generic/variants.cuh>",  # variant_decl
+        "#include<flashinfer/rocm/attention/variants.cuh>",  # variant_decl
         pos_encoding_mode=pos_encoding_mode,
         use_sliding_window=use_sliding_window,
         use_logits_soft_cap=use_logits_soft_cap,
@@ -511,7 +511,7 @@ def gen_batch_prefill_module(
         ]
         additional_scalar_dtypes = ["double", "double", "double", "double"]
         variant_name = f"DefaultAttention<use_custom_mask, {str(use_sliding_window).lower()}, {str(use_logits_soft_cap).lower()}, {str(pos_encoding_mode == 2).lower()}>"
-        variant_decl = "#include<flashinfer/attention/generic/variants.cuh>"
+        variant_decl = "#include<flashinfer/rocm/attention/variants.cuh>"
     else:
         additional_tensor_names = []
         additional_tensor_dtypes = []
