@@ -145,7 +145,7 @@ The classifier itself is covered by `tests/rocm_tests/test_amd_coverage.py`, whi
 flashinfer/
 ├── include/                  # framework-agnostic kernel headers (raw pointers only)
 │   ├── flashinfer/           # FlashInfer kernel implementations
-│   └── gpu_iface/backend/    # GPU abstraction layer — cuda/ and hip/ shims
+│   └── gpu_iface/backend/hip/  # HIP intrinsics behind a common header surface
 ├── csrc/                     # upstream CUDA op registration (PyTorch bindings)
 ├── flashinfer/
 │   ├── csrc_rocm/            # HIP op registration (PyTorch bindings) — the ROCm analog of csrc/
@@ -168,10 +168,11 @@ reduce merge conflicts. New HIP-specific op bindings go in
 `flashinfer/csrc_rocm/`, with a `_hip` or `_aiter` suffix when the file
 routes to a HIP-specific code path or to AITER.
 
-**`include/gpu_iface/`.** Hides CUDA/HIP divergence behind a common
-header surface (`math_ops.hpp`, `mma_ops.hpp`, `memory_ops.hpp`, …).
-When you need a new intrinsic, add the abstraction in `gpu_iface/` and
-provide a HIP implementation under `gpu_iface/backend/hip/`. Don't
+**`include/gpu_iface/`.** A common header surface (`math_ops.hpp`,
+`mma_ops.hpp`, `memory_ops.hpp`, …) over HIP intrinsics. It once spanned
+CUDA too; that half is gone, so a non-HIP compiler now gets an `#error`
+from `macros.hpp`. When you need a new intrinsic, add the abstraction in
+`gpu_iface/` and implement it under `gpu_iface/backend/hip/`. Don't
 reach for `hipcub`, `__hip_*`, or inline asm from inside
 `include/flashinfer/` — go through `gpu_iface`.
 

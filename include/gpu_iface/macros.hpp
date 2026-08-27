@@ -19,8 +19,10 @@
 #define __grid_constant__
 #endif
 
-#elif defined(__CUDACC__) || defined(__CUDA_ARCH__)
-#define PLATFORM_CUDA_DEVICE
+#else
+// The CUDA backend was removed; gpu_iface serves HIP only. Fail here with a
+// named diagnostic rather than deeper in a missing hip/ header.
+#error "flashinfer ROCm requires a HIP compiler (__HIP__ / __HIPCC__)."
 #endif
 
 // Common attributes with FlashInfer (FI) specific naming

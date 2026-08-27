@@ -34,16 +34,6 @@ __forceinline__ __device__ __host__ T1 round_up(const T1 x, const T2 y) {
   return ceil_div(x, y) * y;
 }
 
-#if defined(PLATFORM_CUDA_DEVICE)
-inline std::pair<int, int> GetCudaComputeCapability() {
-  int device_id = 0;
-  cudaGetDevice(&device_id);
-  int major = 0, minor = 0;
-  cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device_id);
-  cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device_id);
-  return std::make_pair(major, minor);
-}
-#elif defined(PLATFORM_HIP_DEVICE)
 inline std::pair<int, int> GetCudaComputeCapability() {
   int device_id = 0;
   FI_GPU_CALL(hipGetDevice(&device_id));
@@ -52,7 +42,6 @@ inline std::pair<int, int> GetCudaComputeCapability() {
   FI_GPU_CALL(hipDeviceGetAttribute(&minor, hipDeviceAttributeComputeCapabilityMinor, device_id));
   return std::make_pair(major, minor);
 }
-#endif
 
 template <typename T>
 inline void DebugPrintCUDAArray(T* device_ptr, size_t size, std::string prefix = "") {
@@ -97,27 +86,6 @@ inline uint32_t FA2ForcedCtaTileQ() {
 }
 
 inline uint32_t FA2DetermineCtaTileQ(int64_t avg_packed_qo_len, uint32_t head_dim) {
-#if defined(PLATFORM_CUDA_DEVICE)
-  if (avg_packed_qo_len > 64 && head_dim < 256) {
-    return 128;
-  } else {
-    auto compute_capacity = GetCudaComputeCapability();
-    if (compute_capacity.first >= 8) {
-      // Ampere or newer
-      if (avg_packed_qo_len > 16) {
-        // avg_packed_qo_len <= 64
-        return 64;
-      } else {
-        // avg_packed_qo_len <= 16
-        return 16;
-      }
-    } else {
-      // NOTE(Zihao): not enough shared memory on Turing for 1x4 warp
-      // layout
-      return 64;
-    }
-  }
-#elif defined(PLATFORM_HIP_DEVICE)
   if (const uint32_t forced = FA2ForcedCtaTileQ(); forced != 0u) return forced;
   // 64 is measured-optimal on gfx942 and gfx950 alike, not a CDNA3 leftover: at
   // head_dim=128 the 128 tile is slower on both, by up to 51% (gfx942, causal,
@@ -130,7 +98,6 @@ inline uint32_t FA2DetermineCtaTileQ(int64_t avg_packed_qo_len, uint32_t head_di
   // CTA_TILE_Q=16 is retained for very short sequences (avg ≤ 16 rows) with head_dim < 256
   // to avoid launching an excessive number of near-empty threadblocks.
   return avg_packed_qo_len <= 16 ? 16 : 64;
-#endif
 }
 
 /*!

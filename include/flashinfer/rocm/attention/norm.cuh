@@ -110,30 +110,12 @@ gpuError_t RMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uint32_t
   float weight_bias = 0.f;
   void* args[] = {&input, &weight, &output, &d, &stride_input, &stride_output, &weight_bias, &eps};
 
-#if defined(PLATFORM_CUDA_DEVICE)
-  cudaLaunchConfig_t config;
-  config.gridDim = nblks;
-  config.blockDim = nthrs;
-  config.dynamicSmemBytes = smem_size;
-  config.stream = stream;
-  cudaLaunchAttribute attrs[1];
-  attrs[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
-  attrs[0].val.programmaticStreamSerializationAllowed = enable_pdl;
-  config.numAttrs = 1;
-  config.attrs = attrs;
-#endif
-
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = RMSNormKernel<VEC_SIZE, T>;
     FI_GPU_CALL(
         gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
-#if defined(PLATFORM_CUDA_DEVICE)
-    FI_GPU_CALL(gpuLaunchKernelEx(&config, kernel, input, weight, output, d, stride_input,
-                                  stride_output, weight_bias, eps));
-#else
-            FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
-#endif
+    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
   return gpuSuccess;
 }
@@ -246,29 +228,11 @@ gpuError_t FusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch_size
   void* args[] = {&input,        &residual,        &weight,      &d,
                   &stride_input, &stride_residual, &weight_bias, &eps};
 
-#if defined(PLATFORM_CUDA_DEVICE)
-  cudaLaunchConfig_t config;
-  config.gridDim = nblks;
-  config.blockDim = nthrs;
-  config.dynamicSmemBytes = smem_size;
-  config.stream = stream;
-  cudaLaunchAttribute attrs[1];
-  attrs[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
-  attrs[0].val.programmaticStreamSerializationAllowed = enable_pdl;
-  config.numAttrs = 1;
-  config.attrs = attrs;
-#endif
-
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = FusedAddRMSNormKernel<VEC_SIZE, T>;
     FI_GPU_CALL(
         gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
-#if defined(PLATFORM_CUDA_DEVICE)
-    FI_GPU_CALL(gpuLaunchKernelEx(&config, kernel, input, residual, weight, d, stride_input,
-                                  stride_residual, weight_bias, eps));
-#else
-            FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
-#endif
+    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
 
   return gpuSuccess;
@@ -288,29 +252,11 @@ gpuError_t GemmaRMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uin
   float weight_bias = 1.f;
   void* args[] = {&input, &weight, &output, &d, &stride_input, &stride_output, &weight_bias, &eps};
 
-#if defined(PLATFORM_CUDA_DEVICE)
-  cudaLaunchConfig_t config;
-  config.gridDim = nblks;
-  config.blockDim = nthrs;
-  config.dynamicSmemBytes = smem_size;
-  config.stream = stream;
-  cudaLaunchAttribute attrs[1];
-  attrs[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
-  attrs[0].val.programmaticStreamSerializationAllowed = enable_pdl;
-  config.numAttrs = 1;
-  config.attrs = attrs;
-#endif
-
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = RMSNormKernel<VEC_SIZE, T>;
     FI_GPU_CALL(
         gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
-#if defined(PLATFORM_CUDA_DEVICE)
-    FI_GPU_CALL(gpuLaunchKernelEx(&config, kernel, input, weight, output, d, stride_input,
-                                  stride_output, weight_bias, eps));
-#else
-            FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
-#endif
+    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
   return gpuSuccess;
 }
@@ -332,30 +278,12 @@ gpuError_t GemmaFusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch
   void* args[] = {&input,        &residual,        &weight,      &d,
                   &stride_input, &stride_residual, &weight_bias, &eps};
 
-#if defined(PLATFORM_CUDA_DEVICE)
-  cudaLaunchConfig_t config;
-  config.gridDim = nblks;
-  config.blockDim = nthrs;
-  config.dynamicSmemBytes = smem_size;
-  config.stream = stream;
-  cudaLaunchAttribute attrs[1];
-  attrs[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
-  attrs[0].val.programmaticStreamSerializationAllowed = enable_pdl;
-  config.numAttrs = 1;
-  config.attrs = attrs;
-#endif
-
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = FusedAddRMSNormKernel<VEC_SIZE, T>;
     FI_GPU_CALL(
         gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
-#if defined(PLATFORM_CUDA_DEVICE)
-    FI_GPU_CALL(gpuLaunchKernelEx(&config, kernel, input, residual, weight, d, stride_input,
-                                  stride_residual, weight_bias, eps));
-#else
-            FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
-#endif
+    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
 
   return gpuSuccess;
