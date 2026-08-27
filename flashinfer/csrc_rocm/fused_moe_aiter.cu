@@ -93,6 +93,11 @@ std::pair<at::Tensor, at::Tensor> quantize_per_token(const at::Tensor& x, at::Sc
   aiter_tensor_t q_a = compat::to_aiter(q);
   aiter_tensor_t x_a = compat::to_aiter(x);
   aiter_tensor_t scale_a = compat::to_aiter(scale);
+  // The POD entry point reads AITER's thread-local stream, not torch's. Without
+  // this the quant kernel lands on the null stream while the CK stages consume
+  // q/scale on the caller's -- and torch's pool streams are non-blocking, so
+  // nothing synchronises them.
+  const compat::StreamGuard stream_guard(at::hip::getCurrentHIPStream());
   aiter::dynamic_per_token_scaled_quant(q_a, x_a, scale_a, /*scale_ub=*/std::nullopt,
                                         /*shuffle_scale=*/false, /*num_rows=*/std::nullopt,
                                         static_cast<int>(num_rows_factor));
