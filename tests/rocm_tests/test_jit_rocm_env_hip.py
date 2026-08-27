@@ -11,6 +11,7 @@ flags they are built with -- neither fails loudly when wrong.
 import pathlib
 
 import pytest
+import torch
 
 from flashinfer.device_utils import IS_HIP
 
@@ -62,6 +63,7 @@ def test_aot_dir_version_check_can_be_bypassed(monkeypatch):
     )
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="No GPU available")
 def test_workspace_dir_is_keyed_by_version_and_arch():
     """<cache>/<version>/<arch> -- the arch segment keeps gfx942 and gfx950 apart.
 
@@ -70,8 +72,6 @@ def test_workspace_dir_is_keyed_by_version_and_arch():
     """
     from flashinfer._version import __version__
     from flashinfer.jit.rocm.env import get_workspace_dir
-
-    import torch
 
     from flashinfer.arch_caps import normalize_arch
 
@@ -150,3 +150,21 @@ def test_activation_template_targets_the_forked_rocm_header():
 
     assert "flashinfer/rocm/attention/activation.cuh" in activation_templ
     assert "hipLaunchKernelGGL" in activation_templ
+
+
+def test_workspace_dir_without_a_device_uses_the_requested_archs(monkeypatch):
+    """With no GPU, the arch comes from FLASHINFER_ROCM_ARCH_LIST (#316).
+
+    Importing flashinfer must not need a device, but the arch has to stay in the
+    path: build.ninja is written only when absent, so one shared directory would
+    serve two ISAs the same objects.
+    """
+    from flashinfer._version import __version__
+    from flashinfer.jit.rocm import env as rocm_env
+
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "gfx950,gfx942")
+
+    got = rocm_env.get_workspace_dir(pathlib.Path("/cache"))
+    # Sorted and deduplicated, so the directory does not depend on list order.
+    assert got == pathlib.Path("/cache") / __version__ / "gfx942_gfx950"
