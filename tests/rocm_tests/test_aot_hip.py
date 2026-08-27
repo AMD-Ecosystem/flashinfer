@@ -13,12 +13,14 @@ Tests the flashinfer.aot_hip module to ensure:
 
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 import torch
 
+from flashinfer import aot_hip
 from flashinfer.aot_hip import (
     compile_and_package_modules,
     gen_all_modules,
@@ -447,3 +449,202 @@ def test_failed_build_restores_the_jit_workspace_paths(monkeypatch, tmp_path):
         )
 
     assert _jit_env_paths() == before
+
+
+class TestArgumentParsers:
+    @pytest.mark.parametrize("text", ["true", "TRUE", "True", "1"])
+    def test_truthy_spellings(self, text):
+        assert aot_hip.parse_bool(text) is True
+
+    @pytest.mark.parametrize("text", ["false", "FALSE", "False", "0"])
+    def test_falsy_spellings(self, text):
+        assert aot_hip.parse_bool(text) is False
+
+    @pytest.mark.parametrize("text", ["yes", "", "2", "none"])
+    def test_anything_else_is_rejected_rather_than_assumed_false(self, text):
+        with pytest.raises(ValueError, match="Invalid boolean value"):
+            aot_hip.parse_bool(text)
+
+    def test_head_dim_splits_into_qo_and_kv(self):
+        assert aot_hip.parse_head_dim("192,128") == (192, 128)
+
+    @pytest.mark.parametrize("text", ["128", "128,", "a,b", "1,2,3"])
+    def test_malformed_head_dim_is_rejected(self, text):
+        with pytest.raises(ValueError):
+            aot_hip.parse_head_dim(text)
+
+
+class TestSkippedCombinations:
+    """gen_fa2 declines two combinations; both would otherwise fail at build."""
+
+    def test_mixed_dtypes_of_equal_width_are_skipped(self):
+        specs = list(
+            aot_hip.gen_fa2(
+                dtype_qo=torch.float16,
+                dtype_kv=torch.bfloat16,
+                head_dim_qk=128,
+                head_dim_vo=128,
+                use_sliding_window=False,
+                use_logits_soft_cap=False,
+            )
+        )
+        assert specs == []
+
+    def test_fp8_is_skipped_because_fa2_has_no_fp8_tensor_cores(self):
+        specs = list(
+            aot_hip.gen_fa2(
+                dtype_qo=torch.float8_e4m3fn,
+                dtype_kv=torch.float8_e4m3fn,
+                head_dim_qk=128,
+                head_dim_vo=128,
+                use_sliding_window=False,
+                use_logits_soft_cap=False,
+            )
+        )
+        assert specs == []
+
+
+class _Spec:
+    def __init__(self, name):
+        self.name = name
+
+
+def _built(build_dir, *names):
+    """Lay out build_dir as a finished build of `names`."""
+    for name in names:
+        so = build_dir / "cached_ops" / name / f"{name}.so"
+        so.parent.mkdir(parents=True)
+        so.write_bytes(b"\x7fELF fake")
+    return [_Spec(n) for n in names]
+
+
+class TestCopyBuiltKernels:
+    def test_each_kernel_lands_under_its_own_name(self, tmp_path):
+        build_dir, out_dir = tmp_path / "build", tmp_path / "out"
+        specs = _built(build_dir, "mod_a", "mod_b")
+
+        aot_hip.copy_built_kernels(specs, out_dir, build_dir)
+
+        for name in ("mod_a", "mod_b"):
+            assert (out_dir / name / f"{name}.so").read_bytes() == b"\x7fELF fake"
+
+    def test_a_missing_kernel_is_named_rather_than_silently_skipped(self, tmp_path):
+        build_dir, out_dir = tmp_path / "build", tmp_path / "out"
+        specs = _built(build_dir, "mod_a") + [_Spec("never_built")]
+
+        with pytest.raises(FileNotFoundError, match="never_built"):
+            aot_hip.copy_built_kernels(specs, out_dir, build_dir)
+
+    def test_a_previous_output_directory_is_replaced_not_merged(self, tmp_path):
+        """A stale .so left from an earlier build would ship in the wheel."""
+        build_dir, out_dir = tmp_path / "build", tmp_path / "out"
+        (out_dir / "stale_mod").mkdir(parents=True)
+        (out_dir / "stale_mod" / "stale_mod.so").write_bytes(b"old")
+        specs = _built(build_dir, "mod_a")
+
+        aot_hip.copy_built_kernels(specs, out_dir, build_dir)
+
+        assert not (out_dir / "stale_mod").exists()
+        assert (out_dir / "mod_a" / "mod_a.so").exists()
+
+
+class TestRegisterDefaultModules:
+    def test_reports_the_same_count_as_the_default_config(self):
+        config = get_default_config()
+        expected = len(
+            gen_all_modules(
+                config["f16_dtype"],
+                config["fa2_head_dim"],
+                config["use_sliding_window"],
+                config["use_logits_soft_cap"],
+            )
+        )
+
+        assert aot_hip.register_default_modules() == expected
+        assert expected > 0
+
+
+@pytest.fixture
+def cli(monkeypatch):
+    """Run main() with a given argv, capturing what it hands the builder."""
+    seen = {}
+    monkeypatch.setattr(
+        aot_hip, "compile_and_package_modules", lambda **kw: seen.update(kw)
+    )
+
+    def _run(*args):
+        monkeypatch.setattr(sys, "argv", ["aot_hip.py", *args])
+        aot_hip.main()
+        return seen
+
+    return _run
+
+
+class TestMain:
+    def test_bare_invocation_builds_the_default_config_in_place(self, cli):
+        seen = cli()
+
+        assert seen["out_dir"] is None
+        assert seen["build_dir"] == Path.cwd()
+        assert seen["config"] == get_default_config()
+        assert (seen["verbose"], seen["skip_prebuilt"]) == (True, False)
+
+    def test_directories_are_taken_from_the_command_line(self, cli, tmp_path):
+        seen = cli("--out-dir", str(tmp_path / "o"), "--build-dir", str(tmp_path / "b"))
+
+        assert seen["out_dir"] == tmp_path / "o"
+        assert seen["build_dir"] == tmp_path / "b"
+
+    def test_head_dims_are_parsed_into_pairs(self, cli):
+        seen = cli("--fa2-head-dim", "64,64", "192,128")
+        assert seen["config"]["fa2_head_dim"] == [(64, 64), (192, 128)]
+
+    def test_dtype_names_resolve_to_torch_dtypes(self, cli):
+        seen = cli("--f16-dtype", "bfloat16")
+        assert seen["config"]["f16_dtype"] == [torch.bfloat16]
+
+    def test_boolean_axes_are_parsed(self, cli):
+        seen = cli("--use-sliding-window", "true", "--use-logits-soft-cap", "0")
+
+        assert seen["config"]["use_sliding_window"] == [True]
+        assert seen["config"]["use_logits_soft_cap"] == [False]
+
+    def test_unset_axes_keep_their_defaults(self, cli):
+        """An empty list must not narrow the build to nothing."""
+        default = get_default_config()
+        seen = cli("--use-sliding-window")
+
+        assert seen["config"]["use_sliding_window"] == default["use_sliding_window"]
+
+    def test_an_unknown_dtype_is_rejected_by_argparse(self, monkeypatch):
+        monkeypatch.setattr(sys, "argv", ["aot_hip.py", "--f16-dtype", "float64"])
+        with pytest.raises(SystemExit):
+            aot_hip.main()
+
+
+def test_verbose_summary_names_the_arch_list_it_published(
+    tmp_path, monkeypatch, capsys
+):
+    """The summary is the only place an AOT run reports which architectures it
+    resolved to, and the AITER shim reads that same list from the environment."""
+    import flashinfer.jit as jit
+
+    monkeypatch.setattr(jit, "build_jit_specs", lambda specs, **kw: None)
+    monkeypatch.setattr(aot_hip, "copy_built_kernels", lambda *a: None)
+    out_dir = tmp_path / "out"
+
+    compile_and_package_modules(
+        out_dir=out_dir,
+        build_dir=tmp_path / "build",
+        project_root=tmp_path,
+        config={"fa2_head_dim": [(64, 64)], "f16_dtype": [torch.float16]},
+        verbose=True,
+        skip_prebuilt=True,
+    )
+    out = capsys.readouterr().out
+
+    assert "AOT build summary:" in out
+    assert f"out_dir: {out_dir}" in out
+    assert "FLASHINFER_ROCM_ARCH_LIST:" in out
+    assert os.environ["FLASHINFER_ROCM_ARCH_LIST"] in out
+    assert "AOT kernels saved to:" in out
