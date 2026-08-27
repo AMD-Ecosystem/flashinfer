@@ -24,6 +24,8 @@
 #include <tuple>
 #include <utility>
 
+#include "aiter_tensor_compat.h"
+
 // AITER's public headers (moe_sorting.h, moe_ck.h) pull in <torch/extension.h> →
 // full pybind11, which clashes with FlashInfer's -DPy_LIMITED_API. torch::Tensor
 // is at::Tensor, so forward-declare the entry points; the linker resolves them
@@ -55,11 +57,14 @@ void ck_moe_stage2(at::Tensor& inter_states, at::Tensor& w1, at::Tensor& w2,
                    std::optional<std::string> dst_type, bool is_shuffled);
 
 #ifdef FLASHINFER_MOE_AITER_PER_TOKEN
-// Unlike the three above, this one AITER declares inside `namespace aiter`.
+// Unlike the three above, this one AITER declares inside `namespace aiter`, and
+// on the POD API rather than at::Tensor -- see quant.h. Declaring it with
+// at::Tensor compiles and then fails at dlopen on the mangled name.
 namespace aiter {
-void dynamic_per_token_scaled_quant(at::Tensor& out, at::Tensor const& input, at::Tensor& scales,
-                                    std::optional<at::Tensor> scale_ub, bool shuffle_scale,
-                                    std::optional<at::Tensor> num_rows, int num_rows_factor);
+void dynamic_per_token_scaled_quant(aiter_tensor_t& out, const aiter_tensor_t& input,
+                                    aiter_tensor_t& scales, std::optional<aiter_tensor_t> scale_ub,
+                                    bool shuffle_scale, std::optional<aiter_tensor_t> num_rows,
+                                    int num_rows_factor);
 }  // namespace aiter
 #endif
 
@@ -83,7 +88,12 @@ std::pair<at::Tensor, at::Tensor> quantize_per_token(const at::Tensor& x, at::Sc
   scale_sizes.back() = 1;
   at::Tensor q = at::empty(x.sizes(), x.options().dtype(fp8));
   at::Tensor scale = at::empty(scale_sizes, x.options().dtype(at::kFloat));
-  aiter::dynamic_per_token_scaled_quant(q, x, scale, /*scale_ub=*/std::nullopt,
+
+  namespace compat = flashinfer::aiter_compat;
+  aiter_tensor_t q_a = compat::to_aiter(q);
+  aiter_tensor_t x_a = compat::to_aiter(x);
+  aiter_tensor_t scale_a = compat::to_aiter(scale);
+  aiter::dynamic_per_token_scaled_quant(q_a, x_a, scale_a, /*scale_ub=*/std::nullopt,
                                         /*shuffle_scale=*/false, /*num_rows=*/std::nullopt,
                                         static_cast<int>(num_rows_factor));
   return {q, scale};
