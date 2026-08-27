@@ -356,6 +356,16 @@ def test_gen_modules_with_different_head_dims(head_dim):
     assert any(f"head_dim_vo_{head_dim[1]}" in spec.name for spec in jit_specs)
 
 
+def _register_arch_list_undo(monkeypatch):
+    """Make monkeypatch unwind FLASHINFER_ROCM_ARCH_LIST, which the build publishes.
+
+    delenv records no undo entry when the name is already absent, so seed it
+    first -- otherwise the build's write survives into the rest of the worker.
+    """
+    monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "")
+    monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST")
+
+
 def _jit_env_paths():
     """Everything _redirected_jit_env mutates, including the env var."""
     from flashinfer.jit import env as jit_env
@@ -373,8 +383,7 @@ def test_build_restores_the_jit_workspace_paths(monkeypatch, tmp_path):
     import flashinfer.aot_hip as aot_hip
 
     before = _jit_env_paths()
-    # The build publishes this itself; register it so monkeypatch unwinds it.
-    monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+    _register_arch_list_undo(monkeypatch)
     monkeypatch.setattr(aot_hip, "gen_all_modules", lambda *a, **k: [])
     monkeypatch.setattr("flashinfer.jit.build_jit_specs", lambda *a, **k: None)
 
@@ -419,7 +428,7 @@ def test_failed_build_restores_the_jit_workspace_paths(monkeypatch, tmp_path):
         def __init__(self):
             raise RuntimeError("ROCm version 0.0 is not recognized")
 
-    monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+    _register_arch_list_undo(monkeypatch)
     monkeypatch.setattr("flashinfer.compilation_context_hip.CompilationContext", _Boom)
 
     with pytest.raises(RuntimeError, match="not recognized"):
