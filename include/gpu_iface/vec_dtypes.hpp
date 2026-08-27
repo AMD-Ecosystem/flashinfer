@@ -13,7 +13,6 @@ namespace vec_dtypes {
 
 // Include the appropriate backend implementation
 #include "backend/hip/vec_dtypes_hip.h"
-#define HIP_ENABLE_WARP_SYNC_BUILTINS 1
 namespace vec_t_detail = flashinfer::gpu_iface::vec_dtypes::detail::hip;
 
 // Re-export types and functions from the appropriate backend
