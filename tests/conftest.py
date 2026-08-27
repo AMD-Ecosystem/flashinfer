@@ -20,8 +20,7 @@ def _worker_gpu_index(worker_idx: int, supported):
 # Pin this worker to a card. PYTEST_XDIST_WORKER ("gw0", "gw1", ...) is injected
 # into each worker subprocess by pytest-xdist before any Python code runs.
 # get_physical_card_device_indices() spreads workers one per *supported* physical
-# card; the torch fallback below, reached only when rocminfo is missing,
-# guarantees neither.
+# card; the torch fallback below guarantees neither.
 #
 # This does not re-scope *this* process -- the flashinfer import below initializes
 # HIP first, so torch has already latched the full device list. What it scopes is
@@ -32,8 +31,8 @@ if _xdist_worker.startswith("gw"):
 
     from flashinfer.hip_utils import get_physical_card_device_indices
 
-    # rocminfo is how cards are identified; when it is missing the list comes
-    # back empty even on a populated host, so fall back to what torch can see
+    # rocminfo is how supported cards are identified; when it reports none --
+    # missing binary, or no supported GPU -- fall back to what torch can see
     # rather than to worker indices that need not name anything.
     _cards = get_physical_card_device_indices() or tuple(
         range(torch.cuda.device_count())
