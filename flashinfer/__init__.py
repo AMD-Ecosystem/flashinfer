@@ -259,13 +259,12 @@ elif IS_HIP:
     # ========================================
     # Module Aliases (for CUDA API compatibility)
     # ========================================
-    from . import decode_rocm as decode
-    from . import prefill_rocm as prefill
+    from ._rocm import install_shadow_modules as _install_shadow_modules
 
-    import sys
-
-    sys.modules["flashinfer.prefill"] = sys.modules["flashinfer.prefill_rocm"]
-    sys.modules["flashinfer.decode"] = sys.modules["flashinfer.decode_rocm"]
+    # Binds flashinfer.decode / .prefill / .mla as attributes as well as in
+    # sys.modules, so both `import flashinfer.mla` and `flashinfer.mla.X` reach
+    # the ROCm module.
+    _install_shadow_modules()
 
     # Cascade imports must come after the sys.modules injection above so that
     # cascade.py's relative imports of flashinfer.decode / flashinfer.prefill

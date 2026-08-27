@@ -14,6 +14,7 @@ import importlib
 
 import pytest
 
+from flashinfer._rocm import CUDA_ONLY_MODULES
 from flashinfer.device_utils import IS_HIP
 
 pytestmark = pytest.mark.skipif(
@@ -21,16 +22,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-_CUDA_ONLY_SUBMODULES = [
-    "flashinfer.comm.cuda_ipc",
-    "flashinfer.comm.trtllm_ar",
-    "flashinfer.comm.trtllm_alltoall",
-    "flashinfer.comm.trtllm_mnnvl_ar",
-    "flashinfer.comm.vllm_ar",
-    "flashinfer.comm.mnnvl",
-    "flashinfer.comm.nvshmem",
-    "flashinfer.comm.nvshmem_allreduce",
-]
+# Read from the registry rather than restated, so a module added there cannot
+# silently go uncovered here.
+_CUDA_ONLY_SUBMODULES = sorted(CUDA_ONLY_MODULES)
 
 
 def test_comm_package_imports_and_exposes_backend_agnostic_symbols():
