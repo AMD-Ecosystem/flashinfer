@@ -3,9 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Hand-maintained input to scripts/amd_coverage.py. Everything not listed here
-# is classified automatically from the diff against the upstream merge base;
-# this file records only what git cannot see. Every path must exist -- the tool
-# fails on a stale entry rather than skipping it.
+# is classified automatically from the diff against the upstream release this
+# fork is based on; this file records only what git cannot see.
+#
+# A `redirect_owned` or `unowned` path must exist and be tracked -- both make a
+# claim about the measured surface, so the tool fails on a stale entry rather
+# than skipping it. `excluded` is not checked that way: it exists to name
+# generated artifacts, which a checkout that has never been built does not have.
 
 # Files with a zero-line Python diff whose implementation is nonetheless ours:
 # jit_env.FLASHINFER_CSRC_DIR resolves to flashinfer/csrc_rocm/ on HIP, so these
