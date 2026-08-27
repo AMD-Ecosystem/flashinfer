@@ -23,6 +23,11 @@ authors = [
 # See README.md for complete installation instructions.
 dependencies = [
     "ninja",
+    # Both are module-scope imports on the path `import flashinfer` always
+    # takes, and both currently arrive only as transitive deps of torch --
+    # which is deliberately undeclared above, so nothing actually requires them.
+    "filelock",
+    "jinja2",
 ]
 
 classifiers = [
@@ -51,7 +56,6 @@ dev = [
     # pytest-cov specifically, not bare `coverage run`: only the plugin measures
     # the xdist worker subprocesses that `pytest -n auto` spawns.
     "pytest-cov",
-    "filelock",  # tests/conftest.py locks the shared JIT-cache report file
     # tests/rocm_tests/test_build_backend.py parses pyproject.toml; tomllib is 3.11+.
     "tomli; python_version < '3.11'",
     "build",
