@@ -17,10 +17,11 @@ def _worker_gpu_index(worker_idx: int, supported):
     return supported[worker_idx % len(supported)] if supported else None
 
 
-# Pin this worker to a supported GPU. PYTEST_XDIST_WORKER ("gw0", "gw1", ...) is
-# injected into each worker subprocess by pytest-xdist before any Python code runs,
-# and get_physical_card_device_indices() spreads workers one per physical card
-# (CPX systems expose four logical devices sharing one card's HBM).
+# Pin this worker to a card. PYTEST_XDIST_WORKER ("gw0", "gw1", ...) is injected
+# into each worker subprocess by pytest-xdist before any Python code runs.
+# get_physical_card_device_indices() spreads workers one per *supported* physical
+# card; the torch fallback below, reached only when rocminfo is missing,
+# guarantees neither.
 #
 # This does not re-scope *this* process -- the flashinfer import below initializes
 # HIP first, so torch has already latched the full device list. What it scopes is
