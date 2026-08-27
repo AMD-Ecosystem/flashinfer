@@ -18,15 +18,8 @@ def get_norm_aiter_module():
 
 
 def _auto_select_norm_backend(input: torch.Tensor, weight: torch.Tensor) -> str:
-    # auto routes plain rmsnorm to the C++ AITER kernel only when the input is
-    # 2D fp16/bf16 with a matching weight dtype (the CK rmsnorm2d kernel rejects
-    # other ranks/dtypes and reads weight with the input dtype) and AITER is
-    # available; everything else falls back to native. (fp32 is unsupported by
-    # both the AITER and native ROCm kernels, so it still raises downstream —
-    # routing it to native just keeps the error consistent with the default
-    # kernel rather than exposing a CK-specific message.) Note: AITER's CK
-    # rmsnorm2d uses lower-precision reductions that exceed the flashinfer test
-    # tolerance at hidden_size >= 1024 (fp16 atol ~4e-3, bf16 ~7e-2).
+    # CK rmsnorm2d only accepts 2D fp16/bf16 and reads weight with the input
+    # dtype, so anything else routes native.
     from ..aiter_utils import is_aiter_available
 
     if (

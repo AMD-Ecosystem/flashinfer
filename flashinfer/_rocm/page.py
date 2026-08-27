@@ -124,10 +124,8 @@ def maybe_append_paged_kv_cache(
     )
     if _backend == "aiter":
         if backend == "aiter":
-            # Explicit opt-in skips _auto_select_kv_append_backend, so re-check
-            # its constraints here. Without this the shim would read page_size
-            # from size(1) -- num_kv_heads under HND -- and scatter every token
-            # to the wrong slot with no error.
+            # The explicit opt-in skips the selector, so re-check its
+            # constraints: a wrong layout scatters silently.
             from ..aiter_utils import require_aiter
 
             require_aiter(paged_k_cache.device, "append_paged_kv_cache")
@@ -140,10 +138,8 @@ def maybe_append_paged_kv_cache(
                     f"kv_layout={kv_layout!r} and dtype={paged_k_cache.dtype}. "
                     f"Use backend='native'."
                 )
-        # kv_last_page_len is not forwarded to the shim, so the batch-length
-        # invariant native enforces (page.cu's kv_indptr.size(0) == B+1) has
-        # nowhere else to live. Without it a short kv_indptr is read past its
-        # end inside build_slot_mapping_kernel and scatters silently.
+        # kv_last_page_len never reaches the shim, so native's batch-length
+        # invariant has nowhere else to live.
         if kv_indptr.numel() != kv_last_page_len.numel() + 1:
             raise ValueError(
                 f"kv_indptr must have kv_last_page_len.numel()+1 entries, got "
