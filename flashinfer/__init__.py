@@ -173,6 +173,11 @@ elif IS_HIP:
     # `import *` cannot carry a dunder; the IS_CUDA arm binds it directly too.
     from ._version import __version__ as __version__
 
+    # Imported for its side effect first: _rocm.api runs
+    # check_torch_rocm_compatibility() before it pulls in any wrapper, so an
+    # incompatible torch reports that rather than failing inside decode_rocm.
+    from ._rocm import api as _rocm_api  # noqa: F401
+
     # These seven rebind names the IS_CUDA arm above already bound with a different
     # type, and mypy analyses both arms. A star import gives it nowhere to attach a
     # targeted ignore, so they are re-imported explicitly; the rest arrive via *.
