@@ -23,7 +23,7 @@ import torch
 from .device_utils import IS_CUDA, IS_HIP
 
 if IS_HIP:
-    from ._rocm.activation import maybe_silu_and_mul
+    from .rocm.activation import maybe_silu_and_mul
 from .jit import gen_act_and_mul_module
 from .utils import (
     device_support_pdl,

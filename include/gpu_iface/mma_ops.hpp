@@ -6,13 +6,8 @@
 #include "gpu_iface/platform.hpp"
 
 // Include platform-specific implementations
-#if defined(PLATFORM_CUDA_DEVICE)
-#include "backend/cuda/mma.cuh"
-namespace mma_detail = flashinfer::gpu_iface::mma_impl::cuda;
-#elif defined(PLATFORM_HIP_DEVICE)
 #include "backend/hip/mma_hip.h"
 namespace mma_detail = flashinfer::gpu_iface::mma_impl::hip;
-#endif
 
 namespace flashinfer {
 namespace gpu_iface {
@@ -45,7 +40,7 @@ __device__ __forceinline__ void transpose_mma_tile(uint32_t* R) {
 #endif
 
 /*!
- * \brief An m16n16k16 gemm kernel using MMA instructions for CUDA/HIP for row
+ * \brief An m16n16k16 gemm kernel using MMA instructions for row
  * major and column major f16 matrix multiplication, accumulated in f32.
  *
  * \tparam T data type of the fragment

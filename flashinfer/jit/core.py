@@ -130,27 +130,7 @@ if IS_CUDA:
     sm121a_nvcc_flags = ["-gencode=arch=compute_121a,code=sm_121a"] + common_nvcc_flags
 
 elif IS_HIP:
-
-    def check_rocm_arch():
-        """
-        Validate ROCm architecture compatibility for FlashInfer.
-
-        Uses centralized validation from hip_utils to ensure:
-        1. System ROCm version supports the architectures
-        2. FlashInfer has AMD ports for the architectures
-        3. PyTorch was compiled with the architectures
-        """
-        import torch.utils.cpp_extension as torch_cpp_ext
-        from ..hip_utils import validate_flashinfer_rocm_arch
-
-        try:
-            validate_flashinfer_rocm_arch(
-                arch_list=None,  # Uses FLASHINFER_ROCM_ARCH_LIST env or defaults to gfx942
-                torch_cpp_ext_module=torch_cpp_ext,
-                verbose=False,
-            )
-        except RuntimeError as e:
-            raise RuntimeError(f"ROCm architecture validation failed: {e}") from e
+    from .rocm.core import check_rocm_arch as check_rocm_arch
 
 
 def clear_cache_dir():
@@ -398,29 +378,10 @@ def gen_jit_spec(
             cuda_cflags += ["-lineinfo"]
 
     elif IS_HIP:
-        check_rocm_arch()
-        verbose = os.environ.get("FLASHINFER_JIT_VERBOSE", "0") == "1"
+        from .rocm.core import build_flags
 
-        cflags = ["-O3", "-std=c++20", "-Wno-switch-bool"]
-        # Use dynamically-generated flags from CompilationContext (includes arch flags)
-        cflags += current_compilation_context.get_hipcc_flags_list()  # type: ignore[attr-defined]
-        cuda_cflags = [
-            "-O3",
-            "-std=c++20",
-            "-DFLASHINFER_ENABLE_F16",
-            "-DFLASHINFER_ENABLE_BF16",
-            "-DFLASHINFER_ENABLE_FP8_E4M3",
-            "-DFLASHINFER_ENABLE_FP8_E5M2",
-            "-ffast-math",  # HIP equivalent of -use_fast_math
-            "-fno-finite-math-only",  # Re-enable inf/NaN: clang's -ffast-math includes
-            # -ffinite-math-only which breaks kernels that use -inf
-            # as a sentinel (e.g. online-softmax Map+Reduce path).
-            # CUDA -use_fast_math does NOT enable finite-math-only.
-        ]
-        if verbose:
-            pass  # HIP doesn't add debug-only NVCC-specific flags
-        else:
-            cuda_cflags += ["-DNDEBUG"]
+        check_rocm_arch()
+        cflags, cuda_cflags = build_flags(current_compilation_context)
 
     if extra_cflags is not None:
         cflags += extra_cflags

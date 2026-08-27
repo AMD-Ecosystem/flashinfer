@@ -14,7 +14,7 @@ import importlib
 
 import pytest
 
-from flashinfer._rocm import CUDA_ONLY_MODULES
+from flashinfer.rocm import CUDA_ONLY_MODULES
 from flashinfer.device_utils import IS_HIP
 
 pytestmark = pytest.mark.skipif(
