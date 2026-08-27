@@ -178,6 +178,8 @@ elif IS_HIP:
     # incompatible torch reports that rather than failing inside decode_rocm.
     from ._rocm import api as _rocm_api  # noqa: F401
 
+    del _rocm_api  # the import ran the check; the alias is not part of the surface
+
     # These seven rebind names the IS_CUDA arm above already bound with a different
     # type, and mypy analyses both arms. A star import gives it nowhere to attach a
     # targeted ignore, so they are re-imported explicitly; the rest arrive via *.
