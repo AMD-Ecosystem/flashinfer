@@ -357,12 +357,14 @@ def test_gen_modules_with_different_head_dims(head_dim):
 
 
 def _jit_env_paths():
+    """Everything _redirected_jit_env mutates, including the env var."""
     from flashinfer.jit import env as jit_env
 
     return (
         jit_env.FLASHINFER_WORKSPACE_DIR,
         jit_env.FLASHINFER_JIT_DIR,
         jit_env.FLASHINFER_GEN_SRC_DIR,
+        os.environ.get("FLASHINFER_WORKSPACE_BASE"),
     )
 
 
