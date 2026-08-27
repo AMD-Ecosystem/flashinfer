@@ -771,8 +771,27 @@ def _run_pytest(
     repo: Path, out_dir: Path, data_file: Path, pytest_args: Sequence[str]
 ) -> Path:
     junit = out_dir / "junit.xml"
+    junit.unlink(missing_ok=True)
     for stale in out_dir.glob("jit-reach.*.json"):
         stale.unlink()  # a previous run's shards would inflate the reach count
+
+    # Clear the artifacts first so "did pytest write this?" is absence->presence
+    # rather than a comparison: a fast run whose output is the same size within
+    # one coarse mtime tick is indistinguishable from no run at all.
+    #
+    # The data file is moved aside, not deleted. It may be a completed suite's
+    # only copy, and a pytest that dies on a plugin import would otherwise take
+    # it with them.
+    previous = data_file.with_name(data_file.name + ".prev")
+    previous.unlink(missing_ok=True)
+    had_previous = data_file.exists()
+    if had_previous:
+        data_file.replace(previous)
+
+    def _restore() -> None:
+        if had_previous:
+            previous.replace(data_file)
+
     cmd = [
         sys.executable,
         "-m",
@@ -786,20 +805,6 @@ def _run_pytest(
     ]
     print(f"+ {' '.join(cmd)}", file=sys.stderr)
 
-    # Compare against a snapshot rather than a wall-clock stamp: NFS mtime
-    # granularity can make a file written moments after `time.time()` look older
-    # than it, which would reject a perfectly good run. Size as well as
-    # nanoseconds for the same reason -- on a coarse clock a rewrite inside one
-    # tick leaves the timestamp identical, and that would read as "wrote
-    # nothing". Same identity tuple as the reach stamp.
-    def _identity(p: Path) -> Optional[Tuple[int, int]]:
-        try:
-            st = p.stat()
-        except OSError:
-            return None
-        return st.st_size, st.st_mtime_ns
-
-    before = {p: _identity(p) for p in (junit, data_file)}
     proc = subprocess.run(
         cmd,
         cwd=repo,
@@ -815,15 +820,17 @@ def _run_pytest(
     # tests and writes nothing -- and leftover artifacts would then be scored as
     # if they were this run's. Trust the artifacts, not the exit code.
     if proc.returncode >= 4:
+        _restore()
         raise ToolError(f"pytest could not run (exit {proc.returncode})")
-    for artefact, was in before.items():
-        now = _identity(artefact)
-        if now is None or now == was:
+    for artefact in (junit, data_file):
+        if not artefact.exists():
+            _restore()
             raise ToolError(
                 f"pytest exited {proc.returncode} without writing {artefact.name}; "
                 "it collected no tests (a plugin import error looks like this). "
                 "Refusing to score the previous run's data."
             )
+    previous.unlink(missing_ok=True)
     _write_stamp(out_dir, data_file)
     return junit
 

@@ -23,9 +23,9 @@ authors = [
 # See README.md for complete installation instructions.
 dependencies = [
     "ninja",
-    # Both are module-scope imports on the path `import flashinfer` always
-    # takes, and both currently arrive only as transitive deps of torch --
-    # which is deliberately undeclared above, so nothing actually requires them.
+    # Module-scope imports on the path `import flashinfer` always takes. Declared
+    # explicitly because torch, the only other thing that pulls them in, is
+    # deliberately left out above -- leaving the resolver no route to either.
     "filelock",
     "jinja2",
 ]

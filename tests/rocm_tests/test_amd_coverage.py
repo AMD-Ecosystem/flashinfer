@@ -606,6 +606,29 @@ class TestStaleArtifacts:
         with pytest.raises(ac.ToolError, match="without writing"):
             ac._run_pytest(tmp_path, tmp_path, tmp_path / ".coverage", [])
 
+    @pytest.mark.parametrize("returncode", [1, 4])
+    def test_a_failed_run_leaves_the_previous_data_intact(
+        self, tmp_path, monkeypatch, returncode
+    ):
+        """Clearing the data file up front must not cost a completed suite's only copy.
+
+        Exit 4 aborts before the artifact check, so both paths have to restore.
+        """
+        data = tmp_path / ".coverage"
+        data.write_text("a completed 40-minute run", encoding="utf-8")
+
+        class _Dead:
+            pass
+
+        _Dead.returncode = returncode
+        monkeypatch.setattr(ac.subprocess, "run", lambda *a, **k: _Dead())
+
+        with pytest.raises(ac.ToolError):
+            ac._run_pytest(tmp_path, tmp_path, data, [])
+
+        assert data.read_text(encoding="utf-8") == "a completed 40-minute run"
+        assert not (tmp_path / ".coverage.prev").exists(), "sidecar left behind"
+
 
 class TestImportBaseline:
     def test_failure_is_an_error_not_a_silent_downgrade(self, tmp_path, monkeypatch):
