@@ -89,7 +89,7 @@ def test_silu_and_mul_auto_backend_selection():
     Independent of the aiter package, so it lives in the native test module to run
     on any HIP build (the contract must hold even when aiter is not installed).
     """
-    from flashinfer._rocm.activation import _auto_select_silu_and_mul_backend
+    from flashinfer.rocm.activation import _auto_select_silu_and_mul_backend
 
     x = torch.empty(8, 256, dtype=torch.float16, device="cuda")
     assert _auto_select_silu_and_mul_backend(x) == "native"

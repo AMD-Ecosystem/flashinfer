@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conformance for the ROCm dispatch registry in ``flashinfer._rocm``.
+"""Conformance for the ROCm dispatch registry in ``flashinfer.rocm``.
 
 The CUDA-only import gate is covered by ``test_comm_import_gate_hip.py``; this
 file covers the shadow table and the gate's install/widen behaviour.
@@ -13,7 +13,7 @@ import sys
 
 import pytest
 
-from flashinfer._rocm import (
+from flashinfer.rocm import (
     CUDA_ONLY_MODULES,
     SHADOW_MODULES,
     gate_cuda_only_modules,

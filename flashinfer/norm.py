@@ -22,7 +22,7 @@ import torch
 from .device_utils import IS_HIP
 
 if IS_HIP:
-    from ._rocm.norm import maybe_fused_add_rmsnorm, maybe_rmsnorm
+    from .rocm.norm import maybe_fused_add_rmsnorm, maybe_rmsnorm
 from .jit.norm import gen_norm_module
 from .utils import device_support_pdl, register_custom_op, register_fake_op
 

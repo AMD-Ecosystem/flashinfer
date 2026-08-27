@@ -1335,7 +1335,7 @@ def test_rope_auto_backend_selection():
     Independent of the aiter package, so it lives in the native test module to run
     on any HIP build (the contract must hold even when aiter is not installed).
     """
-    from flashinfer._rocm.rope import _auto_select_rope_backend
+    from flashinfer.rocm.rope import _auto_select_rope_backend
 
     q = torch.randn(2048, 128, dtype=torch.float16, device="cuda")
     k = torch.randn(2048, 128, dtype=torch.float16, device="cuda")
