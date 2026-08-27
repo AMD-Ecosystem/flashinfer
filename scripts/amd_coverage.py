@@ -505,13 +505,13 @@ def _stale_sources(repo: Path, data_file: Path, owned: Sequence[str]) -> List[st
     never ran, and exits 0 -- the same false green the other guards exist for.
     """
     try:
-        recorded = data_file.stat().st_mtime
+        recorded = data_file.stat().st_mtime_ns
     except OSError:
         return []
     newer = []
     for rel in owned:
         try:
-            if (repo / rel).stat().st_mtime > recorded:
+            if (repo / rel).stat().st_mtime_ns > recorded:
                 newer.append(rel)
         except OSError:
             continue

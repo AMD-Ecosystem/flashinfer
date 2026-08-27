@@ -667,7 +667,9 @@ class TestDataFileHygiene:
     def test_baseline_is_not_named_like_parallel_coverage_data(self):
         """`.coverage.*` is coverage's parallel glob; pytest-cov combine() eats it."""
         src = (_REPO_ROOT / "scripts" / "amd_coverage.py").read_text(encoding="utf-8")
-        name = re.search(r'baseline = out_dir / "([^"]+)"', src).group(1)
+        match = re.search(r'baseline = out_dir / "([^"]+)"', src)
+        assert match, "baseline filename moved; this guard no longer reads it"
+        name = match.group(1)
 
         assert not name.startswith(".coverage."), (
             f"{name} would be absorbed and unlinked by combine(), "
