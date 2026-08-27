@@ -642,7 +642,13 @@ def gen_customize_single_prefill_module(
     use_sliding_window: bool = False,
     use_logits_soft_cap: bool = False,
     use_fp16_qk_reduction: bool = False,
+    fp8_enabled: bool = False,
 ):
+    # Upstream routes fp8 through fa3-only sm90 templates; ROCm has no fp8
+    # prefill kernel, so refuse rather than silently return a bf16/fp16 one.
+    if fp8_enabled:
+        raise ValueError("fp8 prefill is not supported on ROCm")
+
     kwargs = {
         "variant_decl": variant_decl,
         "variant_name": variant_name,
@@ -871,7 +877,13 @@ def gen_customize_batch_prefill_module(
     use_sliding_window: bool = False,
     use_logits_soft_cap: bool = False,
     use_fp16_qk_reduction: bool = False,
+    fp8_enabled: bool = False,
 ):
+    # Upstream routes fp8 through fa3-only sm90 templates; ROCm has no fp8
+    # prefill kernel, so refuse rather than silently return a bf16/fp16 one.
+    if fp8_enabled:
+        raise ValueError("fp8 prefill is not supported on ROCm")
+
     kwargs = {
         "variant_decl": variant_decl,
         "variant_name": variant_name,

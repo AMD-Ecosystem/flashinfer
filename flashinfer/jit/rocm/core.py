@@ -29,7 +29,11 @@ def check_rocm_arch() -> None:
 
 
 def build_flags(compilation_context) -> Tuple[List[str], List[str]]:
-    """The (cflags, cuda_cflags) hipcc is invoked with. Arch flags come from
+    """The (cflags, cuda_cflags) hipcc is invoked with.
+
+    `compilation_context` is left unannotated: annotating it as the HIP
+    CompilationContext makes mypy reject the call site, which resolves the CUDA
+    one under dual-arm analysis -- the error the moved type: ignore suppressed. Arch flags come from
     `compilation_context`, which resolves FLASHINFER_ROCM_ARCH_LIST."""
     cflags = ["-O3", "-std=c++20", "-Wno-switch-bool"]
     cflags += compilation_context.get_hipcc_flags_list()

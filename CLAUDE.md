@@ -54,6 +54,9 @@ Details: `pr-workflow` skill.
 | Limit parallel build | `export MAX_JOBS=4` |
 | Verbose JIT output | `export FLASHINFER_JIT_VERBOSE=1` |
 | Extra JIT link flags | `export FLASHINFER_EXTRA_LDFLAGS="-L/path -lfoo"` |
+| Extra host compile flags | `export FLASHINFER_EXTRA_CFLAGS="-DFOO"` |
+| Extra HIP compile flags | `export FLASHINFER_EXTRA_CUDAFLAGS="-DBAR"` |
+| Warn on our own headers | `export FLASHINFER_OWN_HEADERS_NON_SYSTEM=1` |
 | Run linting | `pre-commit run -a` |
 
 ## Installing Torch

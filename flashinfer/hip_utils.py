@@ -6,8 +6,8 @@ import functools
 import logging
 
 # arch_caps imports nothing (in particular, not torch), so importing it here
-# keeps this module safe to import before the HIP runtime starts -- which
-# tests/conftest.py relies on to set HIP_VISIBLE_DEVICES first.
+# keeps this module importable without torch -- which the hardware-less
+# arch-caps conformance job relies on.
 from .arch_caps import normalize_arch
 
 logger = logging.getLogger(__name__)

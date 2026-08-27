@@ -41,9 +41,23 @@ def get_aot_dir(
 
 
 def get_workspace_dir(cache_dir: pathlib.Path) -> pathlib.Path:
-    """``<cache_dir>/<version>/<arch>``, or .../noarch when no GPU is visible."""
+    """``<cache_dir>/<version>/<arch>``.
+
+    With no GPU visible the arch comes from FLASHINFER_ROCM_ARCH_LIST instead, so
+    importing does not need a device (#316). An unsupported *live* device still
+    raises rather than degrading, so a wrong-arch cache hit cannot happen quietly.
+    """
     try:
         import torch
+
+        if torch.cuda.device_count() == 0:
+            # Importing flashinfer must not require a live GPU. Keep the arch in
+            # the path anyway: build.ninja is only written when absent, so one
+            # shared directory would serve two ISAs the same objects.
+            from ...hip_utils import resolve_target_archs
+
+            archs = sorted(set(resolve_target_archs().split(",")))
+            return cache_dir / flashinfer_version / "_".join(archs)
 
         props = torch.cuda.get_device_properties(torch.cuda.current_device())
         # normalize_arch keeps letter suffixes ("gfx90a"); the gfx\d guard only

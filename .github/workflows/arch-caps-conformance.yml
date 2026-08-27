@@ -10,7 +10,7 @@
 # What this protects: a row added for one architecture but not the other, a
 # gate whose op name no longer matches any call site, a known-bad window that
 # stops matching the version it was written for, or a module-scope `import torch`
-# creeping into the pre-HIP_VISIBLE_DEVICES path. All of those are currently
+# creeping into the torch-free arch-resolution path. All of those are currently
 # caught only by someone remembering to run the GPU suite.
 name: arch-caps conformance
 
@@ -47,6 +47,12 @@ jobs:
       # test_suite_loads_without_torch is what keeps that true.
       - name: Capability-table conformance (no GPU, no torch)
         run: pytest --noconftest tests/rocm_tests/test_arch_caps_hip.py
+
+      # Flag plumbing in the HIP JIT ninja generator. It stubs torch to load
+      # cpp_ext_hip.py, which is what lets it run here; without this step that
+      # stubbing buys nothing, since no other lane collects tests/rocm_tests/.
+      - name: HIP JIT flag plumbing (no GPU, no torch)
+        run: pytest --noconftest tests/rocm_tests/test_jit_flag_hooks.py
 
       # The other hardware-less suite: ownership classification for
       # scripts/amd_coverage.py. Mostly throwaway git repositories, but one case
