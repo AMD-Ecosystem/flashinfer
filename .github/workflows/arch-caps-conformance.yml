@@ -61,6 +61,18 @@ jobs:
       - name: Coverage-ownership classification (no GPU, no torch)
         run: pytest -rs --noconftest tests/rocm_tests/test_amd_coverage.py
 
+      # The repo-maintenance scripts. Git and filesystem only, so this is the
+      # only lane that runs them -- tests/rocm_tests/ is otherwise GPU-gated.
+      # The matrix suite doubles as the README staleness check for anyone who
+      # committed with pre-commit disabled.
+      - name: Repo-maintenance scripts (no GPU, no torch)
+        run: |
+          pytest --noconftest \
+            tests/rocm_tests/test_upstream_canary.py \
+            tests/rocm_tests/test_git_describe_rocm.py \
+            tests/rocm_tests/test_gen_arch_support_matrix.py \
+            tests/rocm_tests/test_build_backend.py
+
       # The unit tests once stayed green while the tool itself raised on every
       # invocation, so CI has to actually invoke it. This also fails loudly if
       # the test above starts skipping for want of a base: no suite run, no GPU.
