@@ -5,6 +5,14 @@
 #ifndef FLASHINFER_ATTENTION_SCHEDULER_CUH_
 #define FLASHINFER_ATTENTION_SCHEDULER_CUH_
 
+#include <hip/driver_types.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <sstream>
+#include <vector>
+
 #include "allocator.h"
 #include "exception.h"
 #include "gpu_iface/dispatch.cuh"
@@ -13,18 +21,6 @@
 #include "gpu_iface/utils.cuh"
 #include "heap.h"
 #include "pos_enc.cuh"
-
-#if defined(PLATFORM_CUDA_DEVICE)
-#include <driver_types.h>
-#elif defined(PLATFORM_HIP_DEVICE)
-#include <hip/driver_types.h>
-#endif
-
-#include <algorithm>
-#include <cstddef>
-#include <cstdint>
-#include <sstream>
-#include <vector>
 
 namespace flashinfer {
 
