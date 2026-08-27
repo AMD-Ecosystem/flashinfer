@@ -4,17 +4,8 @@
 
 """Tests for the ROCm JIT halves in :mod:`flashinfer.jit.rocm`.
 
-No GPU and no build: these cover the directory resolution and hipcc flag
-construction that every JIT-compiled kernel depends on.
-
-What is being protected. These functions decide where compiled kernels are
-cached and which flags they are built with, and nothing else asserts on them --
-a wrong answer does not fail loudly, it silently caches under the wrong
-directory or drops a define. ``-fno-finite-math-only`` in particular must
-survive: clang's ``-ffast-math`` implies ``-ffinite-math-only``, which breaks
-kernels using ``-inf`` as a sentinel (the online-softmax Map+Reduce path), and
-CUDA's ``-use_fast_math`` does not have that implication. Dropping it produces
-wrong attention output, not a build error.
+No GPU work and no kernel build. These cover where kernels are cached and which
+flags they are built with -- neither fails loudly when wrong.
 """
 
 import pathlib
@@ -80,10 +71,20 @@ def test_workspace_dir_is_keyed_by_version_and_arch():
     from flashinfer._version import __version__
     from flashinfer.jit.rocm.env import get_workspace_dir
 
+    import torch
+
+    from flashinfer.arch_caps import normalize_arch
+
     got = get_workspace_dir(pathlib.Path("/cache"))
     assert got.parent.parent == pathlib.Path("/cache")
     assert got.parent.name == __version__
-    assert got.name.startswith("gfx") or got.name == "noarch"
+    # The exact arch, not "gfx-something": a regression that collapses detection
+    # to the noarch fallback would satisfy a looser assertion while making
+    # gfx942 and gfx950 share one cache directory.
+    expected = normalize_arch(
+        torch.cuda.get_device_properties(torch.cuda.current_device()).gcnArchName
+    )
+    assert got.name == expected
 
 
 def test_hipcc_flags_keep_inf_sentinels_alive():
@@ -111,14 +112,20 @@ def test_hipcc_flags_carry_the_dtype_defines():
         assert define in cuda_cflags
 
 
-def test_hipcc_flags_include_the_requested_offload_archs(monkeypatch):
-    """cflags must carry --offload-arch for each arch, or the build targets the wrong GPU."""
-    from flashinfer.compilation_context_hip import CompilationContext
+def test_hipcc_flags_pass_through_the_contexts_arch_flags():
+    """build_flags must forward get_hipcc_flags_list() verbatim into cflags.
 
-    monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "gfx942,gfx950")
+    A stub context, not a real one: constructing CompilationContext validates the
+    request against the installed torch, so an arch-specific torch build would
+    fail this for a reason unrelated to build_flags.
+    """
     from flashinfer.jit.rocm.core import build_flags
 
-    cflags, _ = build_flags(CompilationContext())
+    class _StubContext:
+        def get_hipcc_flags_list(self):
+            return ["--offload-arch=gfx942", "--offload-arch=gfx950"]
+
+    cflags, _ = build_flags(_StubContext())
     assert "--offload-arch=gfx942" in cflags
     assert "--offload-arch=gfx950" in cflags
 
