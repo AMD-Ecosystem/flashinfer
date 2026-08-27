@@ -308,12 +308,15 @@ def _aiter_ops_importable() -> bool:
         # before this import, not before the first build. This is the second
         # entry point that imports aiter; aiter_utils._aiter_importable is the
         # other, and prefill/decode reach this one first.
-        from .aiter_utils import _ensure_aiter_gpu_archs
+        from .aiter_utils import _aiter_version_supported, _ensure_aiter_gpu_archs
 
         _ensure_aiter_gpu_archs()
         import aiter.ops  # noqa: F401
 
-        return True
+        # Same ABI floor aiter_utils._aiter_importable applies. This probe is the
+        # one prefill and decode reach first, so leaving it out would let auto
+        # route into the layouts the vendored structs no longer match.
+        return _aiter_version_supported()
     except Exception:
         return False
 
@@ -1567,12 +1570,9 @@ def single_prefill_with_kv_cache(
         # Outside the probe on purpose: this raises ArchCapabilityError, which
         # gates known-bad toolchains and must never be demoted to a silent fa2.
         _require_aiter_runtime(q.device, "single_prefill")
-        if _aiter_softcap_defect(causal, logits_soft_cap, q.shape[-1], kv_len):
-            raise ValueError(
-                "AITER miscomputes logits_soft_cap for causal head_dim=128 prefill "
-                f"with kv_len >= 512 (through amd-aiter {_AITER_SOFTCAP_DEFECT_THROUGH}); "
-                "use backend='fa2' or backend='auto' instead."
-            )
+        # Hard constraints first: a caller in the defect region *and* on an
+        # unsupported layout should hear about the layout, which is the thing
+        # they control, not about a soft-cap defect they may not have hit.
         if pos_encoding_mode != "NONE":
             raise ValueError(
                 f"AITER backend does not support pos_encoding_mode={pos_encoding_mode!r}; "
@@ -1581,6 +1581,12 @@ def single_prefill_with_kv_cache(
         if kv_layout != "NHD":
             raise ValueError(
                 f"AITER backend only supports kv_layout='NHD'; got {kv_layout!r}. "
+                "use backend='fa2' or backend='auto' instead."
+            )
+        if _aiter_softcap_defect(causal, logits_soft_cap, q.shape[-1], kv_len):
+            raise ValueError(
+                "AITER miscomputes logits_soft_cap for causal head_dim=128 prefill "
+                f"with kv_len >= 512 (through amd-aiter {_AITER_SOFTCAP_DEFECT_THROUGH}); "
                 "use backend='fa2' or backend='auto' instead."
             )
         # logits_soft_cap > 0 forces the varlen .so (mha_fwd template has no _logits
@@ -2371,24 +2377,45 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         dev_idx,
                     )
                 if not use_native_paging:
-                    # The flat-gather route dispatches through
-                    # get_aiter_mha_varlen_fwd_handle, whose .so variant is keyed on
-                    # (dtype, causal, has_lse, has_logits_cap).  AITER pre-ships only
-                    # a subset of that family, so bootstrap the rest here rather than
-                    # let the C++ dlopen fail inside run().  The helper compiles both
-                    # has_lse variants because plan() can't know which one run() will
-                    # request; causal is fixed per plan() call.
+                    # The guard above disarmed itself because the page size looked
+                    # native; the probe just proved otherwise, so this call takes
+                    # flat-gather after all. Re-check against the real kv_len.
+                    softcap_now = softcap_kv_len is None and _aiter_softcap_defect(
+                        causal, logits_soft_cap, head_dim_qk, self._max_kv_len
+                    )
                     # Demoting after a graph capture would null the flat-gather
                     # buffers the captured graph still points at, so once they
                     # exist under capture the failure has to stay an exception.
-                    if resolved_from_auto and not (
+                    demotable = resolved_from_auto and not (
                         self.is_cuda_graph_enabled
                         and self._aiter_flat_gather_idx is not None
-                    ):
+                    )
+                    if softcap_now and not demotable:
+                        raise ValueError(
+                            "AITER miscomputes logits_soft_cap for causal head_dim=128 "
+                            f"prefill with kv_len >= 512 (through amd-aiter "
+                            f"{_AITER_SOFTCAP_DEFECT_THROUGH}); this page size fell back "
+                            "to the flat-gather kernel. Use backend='fa2'."
+                        )
+                    if softcap_now:
+                        reason = (
+                            "aiter native paging was unavailable for page_size="
+                            f"{page_size}, and the flat-gather kernel miscomputes "
+                            "logits_soft_cap for causal head_dim=128 with kv_len >= 512 "
+                            f"(through amd-aiter {_AITER_SOFTCAP_DEFECT_THROUGH})"
+                        )
+                        logger.warning("auto backend falling back to fa2: %s", reason)
+                    elif demotable:
                         reason = _aiter_batch_ragged_available(
                             q_data_type, has_logits, causal, head_dim_qk, dev_idx
                         )
                     else:
+                        # The flat-gather route dispatches through
+                        # get_aiter_mha_varlen_fwd_handle, whose .so variant is keyed
+                        # on (dtype, causal, has_lse, has_logits_cap).  AITER
+                        # pre-ships only a subset, so bootstrap the rest here rather
+                        # than let the C++ dlopen fail inside run(); both has_lse
+                        # variants, since plan() cannot know which run() will want.
                         _aiter_bootstrap_batch_ragged_prefill(
                             q_data_type,
                             has_logits,

@@ -957,6 +957,89 @@ def test_batch_prefill_aiter_falls_back_when_native_paging_missing(
     torch.testing.assert_close(o, wrapper_ref.run(q, kv_data), rtol=2e-2, atol=2e-2)
 
 
+def _plan_softcap_flat_gather(wrapper, device, page_size, kv_len, dtype):
+    """plan() a defect-shape call (causal, cap>0, head_dim=128, kv_len>=512)."""
+    batch_size, qo_len = 1, 16
+    num_qo_heads = num_kv_heads = 8
+    num_pages = (kv_len + page_size - 1) // page_size
+    qo_indptr = (
+        torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * qo_len
+    )
+    kv_indptr = (
+        torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * num_pages
+    )
+    kv_indices = torch.arange(
+        0, num_pages * batch_size, dtype=torch.int32, device=device
+    )
+    kv_last_page_len = torch.full(
+        (batch_size,), (kv_len - 1) % page_size + 1, dtype=torch.int32, device=device
+    )
+    wrapper.plan(
+        qo_indptr,
+        kv_indptr,
+        kv_indices,
+        kv_last_page_len,
+        num_qo_heads,
+        num_kv_heads,
+        128,
+        page_size,
+        causal=True,
+        logits_soft_cap=30.0,
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+
+
+@pytest.mark.parametrize("backend", ["auto", "aiter"])
+def test_softcap_guard_survives_a_native_page_size_degrading(backend, monkeypatch):
+    """The soft-cap guard disarms on a native page size; the probe can undo that.
+
+    softcap_kv_len is None whenever page_size looks native, because native paging
+    uses mha_batch_prefill and is exact. When the runtime probe then degrades the
+    call to flat-gather, it lands on the defective mha_varlen_fwd and has to be
+    re-guarded against the real kv_len.
+    """
+    # Plumbing only -- no numbers compared, so the gfx950 causal gate is irrelevant.
+    monkeypatch.setenv("FLASHINFER_ARCH_ALLOW_KNOWN_BAD", "1")
+    # Strict turns the probe into a raise, so there would be nothing to demote.
+    monkeypatch.delenv("FLASHINFER_AITER_STRICT", raising=False)
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    page_size = 128
+    if page_size not in _aiter_native_page_sizes():
+        pytest.skip(f"page_size={page_size} is not native on this amd-aiter build")
+
+    def _reject(*args, **kwargs):
+        raise RuntimeError(
+            "invalid argument for batch_prefill: no matching kernel found. "
+            f"page_size={page_size}, num_pages=1, dtype=bf16"
+        )
+
+    _aiter_native_paging_available.cache_clear()
+    monkeypatch.setattr(
+        flashinfer.prefill_rocm, "_aiter_bootstrap_batch_prefill", _reject
+    )
+    workspace = torch.empty(256 * 1024 * 1024, dtype=torch.int8, device=device)
+    try:
+        wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+            workspace, "NHD", backend=backend
+        )
+        if backend == "aiter":
+            with pytest.raises(ValueError, match="logits_soft_cap"):
+                _plan_softcap_flat_gather(
+                    wrapper, device, page_size, 1024, torch.bfloat16
+                )
+        else:
+            _plan_softcap_flat_gather(wrapper, device, page_size, 1024, torch.bfloat16)
+            assert wrapper._backend == "fa2", (
+                "auto stayed on the defective flat-gather kernel"
+            )
+            assert "logits_soft_cap" in (wrapper.backend_fallback_reason or "")
+    finally:
+        _aiter_native_paging_available.cache_clear()
+
+
 def test_batch_prefill_aiter_strict_mode_raises(monkeypatch):
     """FLASHINFER_AITER_STRICT=1 must surface the AITER failure instead of degrading."""
     # Asserts plumbing and compares no numbers, so the ROCm 7.2 gfx950 causal
@@ -1125,6 +1208,13 @@ def test_paged_softcap_guard_tracks_the_paging_route():
             q_data_type=torch.float16,
             kv_data_type=torch.float16,
         )
+
+    # "Native page size" is a hint; only the probe settles the route. Where it
+    # degrades to flat-gather the guard is meant to fire, so the premise is gone.
+    if not _aiter_native_paging_available(
+        torch.float16, True, True, native[0], head_dim, device.index or 0
+    ):
+        pytest.skip(f"aiter cannot serve page_size={native[0]} natively on this build")
 
     plan(native[0])
 
