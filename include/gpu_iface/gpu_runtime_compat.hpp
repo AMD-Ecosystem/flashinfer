@@ -61,7 +61,7 @@
 #define gpuLaunchConfig_t hipLaunchConfig_t
 #define gpuLaunchAttribute hipLaunchAttribute
 
-// CUDA error checking macro (replaces FLASHINFER_CUDA_CALL)
+// HIP error checking macro (replaces FLASHINFER_CUDA_CALL upstream)
 #define FI_GPU_CALL(call)                                                                          \
   do {                                                                                             \
     gpuError_t err = (call);                                                                       \

@@ -40,7 +40,7 @@ __device__ __forceinline__ void transpose_mma_tile(uint32_t* R) {
 #endif
 
 /*!
- * \brief An m16n16k16 gemm kernel using MMA instructions for CUDA/HIP for row
+ * \brief An m16n16k16 gemm kernel using MMA instructions for row
  * major and column major f16 matrix multiplication, accumulated in f32.
  *
  * \tparam T data type of the fragment
