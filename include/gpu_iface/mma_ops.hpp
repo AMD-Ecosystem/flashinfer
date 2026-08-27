@@ -6,13 +6,8 @@
 #include "gpu_iface/platform.hpp"
 
 // Include platform-specific implementations
-#if defined(PLATFORM_CUDA_DEVICE)
-#include "backend/cuda/mma.cuh"
-namespace mma_detail = flashinfer::gpu_iface::mma_impl::cuda;
-#elif defined(PLATFORM_HIP_DEVICE)
 #include "backend/hip/mma_hip.h"
 namespace mma_detail = flashinfer::gpu_iface::mma_impl::hip;
-#endif
 
 namespace flashinfer {
 namespace gpu_iface {
