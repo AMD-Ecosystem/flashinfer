@@ -1,10 +1,17 @@
 import torch
 
-from flashinfer.aiter_utils import is_aiter_available
-from flashinfer.arch_caps import capability_available, normalize_arch
 from flashinfer.device_utils import IS_HIP
 from flashinfer.testing.utils import set_seed
 from flashinfer.utils import get_compute_capability
+
+# Re-exported: attention.py imports these from here.
+from .rocm_utils import (  # noqa: F401
+    HIP_DECODE_GQA_GROUP_SIZES,
+    aiter_serves,
+    fa2_backed_backends,
+    get_device_arch,
+    rocm_supported_backends,
+)
 
 # Output columns for the test results.
 output_column_dict = {
@@ -297,30 +304,6 @@ routine_cc_to_supported_backends = {
 }
 
 
-# Benchmark routine -> the CAPABILITIES op key in flashinfer/arch_caps.py, so
-# the ROCm backend list derives from the arch-support matrix rather than
-# restating it. MLA is absent until mla_rocm matches the CUDA wrapper.
-_ROCM_ROUTINE_TO_CAP_OP = {
-    "BatchDecodeWithPagedKVCacheWrapper": "batch_decode",
-    "BatchPrefillWithPagedKVCacheWrapper": "batch_prefill",
-    "BatchPrefillWithRaggedKVCacheWrapper": "batch_prefill",
-}
-
-
-def get_device_arch(device):
-    """Normalized gfx architecture of ``device``, or ``"unknown"``."""
-    try:
-        return normalize_arch(torch.cuda.get_device_properties(device).gcnArchName)
-    except Exception:
-        return "unknown"
-
-
-# GQA group sizes the HIP decode kernel instantiates; see DISPATCH_GQA_GROUP_SIZE
-# in include/flashinfer/utils.cuh. Others raise "Unsupported group_size" from the
-# kernel, which aborts the whole test case rather than skipping one backend.
-HIP_DECODE_GQA_GROUP_SIZES = frozenset({1, 2, 3, 4, 8})
-
-
 def l2_flush_size_mb():
     """Flush-buffer size large enough to evict the device's last-level cache.
 
@@ -374,47 +357,6 @@ def record_backend_resolution(cur_res, wrapper):
     cur_res["backend_fallback_reason"] = (
         getattr(wrapper, "backend_fallback_reason", "") or ""
     )
-
-
-def aiter_serves(device, op):
-    """Whether ``auto`` can actually reach AITER for ``op`` on ``device``.
-
-    ``capability_available`` answers only the architecture and known-bad
-    question; ``is_aiter_available`` also requires the package to import, which
-    is what the selector really gates on.
-    """
-    return is_aiter_available(device, op)
-
-
-def fa2_backed_backends(backends, device, op):
-    """Requested backends that will execute the in-tree HIP kernel.
-
-    "auto" belongs here whenever AITER cannot serve the call, since the selector
-    then resolves it to fa2 -- so it inherits every fa2 constraint. Returns a
-    list so callers may mutate ``backends`` while iterating.
-    """
-    names = [b for b in backends if b == "fa2"]
-    if "auto" in backends and not aiter_serves(device, op):
-        names.append("auto")
-    return names
-
-
-def rocm_supported_backends(routine, device):
-    """Backends this harness can run for ``routine`` on a ROCm ``device``.
-
-    "fa2" is the harness's name for the in-tree HIP kernel -- the same backend
-    arch_caps calls "hip" and declares as the AITER rows' ``fallback``.
-    """
-    op = _ROCM_ROUTINE_TO_CAP_OP.get(routine)
-    if op is None:
-        return []
-    # AITER is reached through "auto", which records what it resolved to, so
-    # "aiter" is deliberately not offered: the attention routines have no
-    # construction or dispatch path for it, and advertising it here would let a
-    # backend through the filter that argparse rejects and no wrapper builds.
-    if capability_available(device, op, "hip"):
-        return ["fa2", "auto"]
-    return []
 
 
 def filter_backends_by_compute_capability(backends, routine, device):

@@ -155,7 +155,7 @@ def test_fused_add_rmsnorm_aiter(batch_size, hidden_size, dtype):
 @requires_aiter
 def test_fused_add_rmsnorm_auto_selection():
     """auto routes fused_add_rmsnorm to the C++ AITER kernel on supported devices."""
-    from flashinfer.norm import _auto_select_fused_add_rmsnorm_backend
+    from flashinfer._rocm.norm import _auto_select_fused_add_rmsnorm_backend
 
     x = torch.empty(512, 8192, dtype=torch.float16, device="cuda")
     assert _auto_select_fused_add_rmsnorm_backend(x) == "aiter"
