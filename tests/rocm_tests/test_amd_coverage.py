@@ -12,6 +12,7 @@ file with ``--noconftest`` (see ``.github/workflows/arch-caps-conformance.yml``)
 """
 
 import importlib.util
+import json
 import re
 import os
 import subprocess
@@ -257,10 +258,6 @@ class TestUpstreamBase:
     def test_missing_release_tag_says_how_to_fix_it(self, repo):
         with pytest.raises(ac.ToolError, match="fetch --tags"):
             ac._resolve_base(str(repo), None)
-
-    def test_unknown_explicit_ref_names_the_fetch(self, repo):
-        with pytest.raises(ac.ToolError, match="git fetch origin tag v0.0.0"):
-            ac._resolve_base(str(repo), "v0.0.0")
 
     def test_disconnected_history_is_not_reported_as_a_missing_ref(self, repo):
         """`merge-base` can fail on a ref that resolved perfectly well.
@@ -747,6 +744,22 @@ class TestDataFileHygiene:
         os.utime(data, ns=(stamped.st_mtime_ns, stamped.st_mtime_ns))
         assert ac._jit_reach(tmp_path, tmp_path, data) is None
 
+    def test_zero_reached_is_reported_not_treated_as_absent(self, tmp_path):
+        """ "0 of N loaded" and "the plugin never ran" are different answers.
+
+        The plugin writes a shard even with nothing loaded, so an empty shard
+        must survive as a real result rather than collapsing to None.
+        """
+        (tmp_path / "flashinfer" / "csrc_rocm").mkdir(parents=True)
+        for name in ("a.cu", "b.cu"):
+            (tmp_path / "flashinfer" / "csrc_rocm" / name).write_text("x")
+        data = tmp_path / ".coverage"
+        (tmp_path / "jit-reach.gw0.json").write_text("[]", encoding="utf-8")
+        data.write_text("x", encoding="utf-8")
+        ac._write_stamp(tmp_path, data)
+
+        assert ac._jit_reach(tmp_path, tmp_path, data) == (0, ["a.cu", "b.cu"])
+
 
 class TestExclusionAccounting:
     def test_tier_b_counts_only_exclusions_inside_our_diff(self, repo, tmp_path):
@@ -871,3 +884,183 @@ class TestReportInputs:
         assert (
             ac._canonical("/usr/lib/python3.12/json/decoder.py", tmp_path, []) is None
         )
+
+
+class TestBaseRefHint:
+    def test_derived_ref_hint_names_origin_tags(self, repo):
+        """The amd tag is reachable but upstream's own tag was never fetched."""
+        _write(repo, "flashinfer/a.py", "a = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "port work")
+        _git(repo, "tag", "v0.5.3+amd.2")  # no bare v0.5.3 in this clone
+
+        with pytest.raises(ac.ToolError, match=r"git fetch origin tag v0\.5\.3"):
+            ac._resolve_base(str(repo), None)
+
+    def test_explicit_branch_ref_is_not_told_to_fetch_a_tag(self, repo):
+        """`--upstream-ref` takes any ref; only the derived one is a tag on origin."""
+        with pytest.raises(ac.ToolError) as exc:
+            ac._resolve_base(str(repo), "upstream/main")
+
+        assert "fetch origin tag" not in str(exc.value)
+        assert "--upstream-ref" in str(exc.value)
+
+
+class TestNoExecutableStatements:
+    """Every owned statement running at import leaves no percentage to report."""
+
+    def _scores(self):
+        return [
+            ac.Score(
+                path="flashinfer/a.py",
+                tier="A",
+                reason="",
+                owned={1, 2},
+                covered={1, 2},
+                import_time={1, 2},  # the baseline subtracts the whole denominator
+                excluded=0,
+            )
+        ]
+
+    def _report(self, tmp_path):
+        return ac._report(
+            tmp_path,
+            "base",
+            False,
+            "gfx942",
+            self._scores(),
+            {},
+            [],
+            {},
+            None,
+            None,
+            [],
+            set(),
+            False,
+        )
+
+    def test_report_returns_none_rather_than_a_fabricated_zero(self, tmp_path, capsys):
+        pct = self._report(tmp_path)
+        capsys.readouterr()
+
+        assert pct is None, "0.0 here would fail a --fail-under on nothing measured"
+
+    def test_printed_report_and_return_value_agree(self, tmp_path, capsys):
+        """The bug was the two disagreeing: printed "n/a", returned 0.0."""
+        pct = self._report(tmp_path)
+        out = capsys.readouterr().out
+
+        assert "n/a" in out
+        assert pct is None, "printed n/a but returned a number --fail-under would use"
+
+
+class TestReachPlugin:
+    """The plugin is what decides whether "0 loaded" is reportable at all."""
+
+    def _plugin(self):
+        spec = importlib.util.spec_from_file_location(
+            "_fi_jit_reach", _REPO_ROOT / "tests" / "jit_reach_plugin.py"
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_a_run_that_loaded_nothing_still_writes_a_shard(
+        self, tmp_path, monkeypatch
+    ):
+        """No shard reads as "the plugin never ran", which is a different claim."""
+        plugin = self._plugin()
+        plugin._installed = True  # the JitSpec.load wrap went in
+        monkeypatch.setenv(plugin._ENV_DIR, str(tmp_path))
+        monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+
+        plugin.pytest_sessionfinish(session=None, exitstatus=0)
+
+        shard = tmp_path / "jit-reach.master.json"
+        assert shard.exists(), "an empty run must still record that it ran"
+        assert json.loads(shard.read_text(encoding="utf-8")) == []
+
+    def test_no_shard_when_the_wrap_never_installed(self, tmp_path, monkeypatch):
+        """`0 of N` would be a confident answer from a run that never looked.
+
+        pytest_configure bails out when flashinfer is unimportable, so the env
+        var alone does not mean anything was instrumented.
+        """
+        plugin = self._plugin()
+        assert plugin._installed is False
+        monkeypatch.setenv(plugin._ENV_DIR, str(tmp_path))
+
+        plugin.pytest_sessionfinish(session=None, exitstatus=0)
+
+        assert not list(tmp_path.glob("jit-reach.*.json"))
+
+    def test_without_the_env_var_it_writes_nothing(self, tmp_path, monkeypatch):
+        plugin = self._plugin()
+        plugin._installed = True
+        monkeypatch.delenv(plugin._ENV_DIR, raising=False)
+
+        plugin.pytest_sessionfinish(session=None, exitstatus=0)
+
+        assert not list(tmp_path.glob("jit-reach.*.json"))
+
+
+class TestFailUnderAgainstNoPercentage:
+    """The caller has to survive `_report` returning None, not just produce it."""
+
+    def _args(self, repo, **over):
+        defaults = dict(
+            upstream_ref=None,
+            run=False,
+            out_dir=str(repo),
+            data_file=str(repo / ".coverage"),
+            json_out=str(repo / "cov.json"),
+            fail_under=60.0,
+            no_baseline=True,
+            show_files=False,
+            pytest_args=[],
+        )
+        defaults.update(over)
+        return __import__("argparse").Namespace(**defaults)
+
+    def _repo_with_no_executable_lines(self, repo, monkeypatch):
+        """Every owned statement is import-time, so the denominator is zero."""
+        _git(repo, "tag", "v0.5.3")  # the upstream release the fork sits on
+        _write(repo, "flashinfer/a.py", "import os\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "port work")
+        _git(repo, "tag", "v0.5.3+amd.1")
+        (repo / ".coverage").write_text("x", encoding="utf-8")
+
+        score = ac.Score(
+            path="flashinfer/a.py",
+            tier="A",
+            reason="",
+            owned={1},
+            covered={1},
+            import_time={1},
+            excluded=0,
+        )
+        monkeypatch.setattr(ac, "score", lambda *a, **k: ([score], set()))
+        monkeypatch.chdir(repo)
+
+    def test_it_exits_without_comparing_and_writes_null(
+        self, repo, monkeypatch, capsys
+    ):
+        self._repo_with_no_executable_lines(repo, monkeypatch)
+
+        # Would raise TypeError on `pct < fail_under` if None leaked through.
+        code = ac.run(self._args(repo))
+        out = capsys.readouterr().out
+
+        assert code == ac.EXIT_ERROR, "no threshold was missed; none exists"
+        assert "no execution percentage to compare" in out
+        assert json.loads((repo / "cov.json").read_text())["execution_percent"] is None
+
+    def test_without_fail_under_it_is_not_an_error(self, repo, monkeypatch, capsys):
+        self._repo_with_no_executable_lines(repo, monkeypatch)
+
+        code = ac.run(self._args(repo, fail_under=None))
+        capsys.readouterr()
+
+        assert code == ac.EXIT_OK

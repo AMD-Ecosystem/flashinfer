@@ -18,6 +18,7 @@ from pathlib import Path
 _ENV_DIR = "FLASHINFER_JIT_REACH_DIR"
 
 _reached: set[str] = set()
+_installed = False
 
 
 def _record(sources) -> None:
@@ -40,6 +41,7 @@ def pytest_configure(config) -> None:
     except Exception:  # noqa: BLE001 -- no flashinfer, nothing to instrument
         return
 
+    global _installed
     original = JitSpec.load
 
     @functools.wraps(original)
@@ -51,14 +53,20 @@ def pytest_configure(config) -> None:
         return
     load._fi_reach_wrapped = True  # type: ignore[attr-defined]
     JitSpec.load = load  # type: ignore[method-assign]
+    _installed = True
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:
     # Not pytest_terminal_summary: xdist unregisters the terminal reporter in
     # workers, so under -n auto that hook never fires and the file stays empty.
     out_dir = os.environ.get(_ENV_DIR)
-    if not out_dir or not _reached:
+    if not out_dir or not _installed:
+        # No wrap means nothing could have been recorded. Writing a shard here
+        # would report a confident "0 of N loaded" for a run that never looked.
         return
+    # Write the shard even when nothing was loaded. No shard at all means "the
+    # plugin never ran", which the report shows as absent; an empty one is the
+    # different and reportable answer "0 of N".
     worker = os.environ.get("PYTEST_XDIST_WORKER", "master")
     path = Path(out_dir)
     path.mkdir(parents=True, exist_ok=True)

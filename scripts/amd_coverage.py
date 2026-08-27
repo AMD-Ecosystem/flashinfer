@@ -16,7 +16,8 @@ Usage::
     python3 scripts/amd_coverage.py                          # score an existing .coverage
     python3 scripts/amd_coverage.py --json-out cov.json --fail-under 60
 
-Exit 0 clean, 1 if ``--fail-under`` is missed, 2 if the tool could not run.
+Exit 0 clean, 1 if ``--fail-under`` is missed, 2 if the tool could not produce a
+number to compare.
 """
 
 from __future__ import annotations
@@ -172,11 +173,21 @@ def _resolve_base(repo: str, upstream_ref: Optional[str]) -> str:
         repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False
     )
     if probe.returncode:
-        raise ToolError(
-            f"unknown ref '{ref}'. `origin` carries the upstream release tags, so "
-            "no second remote is needed:\n"
-            f"  git fetch origin tag {ref}" + _unshallow_hint(repo)
+        # Only the derived ref is known to be a release tag on origin. An
+        # explicit --upstream-ref may be a branch on any remote, so naming a tag
+        # fetch there would send people somewhere the ref does not live.
+        # Quote the ref back verbatim rather than stripping what looks like a
+        # remote prefix: `feature/foo` is a branch name, not remote `feature`,
+        # and guessing turns "unknown ref" into a fetch that fails for a
+        # different reason.
+        how = (
+            f"you passed it to --upstream-ref; fetch whatever provides it:\n"
+            f"  git fetch <remote> {ref}"
+            if upstream_ref
+            else "`origin` carries the upstream release tags, so no second "
+            f"remote is needed:\n  git fetch origin tag {ref}"
         )
+        raise ToolError(f"unknown ref '{ref}'. {how}" + _unshallow_hint(repo))
     merge_base = _run(repo, "merge-base", "HEAD", ref, check=False)
     if merge_base.returncode:
         # rc 1 is the documented "no common ancestor"; anything else is a real
@@ -606,7 +617,7 @@ def _report(
     stale: List[str],
     foreign: Set[str],
     show_files: bool,
-) -> float:
+) -> Optional[float]:
     print("== amd coverage ==")
     print(f"base  : {base_desc}")
     print(f"tree  : {repo}{' (uncommitted changes)' if dirty else ''}")
@@ -703,7 +714,10 @@ def _report(
     print("  C++/HIP under csrc_rocm/ and include/ has no line coverage (JIT-built)")
     print()
 
-    return 100.0 * exec_cov / exec_tot if exec_tot else 0.0
+    # None, not 0.0: with no executable statements outside the import baseline
+    # there is no percentage. Returning 0.0 would print "n/a" and still fail a
+    # --fail-under, on a number nothing measured.
+    return 100.0 * exec_cov / exec_tot if exec_tot else None
 
 
 def _detect_arch() -> str:
@@ -914,7 +928,7 @@ def run(args: argparse.Namespace) -> int:
             "stale_sources": stale,
             "foreign_source_roots": sorted(foreign),
             "tests": tests,
-            "execution_percent": round(pct, 2),
+            "execution_percent": None if pct is None else round(pct, 2),
             "csrc_reach": (
                 {"loaded": reach[0], "never_loaded": reach[1]} if reach else None
             ),
@@ -940,6 +954,12 @@ def run(args: argparse.Namespace) -> int:
         )
         print(f"wrote {args.json_out}")
 
+    if args.fail_under is not None and pct is None:
+        print(
+            "FAIL: --fail-under was given, but every owned statement runs at "
+            "import, so there is no execution percentage to compare."
+        )
+        return EXIT_ERROR  # not RATCHET: no threshold was missed, none exists
     if args.fail_under is not None and pct < args.fail_under:
         print(
             f"FAIL: execution coverage {pct:.2f}% is under --fail-under {args.fail_under}"
