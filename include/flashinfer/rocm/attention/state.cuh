@@ -9,8 +9,6 @@
 #include "gpu_iface/platform.hpp"
 #include "gpu_iface/vec_dtypes.hpp"
 
-// #if defined(PLATFORM_CUDA_DEVICE)
-// #include "gpu_iface/backend/cuda/vec_dtypes.cuh"
 #if defined(PLATFORM_HIP_DEVICE)
 #define HIP_ENABLE_WARP_SYNC_BUILTINS 1
 #endif

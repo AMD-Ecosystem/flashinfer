@@ -25,20 +25,12 @@ class GpuError {
   int code() const { return code_; }
   const std::string& message() const { return message_; }
 
-#if defined(PLATFORM_CUDA_DEVICE)
-  cudaError_t getNative() const { return static_cast<cudaError_t>(code_); }
-#elif defined(PLATFORM_HIP_DEVICE)
   hipError_t getNative() const { return static_cast<hipError_t>(code_); }
-#endif
 };
 
 // Create error from message
 inline GpuError CreateError(std::string message) {
-#if defined(PLATFORM_CUDA_DEVICE)
-  return GpuError(static_cast<int>(cudaErrorUnknown), std::move(message));
-#elif defined(PLATFORM_HIP_DEVICE)
   return GpuError(static_cast<int>(hipErrorUnknown), std::move(message));
-#endif
 }
 
 }  // namespace gpu_iface

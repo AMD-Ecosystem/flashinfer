@@ -253,42 +253,6 @@ struct smem_t {
 #endif
   }
 
-#if defined(PLATFORM_CUDA_DEVICE)
-  __device__ __forceinline__ void ldmatrix_m8n8x4(uint32_t offset, uint32_t* R) {
-    b128_t* smem_ptr = base + offset;
-    mma::ldmatrix_m8n8x4(R, smem_ptr);
-  }
-
-  __device__ __forceinline__ void ldmatrix_m8n8x4_left_half(uint32_t offset, uint32_t* R) {
-    b128_t* smem_ptr = base + offset;
-    mma::ldmatrix_m8n8x4_left_half(R, smem_ptr);
-  }
-
-  __device__ __forceinline__ void ldmatrix_m8n8x4_right_half(uint32_t offset, uint32_t* R) {
-    b128_t* smem_ptr = base + offset;
-    mma::ldmatrix_m8n8x4_right_half(R, smem_ptr);
-  }
-
-  __device__ __forceinline__ void stmatrix_m8n8x4(uint32_t offset, uint32_t* R) {
-    b128_t* smem_ptr = base + offset;
-    mma::stmatrix_m8n8x4(R, smem_ptr);
-  }
-
-  __device__ __forceinline__ void ldmatrix_m8n8x4_trans(uint32_t offset, uint32_t* R) {
-    b128_t* smem_ptr = base + offset;
-    mma::ldmatrix_m8n8x4_trans(R, smem_ptr);
-  }
-
-  __device__ __forceinline__ void ldmatrix_m8n8x4_trans_left_half(uint32_t offset, uint32_t* R) {
-    b128_t* smem_ptr = base + offset;
-    mma::ldmatrix_m8n8x4_trans_left_half(R, smem_ptr);
-  }
-
-  __device__ __forceinline__ void ldmatrix_m8n8x4_trans_right_half(uint32_t offset, uint32_t* R) {
-    b128_t* smem_ptr = base + offset;
-    mma::ldmatrix_m8n8x4_trans_right_half(R, smem_ptr);
-  }
-#endif
   template <gpu_mem::SharedMemFillMode fill_mode, typename T>
   __device__ __forceinline__ void load_128b_async(uint32_t offset, const T* gptr, bool predicate) {
     b128_t* smem_ptr = base + offset;

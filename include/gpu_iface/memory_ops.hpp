@@ -25,13 +25,8 @@ enum class PrefetchMode {
 };
 
 // Include platform-specific implementations
-#if defined(PLATFORM_CUDA_DEVICE)
-#include "backend/cuda/memory_ops.cuh"
-namespace mem_detail = flashinfer::gpu_iface::memory::detail::cuda;
-#elif defined(PLATFORM_HIP_DEVICE)
 #include "backend/hip/memory_ops_hip.h"
 namespace mem_detail = flashinfer::gpu_iface::memory::detail::hip;
-#endif
 
 /**
  * @brief Commits pending asynchronous memory operations to a group
