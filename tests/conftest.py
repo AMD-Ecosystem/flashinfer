@@ -6,28 +6,40 @@ from typing import Any, Dict, Set
 
 import pytest
 
-# Pin this worker to a dedicated supported GPU BEFORE torch initializes the ROCm
-# runtime.  PYTEST_XDIST_WORKER is injected into each worker subprocess by
-# pytest-xdist before any Python code runs ("gw0", "gw1", ...).
-# get_supported_device_indices() uses rocminfo (no HIP init) so it is safe to
-# call here.  We map the worker index through the supported device list so that
-# workers are pinned only to FlashInfer-supported GPUs; unsupported integrated
-# GPUs are never assigned.  Setting HIP_VISIBLE_DEVICES here makes the ROCm
-# runtime start up with exactly one device so all device-0 references inside
-# tests transparently route to the assigned physical GPU.
+
+def _worker_gpu_index(worker_idx: int, supported):
+    """Card to pin an xdist worker to, or None if there is nothing to pin to.
+
+    Workers wrap around when they outnumber the cards. Using worker_idx itself
+    names a device that need not exist, and a child process inheriting that
+    HIP_VISIBLE_DEVICES sees no GPU at all.
+    """
+    return supported[worker_idx % len(supported)] if supported else None
+
+
+# Pin this worker to a supported GPU. PYTEST_XDIST_WORKER ("gw0", "gw1", ...) is
+# injected into each worker subprocess by pytest-xdist before any Python code runs,
+# and get_physical_card_device_indices() spreads workers one per physical card
+# (CPX systems expose four logical devices sharing one card's HBM).
+#
+# This does not re-scope *this* process -- the flashinfer import below initializes
+# HIP first, so torch has already latched the full device list. What it scopes is
+# the child processes tests spawn, which is where a bad index is fatal.
 _xdist_worker = os.environ.get("PYTEST_XDIST_WORKER", "")
 if _xdist_worker.startswith("gw"):
-    _worker_idx = int(_xdist_worker[2:])
-    # Pin to one physical card per worker on CPX systems (avoids HSA crashes
-    # when multiple workers hammer the same card's HBM). On non-CPX systems
-    # the helper returns all supported devices.
+    import torch
+
     from flashinfer.hip_utils import get_physical_card_device_indices
 
-    _supported = get_physical_card_device_indices()
-    _gpu_index = (
-        _supported[_worker_idx] if _worker_idx < len(_supported) else _worker_idx
+    # rocminfo is how cards are identified; when it is missing the list comes
+    # back empty even on a populated host, so fall back to what torch can see
+    # rather than to worker indices that need not name anything.
+    _cards = get_physical_card_device_indices() or tuple(
+        range(torch.cuda.device_count())
     )
-    os.environ["HIP_VISIBLE_DEVICES"] = str(_gpu_index)
+    _gpu_index = _worker_gpu_index(int(_xdist_worker[2:]), _cards)
+    if _gpu_index is not None:
+        os.environ["HIP_VISIBLE_DEVICES"] = str(_gpu_index)
 
 import torch
 from torch.torch_version import TorchVersion
