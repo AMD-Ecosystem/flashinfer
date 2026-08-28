@@ -28,52 +28,6 @@ import torch
 import flashinfer
 from attention_reference import _hipblas_safe_matmul
 
-# Monkey-patch flashinfer.quantization on older versions where the JIT-compiled
-# quantization module fails to build on ROCm (cub/cub.cuh missing in <= 0.2.5).
-try:
-    flashinfer.quantization.packbits(
-        torch.ones(8, dtype=torch.bool, device="cpu"), bitorder="little"
-    )
-except Exception:
-    import flashinfer.quantization as _fiq
-
-    def _pt_packbits(x, bitorder="big"):
-        x = x.to(torch.bool).view(-1).to(torch.uint8)
-        pad = (8 - x.size(0) % 8) % 8
-        if pad:
-            x = torch.cat([x, torch.zeros(pad, dtype=torch.uint8, device=x.device)])
-        x = x.reshape(-1, 8)
-        if bitorder == "big":
-            shifts = torch.arange(7, -1, -1, device=x.device, dtype=torch.uint8)
-        else:
-            shifts = torch.arange(0, 8, device=x.device, dtype=torch.uint8)
-        return (x << shifts).sum(dim=1, dtype=torch.uint8)
-
-    def _pt_segment_packbits(x, indptr, bitorder="big"):
-        seglen = indptr[1:] - indptr[:-1]
-        packed_len = (seglen + 7) // 8
-        indptr_new = torch.zeros_like(indptr)
-        indptr_new[1:] = torch.cumsum(packed_len, 0)
-        y = torch.zeros(int(indptr_new[-1].item()), dtype=torch.uint8, device=x.device)
-        for i in range(len(seglen)):
-            seg = x[indptr[i] : indptr[i + 1]]
-            packed = _pt_packbits(seg, bitorder)
-            y[indptr_new[i] : indptr_new[i + 1]] = packed[
-                : indptr_new[i + 1] - indptr_new[i]
-            ]
-        return y, indptr_new
-
-    _fiq.packbits = lambda x, bitorder="big": _pt_packbits(x, bitorder)
-    _fiq.segment_packbits = _pt_segment_packbits
-    _fiq._packbits = lambda x, bitorder: _pt_packbits(x, bitorder)
-    if hasattr(flashinfer, "prefill"):
-        import flashinfer.prefill as _fip
-
-        if hasattr(_fip, "segment_packbits"):
-            _fip.segment_packbits = _pt_segment_packbits
-        if hasattr(_fip, "packbits"):
-            _fip.packbits = lambda x, bitorder="big": _pt_packbits(x, bitorder)
-
 
 def _plan_with_custom_mask(
     wrapper,
