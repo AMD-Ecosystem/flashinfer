@@ -57,8 +57,10 @@ inline aiter_tensor_t to_aiter(const at::Tensor& t) {
     out.strides[i] = t.stride(i);
   }
   out.dtype_ = to_aiter_dtype(t.scalar_type());
-  // is_gpu() keys off device_id >= 0, and AITER kernels require device memory.
-  out.device_id = t.is_cpu() ? -1 : static_cast<int>(t.device().index());
+  // Every POD entry point is GPU-only, so reject a host tensor here rather than
+  // hand AITER a device_id of -1 and let it fault on a host pointer.
+  TORCH_CHECK(t.is_cuda(), "aiter_tensor_t requires a GPU tensor, got ", t.device());
+  out.device_id = static_cast<int>(t.device().index());
   return out;
 }
 
