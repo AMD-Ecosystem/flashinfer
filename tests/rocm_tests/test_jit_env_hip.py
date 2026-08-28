@@ -83,3 +83,40 @@ def test_workspace_dir_still_names_the_device_arch():
     props = torch.cuda.get_device_properties(torch.cuda.current_device())
     expected = normalize_arch(props.gcnArchName)
     assert jit_env.FLASHINFER_WORKSPACE_DIR.name == expected
+
+
+def test_rocm_env_constants_do_not_come_from_the_cuda_helpers():
+    """The three cache-path helpers stay unguarded; only the assignments are gated.
+
+    Defining them costs nothing because no ROCm path calls them, but note they
+    do NOT all fail if one ever does: only _get_workspace_dir_name touches a
+    CUDA-only global unconditionally. The other two return a plausible
+    CUDA-shaped path, so the gate is the only thing keeping them out.
+    """
+    import pathlib
+
+    from flashinfer.get_include_paths import get_csrc_dir
+    from flashinfer.jit import env as e
+
+    assert pathlib.Path(get_csrc_dir()) == e.FLASHINFER_CSRC_DIR
+    # Bound only in the IS_CUDA arm, so its absence is what proves the gate held.
+    assert not hasattr(e, "FLASHINFER_CUBIN_DIR")
+    with pytest.raises(NameError, match="CompilationContext"):
+        e._get_workspace_dir_name()
+
+
+def test_nvshmem_helpers_stay_absent_on_rocm():
+    """gen_nvshmem_module() must fail at the env layer, naming a CUDA-only API.
+
+    jit/comm.py imports fine on ROCm, so with these defined the failure moves
+    to an absent nvidia.nvshmem -- or, with NVSHMEM_* set, to a build against
+    flashinfer/csrc_rocm/nvshmem_binding.cu, which does not exist.
+    """
+    from flashinfer.jit import comm as jit_comm
+    from flashinfer.jit import env as e
+
+    assert not hasattr(e, "get_nvshmem_include_dirs")
+    assert not hasattr(e, "get_nvshmem_lib_dirs")
+    # First statement in gen_nvshmem_module, so this builds nothing on the way.
+    with pytest.raises(AttributeError, match="get_nvshmem_lib_dirs"):
+        jit_comm.gen_nvshmem_module()

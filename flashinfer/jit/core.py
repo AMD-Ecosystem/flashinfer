@@ -20,6 +20,7 @@ if IS_CUDA:
 elif IS_HIP:
     from ..compilation_context_hip import CompilationContext  # type: ignore[assignment]
     from .cpp_ext_hip import generate_ninja_build_for_op, run_ninja  # type: ignore[no-redef]
+    from .rocm.core import check_rocm_arch as check_rocm_arch
 
 os.makedirs(jit_env.FLASHINFER_WORKSPACE_DIR, exist_ok=True)
 os.makedirs(jit_env.FLASHINFER_CSRC_DIR, exist_ok=True)
@@ -97,40 +98,20 @@ class FlashInferJITLogger(logging.Logger):
 
 logger = FlashInferJITLogger("flashinfer.jit")
 
-if IS_CUDA:
 
-    def check_cuda_arch():
-        # Collect all detected CUDA architectures
-        eligible = False
-        for major, minor in current_compilation_context.TARGET_CUDA_ARCHS:
-            if major >= 8:
+def check_cuda_arch():
+    # Collect all detected CUDA architectures
+    eligible = False
+    for major, minor in current_compilation_context.TARGET_CUDA_ARCHS:
+        if major >= 8:
+            eligible = True
+        elif major == 7 and minor.isdigit():
+            if int(minor) >= 5:
                 eligible = True
-            elif major == 7 and minor.isdigit():
-                if int(minor) >= 5:
-                    eligible = True
 
-        # Raise error only if all detected architectures are lower than sm75
-        if not eligible:
-            raise RuntimeError("FlashInfer requires GPUs with sm75 or higher")
-
-    common_nvcc_flags = [
-        "-DFLASHINFER_ENABLE_FP8_E8M0",
-        "-DFLASHINFER_ENABLE_FP4_E2M1",
-    ]
-    sm89_nvcc_flags = [
-        "-gencode=arch=compute_89,code=sm_89",
-        "-DFLASHINFER_ENABLE_FP8_E8M0",
-    ]
-    sm90a_nvcc_flags = ["-gencode=arch=compute_90a,code=sm_90a"] + common_nvcc_flags
-    sm100a_nvcc_flags = ["-gencode=arch=compute_100a,code=sm_100a"] + common_nvcc_flags
-    sm103a_nvcc_flags = ["-gencode=arch=compute_103a,code=sm_103a"] + common_nvcc_flags
-    sm100f_nvcc_flags = ["-gencode=arch=compute_100f,code=sm_100f"] + common_nvcc_flags
-    sm110a_nvcc_flags = ["-gencode=arch=compute_110a,code=sm_110a"] + common_nvcc_flags
-    sm120a_nvcc_flags = ["-gencode=arch=compute_120a,code=sm_120a"] + common_nvcc_flags
-    sm121a_nvcc_flags = ["-gencode=arch=compute_121a,code=sm_121a"] + common_nvcc_flags
-
-elif IS_HIP:
-    from .rocm.core import check_rocm_arch as check_rocm_arch
+    # Raise error only if all detected architectures are lower than sm75
+    if not eligible:
+        raise RuntimeError("FlashInfer requires GPUs with sm75 or higher")
 
 
 def clear_cache_dir():
@@ -139,6 +120,22 @@ def clear_cache_dir():
 
         shutil.rmtree(jit_env.FLASHINFER_JIT_DIR)
 
+
+common_nvcc_flags = [
+    "-DFLASHINFER_ENABLE_FP8_E8M0",
+    "-DFLASHINFER_ENABLE_FP4_E2M1",
+]
+sm89_nvcc_flags = [
+    "-gencode=arch=compute_89,code=sm_89",
+    "-DFLASHINFER_ENABLE_FP8_E8M0",
+]
+sm90a_nvcc_flags = ["-gencode=arch=compute_90a,code=sm_90a"] + common_nvcc_flags
+sm100a_nvcc_flags = ["-gencode=arch=compute_100a,code=sm_100a"] + common_nvcc_flags
+sm103a_nvcc_flags = ["-gencode=arch=compute_103a,code=sm_103a"] + common_nvcc_flags
+sm100f_nvcc_flags = ["-gencode=arch=compute_100f,code=sm_100f"] + common_nvcc_flags
+sm110a_nvcc_flags = ["-gencode=arch=compute_110a,code=sm_110a"] + common_nvcc_flags
+sm120a_nvcc_flags = ["-gencode=arch=compute_120a,code=sm_120a"] + common_nvcc_flags
+sm121a_nvcc_flags = ["-gencode=arch=compute_121a,code=sm_121a"] + common_nvcc_flags
 
 current_compilation_context = CompilationContext()
 
