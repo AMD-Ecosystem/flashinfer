@@ -665,9 +665,11 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
 
   DISPATCH_GQA_GROUP_SIZE(num_qo_heads / num_kv_heads, GROUP_SIZE, {
     constexpr uint32_t bdy = GROUP_SIZE;
-    constexpr uint32_t num_threads =
-        std::max(get_heuristic_num_threads(GROUP_SIZE, sizeof(DTypeKV)), bdx * bdy);
-    constexpr uint32_t bdz = num_threads / (bdx * bdy);
+    // Declare what dim3(bdx, bdy, bdz) launches: bdz truncates when bdx*bdy does
+    // not divide the heuristic, which at GROUP_SIZE 3 is 192 threads against 256.
+    constexpr uint32_t bdz =
+        std::max(get_heuristic_num_threads(GROUP_SIZE, sizeof(DTypeKV)), bdx * bdy) / (bdx * bdy);
+    constexpr uint32_t num_threads = bdx * bdy * bdz;
 
     // AMD CDNA3 Reduce tile size to accomodate for CDNA3 architecture's hardware threshold.
     constexpr uint32_t tile_size_per_bdx = (sizeof(DTypeKV) == 1 || GROUP_SIZE == 1) ? 2U : 1U;
@@ -768,8 +770,9 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatched(Params params, typename Params:
   constexpr uint32_t bdx = decode_tuning::BatchDecodeBdx<DTypeKV, HEAD_DIM>();
   DISPATCH_GQA_GROUP_SIZE(num_qo_heads / num_kv_heads, GROUP_SIZE, {
     constexpr uint32_t bdy = GROUP_SIZE;
-    constexpr uint32_t num_threads = std::max(128U, bdx * bdy);
-    constexpr uint32_t bdz = num_threads / (bdx * bdy);
+    constexpr uint32_t bdz = decode_tuning::BatchDecodeBdz<DTypeKV, HEAD_DIM, GROUP_SIZE>();
+    constexpr uint32_t num_threads =
+        decode_tuning::BatchDecodeNumThreads<DTypeKV, HEAD_DIM, GROUP_SIZE>();
     constexpr uint32_t tile_size_per_bdx = GROUP_SIZE == 1 ? (sizeof(DTypeKV) == 1 ? 2U : 4U) : 1U;
     DISPATCH_COMPUTE_CAP_DECODE_NUM_STAGES_SMEM(compute_capacity, NUM_STAGES_SMEM, {
       const uint32_t smem_size =

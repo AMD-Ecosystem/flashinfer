@@ -144,8 +144,9 @@ inline gpuError_t BatchDecodeWithPagedKVCacheWorkEstimationDispatched(
   DISPATCH_COMPUTE_CAP_DECODE_NUM_STAGES_SMEM(compute_capacity, NUM_STAGES_SMEM, {
     constexpr uint32_t bdx = decode_tuning::BatchDecodeBdx<DTypeKV, HEAD_DIM>();
     constexpr uint32_t bdy = GROUP_SIZE;
-    constexpr uint32_t num_threads = std::max(128U, bdx * bdy);
-    constexpr uint32_t bdz = num_threads / (bdx * bdy);
+    constexpr uint32_t bdz = decode_tuning::BatchDecodeBdz<DTypeKV, HEAD_DIM, GROUP_SIZE>();
+    constexpr uint32_t num_threads =
+        decode_tuning::BatchDecodeNumThreads<DTypeKV, HEAD_DIM, GROUP_SIZE>();
     constexpr uint32_t tile_size_per_bdx = GROUP_SIZE == 1 ? (sizeof(DTypeKV) == 1 ? 2U : 4U) : 1U;
     const uint32_t num_kv_heads = num_qo_heads / GROUP_SIZE;
     gdy = num_kv_heads;
@@ -163,6 +164,15 @@ inline gpuError_t BatchDecodeWithPagedKVCacheWorkEstimationDispatched(
     FI_GPU_CALL(gpuDeviceGetAttribute(&num_sm, gpuDevAttrMultiProcessorCount, dev_id));
     FI_GPU_CALL(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel,
                                                              num_threads, smem_size));
+    // Without this, max_grid_size is 0, `batch_size * gdy >= 0` is trivially true
+    // on uint32_t, and plan() quietly disables split-KV instead of reporting that
+    // the kernel is unlaunchable.
+    if (num_blocks_per_sm == 0) {
+      std::ostringstream err_msg;
+      err_msg << "Zero occupancy detected. smem_size=" << smem_size
+              << ", num_threads=" << num_threads;
+      FLASHINFER_ERROR(err_msg.str());
+    }
     max_grid_size = num_blocks_per_sm * num_sm;
     if (batch_size * gdy >= max_grid_size) {
       split_kv = false;
