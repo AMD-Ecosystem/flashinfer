@@ -210,3 +210,97 @@ def test_wheel_carries_the_paths_the_jit_resolves(tmp_path, monkeypatch):
     # The sibling projects leaked in once via an unanchored packages.find glob.
     assert top.split() == ["flashinfer"], top
     assert not [f for f in names if f.startswith(("flashinfer-", "amd-flashinfer-"))]
+
+
+class _Recorder:
+    """Stands in for setuptools.build_meta, recording the delegated call."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __getattr__(self, name):
+        def _hook(*args):
+            self.calls.append((name, args))
+            return f"{name}-result"
+
+        return _hook
+
+
+@pytest.fixture
+def hooks(backend, monkeypatch):
+    """The backend with setuptools swapped out, so no real build runs."""
+    recorder = _Recorder()
+    monkeypatch.setattr(backend, "_orig", recorder)
+    return backend, recorder
+
+
+def test_missing_source_tree_is_named(backend):
+    shutil.rmtree(backend._src_include)
+    with pytest.raises(RuntimeError, match="missing source header tree"):
+        backend._materialize_include(use_symlink=True)
+
+
+@pytest.mark.parametrize(
+    "hook, args, delegated",
+    [
+        ("get_requires_for_build_wheel", (), (None,)),
+        ("get_requires_for_build_sdist", (), (None,)),
+        ("get_requires_for_build_editable", (), (None,)),
+        ("prepare_metadata_for_build_wheel", ("md",), ("md", None)),
+    ],
+)
+def test_passthrough_hooks_delegate_unchanged(hooks, hook, args, delegated):
+    """These must not touch flashinfer/include; metadata comes from [project]."""
+    backend, recorder = hooks
+
+    assert getattr(backend, hook)(*args) == f"{hook}-result"
+
+    assert recorder.calls == [(hook, delegated)]
+    assert not backend._pkg_include.exists()
+
+
+def test_editable_metadata_materializes_a_symlink_first(hooks):
+    backend, recorder = hooks
+
+    result = backend.prepare_metadata_for_build_editable("md")
+
+    assert result == "prepare_metadata_for_build_editable-result"
+    assert recorder.calls == [("prepare_metadata_for_build_editable", ("md", None))]
+    assert _describe(backend._pkg_include) == "symlink:../include"
+
+
+def test_build_editable_materializes_a_symlink_and_leaves_it(hooks):
+    backend, recorder = hooks
+
+    assert backend.build_editable("wd") == "build_editable-result"
+
+    assert recorder.calls == [("build_editable", ("wd", None, None))]
+    assert _describe(backend._pkg_include) == "symlink:../include"
+
+
+def test_build_wheel_sees_a_real_copy_and_leaves_nothing(hooks):
+    backend, recorder = hooks
+    seen = {}
+    backend._orig.build_wheel = lambda *a: seen.setdefault(
+        "state", _describe(backend._pkg_include)
+    )
+
+    backend.build_wheel("wd")
+
+    # Real directory during the build; gone once the context manager unwinds.
+    assert seen["state"] == "realdir"
+    assert _describe(backend._pkg_include) == "absent"
+
+
+def test_build_sdist_sees_no_copy_and_leaves_nothing(hooks):
+    backend, _ = hooks
+    _seed(backend, "realdir")
+    seen = {}
+    backend._orig.build_sdist = lambda *a: seen.setdefault(
+        "state", _describe(backend._pkg_include)
+    )
+
+    backend.build_sdist("sd")
+
+    assert seen["state"] == "absent"
+    assert _describe(backend._pkg_include) == "absent"
