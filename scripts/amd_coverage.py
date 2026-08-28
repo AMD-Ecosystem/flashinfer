@@ -860,6 +860,18 @@ def _run_pytest(
     return junit
 
 
+def _anchor(repo: Path, value: Optional[str], default: Path) -> Path:
+    """Resolve a path option against the repo root, not the caller's cwd.
+
+    pytest runs with cwd=repo, so a relative path would otherwise be written in
+    one place and read from another. Absolute paths are honoured as given.
+    """
+    if not value:
+        return default
+    given = Path(value)
+    return given if given.is_absolute() else repo / given
+
+
 def run(args: argparse.Namespace) -> int:
     repo = Path(_git(None, "rev-parse", "--show-toplevel"))
     base = _resolve_base(str(repo), args.upstream_ref)
@@ -872,17 +884,9 @@ def run(args: argparse.Namespace) -> int:
     if not owned:
         raise ToolError("no owned files found -- is this the amd-integration fork?")
 
-    # Anchored to the repo, not the caller's cwd: pytest runs with cwd=repo, so
-    # a relative path would be written in one place and read from another.
-    def _anchored(value: Optional[str], default: Path) -> Path:
-        if not value:
-            return default
-        given = Path(value)
-        return given if given.is_absolute() else repo / given
-
-    out_dir = _anchored(args.out_dir, repo)
+    out_dir = _anchor(repo, args.out_dir, repo)
     out_dir.mkdir(parents=True, exist_ok=True)
-    data_file = _anchored(args.data_file, repo / ".coverage")
+    data_file = _anchor(repo, args.data_file, repo / ".coverage")
     # Not ".coverage.import-baseline": that matches coverage's parallel-data
     # glob `.coverage.*`, so pytest-cov's combine() absorbs and unlinks it, and
     # the import-time split silently vanishes into the headline.
@@ -960,10 +964,17 @@ def run(args: argparse.Namespace) -> int:
             "unowned": unowned,
             "ruled_unowned": ruled,
         }
-        Path(args.json_out).write_text(
-            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
-        )
-        print(f"wrote {args.json_out}")
+        # Anchored like --out-dir and --data-file: the documented refresh writes
+        # docs/rocm/coverage-gfx942.json, and a cwd-relative path would put it
+        # under whichever directory the caller happened to be in.
+        json_out = _anchor(repo, args.json_out, repo)
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        # relative_to raises for a path outside the repo, which --json-out
+        # explicitly allows; the message is not worth failing a scored run over.
+        with contextlib.suppress(ValueError):
+            json_out = json_out.relative_to(repo)
+        print(f"wrote {json_out}")
 
     if args.fail_under is not None and pct is None:
         print(
