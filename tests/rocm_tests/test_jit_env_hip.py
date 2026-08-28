@@ -112,7 +112,11 @@ def test_nvshmem_helpers_stay_absent_on_rocm():
     to an absent nvidia.nvshmem -- or, with NVSHMEM_* set, to a build against
     flashinfer/csrc_rocm/nvshmem_binding.cu, which does not exist.
     """
+    from flashinfer.jit import comm as jit_comm
     from flashinfer.jit import env as e
 
     assert not hasattr(e, "get_nvshmem_include_dirs")
     assert not hasattr(e, "get_nvshmem_lib_dirs")
+    # First statement in gen_nvshmem_module, so this builds nothing on the way.
+    with pytest.raises(AttributeError, match="get_nvshmem_lib_dirs"):
+        jit_comm.gen_nvshmem_module()
