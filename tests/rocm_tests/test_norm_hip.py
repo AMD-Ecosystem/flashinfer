@@ -118,13 +118,50 @@ def test_fused_add_rmsnorm(batch_size, hidden_size, dtype, enable_pdl, contiguou
 
     x_fused = x.clone()
     residual_fused = residual.clone()
+    # Pin to native, as test_norm does — without it `auto` sends every case to
+    # AITER and the native kernel has no coverage. test_fused_add_rmsnorm_aiter
+    # keeps AITER covered, though not at hidden_size 128 or contiguous=False.
     flashinfer.fused_add_rmsnorm(
-        x_fused, residual_fused, weight, eps, enable_pdl=enable_pdl
+        x_fused, residual_fused, weight, eps, enable_pdl=enable_pdl, backend="native"
     )
 
     rtol, atol = (1.6e-2, 1.6e-2) if dtype == torch.bfloat16 else (1e-3, 1e-3)
     torch.testing.assert_close(x_fused, x_native, rtol=rtol, atol=atol)
     torch.testing.assert_close(residual_fused, residual_native, rtol=rtol, atol=atol)
+
+
+# 16384 crosses the gfx942 LDS threshold and 40960 the gfx950 one, so the
+# re-read-from-global fallback is exercised on both arches. backend="native" is
+# required — `auto` routes to AITER and would not reach the kernel under test.
+@pytest.mark.parametrize("hidden_size", [16352, 16384, 40960])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("gemma", [False, True])
+def test_fused_add_rmsnorm_large_hidden_size(hidden_size, dtype, gemma):
+    eps = 1e-6
+    batch_size = 2
+    torch.manual_seed(0)
+    x = torch.randn(batch_size, hidden_size, dtype=dtype, device="cuda") * 0.1
+    residual = torch.randn_like(x) * 0.1
+    weight = torch.randn(hidden_size, dtype=dtype, device="cuda") * 0.1
+
+    if gemma:
+        x_ref, residual_ref = gemma_fused_add_rms_norm(
+            x.clone(), residual.clone(), weight, eps
+        )
+    else:
+        x_ref, residual_ref = fused_add_rms_norm(
+            x.clone(), residual.clone(), weight, eps
+        )
+
+    x_out, residual_out = x.clone(), residual.clone()
+    if gemma:
+        flashinfer.gemma_fused_add_rmsnorm(x_out, residual_out, weight, eps)
+    else:
+        flashinfer.fused_add_rmsnorm(x_out, residual_out, weight, eps, backend="native")
+
+    rtol, atol = (1.6e-2, 1.6e-2) if dtype == torch.bfloat16 else (1e-3, 1e-3)
+    torch.testing.assert_close(x_out, x_ref, rtol=rtol, atol=atol)
+    torch.testing.assert_close(residual_out, residual_ref, rtol=rtol, atol=atol)
 
 
 @requires_aiter
