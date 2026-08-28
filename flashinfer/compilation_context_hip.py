@@ -34,6 +34,10 @@ class CompilationContext:
         "-DFLASHINFER_ENABLE_FP8_E4M3",
         "-DFLASHINFER_ENABLE_FP8_E5M2",
         "-DHIP_ENABLE_WARP_SYNC_BUILTINS=1",
+        # Required from torch 2.12 on: c10/hip/HIPStream.h gates the c10::hip
+        # compat namespace behind `#ifdef USE_ROCM`, so without this every
+        # *_aiter.cu shim fails on c10::hip::getCurrentHIPStream().
+        "-DUSE_ROCM=1",
     ]
 
     def __init__(self):
@@ -43,7 +47,7 @@ class CompilationContext:
         Performs comprehensive validation:
         1. System ROCm version compatibility
         2. FlashInfer AMD port availability
-        3. PyTorch ROCm compilation support
+        3. PYTORCH_ROCM_ARCH, when it is set
         """
         import torch.utils.cpp_extension as torch_cpp_ext
 

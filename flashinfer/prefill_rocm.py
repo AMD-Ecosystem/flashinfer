@@ -62,7 +62,10 @@ from .utils import (
 # sizes we try. The second is the newest release we have actually validated against;
 # bumping it must not silently move the support boundary.
 _AITER_NATIVE_PAGING_SINCE = "0.1.10"
-_AITER_LAST_VALIDATED = "0.1.10"
+_AITER_LAST_VALIDATED = "0.1.16.post3.dev0+g620287969.d20260725"
+# Newest AITER carrying the mha_varlen_fwd soft-cap defect. Bump only after
+# re-measuring against an fp32 reference; the wrong answer is silent.
+_AITER_SOFTCAP_DEFECT_THROUGH = "0.1.21"
 
 
 @functools.cache
@@ -301,9 +304,19 @@ def _aiter_noop_plan(*args, **kwargs):
 @functools.cache
 def _aiter_ops_importable() -> bool:
     try:
+        # AITER 0.1.16+ freezes arch state at import, so GPU_ARCHS has to be set
+        # before this import, not before the first build. This is the second
+        # entry point that imports aiter; aiter_utils._aiter_importable is the
+        # other, and prefill/decode reach this one first.
+        from .aiter_utils import _aiter_version_supported, _ensure_aiter_gpu_archs
+
+        _ensure_aiter_gpu_archs()
         import aiter.ops  # noqa: F401
 
-        return True
+        # Same ABI floor aiter_utils._aiter_importable applies. This probe is the
+        # one prefill and decode reach first, so leaving it out would let auto
+        # route into the layouts the vendored structs no longer match.
+        return _aiter_version_supported()
     except Exception:
         return False
 
@@ -318,15 +331,55 @@ def _require_aiter_runtime(device: torch.device, op: str = "batch_prefill") -> N
     """
     require_capability(device, op, "aiter")
     if not _aiter_ops_importable():
+        from .aiter_utils import (
+            AITER_MIN_VERSION,
+            _aiter_installed_version,
+            _aiter_version_supported,
+        )
+
+        installed = _aiter_installed_version()
+        if installed is not None and not _aiter_version_supported():
+            raise ImportError(
+                f"The AITER backend requires amd-aiter >= {AITER_MIN_VERSION}, but "
+                f"{installed} is installed. The vendored struct layouts do not match "
+                "older releases and would corrupt arguments silently."
+            )
         raise ImportError(
-            "The 'aiter' package is required for the AITER backend. "
-            "Install it via:\n"
-            "  git clone --recursive https://github.com/ROCm/aiter.git\n"
-            "  cd aiter && python3 setup.py develop"
+            "The 'aiter' package is required for the AITER backend and is not "
+            f"installed. Install a wheel >= {AITER_MIN_VERSION}; see "
+            "docs/rocm/backends.md for the index and the pinned version. A source "
+            "build tracks master, whose C ABI does not match the structs vendored "
+            "here."
         )
 
 
 _aiter_auto_warned: set[tuple[torch.device, str]] = set()
+
+
+def _aiter_softcap_defect(
+    causal: bool,
+    logits_soft_cap: Optional[float],
+    head_dim: int,
+    kv_len: Optional[int],
+) -> bool:
+    """Would this call hit AITER's miscomputed soft cap?
+
+    A non-zero cap disables AITER's asm paths, leaving mha_varlen_fwd's CK
+    kernel, which applies the cap wrongly for causal head_dim=128 with
+    kv_len >= 512. Non-causal is exact.
+
+    kv_len=None disarms the check. Callers pass it either because they do not
+    know the length or because they know the call will not reach
+    mha_varlen_fwd -- the paged wrapper does the latter for a natively-paged
+    page size, and re-checks after the runtime probe in case it degrades.
+
+    Deliberately not version-gated: auto-expiring on an AITER newer than
+    _AITER_SOFTCAP_DEFECT_THROUGH would silently re-enable a wrong-answer path
+    on a nightly bump. Re-measure, then widen the constant by hand.
+    """
+    if not (causal and logits_soft_cap and logits_soft_cap > 0):
+        return False
+    return head_dim == 128 and kv_len is not None and kv_len >= 512
 
 
 def _auto_select_prefill_backend(
@@ -340,6 +393,9 @@ def _auto_select_prefill_backend(
     head_dim_vo: int,
     pos_encoding_mode: str = "NONE",
     op: str = "batch_prefill",
+    causal: bool = False,
+    logits_soft_cap: Optional[float] = None,
+    kv_len: Optional[int] = None,
 ) -> Tuple[str, Optional[str]]:
     """Return ``(backend, reason)``: 'aiter' when the GPU and call parameters satisfy
     AITER's constraints, else 'fa2' plus the reason AITER was declined.
@@ -377,6 +433,11 @@ def _auto_select_prefill_backend(
             reason = (
                 f"pos_encoding_mode={pos_encoding_mode!r} (AITER only supports NONE)"
             )
+        elif _aiter_softcap_defect(causal, logits_soft_cap, head_dim_qk, kv_len):
+            reason = (
+                f"logits_soft_cap={logits_soft_cap} with causal head_dim={head_dim_qk} "
+                "(AITER mha_varlen_fwd computes the soft cap incorrectly)"
+            )
 
     if reason is not None:
         key = (device, reason)
@@ -386,11 +447,27 @@ def _auto_select_prefill_backend(
         return "fa2", reason
 
     if not _aiter_ops_importable():
-        reason = (
-            "aiter package not installed "
-            "(see https://github.com/ROCm/aiter for install instructions)"
+        from .aiter_utils import (
+            AITER_MIN_VERSION,
+            _aiter_installed_version,
+            _aiter_version_supported,
         )
-        key = (device, "import_failed")
+
+        installed = _aiter_installed_version()
+        if installed is not None and not _aiter_version_supported():
+            reason = (
+                f"amd-aiter {installed} is below the {AITER_MIN_VERSION} ABI floor "
+                "(the vendored struct layouts do not match older releases)"
+            )
+        else:
+            reason = (
+                "aiter package not installed (see docs/rocm/backends.md for the "
+                "wheel index and pinned version)"
+            )
+        # Keyed on the reason, like the branch above: a constant key would let
+        # whichever condition fired first hide the other for the rest of the
+        # process, and "too old" and "not installed" want different actions.
+        key = (device, reason)
         if key not in _aiter_auto_warned:
             _aiter_auto_warned.add(key)
             logger.warning("auto backend falling back to fa2: %s", reason)
@@ -1505,6 +1582,8 @@ def single_prefill_with_kv_cache(
             scale_v = torch.ones(v.shape[1], dtype=torch.float32, device=q.device)
 
     resolved_from_auto = backend == "auto"
+    kv_len = k.shape[0] if kv_layout == "NHD" else k.shape[1]
+
     if backend == "auto":
         backend, _ = _auto_select_prefill_backend(
             q.device,
@@ -1516,15 +1595,32 @@ def single_prefill_with_kv_cache(
             head_dim_vo=v.shape[-1],
             pos_encoding_mode=pos_encoding_mode,
             op="single_prefill",
+            causal=causal,
+            logits_soft_cap=logits_soft_cap,
+            kv_len=kv_len,
         )
 
     if backend == "aiter":
         # Outside the probe on purpose: this raises ArchCapabilityError, which
         # gates known-bad toolchains and must never be demoted to a silent fa2.
         _require_aiter_runtime(q.device, "single_prefill")
+        # Hard constraints first: a caller in the defect region *and* on an
+        # unsupported layout should hear about the layout, which is the thing
+        # they control, not about a soft-cap defect they may not have hit.
         if pos_encoding_mode != "NONE":
             raise ValueError(
                 f"AITER backend does not support pos_encoding_mode={pos_encoding_mode!r}; "
+                "use backend='fa2' or backend='auto' instead."
+            )
+        if kv_layout != "NHD":
+            raise ValueError(
+                f"AITER backend only supports kv_layout='NHD'; got {kv_layout!r}. "
+                "use backend='fa2' or backend='auto' instead."
+            )
+        if _aiter_softcap_defect(causal, logits_soft_cap, q.shape[-1], kv_len):
+            raise ValueError(
+                "AITER miscomputes logits_soft_cap for causal head_dim=128 prefill "
+                f"with kv_len >= 512 (through amd-aiter {_AITER_SOFTCAP_DEFECT_THROUGH}); "
                 "use backend='fa2' or backend='auto' instead."
             )
         # logits_soft_cap > 0 forces the varlen .so (mha_fwd template has no _logits
@@ -2241,6 +2337,16 @@ class BatchPrefillWithPagedKVCacheWrapper:
         if self._jit_module is not None:
             self._cached_module = self._jit_module
         else:
+            # Only the flat-gather route carries the soft-cap defect; native
+            # paging uses mha_batch_prefill, which is exact. A page size outside
+            # the native set forces flat-gather, so that is the case we can rule
+            # out up front. When native paging is merely *claimed*, the run-time
+            # probe may still fall back to flat-gather -- see plan()'s
+            # use_native_paging. Shared by the auto route and the explicit-aiter
+            # guard below so the two cannot disagree about the same call.
+            softcap_kv_len = (
+                None if page_size in _aiter_native_page_sizes() else self._max_kv_len
+            )
             if self._backend == "auto":
                 self._backend, self._backend_fallback_reason = (
                     _auto_select_prefill_backend(
@@ -2253,7 +2359,18 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         head_dim_vo=head_dim_vo,
                         pos_encoding_mode=pos_encoding_mode,
                         op="batch_prefill",
+                        causal=causal,
+                        logits_soft_cap=logits_soft_cap,
+                        kv_len=softcap_kv_len,
                     )
+                )
+            if self._backend == "aiter" and _aiter_softcap_defect(
+                causal, logits_soft_cap, head_dim_qk, softcap_kv_len
+            ):
+                raise ValueError(
+                    "AITER miscomputes logits_soft_cap for causal head_dim=128 prefill "
+                    f"with kv_len >= 512 (through amd-aiter {_AITER_SOFTCAP_DEFECT_THROUGH}); "
+                    "use backend='fa2' or backend='auto' instead."
                 )
             if self._backend == "aiter" and pos_encoding_mode != "NONE":
                 raise ValueError(
@@ -2294,24 +2411,45 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         dev_idx,
                     )
                 if not use_native_paging:
-                    # The flat-gather route dispatches through
-                    # get_aiter_mha_varlen_fwd_handle, whose .so variant is keyed on
-                    # (dtype, causal, has_lse, has_logits_cap).  AITER pre-ships only
-                    # a subset of that family, so bootstrap the rest here rather than
-                    # let the C++ dlopen fail inside run().  The helper compiles both
-                    # has_lse variants because plan() can't know which one run() will
-                    # request; causal is fixed per plan() call.
+                    # The guard above disarmed itself because the page size looked
+                    # native; the probe just proved otherwise, so this call takes
+                    # flat-gather after all. Re-check against the real kv_len.
+                    softcap_now = softcap_kv_len is None and _aiter_softcap_defect(
+                        causal, logits_soft_cap, head_dim_qk, self._max_kv_len
+                    )
                     # Demoting after a graph capture would null the flat-gather
                     # buffers the captured graph still points at, so once they
                     # exist under capture the failure has to stay an exception.
-                    if resolved_from_auto and not (
+                    demotable = resolved_from_auto and not (
                         self.is_cuda_graph_enabled
                         and self._aiter_flat_gather_idx is not None
-                    ):
+                    )
+                    if softcap_now and not demotable:
+                        raise ValueError(
+                            "AITER miscomputes logits_soft_cap for causal head_dim=128 "
+                            f"prefill with kv_len >= 512 (through amd-aiter "
+                            f"{_AITER_SOFTCAP_DEFECT_THROUGH}); this page size fell back "
+                            "to the flat-gather kernel. Use backend='fa2'."
+                        )
+                    if softcap_now:
+                        reason = (
+                            "aiter native paging was unavailable for page_size="
+                            f"{page_size}, and the flat-gather kernel miscomputes "
+                            "logits_soft_cap for causal head_dim=128 with kv_len >= 512 "
+                            f"(through amd-aiter {_AITER_SOFTCAP_DEFECT_THROUGH})"
+                        )
+                        logger.warning("auto backend falling back to fa2: %s", reason)
+                    elif demotable:
                         reason = _aiter_batch_ragged_available(
                             q_data_type, has_logits, causal, head_dim_qk, dev_idx
                         )
                     else:
+                        # The flat-gather route dispatches through
+                        # get_aiter_mha_varlen_fwd_handle, whose .so variant is keyed
+                        # on (dtype, causal, has_lse, has_logits_cap).  AITER
+                        # pre-ships only a subset, so bootstrap the rest here rather
+                        # than let the C++ dlopen fail inside run(); both has_lse
+                        # variants, since plan() cannot know which run() will want.
                         _aiter_bootstrap_batch_ragged_prefill(
                             q_data_type,
                             has_logits,
@@ -3253,7 +3391,20 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                         head_dim_vo=head_dim_vo,
                         pos_encoding_mode=pos_encoding_mode,
                         op="batch_prefill",
+                        # Ragged always dispatches through mha_varlen_fwd, so it
+                        # carries the soft-cap defect exactly as single prefill does.
+                        causal=causal,
+                        logits_soft_cap=logits_soft_cap,
+                        kv_len=self._max_kv_len,
                     )
+                )
+            if self._backend == "aiter" and _aiter_softcap_defect(
+                causal, logits_soft_cap, head_dim_qk, self._max_kv_len
+            ):
+                raise ValueError(
+                    "AITER miscomputes logits_soft_cap for causal head_dim=128 prefill "
+                    f"with kv_len >= 512 (through amd-aiter {_AITER_SOFTCAP_DEFECT_THROUGH}); "
+                    "use backend='fa2' or backend='auto' instead."
                 )
             if self._backend == "aiter" and pos_encoding_mode != "NONE":
                 raise ValueError(

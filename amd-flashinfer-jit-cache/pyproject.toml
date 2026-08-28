@@ -1,7 +1,7 @@
 [build-system]
 # NOTE: torch is intentionally NOT listed here because ROCm users must install
 # torch from AMD's ROCm repository, not from PyPI. For example,
-#   pip install torch==2.7.1 --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/
+#   pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
 # See README.md for complete installation instructions.
 requires = ["setuptools>=80", "setuptools_scm>=8", "packaging>=24", "wheel", "ninja"]
 build-backend = "build_backend"
@@ -25,12 +25,13 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 # Runtime dependencies
 # NOTE: torch is intentionally NOT listed here because ROCm users must install
 # torch from AMD's ROCm repository, not from PyPI. For example,
-#   pip install torch==2.7.1 --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/
+#   pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
 # See README.md for complete installation instructions.
 dependencies = []
 

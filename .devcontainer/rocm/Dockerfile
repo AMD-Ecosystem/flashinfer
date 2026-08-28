@@ -1,16 +1,45 @@
-ARG ROCM_VERSION=7.2
+# ROCm development container for amd-flashinfer.
+#
+# The base image already provides ROCm, Python and a HIP build of PyTorch inside
+# a venv at /opt/venv, so this file adds only developer tooling and AITER.
+#
+# Two things that are NOT obvious and are load-bearing:
+#
+#  1. No conda/micromamba layer. Torch lives in the base image's interpreter, and
+#     a separate conda environment would shadow it with a torch-less Python.
+#     There is also no pip-installable torch for this ROCm release --
+#     repo.radeon.com/rocm/manylinux/rocm-rel-7.14/ returns 404 -- so the bundled
+#     torch is the only one available.
+#  2. Nothing may `import aiter` at build time. It runs rocminfo for arch
+#     detection *and* imports triton, which fails with
+#     "0 active drivers ([]). There should only be one." when no GPU is attached,
+#     and that has no env-var escape. Install it here; verify it at run time.
+ARG ROCM_VERSION=7.14
+ARG UBUNTU_VERSION=26.04
+ARG PY_VERSION=3.14
+ARG TORCH_VERSION=2.12.0
 
-FROM mambaorg/micromamba:2.1.1 AS micromamba
+# Header donor. The rocm/pytorch base is runtime-only: it carries the pip ROCm
+# SDK (_rocm_sdk_core) rather than /opt/rocm, and that SDK ships no math or
+# utility headers -- no thrust, rocPRIM, rocBLAS or hipBLASLt. torch 2.12's
+# complex.h needs thrust/complex.h, so the JIT cannot compile without them.
+FROM rocm/dev-ubuntu-${UBUNTU_VERSION}:${ROCM_VERSION}.0-full AS rocmdev
 
-FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete
-
+FROM rocm/pytorch:rocm${ROCM_VERSION}_ubuntu${UBUNTU_VERSION}_py${PY_VERSION}_pytorch_release_${TORCH_VERSION}
 ARG ROCM_VERSION
-ARG PY_VERSION=3.12
-ARG TORCH_VERSION=2.9.1
-ARG AITER_VERSION=0.1.10
-ARG AITER_ROCM_VERSION=7.1.1
+ARG PY_VERSION
 
-# Update package lists and install system dependencies
+# AITER is pinned to an exact build including the local version segment: this is
+# currently the only cp314 wheel published anywhere, and pip will not select a
+# local version from a loose specifier.
+ARG AITER_VERSION=0.1.16.post3.dev0+g620287969.d20260725
+ARG AITER_INDEX=https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/vllm-cdna/
+
+# Fail fast if the base image ever stops shipping a HIP-enabled torch.
+RUN python3 -c "import torch, sys; hip = torch.version.hip; print(f'torch {torch.__version__} (hip={hip})'); sys.exit('ERROR: installed torch has no ROCm/HIP build (hip is None)' if hip is None else 0)"
+
+# System dependencies. libstdc++-14-dev and clangd-19 are both still available on
+# Ubuntu 26.04, so these names carry over from the 24.04 image unchanged.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     clang-format \
     clangd-19 \
@@ -25,75 +54,92 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zsh \
     && rm -rf /var/lib/apt/lists/*
 
-# Create a non-root user
 ARG USERNAME=devuser
 ARG USER_UID=1003
 ARG USER_GID=$USER_UID
-ARG MAMBA_USER_ID=${USER_UID}
-ARG MAMBA_USER_GID=${USER_GID}
-ENV MAMBA_USER=$USERNAME
-ENV MAMBA_ROOT_PREFIX="/opt/conda"
-ENV MAMBA_EXE="/bin/micromamba"
 
-# Silence warning where the UID and GID are out of the usual range,
-# create a non-root user.
+# Ubuntu 26.04 ships a default `ubuntu` user at UID/GID 1000, which is the most
+# common host UID and what the README's $(id -u) yields -- so it has to go
+# *before* devuser is created, or groupadd fails with "GID '1000' already
+# exists" and the build dies here.
+RUN rm -rf /home/ubuntu && \
+    if grep -q '^ubuntu:x:1000:1000' /etc/passwd; then userdel -f -r ubuntu; fi
+
+# Silence the warning about out-of-range UID/GID, then create the user.
 RUN sed -i 's/^\(UID_MAX\s*\).*$/\11000000000/' /etc/login.defs && \
     sed -i 's/^\(GID_MAX\s*\).*$/\11000000000/' /etc/login.defs && \
     groupadd --gid $USER_GID $USERNAME && \
     useradd --uid $USER_UID --gid $USER_GID -m $USERNAME && \
     echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME && \
-    chmod 0440 /etc/sudoers.d/$USERNAME && \
-    usermod -a -G render $USERNAME
+    chmod 0440 /etc/sudoers.d/$USERNAME
+
+# The base image has a `video` group but no `render` group, while /dev/dri/render*
+# is render-owned on the hosts. Create it so the user can be a member; callers
+# must still pass the host's numeric render GID via --group-add, since the
+# in-image GID will not generally match the host's.
+RUN (getent group render >/dev/null || groupadd -r render) && \
+    usermod -a -G render,video $USERNAME
 
 RUN echo "set-option -g default-command \"/bin/bash -i\"" >> /home/$USERNAME/.tmux.conf
 
-# Remove default 'ubuntu' user (UID 1000) to prevent devcontainer permission conflicts
-RUN rm -rf /home/ubuntu && if grep ubuntu:x:1000:1000 /etc/passwd >/dev/null; then userdel -f -r ubuntu; fi
+# System python3.14 is PEP 668 externally-managed, so everything goes into the
+# base image's existing venv -- that is where torch already lives, and creating a
+# second one would hide it.
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="$VIRTUAL_ENV/bin:/usr/lib/llvm-19/bin:$PATH"
 
-# Adding micromamba functionality to an existing Docker image requires copying over needed files from the micromamba image
-# Refer: https://micromamba-docker.readthedocs.io/en/latest/advanced_usage.html
-COPY --from=micromamba "$MAMBA_EXE" "$MAMBA_EXE"
-COPY --from=micromamba /usr/local/bin/_activate_current_env.sh /usr/local/bin/_activate_current_env.sh
-COPY --from=micromamba /usr/local/bin/_dockerfile_shell.sh /usr/local/bin/_dockerfile_shell.sh
-COPY --from=micromamba /usr/local/bin/_entrypoint.sh /usr/local/bin/_entrypoint.sh
-COPY --from=micromamba /usr/local/bin/_dockerfile_initialize_user_accounts.sh /usr/local/bin/_dockerfile_initialize_user_accounts.sh
-COPY --from=micromamba /usr/local/bin/_dockerfile_setup_root_prefix.sh /usr/local/bin/_dockerfile_setup_root_prefix.sh
+# Close the three gaps between the pip ROCm SDK and a /opt/rocm install, without
+# which every JIT compile dies on `/opt/rocm/bin/amdclang++: not found`.
+ENV ROCM_SDK="/opt/venv/lib/python${PY_VERSION}/site-packages/_rocm_sdk_core"
+COPY --from=rocmdev /opt/rocm/core-${ROCM_VERSION}/include /opt/rocm-headers/include
 
-RUN /usr/local/bin/_dockerfile_initialize_user_accounts.sh && \
-    /usr/local/bin/_dockerfile_setup_root_prefix.sh
+#  1. Headers, from the donor stage above.
+ENV CPATH="/opt/rocm-headers/include${CPATH:+:$CPATH}"
+#  2. Link names: the SDK ships only versioned libs (libamdhip64.so.7), so
+#     -lamdhip64 cannot resolve without an unversioned symlink.
+#  3. Compiler name: flashinfer invokes $ROCM_HOME/bin/amdclang++, and the SDK
+#     ships bin/hipcc plus lib/llvm/bin/clang++ under a different name. The
+#     device bitcode also sits at lib/llvm/amdgcn rather than $ROCM_PATH/amdgcn.
+RUN set -eu; \
+    for so in "$ROCM_SDK"/lib/lib*.so.[0-9]*; do \
+        [ -e "$so" ] || continue; \
+        base="${so%%.so.*}.so"; [ -e "$base" ] || ln -s "$(basename "$so")" "$base"; \
+    done; \
+    ln -sf ../lib/llvm/bin/clang++ "$ROCM_SDK/bin/amdclang++"; \
+    ln -sf ../lib/llvm/bin/clang "$ROCM_SDK/bin/amdclang"; \
+    [ -e "$ROCM_SDK/amdgcn" ] || ln -s lib/llvm/amdgcn "$ROCM_SDK/amdgcn"
 
-# Switch to non-root user
+# Point at the SDK root, NOT at the grafted header tree: hipcc resolves its own
+# clang via $ROCM_PATH/lib/llvm/bin, which only exists under the SDK.
+ENV ROCM_PATH="$ROCM_SDK"
+ENV ROCM_HOME="$ROCM_SDK"
+# Appended rather than assigned so a future base image that sets these for
+# torch's own bundled ROCm libs is not clobbered. Today's base sets none of them.
+ENV LIBRARY_PATH="${LIBRARY_PATH:+$LIBRARY_PATH:}$ROCM_SDK/lib"
+ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$ROCM_SDK/lib"
+
+# setuptools and setuptools-scm are the in-tree backend's build requirements.
+# They must be in the image because the documented install passes
+# --no-build-isolation, which is itself required: isolation resolves torch from
+# PyPI and pulls a non-ROCm wheel.
+RUN pip install --no-cache-dir \
+        ninja \
+        "setuptools>=80" \
+        "setuptools-scm>=9.2" \
+        "packaging>=24" \
+        pre-commit \
+        numpy \
+        pytest pytest-cov pytest-xdist pytest-rerunfailures \
+        pybind11 \
+        ruff \
+        filelock && \
+    pip install --no-cache-dir "amd-aiter==${AITER_VERSION}" --extra-index-url "${AITER_INDEX}" && \
+    python3 -c "import importlib.metadata as m; print('amd-aiter', m.version('amd-aiter'))"
+
+# Editable installs write into the venv, so hand it to the dev user.
+RUN chown -R $USER_UID:$USER_GID $VIRTUAL_ENV
+
 USER $USERNAME
-# Set home directory to the user's home directory
 WORKDIR /home/$USERNAME
-
-# Set clangd path
-ENV PATH="/usr/lib/llvm-19/bin:$PATH"
-
-# Create the new micromamba environment
-ARG MAMBA_ENV_NAME=flashinfer-py${PY_VERSION}-torch${TORCH_VERSION}-rocm${ROCM_VERSION}
-ENV MAMBA_ENV_NAME=${MAMBA_ENV_NAME}
-
-RUN \
-    sed -i 's/^#\(force_color_prompt=yes\)/\1/' /home/$USERNAME/.bashrc && \
-    echo '' >> /home/$USERNAME/.bashrc && \
-    echo 'eval "$(micromamba shell hook --shell bash)"' >> /home/$USERNAME/.bashrc && \
-    echo "micromamba activate ${MAMBA_ENV_NAME}" >> /home/$USERNAME/.bashrc
-
-# Create a new micromamba env and install needed packages for flashinfer development.
-# torch uses -f/--find-links (not --index-url) because the radeon repo is a flat
-# wheel listing, not a PEP 503 simple index — with --index-url pip requests the
-# per-package path (.../torch/), which 404s, and the install fails with "No
-# matching distribution found". After installing, assert torch is a ROCm/HIP build
-# (torch.version.hip is not None) so the build fails fast if -f ever resolves a
-# PyPI CPU/CUDA wheel instead of the radeon ROCm wheel.
-RUN /bin/micromamba create -n ${MAMBA_ENV_NAME} python=${PY_VERSION} gtest gmock bash-completion -c conda-forge && \
-    /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir ninja build "setuptools>=80" "setuptools-scm>=9.2" "packaging>=24" pre-commit numpy pytest pytest-cov pytest-xdist pytest-rerunfailures pybind11 ruff && \
-    /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install --no-cache-dir torch==${TORCH_VERSION} -f https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_VERSION}/ && \
-    /bin/micromamba run -n ${MAMBA_ENV_NAME} python -c "import torch, sys; hip = torch.version.hip; print(f'torch {torch.__version__} (hip={hip})'); sys.exit('ERROR: installed torch has no ROCm/HIP build (hip is None)' if hip is None else 0)" && \
-    /bin/micromamba run -n ${MAMBA_ENV_NAME} pip install amd_aiter==${AITER_VERSION} --extra-index-url https://pypi.amd.com/rocm-${AITER_ROCM_VERSION}/simple
-SHELL ["/usr/local/bin/_dockerfile_shell.sh"]
-
-ENTRYPOINT ["/usr/local/bin/_entrypoint.sh"]
 
 CMD ["/bin/bash"]

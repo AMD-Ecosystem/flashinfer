@@ -4,11 +4,13 @@
 
 import functools
 import os
+from typing import Optional
 
 import torch
 
 from .arch_caps import (
     ArchCapabilityError,
+    aiter_fallback_backend,
     capability_available,
     normalize_arch,
     require_capability,
@@ -29,6 +31,60 @@ def is_aiter_supported(device: torch.device) -> bool:
     return arch in FLASHINFER_SUPPORTED_ROCM_ARCHS
 
 
+def _ensure_aiter_gpu_archs() -> None:
+    """Give AITER's JIT a GPU_ARCHS, since from 0.1.16 it requires one.
+
+    Unset reaches AITER's validator as ``['']`` and every JIT build asserts. Our
+    own shim build sets this for its own scope, but AITER's Python ops (decode,
+    paged-append, fused MoE) build outside it. Only fills a missing value, so an
+    operator-set GPU_ARCHS still wins.
+    """
+    if os.environ.get("GPU_ARCHS"):
+        return
+    # Imported lazily: flashinfer.jit pulls in the compilation context, and
+    # importing it at module scope here would be circular.
+    from .jit.aiter_source import resolve_aiter_build_arch
+
+    arch = resolve_aiter_build_arch()
+    if arch:
+        os.environ["GPU_ARCHS"] = arch
+
+
+# The vendored structs in include/flashinfer/attention/aiter/ follow the 0.1.16
+# layout. They travel by value through dlsym'd pointers, so an older AITER
+# mismatches offsets silently instead of failing to load -- hence a hard floor
+# rather than a warning.
+AITER_MIN_VERSION = "0.1.16"
+
+
+def _aiter_installed_version() -> Optional[str]:
+    """The installed amd-aiter version, or None when it is not installed."""
+    try:
+        import importlib.metadata as _md
+
+        return _md.version("amd-aiter")
+    except Exception:
+        return None
+
+
+def _aiter_version_supported() -> bool:
+    """True when amd-aiter is installed and new enough for our vendored ABI."""
+    installed = _aiter_installed_version()
+    if installed is None:
+        return False
+    try:
+        from packaging.version import Version
+
+        # Straight PEP 440 comparison, which already sorts the cases that matter:
+        # 0.1.16.post3.dev0+g<sha> (the nightly) is a dev build *of post3* and
+        # sorts above 0.1.16, while 0.1.16.dev0 is a pre-release of 0.1.16 and
+        # sorts below it. base_version would strip both segments and wrongly
+        # admit the latter.
+        return Version(installed) >= Version(AITER_MIN_VERSION)
+    except Exception:
+        return False
+
+
 @functools.lru_cache(maxsize=1)
 def _aiter_importable() -> bool:
     """True when the AITER packages needed for the C++ backends actually import.
@@ -36,15 +92,17 @@ def _aiter_importable() -> bool:
     Uses a real import (not ``find_spec``) so a broken or partially-installed AITER
     — where the spec exists but importing the compiled extension fails, e.g. missing
     ROCm deps — is reported as unavailable rather than routing ``auto`` into a path
-    that raises at build/load time.
+    that raises at build/load time. Too-old AITER counts as unavailable for the same
+    reason: ``auto`` must not route into an ABI it would corrupt.
     """
     try:
+        _ensure_aiter_gpu_archs()
         import aiter  # noqa: F401
         import aiter_meta  # noqa: F401
         from aiter.jit import core as _core  # noqa: F401
     except Exception:
         return False
-    return True
+    return _aiter_version_supported()
 
 
 def is_aiter_available(device: torch.device, op: str) -> bool:
@@ -82,10 +140,23 @@ def require_aiter(device: torch.device, op: str) -> None:
     """
     require_capability(device, op, "aiter")
     if not _aiter_importable():
+        # The usable fallback is per-op -- "fa2" for attention, "native" for the
+        # rest -- so take it from the table rather than naming one that this op
+        # does not accept.
+        alt = aiter_fallback_backend(op)
+        advice = f"use backend={alt!r}" if alt else "use a non-AITER backend"
+        installed = _aiter_installed_version()
+        if installed is not None and not _aiter_version_supported():
+            raise ValueError(
+                f"backend='aiter' for {op} requires amd-aiter >= {AITER_MIN_VERSION}, "
+                f"but {installed} is installed; the vendored struct layouts do not "
+                f"match older releases and would corrupt arguments silently. Upgrade "
+                f"amd-aiter or {advice}."
+            )
         raise ValueError(
             f"backend='aiter' for {op} requires the aiter package, which is not "
-            "installed or failed to import. Install it (see the AITER Support "
-            "section in the README) or use backend='native'."
+            f"installed or failed to import. Install it (see docs/rocm/backends.md) "
+            f"or {advice}."
         )
 
 

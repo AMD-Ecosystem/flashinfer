@@ -130,11 +130,13 @@ def _require_aiter_mla(device: torch.device) -> None:
     try:
         _aiter_mla()
     except ImportError as exc:
+        from .aiter_utils import AITER_MIN_VERSION
+
         raise ImportError(
-            "The 'aiter' package is required for MLA on ROCm. "
-            "Install it via:\n"
-            "  git clone --recursive https://github.com/ROCm/aiter.git\n"
-            "  cd aiter && python3 setup.py develop"
+            "The 'aiter' package is required for MLA on ROCm. Install a wheel >= "
+            f"{AITER_MIN_VERSION}; see docs/rocm/backends.md for the index and the "
+            "pinned version. A source build tracks master, whose C ABI does not "
+            "match the structs vendored here."
         ) from exc
 
 
