@@ -37,8 +37,13 @@ jobs:
         with:
           python-version: '3.11'
 
+      # `build` and the PEP 517 requires: test_build_backend.py builds a wheel
+      # with no isolation, and it is the only check that the wheel ships
+      # flashinfer/ alone. Without these it importorskips and proves nothing.
       - name: Install pytest
-        run: python -m pip install --upgrade pip pytest
+        run: |
+          python -m pip install --upgrade pip pytest build
+          python -m pip install 'setuptools>=80' 'setuptools-scm>=9.2' 'packaging>=24'
 
       # --noconftest: tests/conftest.py and tests/rocm_tests/conftest.py both
       # import torch and flashinfer at module scope, so collecting under
@@ -60,6 +65,20 @@ jobs:
       # keeps that from vanishing silently.
       - name: Coverage-ownership classification (no GPU, no torch)
         run: pytest -rs --noconftest tests/rocm_tests/test_amd_coverage.py
+
+      # The repo-maintenance scripts. Git and filesystem only, so this is the
+      # only lane that runs them -- tests/rocm_tests/ is otherwise GPU-gated.
+      # The matrix suite doubles as the README staleness check for anyone who
+      # committed with pre-commit disabled.
+      # -rs because test_build_backend.py importorskips `build`; without it a
+      # missing dependency reads as a pass rather than as an unrun wheel check.
+      - name: Repo-maintenance scripts (no GPU, no torch)
+        run: |
+          pytest -rs --noconftest \
+            tests/rocm_tests/test_upstream_canary.py \
+            tests/rocm_tests/test_git_describe_rocm.py \
+            tests/rocm_tests/test_gen_arch_support_matrix.py \
+            tests/rocm_tests/test_build_backend.py
 
       # The unit tests once stayed green while the tool itself raised on every
       # invocation, so CI has to actually invoke it. This also fails loudly if
