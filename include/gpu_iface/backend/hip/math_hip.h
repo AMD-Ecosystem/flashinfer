@@ -65,11 +65,9 @@ __forceinline__ __device__ float ptx_rcp(float x) { return __frcp_rn(x); }
 
 template <typename T>
 __forceinline__ __device__ T shfl_xor_sync(T x, int lane_mask) {
-  // CDNA3 wavefront width is 64. Use the full wavefront width so that
-  // cross-lane exchanges work correctly across all 64 lanes. All current
-  // callers (norm, decode, prefill, mla) use lane_mask values ≤ 16, so
-  // the exchange pattern is identical to a width=32 call for those callers,
-  // but this is the semantically correct value for CDNA3.
+  // Full 64-lane width, so no index clamping: srcLane = lane ^ lane_mask. A
+  // caller reducing over an aligned group of width W with masks < W therefore
+  // stays inside its own group, provided that index is in the low bits of tid.
   return __shfl_xor(x, lane_mask, 64);
 }
 
