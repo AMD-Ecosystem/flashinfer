@@ -7,6 +7,7 @@
 
 #include <exception>
 #include <sstream>
+#include <string>
 
 namespace flashinfer {
 

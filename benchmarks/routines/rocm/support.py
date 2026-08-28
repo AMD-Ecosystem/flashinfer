@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""ROCm-only helpers for the benchmark harness.
+"""Which backends the harness may run, on a ROCm device.
 
 Kept out of ``flashinfer_benchmark_utils.py`` so the upstream file carries only
 the branch that calls into here.
@@ -75,3 +75,21 @@ def rocm_supported_backends(routine, device):
     if capability_available(device, op, "hip"):
         return ["fa2", "auto"]
     return []
+
+
+def filter_backends_by_arch(backends, routine, device):
+    """ROCm counterpart of ``filter_backends_by_compute_capability``.
+
+    gfx942/gfx950 report compute capability 9.4/9.5, which match no entry in the
+    NVIDIA table -- routing them through it would strip every backend, fa2
+    included. Mutates and returns ``backends``, as the upstream function does.
+    """
+    supported = rocm_supported_backends(routine, device)
+    arch = get_device_arch(device)
+    for backend in [b for b in backends if b not in supported]:
+        backends.remove(backend)
+        print(
+            f"[WARNING] {backend} for routine {routine} is not supported on "
+            f"architecture {arch}. Skipping."
+        )
+    return backends

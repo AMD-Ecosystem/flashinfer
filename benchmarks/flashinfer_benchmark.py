@@ -8,33 +8,11 @@ from routines.flashinfer_benchmark_utils import (
     full_output_columns,
     output_column_dict,
 )
+from routines.rocm import add_timing_budget_args, load_routine_group
 
-# The gemm and moe routines pull in CUDA-only modules (flashinfer.autotuner,
-# flashinfer.fused_moe), so importing them unconditionally makes the whole runner
-# unimportable on ROCm -- including the attention routines, which do work there.
-_ROUTINE_IMPORT_ERRORS = {}
-
-try:
-    from routines.gemm import parse_gemm_args, run_gemm_test
-except Exception as exc:
-    parse_gemm_args = run_gemm_test = None
-    _ROUTINE_IMPORT_ERRORS["gemm"] = exc
-
-try:
-    from routines.moe import parse_moe_args, run_moe_test
-except Exception as exc:
-    parse_moe_args = run_moe_test = None
-    _ROUTINE_IMPORT_ERRORS["moe"] = exc
-
-
-def require_routine_group(group):
-    """Raise with the original import error if this routine group failed to import."""
-    exc = _ROUTINE_IMPORT_ERRORS.get(group)
-    if exc is not None:
-        raise RuntimeError(
-            f"The '{group}' benchmark routines are unavailable on this platform: "
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
+# A failure to import either is deferred to first use rather than taken here.
+gemm = load_routine_group("gemm")
+moe = load_routine_group("moe")
 
 
 def run_test(args):
@@ -49,11 +27,9 @@ def run_test(args):
     if args.routine in benchmark_apis["attention"]:
         res = run_attention_test(args)
     elif args.routine in benchmark_apis["gemm"]:
-        require_routine_group("gemm")
-        res = run_gemm_test(args)
+        res = gemm.run_gemm_test(args)
     elif args.routine in benchmark_apis["moe"]:
-        require_routine_group("moe")
-        res = run_moe_test(args)
+        res = moe.run_moe_test(args)
     else:
         raise ValueError(f"Unsupported routine: {args.routine}")
 
@@ -148,23 +124,7 @@ def parse_args(line=sys.argv[1:]):
         default=5,
         help="Number of dry runs.",
     )
-    parser.add_argument(
-        "--dry_run_time_ms",
-        type=int,
-        required=False,
-        default=None,
-        help="Warmup budget in ms. Overrides --dry_run_iters. On ROCm prefer this "
-        "over an iteration count: clock sampling intervals run to hundreds of ms, "
-        "so a handful of iterations warms up well short of steady-state clocks.",
-    )
-    parser.add_argument(
-        "--repeat_time_ms",
-        type=int,
-        required=False,
-        default=None,
-        help="Measurement budget in ms. Overrides --num_iters. Leaving this unset "
-        "keeps the sample count fixed, which makes std_time comparable run over run.",
-    )
+    add_timing_budget_args(parser)
     parser.add_argument(
         "--case_tag",
         type=str,
@@ -190,11 +150,9 @@ def parse_args(line=sys.argv[1:]):
     if args.routine in benchmark_apis["attention"]:
         args = parse_attention_args(line, parser)
     elif args.routine in benchmark_apis["gemm"]:
-        require_routine_group("gemm")
-        args = parse_gemm_args(line, parser)
+        args = gemm.parse_gemm_args(line, parser)
     elif args.routine in benchmark_apis["moe"]:
-        require_routine_group("moe")
-        args = parse_moe_args(line, parser)
+        args = moe.parse_moe_args(line, parser)
     else:
         raise ValueError(f"Unsupported routine: {args.routine}")
 

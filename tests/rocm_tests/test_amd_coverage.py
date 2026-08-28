@@ -16,6 +16,7 @@ import json
 import re
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1066,3 +1067,260 @@ class TestFailUnderAgainstNoPercentage:
         capsys.readouterr()
 
         assert code == ac.EXIT_OK
+
+
+def _score(
+    path="flashinfer/a.py",
+    tier="A",
+    owned=(1, 2, 3),
+    covered=(1, 2),
+    import_time=(),
+    excluded=0,
+    reason="",
+):
+    return ac.Score(
+        path=path,
+        tier=tier,
+        reason=reason,
+        owned=set(owned),
+        covered=set(covered),
+        import_time=set(import_time),
+        excluded=excluded,
+    )
+
+
+def _report(**overrides):
+    kwargs = dict(
+        repo=Path("/wt"),
+        base_desc="abc123 2026-01-01 base",
+        dirty=False,
+        arch="gfx942",
+        scores=[_score()],
+        excluded={},
+        unowned=[],
+        ruled={},
+        tests=None,
+        reach=None,
+        stale=[],
+        foreign=set(),
+        show_files=False,
+    )
+    kwargs.update(overrides)
+    return ac._report(**kwargs)
+
+
+class TestScoreArithmetic:
+    def test_import_time_lines_leave_both_sides_of_the_ratio(self):
+        s = _score(owned=(1, 2, 3, 4), covered=(1, 2, 3), import_time=(1, 2))
+        assert (s.exec_total, s.exec_covered) == (2, 1)
+
+    def test_a_file_that_is_all_import_has_no_execution_ratio(self):
+        s = _score(owned=(1, 2), covered=(1, 2), import_time=(1, 2))
+        assert (s.exec_total, s.exec_covered) == (0, 0)
+
+    def test_covered_lines_outside_owned_do_not_count(self):
+        """Tier B scores only our hunks; upstream's covered lines are not ours."""
+        assert _score(owned=(1, 2), covered=(1, 2, 99)).exec_covered == 2
+
+
+class TestReportHeadline:
+    def test_percentage_is_execution_only(self, capsys):
+        pct = _report(
+            scores=[_score(owned=(1, 2, 3, 4), covered=(1, 2, 3), import_time=(1,))]
+        )
+        out = capsys.readouterr().out
+
+        assert pct == pytest.approx(100 * 2 / 3)
+        assert "import-time lines (always covered)" in out
+        assert "total, conventional" in out
+
+    def test_no_executable_statements_yields_none_not_zero(self, capsys):
+        """0.0 would print n/a and still fail a --fail-under, on nothing measured."""
+        assert (
+            _report(scores=[_score(owned=(1,), covered=(1,), import_time=(1,))]) is None
+        )
+        assert "n/a" in capsys.readouterr().out
+
+    def test_without_a_baseline_the_headline_says_so(self, capsys):
+        _report(scores=[_score(import_time=())])
+        assert "no import-time baseline" in capsys.readouterr().out
+
+    def test_dirty_tree_is_flagged_in_the_header(self, capsys):
+        _report(dirty=True)
+        assert "(uncommitted changes)" in capsys.readouterr().out
+
+    def test_stale_sources_are_named_and_capped(self, capsys):
+        _report(stale=[f"flashinfer/f{i}.py" for i in range(5)])
+        out = capsys.readouterr().out
+
+        assert "STALE : 5 owned files changed after this run" in out
+        assert "+2 more" in out
+
+    def test_foreign_root_is_named_rather_than_folded_in(self, capsys):
+        _report(foreign={"/other/checkout"})
+        out = capsys.readouterr().out
+
+        assert "NOTE  : executed lines came from /other/checkout" in out
+        assert "set PYTHONPATH" in out
+
+    def test_skips_are_called_out_because_they_lower_the_number(self, capsys):
+        _report(tests={"passed": 10, "skipped": 3, "failed": 1, "total": 14})
+        out = capsys.readouterr().out
+
+        assert "tests : 10 passed, 3 skipped, 1 failed" in out
+        assert "skips lower the number" in out
+
+    def test_zero_skips_omits_the_caveat(self, capsys):
+        _report(tests={"passed": 10, "skipped": 0, "failed": 0, "total": 10})
+        assert "skips lower the number" not in capsys.readouterr().out
+
+    def test_per_file_table_is_opt_in(self, capsys):
+        _report(show_files=False)
+        assert "== per file ==" not in capsys.readouterr().out
+
+    def test_per_file_table_shows_the_excluded_count(self, capsys):
+        _report(scores=[_score(excluded=7)], show_files=True)
+        out = capsys.readouterr().out
+
+        assert "== per file ==" in out
+        assert "(7 excluded)" in out
+
+    def test_tier_subtotals_cover_every_tier_present(self, capsys):
+        _report(
+            scores=[
+                _score(path="flashinfer/a.py", tier="A"),
+                _score(path="flashinfer/b.py", tier="B"),
+                _score(path="flashinfer/c.py", tier="C"),
+            ]
+        )
+        out = capsys.readouterr().out
+
+        for tier in "ABC":
+            assert f"tier {tier}" in out
+
+    def test_not_counted_section_lists_rulings_and_exclusions(self, capsys):
+        _report(
+            scores=[_score(excluded=4)],
+            excluded={"flashinfer/_version.py": "generated"},
+            ruled={"flashinfer/fp4_quantization.py": "basename collision"},
+            unowned=["flashinfer/up.py"],
+        )
+        out = capsys.readouterr().out
+
+        assert "4 lines in 1 files excluded" in out
+        assert "flashinfer/_version.py -- generated" in out
+        assert "flashinfer/fp4_quantization.py -- basename collision" in out
+        assert "1 upstream files on the measured surface" in out
+
+    def test_reach_is_labelled_as_not_coverage(self, capsys):
+        _report(reach=(44, ["activation.cu", "flashinfer_ops.cu"]))
+        out = capsys.readouterr().out
+
+        assert "44 of 46 translation units" in out
+        assert "not a coverage figure" in out
+        assert "never loaded: activation.cu, flashinfer_ops.cu" in out
+
+    def test_a_long_unreached_list_is_truncated(self, capsys):
+        _report(reach=(0, [f"u{i}.cu" for i in range(10)]))
+        assert "+4 more" in capsys.readouterr().out
+
+
+class TestJitReach:
+    @pytest.fixture
+    def reach(self, tmp_path):
+        """An out-dir whose stamp matches its data file, plus two csrc units."""
+        repo, out_dir = tmp_path / "repo", tmp_path / "out"
+        (repo / ac._CSRC_DIR).mkdir(parents=True)
+        for name in ("a.cu", "b.cu", "notes.txt"):
+            (repo / ac._CSRC_DIR / name).write_text("// x\n")
+        out_dir.mkdir()
+        data = tmp_path / "data.coverage"
+        data.write_text("x")
+        ac._write_stamp(out_dir, data)
+        return repo, out_dir, data
+
+    def test_counts_units_loaded_across_shards(self, reach):
+        repo, out_dir, data = reach
+        (out_dir / "jit-reach.gw0.json").write_text(json.dumps(["a.cu"]))
+        (out_dir / "jit-reach.gw1.json").write_text(json.dumps(["a.cu", "b.cu"]))
+
+        assert ac._jit_reach(repo, out_dir, data) == (2, [])
+
+    def test_non_source_files_are_not_translation_units(self, reach):
+        repo, out_dir, data = reach
+        (out_dir / "jit-reach.gw0.json").write_text(json.dumps(["a.cu"]))
+
+        assert ac._jit_reach(repo, out_dir, data) == (1, ["b.cu"])
+
+    def test_a_corrupt_shard_is_skipped_not_fatal(self, reach):
+        repo, out_dir, data = reach
+        (out_dir / "jit-reach.gw0.json").write_text("{not json")
+        (out_dir / "jit-reach.gw1.json").write_text(json.dumps(["a.cu"]))
+
+        assert ac._jit_reach(repo, out_dir, data) == (1, ["b.cu"])
+
+    def test_a_stale_stamp_suppresses_the_figure(self, reach):
+        """Shards from an earlier run would otherwise be reported as this one's."""
+        repo, out_dir, data = reach
+        (out_dir / "jit-reach.gw0.json").write_text(json.dumps(["a.cu"]))
+        data.write_text("rewritten, so the stamp no longer matches")
+
+        assert ac._jit_reach(repo, out_dir, data) is None
+
+    def test_no_shards_means_no_figure(self, reach):
+        assert ac._jit_reach(*reach) is None
+
+    def test_no_translation_units_means_no_figure(self, reach, tmp_path):
+        repo, out_dir, data = reach
+        (out_dir / "jit-reach.gw0.json").write_text(json.dumps([]))
+        for unit in (repo / ac._CSRC_DIR).glob("*.cu"):
+            unit.unlink()
+
+        assert ac._jit_reach(repo, out_dir, data) is None
+
+
+class TestMain:
+    def _argv(self, monkeypatch, *args):
+        monkeypatch.setattr(sys, "argv", ["amd_coverage.py", *args])
+
+    def test_tool_error_exits_two_with_the_message_on_stderr(self, monkeypatch, capsys):
+        self._argv(monkeypatch)
+        monkeypatch.setattr(
+            ac, "run", lambda a: (_ for _ in ()).throw(ac.ToolError("boom"))
+        )
+
+        assert ac.main() == ac.EXIT_ERROR
+        assert "error: boom" in capsys.readouterr().err
+
+    def test_defaults_are_what_the_documented_recipe_assumes(self, monkeypatch):
+        self._argv(monkeypatch)
+        seen = {}
+        monkeypatch.setattr(ac, "run", lambda a: seen.setdefault("a", a) and ac.EXIT_OK)
+
+        ac.main()
+        args = seen["a"]
+
+        assert (args.run, args.show_files, args.no_baseline) == (False, False, False)
+        assert args.upstream_ref is None
+        assert (args.data_file, args.out_dir, args.json_out) == (None, None, None)
+        assert args.fail_under is None
+        assert args.pytest_args == []
+
+    def test_pytest_args_after_the_separator_are_collected(self, monkeypatch):
+        self._argv(monkeypatch, "--run", "--", "-n", "4", "-m", "not slow")
+        seen = {}
+        monkeypatch.setattr(ac, "run", lambda a: seen.setdefault("a", a) and ac.EXIT_OK)
+
+        ac.main()
+
+        assert seen["a"].run is True
+        assert seen["a"].pytest_args == ["-n", "4", "-m", "not slow"]
+
+    def test_fail_under_is_a_float(self, monkeypatch):
+        self._argv(monkeypatch, "--fail-under", "90.5")
+        seen = {}
+        monkeypatch.setattr(ac, "run", lambda a: seen.setdefault("a", a) and ac.EXIT_OK)
+
+        ac.main()
+
+        assert seen["a"].fail_under == pytest.approx(90.5)

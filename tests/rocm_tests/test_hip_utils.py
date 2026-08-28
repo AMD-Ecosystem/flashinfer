@@ -9,6 +9,7 @@ Covers every public function using unittest.mock so that no real ROCm
 installation, GPU hardware, or external tools are required.
 """
 
+import contextlib
 import subprocess
 import warnings
 from unittest.mock import MagicMock, patch
@@ -758,3 +759,225 @@ class TestFlashinferSupportedRocmArchs:
     def test_all_entries_start_with_gfx(self):
         for arch in FLASHINFER_SUPPORTED_ROCM_ARCHS:
             assert arch.startswith("gfx"), f"Unexpected arch: {arch}"
+
+
+def _completed(stdout="", returncode=0):
+    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout)
+
+
+class TestRocmVersionProbes:
+    """Each probe returns a version or None; none may raise or hang the build."""
+
+    def test_info_file_reports_the_first_three_components(self, tmp_path):
+        info = tmp_path / ".info"
+        info.mkdir()
+        # Four dot-separated fields: a three-field input leaves the [:3] slice
+        # a no-op, so it would not pin the truncation this test is named for.
+        (info / "version").write_text("7.2.0.60002-42\n")
+        with patch.object(hip_utils, "get_rocm_home", return_value=str(tmp_path)):
+            assert hip_utils.get_system_rocm_version_from_info_file() == "7.2.0"
+
+    def test_missing_info_file_is_not_an_error(self, tmp_path):
+        with patch.object(hip_utils, "get_rocm_home", return_value=str(tmp_path)):
+            assert hip_utils.get_system_rocm_version_from_info_file() is None
+
+    def test_amd_smi_version_is_parsed_out_of_the_banner(self):
+        with patch.object(
+            subprocess, "run", return_value=_completed("ROCm version: 7.1.0\n")
+        ):
+            assert hip_utils.get_system_rocm_version_from_amd_smi() == "7.1.0"
+
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            _completed("ROCm version: 7.1.0\n", returncode=1),
+            _completed("no version here\n"),
+        ],
+    )
+    def test_amd_smi_failure_or_unparsable_output_yields_none(self, outcome):
+        with patch.object(subprocess, "run", return_value=outcome):
+            assert hip_utils.get_system_rocm_version_from_amd_smi() is None
+
+    @pytest.mark.parametrize(
+        "raised", [FileNotFoundError, subprocess.TimeoutExpired("amd-smi", 5)]
+    )
+    def test_amd_smi_absent_or_hung_yields_none(self, raised):
+        with patch.object(subprocess, "run", side_effect=raised):
+            assert hip_utils.get_system_rocm_version_from_amd_smi() is None
+
+    def test_dpkg_version_is_read_from_the_rocm_core_row_only(self):
+        """dpkg -l prints a header and every matched package, so the version has
+        to be anchored to rocm-core rather than to the first triple on the page."""
+        listing = (
+            "||/ Name        Version      Architecture Description\n"
+            "+++-===========-============-============-==========\n"
+            "ii  libfoo      1.2.3-1      amd64        unrelated\n"
+            "ii  rocm-core   7.2.0-1      amd64        ROCm core\n"
+        )
+        with patch.object(subprocess, "run", return_value=_completed(listing)):
+            assert hip_utils.get_system_rocm_version_from_dpkg() == "7.2.0"
+
+    def test_dpkg_absent_yields_none(self):
+        with patch.object(subprocess, "run", side_effect=FileNotFoundError):
+            assert hip_utils.get_system_rocm_version_from_dpkg() is None
+
+    def test_dpkg_without_the_package_yields_none(self):
+        with patch.object(subprocess, "run", return_value=_completed("", returncode=1)):
+            assert hip_utils.get_system_rocm_version_from_dpkg() is None
+
+
+def _named_probe(name, value):
+    """A stand-in probe carrying a real __name__; the ladder prints it."""
+    probe = MagicMock(return_value=value)
+    probe.__name__ = name
+    return probe
+
+
+class TestRocmVersionLadder:
+    def test_therock_build_asks_hipconfig_and_nothing_else(self):
+        with (
+            patch.object(hip_utils, "is_therock_build", return_value=True),
+            patch.object(
+                hip_utils,
+                "get_system_rocm_version_from_hipconfig",
+                return_value="7.9.0",
+            ) as hipconfig,
+            patch.object(
+                hip_utils, "get_system_rocm_version_from_info_file"
+            ) as info_file,
+        ):
+            assert hip_utils.get_system_rocm_version() == "7.9.0"
+
+        hipconfig.assert_called_once()
+        info_file.assert_not_called()
+
+    def test_the_first_probe_that_answers_wins(self, capsys):
+        with (
+            patch.object(hip_utils, "is_therock_build", return_value=False),
+            patch.object(
+                hip_utils,
+                "get_system_rocm_version_from_info_file",
+                return_value="7.2.0",
+            ),
+            patch.object(hip_utils, "get_system_rocm_version_from_amd_smi") as amd_smi,
+        ):
+            assert hip_utils.get_system_rocm_version() == "7.2.0"
+
+        amd_smi.assert_not_called()
+        assert "Trying next method" not in capsys.readouterr().out
+
+    def test_a_silent_probe_names_itself_and_falls_through(self, capsys):
+        with (
+            patch.object(hip_utils, "is_therock_build", return_value=False),
+            patch.object(
+                hip_utils,
+                "get_system_rocm_version_from_info_file",
+                _named_probe("get_system_rocm_version_from_info_file", None),
+            ),
+            patch.object(
+                hip_utils,
+                "get_system_rocm_version_from_amd_smi",
+                _named_probe("get_system_rocm_version_from_amd_smi", "7.1.0"),
+            ),
+        ):
+            assert hip_utils.get_system_rocm_version() == "7.1.0"
+
+        assert "get_system_rocm_version_from_info_file" in capsys.readouterr().out
+
+    def test_all_probes_silent_yields_none(self):
+        names = (
+            "get_system_rocm_version_from_info_file",
+            "get_system_rocm_version_from_amd_smi",
+            "get_system_rocm_version_from_dpkg",
+            "get_system_rocm_version_from_hipconfig",
+        )
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                patch.object(hip_utils, "is_therock_build", return_value=False)
+            )
+            for name in names:
+                stack.enter_context(
+                    patch.object(hip_utils, name, _named_probe(name, None))
+                )
+            assert hip_utils.get_system_rocm_version() is None
+
+
+def _vram_json(**cards):
+    import json
+
+    return json.dumps(
+        {f"card{i}": {"VRAM Total Memory (B)": str(v)} for i, v in cards.items()}
+    )
+
+
+@pytest.fixture
+def physical_cards():
+    """Call get_physical_card_device_indices uncached, with a fixed device list."""
+    hip_utils.get_physical_card_device_indices.cache_clear()
+
+    def _call(supported, run_result=None, run_error=None):
+        kwargs = (
+            {"side_effect": run_error} if run_error else {"return_value": run_result}
+        )
+        with (
+            patch.object(
+                hip_utils, "get_supported_device_indices", return_value=supported
+            ),
+            patch.object(subprocess, "run", **kwargs),
+        ):
+            hip_utils.get_physical_card_device_indices.cache_clear()
+            return hip_utils.get_physical_card_device_indices()
+
+    yield _call
+    hip_utils.get_physical_card_device_indices.cache_clear()
+
+
+class TestPhysicalCardIndices:
+    """CPX splits one card into several devices; allocating on each concurrently
+    exhausts the shared VRAM, so callers need one index per physical card."""
+
+    def test_no_supported_devices_is_empty(self, physical_cards):
+        assert physical_cards(()) == ()
+
+    def test_identical_vram_keeps_every_device(self, physical_cards):
+        result = physical_cards((0, 1), _completed(_vram_json(**{"0": 200, "1": 200})))
+        assert result == (0, 1)
+
+    def test_cpx_partitions_collapse_to_the_full_capacity_device(self, physical_cards):
+        # card0 reports the whole card; card1 and card2 are its partitions.
+        result = physical_cards(
+            (0, 1, 2), _completed(_vram_json(**{"0": 200, "1": 50, "2": 50}))
+        )
+        assert result == (0,)
+
+    @pytest.mark.parametrize(
+        "run_result, run_error",
+        [
+            (_completed("", returncode=1), None),
+            (_completed("not json"), None),
+            (None, FileNotFoundError),
+            (None, subprocess.TimeoutExpired("rocm-smi", 10)),
+        ],
+    )
+    def test_unusable_rocm_smi_falls_back_to_the_supported_list(
+        self, physical_cards, run_result, run_error
+    ):
+        assert physical_cards((0, 1), run_result, run_error) == (0, 1)
+
+    def test_unparsable_card_entries_are_skipped(self, physical_cards):
+        import json
+
+        payload = json.dumps(
+            {
+                "card0": {"VRAM Total Memory (B)": "200"},
+                "cardX": {"VRAM Total Memory (B)": "200"},
+                "card1": {"no such key": "1"},
+                "system": {"VRAM Total Memory (B)": "999"},
+            }
+        )
+        # Device 1 reported nothing readable, so it is dropped rather than
+        # assumed to be a full card.
+        assert physical_cards((0, 1), _completed(payload)) == (0,)
+
+    def test_no_vram_reported_for_any_supported_device_falls_back(self, physical_cards):
+        assert physical_cards((3, 4), _completed(_vram_json(**{"0": 200}))) == (3, 4)
