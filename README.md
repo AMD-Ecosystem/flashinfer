@@ -188,12 +188,15 @@ matching `tests/rocm_tests/test_*_hip.py`; `single_decode` is exercised
 from the batch-decode, sliding-window, and logits-cap files, and
 `quantization` by `tests/utils/test_quantization.py`.
 
-**Soft-capped causal prefill does not use AITER.** AITER miscomputes
-`logits_soft_cap` for causal prefill with `head_dim=128` and `kv_len >= 512`
-(through amd-aiter 0.1.21), so `backend="auto"` serves those calls with `fa2`
-and `backend="aiter"` raises rather than returning wrong numbers. Every other
-soft-cap shape — non-causal, other head dims, shorter contexts — still goes to
-AITER.
+**Soft-capped causal prefill avoids one AITER kernel.** AITER's
+`mha_varlen_fwd` miscomputes `logits_soft_cap` for causal prefill with
+`head_dim=128` and `kv_len >= 512` (through amd-aiter 0.1.21). Single and
+ragged prefill always dispatch through it, so `backend="auto"` serves those
+calls with `fa2` and `backend="aiter"` raises rather than returning wrong
+numbers. Paged prefill keeps using AITER when the page size is native, since
+that route takes `mha_batch_prefill`, which is exact — it falls back only if
+the run-time probe demotes the call to a flat gather. Every other soft-cap
+shape — non-causal, other head dims, shorter contexts — is unaffected.
 
 ## `torch.compile`
 
