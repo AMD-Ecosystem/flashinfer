@@ -103,22 +103,7 @@ def _plan_with_custom_mask(
 
 
 def _packbits(mask_flat, bitorder="little"):
-    """Pack a boolean tensor into uint8, with fallback for broken JIT on ROCm
-    <= 0.2.5 where cub/cub.cuh is missing.
-    """
-    try:
-        return flashinfer.quantization.packbits(mask_flat, bitorder=bitorder)
-    except (RuntimeError, ImportError):
-        x = mask_flat.to(torch.uint8)
-        pad = (8 - x.shape[0] % 8) % 8
-        if pad:
-            x = torch.cat([x, torch.zeros(pad, dtype=torch.uint8, device=x.device)])
-        x = x.reshape(-1, 8)
-        if bitorder == "big":
-            shifts = torch.arange(7, -1, -1, device=x.device, dtype=torch.uint8)
-        else:
-            shifts = torch.arange(0, 8, device=x.device, dtype=torch.uint8)
-        return (x << shifts).sum(dim=1, dtype=torch.uint8)
+    return flashinfer.quantization.packbits(mask_flat, bitorder=bitorder)
 
 
 # ---------------------------------------------------------------------------

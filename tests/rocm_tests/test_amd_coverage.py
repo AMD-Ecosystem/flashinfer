@@ -1279,6 +1279,29 @@ class TestJitReach:
         assert ac._jit_reach(repo, out_dir, data) is None
 
 
+class TestJsonOutAnchoring:
+    def test_a_relative_json_out_lands_under_the_repo_root(self, tmp_path):
+        """The documented refresh writes docs/rocm/coverage-gfx942.json; a
+        cwd-relative path would put it under the caller's directory instead."""
+        repo = tmp_path / "repo"
+        (repo / "sub").mkdir(parents=True)
+
+        def _anchored(value, default):
+            if not value:
+                return default
+            given = Path(value)
+            return given if given.is_absolute() else repo / given
+
+        assert _anchored("docs/rocm/cov.json", repo) == repo / "docs/rocm/cov.json"
+        assert _anchored(str(tmp_path / "abs.json"), repo) == tmp_path / "abs.json"
+
+    def test_the_tool_anchors_json_out_the_same_way_as_out_dir(self):
+        """Guards the asymmetry this fixed: json_out used to bypass _anchored."""
+        source = (_REPO_ROOT / "scripts" / "amd_coverage.py").read_text()
+        assert "json_out = _anchored(args.json_out, repo)" in source
+        assert source.count("_anchored(") >= 4
+
+
 class TestMain:
     def _argv(self, monkeypatch, *args):
         monkeypatch.setattr(sys, "argv", ["amd_coverage.py", *args])
