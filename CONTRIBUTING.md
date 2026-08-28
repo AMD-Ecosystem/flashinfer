@@ -131,7 +131,7 @@ python3 scripts/amd_coverage.py                           # re-score an existing
 
 **What gets counted.** Files we added are scored whole. Upstream files we merely edited are scored **only on the lines our diff touched**, so upstream's untested code neither flatters nor penalises the number. A third tier covers files with a zero-line Python diff whose implementation is ours anyway through the `FLASHINFER_CSRC_DIR` redirect — `sampling.py` and friends — which no diff can discover; they are declared in `scripts/coverage_ownership.toml`, one entry per file with a reason.
 
-**What is deliberately left out, and why the report says so.** Lines inside `if IS_CUDA:` are excluded and counted in the output: the port re-indented upstream code under those guards, so git attributes it to us even though no ROCm box can execute it — in `flashinfer/jit/env.py` that is about half the owned lines. Lines that run at `import flashinfer` are reported as their own bucket rather than in the headline, because `tests/conftest.py` imports the package at collection and would otherwise credit every module-level statement before a test body runs. C++ under `csrc_rocm/` is JIT-compiled and has no line data at all; instead the report counts how many of its translation units a run actually built and loaded, labelled as reach, not coverage.
+**What is deliberately left out, and why the report says so.** Lines inside `if IS_CUDA:` are excluded and counted in the output: the port re-indented upstream code under those guards, so git attributes it to us even though no ROCm box can execute it — in `flashinfer/jit/env.py` that is about half the owned lines. Lines that run at `import flashinfer` are reported as their own bucket rather than in the headline, because `tests/conftest.py` imports the package at collection and would otherwise credit every module-level statement before a test body runs. C++ under `flashinfer/csrc/rocm/` is JIT-compiled and has no line data at all; instead the report counts how many of its translation units a run actually built and loaded, labelled as reach, not coverage.
 
 **The last measured run is committed** at [`docs/rocm/coverage-gfx942.json`](docs/rocm/coverage-gfx942.json), so a change that drops coverage shows up as a reviewable diff rather than going unnoticed until someone re-runs the suite by hand (about 75 minutes under `--cov` instrumentation, against the ~20 min in the table above uninstrumented). Refresh it in the same commit as any change that moves the number, and before each `+amd.N` tag, by adding `--json-out docs/rocm/coverage-gfx942.json` to the invocation above; relative paths are anchored to the repository root, so it does not matter where you run it from. There is no automated gate — a stale payload is invisible, and the artifact records no HEAD sha to check it against, so this is a convention rather than an enforcement.
 
@@ -152,7 +152,7 @@ flashinfer/
 │   └── gpu_iface/backend/hip/  # HIP intrinsics behind a common header surface
 ├── csrc/                     # upstream CUDA op registration (PyTorch bindings)
 ├── flashinfer/
-│   ├── csrc_rocm/            # HIP op registration (PyTorch bindings) — the ROCm analog of csrc/
+│   ├── csrc/rocm/            # HIP op registration (PyTorch bindings) — the ROCm analog of csrc/
 │   ├── jit/                  # Python JIT compilation infra (cpp_ext_hip.py is the HIP entry)
 │   └── *.py                  # Python user-facing API (e.g. attention.py, mla_rocm.py)
 ├── tests/rocm_tests/         # HIP test suite (test_*_hip.py)
@@ -162,14 +162,14 @@ flashinfer/
 
 **Framework separation.** `include/` files must remain framework-agnostic
 — no PyTorch headers, raw pointers only. PyTorch tensor handling for HIP
-ops lives in `flashinfer/csrc_rocm/`. Violating this causes subtle build
+ops lives in `flashinfer/csrc/rocm/`. Violating this causes subtle build
 failures because the same headers are pulled into the JIT compilation
 pipeline that has no PyTorch on its include path.
 
-**`csrc/` vs `flashinfer/csrc_rocm/`.** `csrc/` is the upstream CUDA op
+**`csrc/` vs `flashinfer/csrc/rocm/`.** `csrc/` is the upstream CUDA op
 registration tree — keep it in sync with upstream where possible to
 reduce merge conflicts. New HIP-specific op bindings go in
-`flashinfer/csrc_rocm/`, with a `_hip` or `_aiter` suffix when the file
+`flashinfer/csrc/rocm/`, with a `_hip` or `_aiter` suffix when the file
 routes to a HIP-specific code path or to AITER.
 
 **`include/gpu_iface/`.** A common header surface (`math_ops.hpp`,
@@ -195,7 +195,7 @@ might plausibly create.
 **So: add files, don't edit them.** Concretely, prefer in this order:
 
 1. **Source-path redirect.** `FLASHINFER_CSRC_DIR` already points at
-   `flashinfer/csrc_rocm/` on ROCm (see `flashinfer/jit/env.py` and
+   `flashinfer/csrc/rocm/` on ROCm (see `flashinfer/jit/env.py` and
    `flashinfer/get_include_paths.py`), so a shared JIT generator naming
    `sampling.cu` picks up the HIP source with **zero Python diff**. This is why
    `flashinfer/sampling.py` and `flashinfer/quantization.py` contain no HIP
@@ -244,7 +244,7 @@ state; what matters is that your change does not lengthen the list.
 1. **Kernel implementation** — framework-agnostic header(s) in
    `include/flashinfer/`, using `gpu_iface/` for any CUDA/HIP-divergent
    intrinsic.
-2. **PyTorch binding** — register the op in `flashinfer/csrc_rocm/`.
+2. **PyTorch binding** — register the op in `flashinfer/csrc/rocm/`.
    The only layer that may include Torch headers.
 3. **JIT generator** — add the op's JIT spec in `flashinfer/jit/*.py`.
 4. **Python interface** — expose the user-facing API in `flashinfer/*.py`.

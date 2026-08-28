@@ -3,7 +3,7 @@
 """
 Shared plumbing for FlashInfer's C++-level AITER backends (ROCm).
 
-FlashInfer wraps AITER kernels by compiling a small ``csrc_rocm/*_aiter.cu`` shim
+FlashInfer wraps AITER kernels by compiling a small ``csrc/rocm/*_aiter.cu`` shim
 that calls AITER's C++ entry point directly and links the symbol-visible AITER
 ``.so``. Prefer ``#include``-ing AITER's real header, so a signature change is a
 compile error rather than a load-time ``undefined symbol``. Fall back to a

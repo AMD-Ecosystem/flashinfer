@@ -55,7 +55,7 @@ though no ROCm box executes it. Detection is AST-based and matches only a bare
 `IS_CUDA` test; a compound condition stays in the denominator rather than being
 dropped on a guess.
 
-**`csrc_rocm` reach is not coverage.** JIT-built HIP has no line data. The
+**`csrc/rocm` reach is not coverage.** JIT-built HIP has no line data. The
 report says how many of its translation units a run built and loaded, via the
 `tests/jit_reach_plugin.py` hook on `JitSpec.load`. Do not quote it as a
 percentage or add it to the Python number.

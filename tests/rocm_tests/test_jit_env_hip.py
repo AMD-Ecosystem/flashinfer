@@ -110,7 +110,7 @@ def test_nvshmem_helpers_stay_absent_on_rocm():
 
     jit/comm.py imports fine on ROCm, so with these defined the failure moves
     to an absent nvidia.nvshmem -- or, with NVSHMEM_* set, to a build against
-    flashinfer/csrc_rocm/nvshmem_binding.cu, which does not exist.
+    flashinfer/csrc/rocm/nvshmem_binding.cu, which does not exist.
     """
     from flashinfer.jit import comm as jit_comm
     from flashinfer.jit import env as e

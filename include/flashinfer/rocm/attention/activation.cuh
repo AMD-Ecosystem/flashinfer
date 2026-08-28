@@ -22,7 +22,7 @@ namespace activation {
 // across blocks_per_row blocks on gridDim.y until the total block count covers
 // the CU array. For large num_tokens this resolves to blocks_per_row == 1, i.e.
 // the original one-block-per-token launch. Single definition shared by the AOT
-// launcher (flashinfer/csrc_rocm/activation.cu) and the JIT template
+// launcher (flashinfer/csrc/rocm/activation.cu) and the JIT template
 // (flashinfer/jit/activation.py) so the two paths cannot drift.
 inline void act_and_mul_launch_dims(int d, int64_t num_tokens, uint32_t vec_size, int dev_id,
                                     dim3& grid_dim, dim3& block_dim) {

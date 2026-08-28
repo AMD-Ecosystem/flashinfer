@@ -28,9 +28,9 @@ include NOTICE
 include README.md
 recursive-include licenses *.txt
 
-# csrc_rocm is declared as package-data, but graft it explicitly so the sdist is
+# csrc/rocm is declared as package-data, but graft it explicitly so the sdist is
 # self-sufficient regardless of setuptools' package-data-in-sdist behavior.
-recursive-include flashinfer/csrc_rocm *.cu *.cc *.h *.jinja
+recursive-include flashinfer/csrc/rocm *.cu *.cc *.h *.jinja
 
 # setuptools-scm's file finder adds every git-tracked file to the sdist, so
 # development and CI machinery has to be pruned explicitly or it ships in the
