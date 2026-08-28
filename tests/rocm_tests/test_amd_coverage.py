@@ -11,7 +11,6 @@ collection still pulls in the suite's torch-importing conftest, so CI runs this
 file with ``--noconftest`` (see ``.github/workflows/arch-caps-conformance.yml``).
 """
 
-import contextlib
 import importlib.util
 import json
 import re
@@ -1296,19 +1295,16 @@ class TestJsonOutAnchoring:
         assert _anchored("docs/rocm/cov.json", repo) == repo / "docs/rocm/cov.json"
         assert _anchored(str(tmp_path / "abs.json"), repo) == tmp_path / "abs.json"
 
-    def test_an_absolute_json_out_outside_the_repo_still_reports(self, tmp_path):
-        """--json-out accepts a path outside the repo, so the success message
-        must not be the thing that fails the run."""
-        outside = tmp_path / "cov.json"
-        with contextlib.suppress(ValueError):
-            outside = outside.relative_to(Path("/nonexistent/repo"))
-        assert str(outside)
-
-    def test_the_tool_anchors_json_out_the_same_way_as_out_dir(self):
-        """Guards the asymmetry this fixed: json_out used to bypass _anchored."""
+    def test_the_tool_anchors_json_out_and_tolerates_an_outside_path(self):
+        """Two regressions this pins, neither reachable without a scored run:
+        json_out used to bypass _anchored, and relative_to() then raised for the
+        absolute out-of-repo path _anchored explicitly allows."""
         source = (_REPO_ROOT / "scripts" / "amd_coverage.py").read_text()
         assert "json_out = _anchored(args.json_out, repo)" in source
         assert source.count("_anchored(") >= 4
+        guard = source[source.index("json_out = _anchored") :]
+        guard = guard[: guard.index('print(f"wrote')]
+        assert "contextlib.suppress(ValueError)" in guard
 
 
 class TestMain:
