@@ -446,10 +446,23 @@ def _auto_select_prefill_backend(
         return "fa2", reason
 
     if not _aiter_ops_importable():
-        reason = (
-            "aiter package not installed "
-            "(see https://github.com/ROCm/aiter for install instructions)"
+        from .aiter_utils import (
+            AITER_MIN_VERSION,
+            _aiter_installed_version,
+            _aiter_version_supported,
         )
+
+        installed = _aiter_installed_version()
+        if installed is not None and not _aiter_version_supported():
+            reason = (
+                f"amd-aiter {installed} is below the {AITER_MIN_VERSION} ABI floor "
+                "(the vendored struct layouts do not match older releases)"
+            )
+        else:
+            reason = (
+                "aiter package not installed "
+                "(see https://github.com/ROCm/aiter for install instructions)"
+            )
         key = (device, "import_failed")
         if key not in _aiter_auto_warned:
             _aiter_auto_warned.add(key)
