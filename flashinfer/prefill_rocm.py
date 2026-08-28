@@ -331,6 +331,19 @@ def _require_aiter_runtime(device: torch.device, op: str = "batch_prefill") -> N
     """
     require_capability(device, op, "aiter")
     if not _aiter_ops_importable():
+        from .aiter_utils import (
+            AITER_MIN_VERSION,
+            _aiter_installed_version,
+            _aiter_version_supported,
+        )
+
+        installed = _aiter_installed_version()
+        if installed is not None and not _aiter_version_supported():
+            raise ImportError(
+                f"The AITER backend requires amd-aiter >= {AITER_MIN_VERSION}, but "
+                f"{installed} is installed. The vendored struct layouts do not match "
+                "older releases and would corrupt arguments silently."
+            )
         raise ImportError(
             "The 'aiter' package is required for the AITER backend. "
             "Install it via:\n"
