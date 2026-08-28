@@ -459,7 +459,8 @@ class TestValidateFlashinferRocmArch:
         assert flags == ["--offload-arch=gfx942"]
         assert arch_set == {"gfx942"}
 
-    def test_pytorch_validation_passes_when_all_flags_present(self):
+    def test_pytorch_validation_passes_when_all_flags_present(self, monkeypatch):
+        monkeypatch.setenv("PYTORCH_ROCM_ARCH", "gfx942;gfx950")
         torch_cpp_ext = MagicMock()
         torch_cpp_ext._get_rocm_arch_flags.return_value = [
             "--offload-arch=gfx942",
@@ -471,16 +472,42 @@ class TestValidateFlashinferRocmArch:
             )
         assert flags == ["--offload-arch=gfx942"]
 
-    def test_pytorch_validation_raises_when_flag_missing(self):
+    def test_pytorch_validation_raises_when_flag_missing(self, monkeypatch):
+        monkeypatch.setenv("PYTORCH_ROCM_ARCH", "gfx950")
         torch_cpp_ext = MagicMock()
         torch_cpp_ext._get_rocm_arch_flags.return_value = ["--offload-arch=gfx950"]
         with (
             self._patch_validate_rocm_arch("gfx942"),
-            pytest.raises(RuntimeError, match="PyTorch does not support"),
+            pytest.raises(RuntimeError, match="PYTORCH_ROCM_ARCH excludes"),
         ):
             validate_flashinfer_rocm_arch(
                 arch_list="gfx942", torch_cpp_ext_module=torch_cpp_ext
             )
+
+    @pytest.mark.parametrize(
+        "torch_flags",
+        [
+            pytest.param(["--offload-arch=", "-fno-gpu-rdc"], id="no-visible-device"),
+            pytest.param(["--offload-arch=gfx942"], id="cross-compile-from-gfx942"),
+        ],
+    )
+    def test_pytorch_validation_skipped_without_pytorch_rocm_arch(
+        self, monkeypatch, torch_flags
+    ):
+        """Unset PYTORCH_ROCM_ARCH makes torch report visible cards, not its build.
+
+        Enforcing against that breaks a GPU-free import and any cross-compile,
+        so the check only applies when the variable pins the set explicitly.
+        """
+        monkeypatch.delenv("PYTORCH_ROCM_ARCH", raising=False)
+        torch_cpp_ext = MagicMock()
+        torch_cpp_ext._get_rocm_arch_flags.return_value = torch_flags
+        with self._patch_validate_rocm_arch("gfx950"):
+            flags, arch_set = validate_flashinfer_rocm_arch(
+                arch_list="gfx950", torch_cpp_ext_module=torch_cpp_ext
+            )
+        assert flags == ["--offload-arch=gfx950"]
+        assert arch_set == {"gfx950"}
 
     def test_reads_arch_from_env_when_none_given(self, monkeypatch):
         monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "gfx942")

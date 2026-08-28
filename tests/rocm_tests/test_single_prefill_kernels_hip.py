@@ -73,6 +73,18 @@ def test_single_prefill_with_kv_cache(
     if causal and qo_len > kv_len:
         pytest.skip("causal attention requires kv_len >= qo_len")
 
+    # A non-zero soft cap disables AITER's asm paths, leaving mha_varlen_fwd's
+    # CK kernel, which applies the cap wrongly. Non-causal is unaffected, and
+    # mha_batch_prefill is exact on the same inputs.
+    if (
+        backend == "aiter"
+        and logits_soft_cap > 0
+        and causal
+        and head_dim == 128
+        and kv_len >= 512
+    ):
+        pytest.skip("AITER mha_varlen_fwd soft-cap defect (aiter<=0.1.21)")
+
     if kv_layout == "HND":
         k = torch.randn(
             num_kv_heads, kv_len, head_dim, device="cuda:0", dtype=torch.float16
@@ -316,3 +328,79 @@ def test_auto_backend_selects_aiter(head_dim, return_lse):
             q, k, v, causal=False, kv_layout="NHD", backend="aiter"
         )
         torch.testing.assert_close(o_auto, o_aiter, rtol=0, atol=0)
+
+
+# (causal, logits_soft_cap, head_dim, kv_len, expect_aiter)
+_SOFTCAP_ROUTING = [
+    (True, 8.0, 128, 512, False),  # the defect region
+    (True, 8.0, 128, 2048, False),
+    (True, 0.0, 128, 512, True),  # no cap: asm path, exact
+    (False, 8.0, 128, 512, True),  # non-causal: exact
+    (True, 8.0, 64, 512, True),  # other head dims unaffected
+    (True, 8.0, 256, 512, True),
+    (True, 8.0, 128, 128, True),  # short kv unaffected
+]
+
+
+@pytest.mark.parametrize(
+    "causal,soft_cap,head_dim,kv_len,expect_aiter", _SOFTCAP_ROUTING
+)
+def test_auto_backend_avoids_aiter_softcap_defect(
+    causal, soft_cap, head_dim, kv_len, expect_aiter
+):
+    """backend='auto' must not route the miscomputed soft-cap case to AITER.
+
+    Guards the routing directly rather than the numerics, because the wrong
+    answer is silent: with AITER selected the call returns plausible values.
+    """
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+
+    from flashinfer.prefill_rocm import _auto_select_prefill_backend
+
+    chosen, reason = _auto_select_prefill_backend(
+        device,
+        dtype_q=torch.float16,
+        dtype_kv=torch.float16,
+        kv_layout="NHD",
+        has_custom_mask=False,
+        head_dim_qk=head_dim,
+        head_dim_vo=head_dim,
+        # Capability gates differ per op, so the row asserted here has to be the
+        # one single prefill actually consults.
+        op="single_prefill",
+        causal=causal,
+        logits_soft_cap=soft_cap,
+        kv_len=kv_len,
+    )
+    assert chosen == ("aiter" if expect_aiter else "fa2"), reason
+    # Assert on the reason too, so a fallback for some unrelated cause cannot
+    # masquerade as the soft-cap guard working.
+    if not expect_aiter:
+        assert reason is not None and "logits_soft_cap" in reason, reason
+
+
+def test_explicit_aiter_backend_rejects_softcap_defect():
+    """An explicit backend='aiter' must fail loudly, not return wrong numbers.
+
+    'auto' silently falls back; asking for AITER by name is a deliberate choice,
+    so the defect region has to raise rather than degrade.
+    """
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+
+    kv_len, qo_len, num_heads, head_dim = 512, 37, 4, 128
+    q = torch.randn(qo_len, num_heads, head_dim, dtype=torch.float16, device=device)
+    k = torch.randn(kv_len, num_heads, head_dim, dtype=torch.float16, device=device)
+    v = torch.randn(kv_len, num_heads, head_dim, dtype=torch.float16, device=device)
+
+    with pytest.raises(ValueError, match="logits_soft_cap"):
+        flashinfer.single_prefill_with_kv_cache(
+            q, k, v, causal=True, logits_soft_cap=8.0, backend="aiter"
+        )
+
+    # Same shape without the cap must still be served by AITER, so the guard is
+    # not quietly disabling the backend outright.
+    flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="aiter")

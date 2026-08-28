@@ -77,6 +77,10 @@ ranks higher than a same-version PyPI wheel. Supported versions are in the
 [Supported hardware and toolchain](README.md#supported-hardware-and-toolchain)
 table in `README.md`.
 
+ROCm 7.14 has no `rocm-rel-7.14/` directory on `repo.radeon.com` at all, so
+there is no pip recipe for it. The devcontainer gets torch 2.12 from its
+`rocm/pytorch:rocm7.14_*` base image instead.
+
 ## Non-Obvious Gotchas
 
 **JIT build.ninja caching**: `JitSpec.build()` only writes `build.ninja` when
@@ -101,26 +105,37 @@ count to avoid HSA/HIPBLAS flakiness under concurrent load. The `slow` marker
 gates 1M-trial sampling and 4 GB tensor tests — exclude with `-m "not slow"`
 for fast iteration.
 
-**AITER is a separate install, and the version matters**: The AITER backend
-(used by prefill attention on gfx942) is not bundled. Install the pinned wheel:
+**AITER is version-pinned, and the pin depends on the interpreter**: the
+devcontainer bundles the wheel, so no separate install is needed there. The
+pin differs by channel because the channels carry different builds.
+
+On CPython 3.12 (the CI image, ROCm 7.1.1):
 
 ```bash
 pip install amd-aiter==0.1.10 --extra-index-url https://pypi.amd.com/rocm-7.1.1/simple
 ```
 
-`0.1.10` is what this repo is built and tested against —
-`prefill_rocm.py` records it as `_AITER_LAST_VALIDATED`, and
-[`docs/rocm/backends.md`](docs/rocm/backends.md) explains the index choice.
-Note `amd-aiter` is **not** on the top-level
-`pypi.amd.com/simple` index, and it must be `--extra-index-url` rather than
-`--index-url` so AITER's own dependencies still resolve from PyPI.
+`amd-aiter` is **not** on the top-level `pypi.amd.com/simple` index, and it
+must be `--extra-index-url` rather than `--index-url` so AITER's own
+dependencies still resolve from PyPI. **Only cp310 and cp312 wheels exist** on
+that channel (verified 2026-08-20); on 3.11, 3.13 or 3.14 it fails with
+`No matching distribution found`, and public PyPI tops out at a stale
+`0.1.7.post2.dev18`.
 
-**Only cp310 and cp312 wheels exist** on that channel.
-On any other interpreter — 3.11, 3.13, 3.14 — the command fails with
-`No matching distribution found`, and there is no pinned-version fallback:
-public PyPI tops out at a stale `0.1.7.post2.dev18`, and the nightlies index
-only carries `>= 0.1.16`. Use CPython 3.12 unless you are prepared to run an
-unvalidated AITER.
+The devcontainer runs CPython 3.14, for which the nightlies index carries the
+only wheel that exists:
+
+```bash
+pip install amd-aiter==0.1.16.post3.dev0+g620287969.d20260725 \
+  --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/vllm-cdna/
+```
+
+Spell the version out in full including the local `+g...` segment; pip will
+not select a local version from a loose specifier. `prefill_rocm.py` records
+whatever is validated as `_AITER_LAST_VALIDATED`, and
+[`docs/rocm/backends.md`](docs/rocm/backends.md) explains the index choice.
+`aiter_utils.AITER_MIN_VERSION` is the hard floor below which the vendored
+struct layouts stop matching.
 
 A source build (`git clone --recursive https://github.com/ROCm/aiter.git &&
 cd aiter && python3 setup.py develop`) tracks master, which is **many releases

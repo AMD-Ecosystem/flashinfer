@@ -29,9 +29,9 @@ For an in-script view of what's being passed, wrap the suspect call with `print(
 | Symptom | First check |
 | --- | --- |
 | `Memory access fault by GPU node-N` / `hipErrorIllegalAddress` / "CUDA error: illegal memory access" (PyTorch's ROCm reports HIP errors as "CUDA" errors) | Run with the env combo above. Print tensor shapes/dtypes/strides just before the call. Verify: `is_contiguous()` where required, all tensors on the same `cuda:N`, `kv_indices` within `[0, num_pages)`, `head_dim_qk` matches between Q and KV. |
-| `backend="aiter"` `ValueError` before launch | `kv_layout != "NHD"` (only NHD is allowed — raised in the prefill wrapper's `plan()`, e.g. [`prefill_rocm.py:1978`](../../../flashinfer/prefill_rocm.py)). |
+| `backend="aiter"` `ValueError` before launch | `kv_layout != "NHD"` (only NHD is allowed). Grep [`prefill_rocm.py`](../../../flashinfer/prefill_rocm.py) for `only supports kv_layout` — single prefill and both batch wrappers each raise it. |
 | `backend="aiter"` `RuntimeError` | Non-gfx942/gfx950 GPU. |
-| `backend="aiter"` `ImportError` | `amd-aiter` not installed (`pip install amd-aiter --index-url https://pypi.amd.com/simple/`). |
+| `backend="aiter"` `ImportError` | `amd-aiter` not installed — see the AITER wheel section in `README.md` for the pinned version and its index. |
 | `backend="aiter"` hard GPU fault mid-kernel | `amd-aiter` version mismatch vs. ROCm. Reinstall matching your ROCm version. Try the default HIP backend to confirm the bug is in AITER, not our side. |
 | NaN / Inf in outputs | Insert `torch.isnan(t).any()` / `torch.isinf(t).any()` checks around the call. On CDNA3/4: `_fnuz` FP8 has different representable range than NVIDIA OCP FP8 — scale factors calibrated against NVIDIA refs overflow. Or `-inf` from a previous op fed into `exp`. Or `torch.empty` vs `torch.zeros`. |
 | `HIP out of memory` | `rocm-smi --showmeminfo vram --showpids` — kill zombies. JIT-compile spike → `MAX_JOBS=1`. Other tenant → `HIP_VISIBLE_DEVICES=N`. |

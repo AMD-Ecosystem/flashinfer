@@ -16,12 +16,15 @@ building from source and everything else specific to contributing code.
 Build the development image with the repository's Dockerfile:
 
 ```bash
-docker build -t flashinfer-dev:rocm7.2 -f .devcontainer/rocm/Dockerfile .
+docker build -t flashinfer-dev:rocm7.14 -f .devcontainer/rocm/Dockerfile .
 ```
 
-`ROCM_VERSION`, `PY_VERSION`, and `TORCH_VERSION` default to 7.2, 3.12, and
-2.9.1; override with `--build-arg` if you need a different combination. Pass
-`--build-arg USERNAME=$USER --build-arg USER_UID=$(id -u) --build-arg
+`ROCM_VERSION`, `UBUNTU_VERSION`, `PY_VERSION`, and `TORCH_VERSION` default to
+7.14, 26.04, 3.14, and 2.12.0. They select the `rocm/pytorch` base image tag,
+so they are not independent knobs — any override has to name a tag that exists
+on Docker Hub. `AITER_VERSION` and `AITER_INDEX` pin the AITER wheel; the
+default is the vllm-cdna nightly, which is the only cp314 build published.
+Pass `--build-arg USERNAME=$USER --build-arg USER_UID=$(id -u) --build-arg
 USER_GID=$(id -g)` to match container file ownership to your host user —
 without them, build artifacts come out root-owned.
 
@@ -30,11 +33,16 @@ docker run -it \
   --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
   --privileged --ipc=host --network=host \
   --device=/dev/kfd --device=/dev/dri \
-  --group-add video --group-add render \
+  --group-add video --group-add "$(getent group render | cut -d: -f3)" \
   -v $PWD:/workspace \
   --name flashinfer-dev-container \
-  flashinfer-dev:rocm7.2
+  flashinfer-dev:rocm7.14
 ```
+
+`render` must be the **host's numeric GID**. Passing the name resolves against
+the image's own `render` group, whose GID is assigned at build time and will
+not match `/dev/dri/renderD*` — leaving the container user unable to open the
+device, which surfaces as "No CUDA GPUs are available".
 
 # Building and Installing
 

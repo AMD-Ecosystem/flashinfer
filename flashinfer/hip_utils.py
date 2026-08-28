@@ -4,6 +4,7 @@
 
 import functools
 import logging
+import os
 
 # arch_caps imports nothing (in particular, not torch), so importing it here
 # keeps this module importable without torch -- which the hardware-less
@@ -343,7 +344,7 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
     # Add new tuple for adding a new version group
     _ROCM_ARCH_GROUPS = [
         (
-            ["7.13", "7.12", "7.11", "7.3", "7.2", "7.1", "7.0"],
+            ["7.14", "7.13", "7.12", "7.11", "7.3", "7.2", "7.1", "7.0"],
             [
                 "gfx950",
                 "gfx1201",
@@ -435,7 +436,8 @@ def validate_flashinfer_rocm_arch(
     Validates in order:
     1. System ROCm version supports the architectures (ROCM_COMPAT_MATRIX)
     2. FlashInfer has AMD ports for the architectures (FLASHINFER_SUPPORTED_ROCM_ARCHS)
-    3. PyTorch was compiled with the architectures (torch.utils.cpp_extension)
+    3. PYTORCH_ROCM_ARCH, if set, permits the architectures (skipped when unset,
+       where torch reports the visible cards rather than its build)
 
     Args:
         arch_list: Comma-separated list (e.g., "gfx942,gfx90a") or None for default
@@ -487,17 +489,25 @@ def validate_flashinfer_rocm_arch(
         )
         requested_archs = supported_in_request
 
-    # Step 3: Validate against PyTorch's available architectures (if module provided)
+    # Step 3: Validate against PyTorch's architectures -- but only when PyTorch was
+    # actually told which ones to build. With PYTORCH_ROCM_ARCH unset,
+    # _get_rocm_arch_flags() enumerates the *visible cards* rather than anything
+    # about the build: it yields ["--offload-arch=", ...] when no device is
+    # visible, and lists only the local card otherwise. Enforcing against that
+    # turns an import on a GPU-free host into a hard error, and rejects
+    # cross-compiling for gfx950 from a gfx942 box -- which is precisely what an
+    # ahead-of-time build is for.
     arch_flags = [f"--offload-arch={arch}" for arch in requested_archs]
-    if torch_cpp_ext_module is not None:
+    if torch_cpp_ext_module is not None and os.environ.get("PYTORCH_ROCM_ARCH"):
         pytorch_arch_flags = torch_cpp_ext_module._get_rocm_arch_flags()
         missing_in_pytorch = [
             flag for flag in arch_flags if flag not in pytorch_arch_flags
         ]
         if missing_in_pytorch:
             raise RuntimeError(
-                f"PyTorch does not support the following architectures: {', '.join(missing_in_pytorch)}.\n"
-                f"PyTorch was compiled with: {', '.join(pytorch_arch_flags)}"
+                f"PYTORCH_ROCM_ARCH excludes the following architectures: {', '.join(missing_in_pytorch)}.\n"
+                f"It restricts extension builds to: {', '.join(pytorch_arch_flags)}\n"
+                "Unset it to build for whatever FLASHINFER_ROCM_ARCH_LIST requests."
             )
 
     if verbose:
