@@ -142,10 +142,9 @@ def _get_workspace_dir_name() -> pathlib.Path:
 
 
 if IS_CUDA:
-    # Unlike the helpers above, these two are reachable on ROCm --
-    # jit/comm.py:gen_nvshmem_module() imports there and calls them. Leaving
-    # them defined turns its AttributeError into a build against a source file
-    # the ROCm tree does not have.
+    # These must stay gated, unlike the helpers above: jit/comm.py imports on
+    # ROCm, so gen_nvshmem_module() would reach them and fail on an absent
+    # nvidia.nvshmem -- or, with NVSHMEM_* set, on a source csrc_rocm lacks.
     def get_nvshmem_include_dirs():
         paths = os.environ.get("NVSHMEM_INCLUDE_PATH")
         if paths is not None:

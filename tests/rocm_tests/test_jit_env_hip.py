@@ -101,16 +101,16 @@ def test_rocm_env_constants_do_not_come_from_the_cuda_helpers():
     assert pathlib.Path(get_csrc_dir()) == e.FLASHINFER_CSRC_DIR
     # Bound only in the IS_CUDA arm, so its absence is what proves the gate held.
     assert not hasattr(e, "FLASHINFER_CUBIN_DIR")
-    with pytest.raises(NameError):
+    with pytest.raises(NameError, match="CompilationContext"):
         e._get_workspace_dir_name()
 
 
 def test_nvshmem_helpers_stay_absent_on_rocm():
-    """gen_nvshmem_module() must fail at the env layer, not at hipcc.
+    """gen_nvshmem_module() must fail at the env layer, naming a CUDA-only API.
 
-    jit/comm.py imports fine on ROCm, so if these are defined it builds a spec
-    for flashinfer/csrc_rocm/nvshmem_binding.cu -- a file the ROCm tree does
-    not have -- and the error names a missing source instead of a CUDA-only API.
+    jit/comm.py imports fine on ROCm, so with these defined the failure moves
+    to an absent nvidia.nvshmem -- or, with NVSHMEM_* set, to a build against
+    flashinfer/csrc_rocm/nvshmem_binding.cu, which does not exist.
     """
     from flashinfer.jit import env as e
 
