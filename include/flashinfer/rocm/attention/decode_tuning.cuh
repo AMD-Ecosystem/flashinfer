@@ -21,6 +21,9 @@ namespace decode_tuning {
  */
 template <typename DTypeKV, uint32_t HEAD_DIM>
 constexpr uint32_t BatchDecodeVecSize() {
+  // bdx spans half a wavefront here. Widening it to 64 the way single-decode
+  // does measures slower on both gfx942 and gfx950 — 16-byte per-lane loads
+  // beat the wider reduction. Do not "fix" without re-measuring.
   return std::max(16UL / sizeof(DTypeKV), HEAD_DIM / 32UL);
 }
 

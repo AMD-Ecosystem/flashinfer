@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#include <cstdint>
+#include <sstream>
+
+#include "exception.h"
 #include "macros.hpp"
 
 // Include appropriate runtime
@@ -121,3 +125,22 @@ inline int getMaxSharedMemPerBlock(int dev_id) {
   if (dev_id >= 0 && dev_id < 64 && max_smem_per_block > 0) cache[dev_id] = max_smem_per_block;
   return max_smem_per_block;
 }
+
+namespace flashinfer {
+
+/// Throws naming the requested size and the device limit, instead of letting the
+/// launch fail with a bare "invalid argument".
+///
+/// @param smem_size Dynamic shared memory the launch will request, in bytes
+/// @param dev_id Device ID
+inline void checkSmemBudget(uint32_t smem_size, int dev_id) {
+  const uint32_t limit = static_cast<uint32_t>(getMaxSharedMemPerBlock(dev_id));
+  if (smem_size > limit) {
+    std::ostringstream err_msg;
+    err_msg << "Shared memory size " << smem_size << " exceeds the device limit of " << limit
+            << " bytes";
+    FLASHINFER_ERROR(err_msg.str());
+  }
+}
+
+}  // namespace flashinfer

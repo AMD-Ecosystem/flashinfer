@@ -669,18 +669,9 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
         2U * NUM_STAGES_SMEM * bdy * tile_size_per_bdx * bdz * HEAD_DIM * sizeof(DTypeKV) +
         2U * bdy * bdz * sizeof(float);
 
-    // Query the device rather than assuming CDNA3's 64 KB: CDNA4 reports 160 KB
-    // per block, so a hard-coded 65536 rejects configurations gfx950 can run.
     int dev_id = 0;
     FI_GPU_CALL(gpuGetDevice(&dev_id));
-    const uint32_t max_smem_per_block = static_cast<uint32_t>(getMaxSharedMemPerBlock(dev_id));
-
-    if (smem_size > max_smem_per_block) {
-      std::ostringstream err_msg;
-      err_msg << "Shared memory size " << smem_size << " exceeds the device limit of "
-              << max_smem_per_block << " bytes";
-      FLASHINFER_ERROR(err_msg.str());
-    }
+    checkSmemBudget(smem_size, dev_id);
 
     auto kernel =
         SingleDecodeWithKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
@@ -773,6 +764,10 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatched(Params params, typename Params:
           2 * NUM_STAGES_SMEM * tile_size_per_bdx * bdy * bdz * HEAD_DIM * sizeof(DTypeKV) +
           std::max(tile_size_per_bdx * num_threads * sizeof(DTypeKV*),
                    2 * bdy * bdz * sizeof(float));
+      int dev_id = 0;
+      FI_GPU_CALL(gpuGetDevice(&dev_id));
+      checkSmemBudget(smem_size, dev_id);
+
       auto kernel =
           BatchDecodeWithPagedKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
                                             vec_size, bdx, bdy, bdz, AttentionVariant, Params>;
