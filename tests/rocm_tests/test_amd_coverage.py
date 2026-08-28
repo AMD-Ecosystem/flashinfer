@@ -1302,7 +1302,10 @@ class TestPathAnchoring:
         """json_out bypassed the anchoring until this branch; the print that
         follows also has to tolerate the out-of-repo path _anchor allows."""
         lines = (_REPO_ROOT / "scripts" / "amd_coverage.py").read_text().splitlines()
-        assert sum("_anchor(repo," in ln for ln in lines) == 3
+        # Named assignments, not a total: a fourth anchored option is a correct
+        # change and must not fail this.
+        for name in ("out_dir", "data_file", "json_out"):
+            assert any(f"{name} = _anchor(repo," in ln for ln in lines), name
         at = next(i for i, ln in enumerate(lines) if "json_out = _anchor(repo," in ln)
         # A line window rather than a slice delimited by the print itself, which
         # would fail on a quote-style change that leaves the guard intact.
