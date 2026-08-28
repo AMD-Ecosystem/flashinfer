@@ -1,8 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Vendored aiter::mha_fwd_args from AITER amd-aiter>=0.1.10.
+// Vendored aiter::mha_fwd_args from AITER amd-aiter>=0.1.16.
 // Extracted from aiter_meta/csrc/include/mha_fwd.h.
+//
+// 0.1.16 is a hard minimum, not a recommendation: the block_scale_seqstart_*
+// fields below were inserted before sink_ptr, so on 0.1.10 every field from
+// sink_ptr on lands at the wrong offset. The struct goes by value through a
+// dlsym'd pointer, so the mismatch corrupts silently rather than failing to
+// load. flashinfer.aiter_utils enforces the floor at run time.
 //
 // ABI note: aiter::mha_fwd() is called via dlsym. The struct layout here must
 // match the .so exactly. ck_tile::index_t = int32_t (ck_tile/core/numeric/integer.hpp).
@@ -54,6 +60,9 @@ struct mha_fwd_args {
   const void* seqlen_k_ptr = nullptr;
   const void* cu_seqlen_q_ptr = nullptr;
   const void* cu_seqlen_k_ptr = nullptr;
+  // Added in 0.1.16 — inserted *before* sink_ptr, so every later field shifts.
+  const void* block_scale_seqstart_q_ptr = nullptr;
+  const void* block_scale_seqstart_k_ptr = nullptr;
   const void* sink_ptr = nullptr;
 
   // Dimensions (ck_tile::index_t = int32_t)
@@ -84,6 +93,10 @@ struct mha_fwd_args {
   int32_t nhead_stride_randval = 0;
   int32_t nhead_stride_lse = 0;
   int32_t nhead_stride_o;
+  // Added in 0.1.16.
+  int32_t nhead_stride_q_descale = 0;
+  int32_t nhead_stride_k_descale = 0;
+  int32_t nhead_stride_v_descale = 0;
 
   int32_t batch_stride_q = 0;
   int32_t batch_stride_k = 0;
@@ -92,6 +105,10 @@ struct mha_fwd_args {
   int32_t batch_stride_randval = 0;
   int32_t batch_stride_lse = 0;
   int32_t batch_stride_o = 0;
+  // Added in 0.1.16.
+  int32_t batch_stride_q_descale = 0;
+  int32_t batch_stride_k_descale = 0;
+  int32_t batch_stride_v_descale = 0;
 
   int32_t window_size_left = -1;
   int32_t window_size_right = -1;
@@ -104,6 +121,11 @@ struct mha_fwd_args {
 
   // Dropout seed/offset (first variant = {0,0} when dropout disabled)
   std::variant<std::pair<uint64_t, uint64_t>, std::pair<const void*, const void*>> drop_seed_offset;
+
+  // Added in 0.1.16. Must match what AITER's own arg builders pass, which is
+  // an unconditional 128; the pipeline never sees 0 from AITER itself.
+  int32_t block_scale_size_q = 128;
+  int32_t block_scale_size_kv = 128;
 };
 
 }  // namespace aiter

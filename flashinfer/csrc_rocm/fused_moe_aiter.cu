@@ -24,10 +24,16 @@
 #include <tuple>
 #include <utility>
 
+#include "aiter_tensor_compat.h"
+
 // AITER's public headers (moe_sorting.h, moe_ck.h) pull in <torch/extension.h> →
 // full pybind11, which clashes with FlashInfer's -DPy_LIMITED_API. torch::Tensor
 // is at::Tensor, so forward-declare the entry points; the linker resolves them
 // against the symbol-visible AITER .so. These three are at global namespace.
+//
+// They must track moe_ck.h exactly: a missing trailing parameter still compiles
+// and then fails at dlopen with a mangled-name mismatch. 0.1.16 added
+// `is_shuffled` to both CK stages.
 void moe_sorting_fwd(at::Tensor& topk_ids, at::Tensor& topk_weights, at::Tensor& sorted_token_ids,
                      at::Tensor& sorted_weights, at::Tensor& sorted_expert_ids,
                      at::Tensor& num_valid_ids, at::Tensor& moe_buf, int num_experts, int unit_size,
@@ -40,7 +46,7 @@ void ck_moe_stage1(at::Tensor& hidden_states, at::Tensor& w1, at::Tensor& w2,
                    std::optional<at::Tensor> w1_scale, std::optional<at::Tensor> a1_scale,
                    std::optional<int> block_m, std::optional<at::Tensor> sorted_weights,
                    int quant_type, int activation, std::optional<int> splitk, bool nt,
-                   std::optional<std::string> dst_type);
+                   std::optional<std::string> dst_type, bool is_shuffled);
 
 void ck_moe_stage2(at::Tensor& inter_states, at::Tensor& w1, at::Tensor& w2,
                    at::Tensor& sorted_token_ids, at::Tensor& sorted_expert_ids,
@@ -48,14 +54,17 @@ void ck_moe_stage2(at::Tensor& inter_states, at::Tensor& w1, at::Tensor& w2,
                    std::optional<at::Tensor> w2_scale, std::optional<at::Tensor> a2_scale,
                    std::optional<int> block_m, std::optional<at::Tensor> sorted_weights,
                    int quant_type, int activation, std::optional<int> splitk, bool nt,
-                   std::optional<std::string> dst_type);
+                   std::optional<std::string> dst_type, bool is_shuffled);
 
 #ifdef FLASHINFER_MOE_AITER_PER_TOKEN
-// Unlike the three above, this one AITER declares inside `namespace aiter`.
+// Unlike the three above, this one AITER declares inside `namespace aiter`, and
+// on the POD API rather than at::Tensor -- see quant.h. Declaring it with
+// at::Tensor compiles and then fails at dlopen on the mangled name.
 namespace aiter {
-void dynamic_per_token_scaled_quant(at::Tensor& out, at::Tensor const& input, at::Tensor& scales,
-                                    std::optional<at::Tensor> scale_ub, bool shuffle_scale,
-                                    std::optional<at::Tensor> num_rows, int num_rows_factor);
+void dynamic_per_token_scaled_quant(aiter_tensor_t& out, const aiter_tensor_t& input,
+                                    aiter_tensor_t& scales, std::optional<aiter_tensor_t> scale_ub,
+                                    bool shuffle_scale, std::optional<aiter_tensor_t> num_rows,
+                                    int num_rows_factor);
 }  // namespace aiter
 #endif
 
@@ -79,7 +88,17 @@ std::pair<at::Tensor, at::Tensor> quantize_per_token(const at::Tensor& x, at::Sc
   scale_sizes.back() = 1;
   at::Tensor q = at::empty(x.sizes(), x.options().dtype(fp8));
   at::Tensor scale = at::empty(scale_sizes, x.options().dtype(at::kFloat));
-  aiter::dynamic_per_token_scaled_quant(q, x, scale, /*scale_ub=*/std::nullopt,
+
+  namespace compat = flashinfer::aiter_compat;
+  aiter_tensor_t q_a = compat::to_aiter(q);
+  aiter_tensor_t x_a = compat::to_aiter(x);
+  aiter_tensor_t scale_a = compat::to_aiter(scale);
+  // The POD entry point reads AITER's thread-local stream, not torch's. Without
+  // this the quant kernel lands on the null stream while the CK stages consume
+  // q/scale on the caller's -- and torch's pool streams are non-blocking, so
+  // nothing synchronises them.
+  const compat::StreamGuard stream_guard(at::hip::getCurrentHIPStream());
+  aiter::dynamic_per_token_scaled_quant(q_a, x_a, scale_a, /*scale_ub=*/std::nullopt,
                                         /*shuffle_scale=*/false, /*num_rows=*/std::nullopt,
                                         static_cast<int>(num_rows_factor));
   return {q, scale};
@@ -287,7 +306,7 @@ void fused_moe_aiter(at::Tensor out, at::Tensor hidden_states, at::Tensor w1, at
                 topk_i32, kernel_name, w1_scale, a1_scale, block_m_i32,
                 /*sorted_weights=*/std::nullopt, quant_type, activation_i32, /*splitk=*/1,
                 /*nt=*/false,
-                /*dst_type=*/std::nullopt);
+                /*dst_type=*/std::nullopt, /*is_shuffled=*/true);
 
   at::Tensor stage2_in = inter_states;
   std::optional<at::Tensor> a2_scale;
@@ -304,5 +323,5 @@ void fused_moe_aiter(at::Tensor out, at::Tensor hidden_states, at::Tensor w1, at
   ck_moe_stage2(stage2_in, w1, w2, sorted_token_ids, sorted_expert_ids, num_valid_ids, out,
                 topk_i32, kernel_name, w2_scale, a2_scale, block_m_i32, sorted_weights, quant_type,
                 activation_i32, /*splitk=*/1,
-                /*nt=*/false, /*dst_type=*/std::nullopt);
+                /*nt=*/false, /*dst_type=*/std::nullopt, /*is_shuffled=*/true);
 }

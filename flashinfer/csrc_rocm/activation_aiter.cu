@@ -9,15 +9,30 @@
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <c10/hip/HIPGuard.h>
 
-// AITER's public header (activation.h) pulls in <torch/extension.h> → full
-// pybind11, which clashes with FlashInfer's -DPy_LIMITED_API. torch::Tensor is
-// at::Tensor, so forward-declare the entry point; the linker resolves it against
-// the symbol-visible AITER .so.
-namespace aiter {
-void silu_and_mul(at::Tensor& out, at::Tensor& input);
-}  // namespace aiter
+// AITER's real header, not a forward declaration: a signature change must be a
+// compile error, not a load-time `undefined symbol`. Includable since 0.1.16,
+// which dropped <torch/extension.h> and with it the pybind11 clash against
+// FlashInfer's -DPy_LIMITED_API.
+#include <activation.h>
+#include <aiter_stream.h>
+
+#include "aiter_tensor_compat.h"
 
 void silu_and_mul_aiter(at::Tensor out, at::Tensor input) {
+  TORCH_CHECK(out.device() == input.device(), "silu_and_mul: out is on ", out.device(),
+              " but input is on ", input.device());
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(input.device());
-  aiter::silu_and_mul(out, input);
+
+  // The kernel indexes linearly, so strides in aiter_tensor_t are not honoured.
+  // AITER's torch entry point used to reject this; the POD API cannot.
+  TORCH_CHECK(input.is_contiguous(), "silu_and_mul: input must be contiguous");
+  TORCH_CHECK(out.is_contiguous(), "silu_and_mul: out must be contiguous");
+
+  const aiter_tensor_t out_a = flashinfer::aiter_compat::to_aiter(out);
+  const aiter_tensor_t in_a = flashinfer::aiter_compat::to_aiter(input);
+
+  const flashinfer::aiter_compat::StreamGuard stream_guard(at::hip::getCurrentHIPStream());
+  // `limit` (new in 0.1.16) gates an optional clamp; 0.0f is AITER's declared
+  // default and preserves the previous behaviour.
+  aiter::silu_and_mul(out_a, in_a, /*limit=*/0.0f);
 }
