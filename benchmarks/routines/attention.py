@@ -16,13 +16,16 @@ from .flashinfer_benchmark_utils import (
     print_perf_metrics,
     is_close_stats,
     filter_backends_by_compute_capability,
-    as_nhd_paged_kv_cache,
-    record_backend_resolution,
-    bench_timing_kwargs,
-    HIP_DECODE_GQA_GROUP_SIZES,
-    fa2_backed_backends,
 )
 from flashinfer.device_utils import IS_HIP
+from .rocm import (
+    HIP_DECODE_GQA_GROUP_SIZES,
+    as_nhd_paged_kv_cache,
+    bench_timing_kwargs,
+    fa2_backed_backends,
+    record_backend_resolution,
+    use_cuda_graph_for,
+)
 
 
 def normalize_backends(backends):
@@ -572,11 +575,7 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
             **bench_timing_kwargs(args, device),
             sleep_after_run=False,
             enable_cupti=args.use_cupti,
-            # "auto" may have resolved to AITER, whose launch grid is fixed at
-            # capture shapes; time it eagerly like fa2 rather than under a graph.
-            use_cuda_graph=(
-                is_cuda_graph_compatible and cur_backend not in ("fa2", "auto")
-            ),
+            use_cuda_graph=use_cuda_graph_for(cur_backend, is_cuda_graph_compatible),
         )
 
     # Perform reference check
@@ -1045,11 +1044,7 @@ def testBatchPrefillWithPagedKVCacheWrapper(args):
             **bench_timing_kwargs(args, device),
             sleep_after_run=False,
             enable_cupti=args.use_cupti,
-            # "auto" may have resolved to AITER, whose launch grid is fixed at
-            # capture shapes; time it eagerly like fa2 rather than under a graph.
-            use_cuda_graph=(
-                is_cuda_graph_compatible and cur_backend not in ("fa2", "auto")
-            ),
+            use_cuda_graph=use_cuda_graph_for(cur_backend, is_cuda_graph_compatible),
         )
 
     # Perform reference check
@@ -1501,11 +1496,7 @@ def testBatchPrefillWithRaggedKVCacheWrapper(args):
             **bench_timing_kwargs(args, device),
             sleep_after_run=True,
             enable_cupti=args.use_cupti,
-            # "auto" may have resolved to AITER, whose launch grid is fixed at
-            # capture shapes; time it eagerly like fa2 rather than under a graph.
-            use_cuda_graph=(
-                is_cuda_graph_compatible and cur_backend not in ("fa2", "auto")
-            ),
+            use_cuda_graph=use_cuda_graph_for(cur_backend, is_cuda_graph_compatible),
         )
 
     # Perform reference check
@@ -1899,11 +1890,7 @@ def testBatchMLAPagedAttentionWrapper(args):
             **bench_timing_kwargs(args, device),
             sleep_after_run=False,
             enable_cupti=args.use_cupti,
-            # "auto" may have resolved to AITER, whose launch grid is fixed at
-            # capture shapes; time it eagerly like fa2 rather than under a graph.
-            use_cuda_graph=(
-                is_cuda_graph_compatible and cur_backend not in ("fa2", "auto")
-            ),
+            use_cuda_graph=use_cuda_graph_for(cur_backend, is_cuda_graph_compatible),
         )
 
     # Perform reference check

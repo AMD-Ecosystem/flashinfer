@@ -28,6 +28,12 @@ def _utils():
     return u
 
 
+def _rocm():
+    import routines.rocm as r
+
+    return r
+
+
 @pytest.mark.parametrize("routine", ATTENTION_ROUTINES)
 def test_fa2_survives_the_backend_filter(routine):
     """gfx942/gfx950 report CC 9.4/9.5, absent from the NVIDIA table.
@@ -56,13 +62,79 @@ def test_benchmark_module_imports():
     assert callable(flashinfer_benchmark.run_test)
 
 
-def test_unavailable_routine_group_reports_the_original_error():
+def test_unavailable_routine_group_defers_its_import_error():
+    """A failed group must stay importable and only raise when actually used."""
+    from routines.rocm import load_routine_group
+
+    group = load_routine_group("no_such_routine_module")
+    assert not group, "a failed group must be falsy so callers can test it"
+    with pytest.raises(RuntimeError, match="unavailable on this platform"):
+        _ = group.parse_args
+
+
+def test_available_routine_group_is_the_real_module():
+    """The loader must not mask a group that imports fine."""
+    from routines.rocm import load_routine_group
+
+    group = load_routine_group("attention")
+    assert callable(group.run_attention_test)
+    assert group
+
+
+@pytest.mark.parametrize("group_name", ["gemm", "moe"])
+def test_runner_routes_each_group_through_the_loader(group_name):
+    """The runner's own bindings, not just the loader in isolation.
+
+    Rebinding either to None passes every other test here while turning the
+    actionable "unavailable on this platform" message into an AttributeError
+    that the testlist loop swallows.
+    """
     import flashinfer_benchmark
 
-    if "moe" not in flashinfer_benchmark._ROUTINE_IMPORT_ERRORS:
-        pytest.skip("routines.moe imported successfully on this build")
-    with pytest.raises(RuntimeError, match="unavailable on this platform"):
-        flashinfer_benchmark.require_routine_group("moe")
+    group = getattr(flashinfer_benchmark, group_name)
+    entry = f"run_{group_name}_test"
+    if group:
+        assert callable(getattr(group, entry))
+    else:
+        with pytest.raises(RuntimeError, match="unavailable on this platform"):
+            getattr(group, entry)
+
+
+def test_unavailable_group_survives_copy_and_pickle():
+    """__getattr__ must answer AttributeError for private names.
+
+    Returning the RuntimeError for them instead sends copy/pickle into
+    infinite recursion probing __setstate__ before _name is bound.
+    """
+    import copy
+    import pickle
+
+    from routines.rocm.harness import _UnavailableRoutineGroup
+
+    group = _UnavailableRoutineGroup("gemm", ImportError("boom"))
+    assert not copy.copy(group)
+    assert not pickle.loads(pickle.dumps(group))
+
+
+def test_runner_registers_the_timing_budget_options():
+    """Dropping the add_timing_budget_args call fails loudly here, not silently.
+
+    argparse would reject --dry_run_time_ms outright, but a testlist line that
+    carries it is the only place that shows up.
+    """
+    import flashinfer_benchmark
+
+    args = flashinfer_benchmark.parse_args(
+        [
+            "--routine", "BatchDecodeWithPagedKVCacheWrapper",
+            "--page_size", "16", "--batch_size", "4", "--s_qo", "1", "--s_kv", "128",
+            "--num_qo_heads", "8", "--num_kv_heads", "8",
+            "--head_dim_qk", "128", "--head_dim_vo", "128",
+            "--dry_run_time_ms", "250", "--repeat_time_ms", "400",
+        ]
+    )  # fmt: skip
+    assert args.dry_run_time_ms == 250
+    assert args.repeat_time_ms == 400
 
 
 def test_nhd_view_is_an_exact_zero_copy_permutation():
@@ -71,7 +143,7 @@ def test_nhd_view_is_an_exact_zero_copy_permutation():
     A wrong permutation would still run and still produce plausible timings, so
     the exactness is the whole safety argument.
     """
-    u = _utils()
+    r = _rocm()
     pages, heads, page_size, dim = 3, 4, 8, 16
     base = torch.randn(pages, 2, heads, page_size, dim)
     hnd = base.as_strided(
@@ -84,7 +156,7 @@ def test_nhd_view_is_an_exact_zero_copy_permutation():
             1,
         ),
     )
-    nhd = u.as_nhd_paged_kv_cache(hnd)
+    nhd = r.as_nhd_paged_kv_cache(hnd)
 
     assert nhd.shape == (pages, 2, page_size, heads, dim)
     assert nhd.is_contiguous()
@@ -137,7 +209,7 @@ def test_hip_gqa_group_sizes_match_the_kernel_dispatch():
     from_kernel = {int(n) for n in re.findall(r"group_size == (\d+)", macro)}
 
     assert from_kernel, "could not parse DISPATCH_GQA_GROUP_SIZE"
-    assert frozenset(from_kernel) == _utils().HIP_DECODE_GQA_GROUP_SIZES
+    assert frozenset(from_kernel) == _rocm().HIP_DECODE_GQA_GROUP_SIZES
     # Llama-3.1-405B is 128 qo / 8 kv heads, i.e. group size 16.
     assert 128 // 8 not in from_kernel
 
@@ -168,8 +240,8 @@ def test_filter_only_offers_backends_the_cli_accepts(routine):
     Offering one that argparse rejects, or that no wrapper branch constructs,
     turns a supported configuration into a silently missing CSV row.
     """
-    u = _utils()
-    offered = u.rocm_supported_backends(routine, torch.device("cuda"))
+    r = _rocm()
+    offered = r.rocm_supported_backends(routine, torch.device("cuda"))
     assert offered, f"{routine} offers no backend at all on this device"
     unknown = set(offered) - _backend_choices()
     assert not unknown, f"{unknown} survive the filter but --backends rejects them"
@@ -198,18 +270,18 @@ def test_auto_inherits_fa2_constraints_when_aiter_cannot_serve():
     Guarding only the literal "fa2" leaves `auto` to reach a kernel that aborts
     the whole test case -- exactly the crash the group-size guard prevents.
     """
-    u = _utils()
+    r = _rocm()
     device = torch.device("cuda")
     for op in ("batch_decode", "batch_prefill"):
-        backed = u.fa2_backed_backends(["fa2", "auto"], device, op)
+        backed = r.fa2_backed_backends(["fa2", "auto"], device, op)
         assert "fa2" in backed
-        assert ("auto" in backed) is not u.aiter_serves(device, op)
+        assert ("auto" in backed) is not r.aiter_serves(device, op)
 
 
 def test_resolution_is_recorded_only_for_auto():
     """An explicit backend resolves to itself; filling the column for it would
     make every fa2 row match the README's "investigate this" signature."""
-    u = _utils()
+    r = _rocm()
 
     class _Wrapper:
         backend = "fa2"
@@ -217,17 +289,33 @@ def test_resolution_is_recorded_only_for_auto():
 
     for requested, expected in (("fa2", ""), ("auto", "fa2")):
         row = {"backend": requested, "backend_resolved": "", "fallback": ""}
-        u.record_backend_resolution(row, _Wrapper())
+        r.record_backend_resolution(row, _Wrapper())
         assert row["backend_resolved"] == expected
+
+
+@pytest.mark.parametrize(
+    "backend,compatible,expected",
+    [
+        # "auto" may have resolved to AITER, whose launch grid is fixed at
+        # capture shapes, so it must be timed eagerly exactly like fa2.
+        ("auto", True, False),
+        ("fa2", True, False),
+        ("fa2_tc", True, True),
+        ("trtllm-gen", True, True),
+        ("trtllm-gen", False, False),
+    ],
+)
+def test_only_fa2_and_auto_opt_out_of_graph_capture(backend, compatible, expected):
+    assert _rocm().use_cuda_graph_for(backend, compatible) is expected
 
 
 def test_timing_kwargs_default_to_iteration_counts():
     """Passing no time budget must reproduce the previous behaviour exactly."""
-    u = _utils()
+    r = _rocm()
     args = pytest.importorskip("argparse").Namespace(
         dry_run_iters=5, num_iters=30, dry_run_time_ms=None, repeat_time_ms=None
     )
-    kwargs = u.bench_timing_kwargs(args, torch.device("cuda"))
+    kwargs = r.bench_timing_kwargs(args, torch.device("cuda"))
     assert kwargs["dry_run_iters"] == 5
     assert kwargs["repeat_iters"] == 30
     assert "dry_run_time_ms" not in kwargs
@@ -237,11 +325,11 @@ def test_timing_kwargs_default_to_iteration_counts():
 
 def test_time_budget_overrides_the_matching_iteration_count():
     """bench_gpu_time honours *_time_ms only when the matching *_iters is None."""
-    u = _utils()
+    r = _rocm()
     args = pytest.importorskip("argparse").Namespace(
         dry_run_iters=5, num_iters=30, dry_run_time_ms=250, repeat_time_ms=None
     )
-    kwargs = u.bench_timing_kwargs(args, torch.device("cuda"))
+    kwargs = r.bench_timing_kwargs(args, torch.device("cuda"))
     assert kwargs["dry_run_iters"] is None
     assert kwargs["dry_run_time_ms"] == 250
     assert kwargs["repeat_iters"] == 30
