@@ -67,7 +67,7 @@ def fused_add_rms_norm(x, residual, weight, eps):
 
 
 @pytest.mark.parametrize("batch_size", [1, 19, 99, 989])
-@pytest.mark.parametrize("hidden_size", [111, 500, 1024, 3072, 3584, 4096, 8192])
+@pytest.mark.parametrize("hidden_size", [111, 128, 500, 1024, 3072, 3584, 4096, 8192])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("specify_out", [True, False])
 @pytest.mark.parametrize("enable_pdl", [False])
@@ -96,7 +96,7 @@ def test_norm(batch_size, hidden_size, dtype, specify_out, enable_pdl, contiguou
 
 
 @pytest.mark.parametrize("batch_size", [1, 19, 99, 989])
-@pytest.mark.parametrize("hidden_size", [111, 500, 1024, 3072, 3584, 4096, 8192])
+@pytest.mark.parametrize("hidden_size", [111, 128, 500, 1024, 3072, 3584, 4096, 8192])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("enable_pdl", [False])
 @pytest.mark.parametrize("contiguous", [True, False])
@@ -200,7 +200,7 @@ def test_fused_add_rmsnorm_auto_correct(batch_size, hidden_size, dtype):
 
 
 @pytest.mark.parametrize("batch_size", [1, 19, 99, 989])
-@pytest.mark.parametrize("hidden_size", [111, 500, 1024, 3072, 3584, 4096, 8192])
+@pytest.mark.parametrize("hidden_size", [111, 128, 500, 1024, 3072, 3584, 4096, 8192])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("specify_out", [True, False])
 @pytest.mark.parametrize("enable_pdl", [False])
@@ -228,7 +228,7 @@ def test_gemma_norm(
 
 
 @pytest.mark.parametrize("batch_size", [1, 19, 99, 989])
-@pytest.mark.parametrize("hidden_size", [111, 500, 1024, 3072, 3584, 4096, 8192])
+@pytest.mark.parametrize("hidden_size", [111, 128, 500, 1024, 3072, 3584, 4096, 8192])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("enable_pdl", [False])
 @pytest.mark.parametrize("contiguous", [True, False])

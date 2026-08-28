@@ -495,10 +495,13 @@ __global__ void PersistentVariableLengthAttentionSumKernel(DTypeIn* __restrict__
   extern __shared__ uint8_t smem[];
   DTypeIn* v_smem = (DTypeIn*)smem;
 
-  vec_t<float, vec_size> v_sum_vec;
-
 #pragma unroll 1
   for (uint32_t i = cta_id; i < seq_len * num_heads; i += num_ctas) {
+    // Scoped per work item: threadblock_sum stores this to smem before zeroing
+    // it, so any value surviving from the previous i is amplified by bdy.
+    vec_t<float, vec_size> v_sum_vec;
+    v_sum_vec.fill(0.f);
+
     uint32_t pos = i / num_heads;
     uint32_t head_idx = i % num_heads;
     const uint32_t num_index_sets = indptr[pos + 1] - indptr[pos];

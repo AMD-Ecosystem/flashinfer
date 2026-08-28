@@ -8,6 +8,7 @@
 #include <sstream>
 
 #include "cascade.cuh"
+#include "decode_tuning.cuh"
 #include "gpu_iface/cooperative_groups.h"
 #include "gpu_iface/gpu_runtime_compat.hpp"
 #include "gpu_iface/math_ops.hpp"
@@ -20,6 +21,18 @@
 namespace flashinfer {
 
 DEFINE_HAS_MEMBER(decode_maybe_q_rope_offset)
+
+/// Throws naming the requested size and the device limit, instead of letting the
+/// launch fail with a bare "invalid argument".
+inline void CheckSmemBudget(uint32_t smem_size, int dev_id) {
+  const uint32_t limit = static_cast<uint32_t>(getMaxSharedMemPerBlock(dev_id));
+  if (smem_size > limit) {
+    std::ostringstream err_msg;
+    err_msg << "Shared memory size " << smem_size << " exceeds the device limit of " << limit
+            << " bytes";
+    FLASHINFER_ERROR(err_msg.str());
+  }
+}
 
 namespace cg = cooperative_groups;
 using PrefetchMode = gpu_iface::memory::PrefetchMode;
@@ -668,18 +681,9 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
         2U * NUM_STAGES_SMEM * bdy * tile_size_per_bdx * bdz * HEAD_DIM * sizeof(DTypeKV) +
         2U * bdy * bdz * sizeof(float);
 
-    // Query the device rather than assuming CDNA3's 64 KB: CDNA4 reports 160 KB
-    // per block, so a hard-coded 65536 rejects configurations gfx950 can run.
     int dev_id = 0;
     FI_GPU_CALL(gpuGetDevice(&dev_id));
-    const uint32_t max_smem_per_block = static_cast<uint32_t>(getMaxSharedMemPerBlock(dev_id));
-
-    if (smem_size > max_smem_per_block) {
-      std::ostringstream err_msg;
-      err_msg << "Shared memory size " << smem_size << " exceeds the device limit of "
-              << max_smem_per_block << " bytes";
-      FLASHINFER_ERROR(err_msg.str());
-    }
+    CheckSmemBudget(smem_size, dev_id);
 
     auto kernel =
         SingleDecodeWithKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
@@ -759,10 +763,9 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatched(Params params, typename Params:
   const uint32_t num_kv_heads = params.paged_kv.num_heads;
   const uint32_t padded_batch_size = params.padded_batch_size;
 
-  constexpr uint32_t vec_size = std::max(16UL / sizeof(DTypeKV), HEAD_DIM / 32UL);
+  constexpr uint32_t vec_size = decode_tuning::BatchDecodeVecSize<DTypeKV, HEAD_DIM>();
   auto compute_capacity = GetCudaComputeCapability();
-  constexpr uint32_t bdx = HEAD_DIM / vec_size;
-  static_assert(bdx <= 32);
+  constexpr uint32_t bdx = decode_tuning::BatchDecodeBdx<DTypeKV, HEAD_DIM>();
   DISPATCH_GQA_GROUP_SIZE(num_qo_heads / num_kv_heads, GROUP_SIZE, {
     constexpr uint32_t bdy = GROUP_SIZE;
     constexpr uint32_t num_threads = std::max(128U, bdx * bdy);
@@ -773,6 +776,10 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatched(Params params, typename Params:
           2 * NUM_STAGES_SMEM * tile_size_per_bdx * bdy * bdz * HEAD_DIM * sizeof(DTypeKV) +
           std::max(tile_size_per_bdx * num_threads * sizeof(DTypeKV*),
                    2 * bdy * bdz * sizeof(float));
+      int dev_id = 0;
+      FI_GPU_CALL(gpuGetDevice(&dev_id));
+      CheckSmemBudget(smem_size, dev_id);
+
       auto kernel =
           BatchDecodeWithPagedKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
                                             vec_size, bdx, bdy, bdz, AttentionVariant, Params>;

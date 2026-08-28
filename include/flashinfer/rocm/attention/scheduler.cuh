@@ -5,7 +5,14 @@
 #ifndef FLASHINFER_ATTENTION_SCHEDULER_CUH_
 #define FLASHINFER_ATTENTION_SCHEDULER_CUH_
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <sstream>
+#include <vector>
+
 #include "allocator.h"
+#include "decode_tuning.cuh"
 #include "exception.h"
 #include "gpu_iface/dispatch.cuh"
 #include "gpu_iface/gpu_runtime_compat.hpp"
@@ -13,18 +20,6 @@
 #include "gpu_iface/utils.cuh"
 #include "heap.h"
 #include "pos_enc.cuh"
-
-#if defined(PLATFORM_CUDA_DEVICE)
-#include <driver_types.h>
-#elif defined(PLATFORM_HIP_DEVICE)
-#include <hip/driver_types.h>
-#endif
-
-#include <algorithm>
-#include <cstddef>
-#include <cstdint>
-#include <sstream>
-#include <vector>
 
 namespace flashinfer {
 
@@ -144,11 +139,10 @@ inline gpuError_t BatchDecodeWithPagedKVCacheWorkEstimationDispatched(
     bool enable_cuda_graph, gpuStream_t stream) {
   using DTypeKV = typename Params::DTypeKV;
   using IdType = typename Params::IdType;
-  constexpr uint32_t vec_size = std::max(16UL / sizeof(DTypeKV), HEAD_DIM / 32UL);
+  constexpr uint32_t vec_size = decode_tuning::BatchDecodeVecSize<DTypeKV, HEAD_DIM>();
   auto compute_capacity = GetCudaComputeCapability();
   DISPATCH_COMPUTE_CAP_DECODE_NUM_STAGES_SMEM(compute_capacity, NUM_STAGES_SMEM, {
-    constexpr uint32_t bdx = HEAD_DIM / vec_size;
-    static_assert(bdx <= 32);
+    constexpr uint32_t bdx = decode_tuning::BatchDecodeBdx<DTypeKV, HEAD_DIM>();
     constexpr uint32_t bdy = GROUP_SIZE;
     constexpr uint32_t num_threads = std::max(128U, bdx * bdy);
     constexpr uint32_t bdz = num_threads / (bdx * bdy);

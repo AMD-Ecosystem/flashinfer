@@ -10,11 +10,7 @@
 #include "gpu_iface/platform.hpp"
 
 // Define platform-specific full mask for warp/wavefront operations
-#if defined(PLATFORM_CUDA_DEVICE)
-constexpr uint32_t WARP_FULL_MASK = 0xffffffff;  // 32-bit mask for CUDA
-#elif defined(PLATFORM_HIP_DEVICE)
 constexpr uint64_t WARP_FULL_MASK = 0xffffffffffffffffULL;  // 64-bit mask for HIP
-#endif
 
 __device__ __forceinline__ uint32_t frag_layout_swizzle_16b_to_8b(uint32_t x) {
   uint32_t tmp = __shfl_xor_sync(WARP_FULL_MASK, x, 0x1);

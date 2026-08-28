@@ -19,17 +19,26 @@ namespace flashinfer {
 using namespace gpu_iface::vec_dtypes;
 namespace norm {
 
+// Threads per lane group. Must divide the wavefront so a group's shuffle
+// reduction never crosses a wave boundary.
+constexpr uint32_t kLaneGroupSize = 32;
+constexpr uint32_t kMaxBlockSize = 1024;
+
+static_assert(kLaneGroupSize <= static_cast<uint32_t>(gpu_iface::kWarpSize) &&
+              static_cast<uint32_t>(gpu_iface::kWarpSize) % kLaneGroupSize == 0);
+// Stage 2 folds num_warps partial sums inside a single lane group. Ceiling
+// division, matching how the launchers derive num_warps.
+static_assert((kMaxBlockSize + kLaneGroupSize - 1) / kLaneGroupSize <= kLaneGroupSize);
+
 template <uint32_t VEC_SIZE, typename T>
 __global__ void RMSNormKernel(T* __restrict__ input, T* __restrict__ weight, T* __restrict__ output,
                               const uint32_t d, const uint32_t stride_input,
                               const uint32_t stride_output, float weight_bias, float eps) {
   const uint32_t bx = blockIdx.x;
   const uint32_t tx = threadIdx.x, ty = threadIdx.y;
-  constexpr uint32_t warp_size = 32;
   const uint32_t num_warps = blockDim.y;
-  // NOTE(Zihao): it's guaranteed that num_warps should be smaller than 32
-  const uint32_t thread_id = tx + ty * warp_size;
-  const uint32_t num_threads = num_warps * warp_size;
+  const uint32_t thread_id = tx + ty * kLaneGroupSize;
+  const uint32_t num_threads = num_warps * kLaneGroupSize;
   const uint32_t rounds = ceil_div(d, VEC_SIZE * num_threads);
   extern __shared__ float smem[];
 
@@ -53,7 +62,7 @@ __global__ void RMSNormKernel(T* __restrict__ input, T* __restrict__ weight, T* 
 
   // first, warp reduce sum
 #pragma unroll
-  for (uint32_t offset = warp_size / 2; offset > 0; offset /= 2) {
+  for (uint32_t offset = kLaneGroupSize / 2; offset > 0; offset /= 2) {
     sum_sq += math::shfl_xor_sync(sum_sq, offset);
   }
 
@@ -63,7 +72,7 @@ __global__ void RMSNormKernel(T* __restrict__ input, T* __restrict__ weight, T* 
   if (ty == 0) {
     sum_sq = (tx < num_warps) ? smem[tx] : 0.f;
 #pragma unroll
-    for (uint32_t offset = warp_size / 2; offset > 0; offset /= 2) {
+    for (uint32_t offset = kLaneGroupSize / 2; offset > 0; offset /= 2) {
       sum_sq += math::shfl_xor_sync(sum_sq, offset);
     }
     smem[0] = sum_sq;
@@ -102,38 +111,20 @@ gpuError_t RMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uint32_t
                    bool enable_pdl = false, gpuStream_t stream = 0) {
   const uint32_t vec_size = std::gcd(16 / sizeof(T), d);
 
-  const uint32_t block_size = std::min<uint32_t>(1024, d / vec_size);
-  const uint32_t num_warps = ceil_div(block_size, 32);
+  const uint32_t block_size = std::min<uint32_t>(kMaxBlockSize, d / vec_size);
+  const uint32_t num_warps = ceil_div(block_size, kLaneGroupSize);
   dim3 nblks(batch_size);
-  dim3 nthrs(32, num_warps);
+  dim3 nthrs(kLaneGroupSize, num_warps);
   const uint32_t smem_size = num_warps * sizeof(float);
   float weight_bias = 0.f;
   void* args[] = {&input, &weight, &output, &d, &stride_input, &stride_output, &weight_bias, &eps};
-
-#if defined(PLATFORM_CUDA_DEVICE)
-  cudaLaunchConfig_t config;
-  config.gridDim = nblks;
-  config.blockDim = nthrs;
-  config.dynamicSmemBytes = smem_size;
-  config.stream = stream;
-  cudaLaunchAttribute attrs[1];
-  attrs[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
-  attrs[0].val.programmaticStreamSerializationAllowed = enable_pdl;
-  config.numAttrs = 1;
-  config.attrs = attrs;
-#endif
 
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = RMSNormKernel<VEC_SIZE, T>;
     FI_GPU_CALL(
         gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
-#if defined(PLATFORM_CUDA_DEVICE)
-    FI_GPU_CALL(gpuLaunchKernelEx(&config, kernel, input, weight, output, d, stride_input,
-                                  stride_output, weight_bias, eps));
-#else
-            FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
-#endif
+    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
   return gpuSuccess;
 }
@@ -145,10 +136,9 @@ __global__ void FusedAddRMSNormKernel(T* __restrict__ input, T* __restrict__ res
                                       float weight_bias, float eps) {
   const uint32_t bx = blockIdx.x;
   const uint32_t tx = threadIdx.x, ty = threadIdx.y;
-  constexpr uint32_t warp_size = 32;
   const uint32_t num_warps = blockDim.y;
-  const uint32_t thread_id = tx + ty * warp_size;
-  const uint32_t num_threads = num_warps * warp_size;
+  const uint32_t thread_id = tx + ty * kLaneGroupSize;
+  const uint32_t num_threads = num_warps * kLaneGroupSize;
   const uint32_t rounds = ceil_div(d, VEC_SIZE * num_threads);
   extern __shared__ float smem[];
   float* smem_x = smem + ceil_div(num_warps, 4) * 4;
@@ -187,7 +177,7 @@ __global__ void FusedAddRMSNormKernel(T* __restrict__ input, T* __restrict__ res
 
   // first, warp reduce sum
 #pragma unroll
-  for (uint32_t offset = warp_size / 2; offset > 0; offset /= 2) {
+  for (uint32_t offset = kLaneGroupSize / 2; offset > 0; offset /= 2) {
     sum_sq += math::shfl_xor_sync(sum_sq, offset);
   }
 
@@ -197,7 +187,7 @@ __global__ void FusedAddRMSNormKernel(T* __restrict__ input, T* __restrict__ res
   if (ty == 0) {
     sum_sq = (tx < num_warps) ? smem[tx] : 0.f;
 #pragma unroll
-    for (uint32_t offset = warp_size / 2; offset > 0; offset /= 2) {
+    for (uint32_t offset = kLaneGroupSize / 2; offset > 0; offset /= 2) {
       sum_sq += math::shfl_xor_sync(sum_sq, offset);
     }
     smem[0] = sum_sq;
@@ -237,38 +227,20 @@ gpuError_t FusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch_size
                            bool enable_pdl = false, gpuStream_t stream = 0) {
   const uint32_t vec_size = std::gcd(16 / sizeof(T), d);
 
-  const uint32_t block_size = std::min<uint32_t>(1024, d / vec_size);
-  const uint32_t num_warps = ceil_div(block_size, 32);
+  const uint32_t block_size = std::min<uint32_t>(kMaxBlockSize, d / vec_size);
+  const uint32_t num_warps = ceil_div(block_size, kLaneGroupSize);
   dim3 nblks(batch_size);
-  dim3 nthrs(32, num_warps);
+  dim3 nthrs(kLaneGroupSize, num_warps);
   const uint32_t smem_size = (ceil_div(num_warps, 4) * 4 + d) * sizeof(float);
   float weight_bias = 0.f;
   void* args[] = {&input,        &residual,        &weight,      &d,
                   &stride_input, &stride_residual, &weight_bias, &eps};
 
-#if defined(PLATFORM_CUDA_DEVICE)
-  cudaLaunchConfig_t config;
-  config.gridDim = nblks;
-  config.blockDim = nthrs;
-  config.dynamicSmemBytes = smem_size;
-  config.stream = stream;
-  cudaLaunchAttribute attrs[1];
-  attrs[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
-  attrs[0].val.programmaticStreamSerializationAllowed = enable_pdl;
-  config.numAttrs = 1;
-  config.attrs = attrs;
-#endif
-
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = FusedAddRMSNormKernel<VEC_SIZE, T>;
     FI_GPU_CALL(
         gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
-#if defined(PLATFORM_CUDA_DEVICE)
-    FI_GPU_CALL(gpuLaunchKernelEx(&config, kernel, input, residual, weight, d, stride_input,
-                                  stride_residual, weight_bias, eps));
-#else
-            FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
-#endif
+    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
 
   return gpuSuccess;
@@ -280,37 +252,19 @@ gpuError_t GemmaRMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uin
                         bool enable_pdl = false, gpuStream_t stream = 0) {
   const uint32_t vec_size = std::gcd(16 / sizeof(T), d);
 
-  const uint32_t block_size = std::min<uint32_t>(1024, d / vec_size);
-  const uint32_t num_warps = ceil_div(block_size, 32);
+  const uint32_t block_size = std::min<uint32_t>(kMaxBlockSize, d / vec_size);
+  const uint32_t num_warps = ceil_div(block_size, kLaneGroupSize);
   dim3 nblks(batch_size);
-  dim3 nthrs(32, num_warps);
+  dim3 nthrs(kLaneGroupSize, num_warps);
   const uint32_t smem_size = num_warps * sizeof(float);
   float weight_bias = 1.f;
   void* args[] = {&input, &weight, &output, &d, &stride_input, &stride_output, &weight_bias, &eps};
-
-#if defined(PLATFORM_CUDA_DEVICE)
-  cudaLaunchConfig_t config;
-  config.gridDim = nblks;
-  config.blockDim = nthrs;
-  config.dynamicSmemBytes = smem_size;
-  config.stream = stream;
-  cudaLaunchAttribute attrs[1];
-  attrs[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
-  attrs[0].val.programmaticStreamSerializationAllowed = enable_pdl;
-  config.numAttrs = 1;
-  config.attrs = attrs;
-#endif
 
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = RMSNormKernel<VEC_SIZE, T>;
     FI_GPU_CALL(
         gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
-#if defined(PLATFORM_CUDA_DEVICE)
-    FI_GPU_CALL(gpuLaunchKernelEx(&config, kernel, input, weight, output, d, stride_input,
-                                  stride_output, weight_bias, eps));
-#else
-            FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
-#endif
+    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
   return gpuSuccess;
 }
@@ -321,10 +275,10 @@ gpuError_t GemmaFusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch
                                 bool enable_pdl = false, gpuStream_t stream = 0) {
   const uint32_t vec_size = std::gcd(16 / sizeof(T), d);
 
-  const uint32_t block_size = std::min<uint32_t>(1024, d / vec_size);
-  const uint32_t num_warps = ceil_div(block_size, 32);
+  const uint32_t block_size = std::min<uint32_t>(kMaxBlockSize, d / vec_size);
+  const uint32_t num_warps = ceil_div(block_size, kLaneGroupSize);
   dim3 nblks(batch_size);
-  dim3 nthrs(32, num_warps);
+  dim3 nthrs(kLaneGroupSize, num_warps);
   // NOTE(Zihao): use ceil_div(num_warps, 4) * 4 for address alignment to 16
   // bytes
   const uint32_t smem_size = (ceil_div(num_warps, 4) * 4 + d) * sizeof(float);
@@ -332,30 +286,12 @@ gpuError_t GemmaFusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch
   void* args[] = {&input,        &residual,        &weight,      &d,
                   &stride_input, &stride_residual, &weight_bias, &eps};
 
-#if defined(PLATFORM_CUDA_DEVICE)
-  cudaLaunchConfig_t config;
-  config.gridDim = nblks;
-  config.blockDim = nthrs;
-  config.dynamicSmemBytes = smem_size;
-  config.stream = stream;
-  cudaLaunchAttribute attrs[1];
-  attrs[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
-  attrs[0].val.programmaticStreamSerializationAllowed = enable_pdl;
-  config.numAttrs = 1;
-  config.attrs = attrs;
-#endif
-
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = FusedAddRMSNormKernel<VEC_SIZE, T>;
     FI_GPU_CALL(
         gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
-#if defined(PLATFORM_CUDA_DEVICE)
-    FI_GPU_CALL(gpuLaunchKernelEx(&config, kernel, input, residual, weight, d, stride_input,
-                                  stride_residual, weight_bias, eps));
-#else
-            FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
-#endif
+    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
 
   return gpuSuccess;
