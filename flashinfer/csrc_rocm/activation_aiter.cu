@@ -19,6 +19,8 @@
 #include "aiter_tensor_compat.h"
 
 void silu_and_mul_aiter(at::Tensor out, at::Tensor input) {
+  TORCH_CHECK(out.device() == input.device(), "silu_and_mul: out is on ", out.device(),
+              " but input is on ", input.device());
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(input.device());
 
   // The kernel indexes linearly, so strides in aiter_tensor_t are not honoured.
