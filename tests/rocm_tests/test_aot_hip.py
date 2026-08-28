@@ -264,6 +264,11 @@ def test_publishing_preserves_the_requested_order(monkeypatch):
     monkeypatch.setattr(
         "flashinfer.compilation_context_hip.CompilationContext", _OrderedContext
     )
+    # Spec generation is stubbed because it validates the *published* list
+    # against what PyTorch was compiled for, so on a gfx942-only build this
+    # test failed on gfx950 -- an arch it names deliberately. The publish
+    # happens before this point, which is the whole subject here.
+    monkeypatch.setattr(aot_hip, "gen_all_modules", lambda *a, **k: [])
 
     aot_hip.compile_and_package_modules(
         out_dir=None,
