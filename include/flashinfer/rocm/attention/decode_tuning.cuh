@@ -21,18 +21,22 @@ namespace decode_tuning {
  */
 template <typename DTypeKV, uint32_t HEAD_DIM>
 constexpr uint32_t BatchDecodeVecSize() {
-  // bdx spans half a wavefront here. Widening it to 64 the way single-decode
-  // does measures slower on both gfx942 and gfx950 — 16-byte per-lane loads
-  // beat the wider reduction. Do not "fix" without re-measuring.
+  // bdx deliberately spans half a wavefront; widening it measures slower on
+  // both archs. Do not change without re-benchmarking.
   return std::max(16UL / sizeof(DTypeKV), HEAD_DIM / 32UL);
 }
 
 /*! \brief Threads cooperating on one head, i.e. the width of the in-wave reduction. */
 template <typename DTypeKV, uint32_t HEAD_DIM>
 constexpr uint32_t BatchDecodeBdx() {
-  constexpr uint32_t bdx = HEAD_DIM / BatchDecodeVecSize<DTypeKV, HEAD_DIM>();
+  constexpr uint32_t vec_size = BatchDecodeVecSize<DTypeKV, HEAD_DIM>();
+  constexpr uint32_t bdx = HEAD_DIM / vec_size;
   // The reduction shuffles over bdx lanes, so it must fit within one wavefront.
   static_assert(bdx <= 32);
+  // compute_qk butterflies over offsets bdx/2..1, which is an all-reduce only
+  // for power-of-two bdx; and the kernel treats bdx * vec_size as the head dim.
+  static_assert((bdx & (bdx - 1)) == 0, "head_dim yields a non-power-of-two bdx");
+  static_assert(bdx * vec_size == HEAD_DIM, "head_dim is not a multiple of vec_size");
   return bdx;
 }
 
