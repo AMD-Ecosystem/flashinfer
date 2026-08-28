@@ -155,8 +155,8 @@ def require_aiter(device: torch.device, op: str) -> None:
             )
         raise ValueError(
             f"backend='aiter' for {op} requires the aiter package, which is not "
-            f"installed or failed to import. Install it (see the AITER Support "
-            f"section in the README) or {advice}."
+            f"installed or failed to import. Install it (see docs/rocm/backends.md) "
+            f"or {advice}."
         )
 
 
