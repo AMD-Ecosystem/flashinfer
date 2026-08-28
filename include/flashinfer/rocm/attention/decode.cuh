@@ -22,6 +22,18 @@ namespace flashinfer {
 
 DEFINE_HAS_MEMBER(decode_maybe_q_rope_offset)
 
+/// Throws naming the requested size and the device limit, instead of letting the
+/// launch fail with a bare "invalid argument".
+inline void CheckSmemBudget(uint32_t smem_size, int dev_id) {
+  const uint32_t limit = static_cast<uint32_t>(getMaxSharedMemPerBlock(dev_id));
+  if (smem_size > limit) {
+    std::ostringstream err_msg;
+    err_msg << "Shared memory size " << smem_size << " exceeds the device limit of " << limit
+            << " bytes";
+    FLASHINFER_ERROR(err_msg.str());
+  }
+}
+
 namespace cg = cooperative_groups;
 using PrefetchMode = gpu_iface::memory::PrefetchMode;
 using SharedMemFillMode = gpu_iface::memory::SharedMemFillMode;
@@ -671,7 +683,7 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
 
     int dev_id = 0;
     FI_GPU_CALL(gpuGetDevice(&dev_id));
-    checkSmemBudget(smem_size, dev_id);
+    CheckSmemBudget(smem_size, dev_id);
 
     auto kernel =
         SingleDecodeWithKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
@@ -766,7 +778,7 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatched(Params params, typename Params:
                    2 * bdy * bdz * sizeof(float));
       int dev_id = 0;
       FI_GPU_CALL(gpuGetDevice(&dev_id));
-      checkSmemBudget(smem_size, dev_id);
+      CheckSmemBudget(smem_size, dev_id);
 
       auto kernel =
           BatchDecodeWithPagedKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
