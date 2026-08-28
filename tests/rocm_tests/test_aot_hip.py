@@ -629,6 +629,7 @@ def test_verbose_summary_names_the_arch_list_it_published(
     resolved to, and the AITER shim reads that same list from the environment."""
     import flashinfer.jit as jit
 
+    _register_arch_list_undo(monkeypatch)
     monkeypatch.setattr(jit, "build_jit_specs", lambda specs, **kw: None)
     monkeypatch.setattr(aot_hip, "copy_built_kernels", lambda *a: None)
     out_dir = tmp_path / "out"

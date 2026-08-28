@@ -41,12 +41,16 @@ class TestAiterNativePageSizes:
     def _with_version(self, monkeypatch, value):
         import importlib.metadata
 
+        # Captured before the setattr: reading it back through the module would
+        # resolve to this same function and recurse.
+        original = importlib.metadata.version
+
         def _version(name):
-            if name == "amd-aiter":
-                if isinstance(value, Exception):
-                    raise value
-                return value
-            return importlib.metadata.version(name)
+            if name != "amd-aiter":
+                return original(name)
+            if isinstance(value, Exception):
+                raise value
+            return value
 
         monkeypatch.setattr(importlib.metadata, "version", _version)
 

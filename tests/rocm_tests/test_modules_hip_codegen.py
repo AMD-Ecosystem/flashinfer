@@ -27,21 +27,24 @@ _DIMS = dict(
 
 
 class TestUriGeneration:
-    @pytest.mark.parametrize("backend", ["fa2", "aiter"])
-    def test_the_backend_is_part_of_the_single_prefill_uri(self, backend):
-        uri = modules_hip.get_single_prefill_uri(backend, **_DT, **_DIMS)
-        assert isinstance(uri, str) and uri
+    def test_fa2_and_aiter_do_not_share_a_cache_key(self):
+        fa2 = modules_hip.get_single_prefill_uri("fa2", **_DT, **_DIMS)
+        aiter = modules_hip.get_single_prefill_uri("aiter", **_DT, **_DIMS)
 
-    def test_fa3_is_accepted_for_a_uri_but_warned_about(self, caplog):
-        """Upstream callers still pass fa3; the URI is produced as if fa2 so the
-        error comes from the generator, with a reason, rather than from a
-        mysterious cache key."""
-        single = modules_hip.get_single_prefill_uri("fa3", **_DT, **_DIMS)
-        batch = modules_hip.get_batch_prefill_uri(
+        assert fa2 != aiter
+        assert "aiter" in aiter
+
+    def test_fa3_produces_the_fa2_uri_so_the_error_comes_from_the_generator(self):
+        """Upstream callers still pass fa3. Sharing fa2's cache key is what keeps
+        the refusal in gen_*, with a reason, rather than in a lookup miss."""
+        assert modules_hip.get_single_prefill_uri(
+            "fa3", **_DT, **_DIMS
+        ) == modules_hip.get_single_prefill_uri("fa2", **_DT, **_DIMS)
+        assert modules_hip.get_batch_prefill_uri(
             "fa3", **_DT, dtype_idx=torch.int32, **_DIMS
+        ) == modules_hip.get_batch_prefill_uri(
+            "fa2", **_DT, dtype_idx=torch.int32, **_DIMS
         )
-
-        assert single and batch
 
     def test_batch_and_single_uris_differ(self):
         single = modules_hip.get_single_prefill_uri("fa2", **_DT, **_DIMS)

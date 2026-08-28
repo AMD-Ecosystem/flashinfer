@@ -38,13 +38,18 @@ class TestFp8ShapeProblem:
 
     @pytest.mark.parametrize("arch", ["gfx942", "gfx950"])
     def test_an_indivisible_inter_dim_names_the_dimension_and_the_tile(self, arch):
-        k_tile = fused_moe_rocm._fp8_stage2_k_tile(arch, 32, 8192)
+        # Large enough that production picks the same tile it would for a
+        # conforming shape; k_tile + 1 would drop gfx942 into the narrow arm.
+        inter = 8192 + 64
+        k_tile = fused_moe_rocm._fp8_stage2_k_tile(arch, 32, inter)
+        assert inter % k_tile, "shape must be indivisible for this to be a problem"
         model = fused_moe_rocm._FP8_STAGE1_K_TILE * 4
 
-        problem = fused_moe_rocm._fp8_shape_problem(arch, 32, model, k_tile + 1)
+        problem = fused_moe_rocm._fp8_shape_problem(arch, 32, model, inter)
 
         assert problem is not None
         assert "inter_dim" in problem and arch in problem
+        assert str(k_tile) in problem
 
 
 class TestMoeFp8Dtype:

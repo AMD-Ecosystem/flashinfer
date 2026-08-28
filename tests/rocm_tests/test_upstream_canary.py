@@ -12,6 +12,7 @@ suite's torch-importing conftest, so CI runs this file with ``--noconftest``.
 
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -526,7 +527,12 @@ class TestRun:
 
         assert "renamed.cu" in out
         assert "[rename]" in out
-        assert "ours         +0/-0" not in out
+        # Read the churn back rather than matching a padded column: the width is
+        # computed from the longest path, so a literal is both brittle and, at
+        # the wrong space count, unable to fail.
+        ours = re.search(r"renamed\.cu\s+ours\s+(\S+)", out)
+        assert ours is not None, out
+        assert ours.group(1) != "+0/-0"
 
     def test_add_add_conflict_is_labelled(self, repo, monkeypatch, capsys):
         _git(repo, "checkout", "-q", "theirs")

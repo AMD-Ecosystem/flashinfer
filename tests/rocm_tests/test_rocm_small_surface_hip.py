@@ -124,25 +124,28 @@ class TestBlockingReason:
 
 
 class TestAiterAvailabilityGate:
+    @pytest.fixture(autouse=True)
+    def _uncached(self):
+        """Teardown, not a trailing statement: an assertion failure would
+        otherwise strand a probe answer computed under a fake torch or a
+        blocked import, and every later AITER test in the worker would skip."""
+        for probe in (aiter_utils.is_aiter_supported, aiter_utils._aiter_importable):
+            probe.cache_clear()
+        yield
+        for probe in (aiter_utils.is_aiter_supported, aiter_utils._aiter_importable):
+            probe.cache_clear()
+
     def test_a_non_hip_torch_is_never_an_aiter_target(self, monkeypatch):
-        aiter_utils.is_aiter_supported.cache_clear()
         monkeypatch.setattr(torch.version, "hip", None)
 
         assert aiter_utils.is_aiter_supported(torch.device("cuda:0")) is False
 
-        aiter_utils.is_aiter_supported.cache_clear()
-
     def test_an_unreadable_device_is_not_an_aiter_target(self, monkeypatch):
         """get_device_properties raises for an index that does not exist; that is
         an answer, not a crash."""
-        aiter_utils.is_aiter_supported.cache_clear()
-
         assert aiter_utils.is_aiter_supported(torch.device("cuda:999")) is False
 
-        aiter_utils.is_aiter_supported.cache_clear()
-
     def test_a_missing_package_makes_the_probe_report_unavailable(self, monkeypatch):
-        aiter_utils._aiter_importable.cache_clear()
         real_import = (
             __builtins__["__import__"]
             if isinstance(__builtins__, dict)
@@ -157,8 +160,6 @@ class TestAiterAvailabilityGate:
         monkeypatch.setattr("builtins.__import__", _no_aiter)
 
         assert aiter_utils._aiter_importable() is False
-
-        aiter_utils._aiter_importable.cache_clear()
 
     def test_explicit_aiter_without_the_package_names_the_alternative(
         self, monkeypatch

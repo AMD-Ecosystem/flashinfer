@@ -10,6 +10,8 @@ that nothing else reports. The guards around it turn a malformed plan into a
 message rather than a kernel-side fault.
 """
 
+import os
+
 import pytest
 import torch
 
@@ -47,10 +49,11 @@ class TestCombinedKvView:
         assert mla_rocm._combined_kv_view(ckv, kpe) is None
 
     def test_mismatched_dtypes_are_rejected(self, device):
-        ckv, _ = _adjacent(device)
-        kpe = torch.zeros(4, 8, 64, dtype=torch.bfloat16, device=device)
+        # Reinterpreted, not reallocated: storage stays shared so the dtype
+        # check is the only one that can reject.
+        ckv, kpe = _adjacent(device)
 
-        assert mla_rocm._combined_kv_view(ckv, kpe) is None
+        assert mla_rocm._combined_kv_view(ckv, kpe.view(torch.bfloat16)) is None
 
     def test_a_wrong_rank_is_rejected(self, device):
         ckv, kpe = _adjacent(device)
@@ -59,12 +62,23 @@ class TestCombinedKvView:
         assert mla_rocm._combined_kv_view(ckv, kpe.reshape(-1)) is None
 
     def test_mismatched_page_geometry_is_rejected(self, device):
-        ckv, _ = _adjacent(device)
-        kpe = torch.zeros(4, 16, 64, dtype=torch.float16, device=device)
+        ckv, kpe = _adjacent(device)
+        # Shares storage so the data_ptr check cannot be what rejects it. The
+        # shape guard still is not isolated -- removing it, the view assembly
+        # below rejects instead -- so this pins the outcome, not the guard.
+        regrouped = torch.as_strided(
+            kpe, (2, 16, 64), (kpe.stride(0) * 2, kpe.stride(1), kpe.stride(2))
+        )
 
-        assert mla_rocm._combined_kv_view(ckv, kpe) is None
+        assert (
+            regrouped.untyped_storage().data_ptr() == ckv.untyped_storage().data_ptr()
+        )
+        assert mla_rocm._combined_kv_view(ckv, regrouped) is None
 
     def test_tensors_on_different_devices_are_rejected(self, device):
+        """Cannot be isolated the way the others are -- two devices cannot share
+        storage, so the data_ptr check would reject this even without the
+        device check. Kept because the pair is reachable from a caller."""
         ckv, _ = _adjacent(device)
         kpe = torch.zeros(4, 8, 64, dtype=torch.float16, device="cpu")
 
@@ -125,5 +139,6 @@ class TestUtilsHelpers:
         assert out.device.type == "cpu"
         assert out.dtype == torch.int64
 
-    def test_custom_op_mode_is_reported(self):
-        assert isinstance(utils.use_torch_custom_ops_enabled(), bool)
+    def test_custom_op_mode_tracks_the_environment(self):
+        expected = os.environ.get("FLASHINFER_USE_TORCH_CUSTOM_OPS", "0") == "1"
+        assert utils.use_torch_custom_ops_enabled() is expected

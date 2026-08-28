@@ -771,11 +771,11 @@ class TestRocmVersionProbes:
     def test_info_file_reports_the_first_three_components(self, tmp_path):
         info = tmp_path / ".info"
         info.mkdir()
-        (info / "version").write_text("7.2.0-42-abcdef\n")
+        # Four dot-separated fields: a three-field input leaves the [:3] slice
+        # a no-op, so it would not pin the truncation this test is named for.
+        (info / "version").write_text("7.2.0.60002-42\n")
         with patch.object(hip_utils, "get_rocm_home", return_value=str(tmp_path)):
-            assert (
-                hip_utils.get_system_rocm_version_from_info_file() == "7.2.0-42-abcdef"
-            )
+            assert hip_utils.get_system_rocm_version_from_info_file() == "7.2.0"
 
     def test_missing_info_file_is_not_an_error(self, tmp_path):
         with patch.object(hip_utils, "get_rocm_home", return_value=str(tmp_path)):

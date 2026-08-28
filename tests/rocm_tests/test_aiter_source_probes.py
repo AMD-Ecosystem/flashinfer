@@ -77,16 +77,19 @@ class TestCacheTag:
 
 
 class TestCsrcIncludeDir:
+    @pytest.fixture(autouse=True)
+    def _uncached(self):
+        aiter_source._aiter_csrc_include_dir.cache_clear()
+        yield
+        aiter_source._aiter_csrc_include_dir.cache_clear()
+
     def test_a_missing_header_tree_names_the_package(self, monkeypatch):
         import aiter_meta
 
-        aiter_source._aiter_csrc_include_dir.cache_clear()
         monkeypatch.setattr(aiter_meta, "__path__", ["/nonexistent"])
 
         with pytest.raises(RuntimeError, match="aiter_meta/csrc/include"):
             aiter_source._aiter_csrc_include_dir()
-
-        aiter_source._aiter_csrc_include_dir.cache_clear()
 
 
 class TestFindBuiltSo:
