@@ -1301,12 +1301,12 @@ class TestPathAnchoring:
     def test_every_path_option_goes_through_it(self):
         """json_out bypassed the anchoring until this branch; the print that
         follows also has to tolerate the out-of-repo path _anchor allows."""
-        source = (_REPO_ROOT / "scripts" / "amd_coverage.py").read_text()
-        assert source.count("_anchor(repo,") == 3
-        guard = source[source.index("json_out = _anchor(repo,") :]
-        assert (
-            "contextlib.suppress(ValueError)" in guard[: guard.index('print(f"wrote')]
-        )
+        lines = (_REPO_ROOT / "scripts" / "amd_coverage.py").read_text().splitlines()
+        assert sum("_anchor(repo," in ln for ln in lines) == 3
+        at = next(i for i, ln in enumerate(lines) if "json_out = _anchor(repo," in ln)
+        # A line window rather than a slice delimited by the print itself, which
+        # would fail on a quote-style change that leaves the guard intact.
+        assert any("contextlib.suppress(ValueError)" in ln for ln in lines[at : at + 8])
 
 
 class TestMain:
