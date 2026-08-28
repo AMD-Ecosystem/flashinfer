@@ -10,10 +10,22 @@ which is why the floor is enforced before routing rather than at the call.
 """
 
 import pathlib
+import re
 
 import pytest
 
 from flashinfer import aiter_utils
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+_DOC_REF = re.compile(r"docs/[\w./-]+\.md")
+
+
+def _doc_references():
+    for src in sorted(
+        (*_REPO_ROOT.glob("flashinfer/**/*.py"), *_REPO_ROOT.glob("scripts/*.py"))
+    ):
+        for ref in dict.fromkeys(_DOC_REF.findall(src.read_text())):
+            yield src.relative_to(_REPO_ROOT), ref
 
 
 @pytest.mark.parametrize(
@@ -44,6 +56,16 @@ def test_absent_aiter_is_not_a_version_failure(monkeypatch):
     """A missing package must not be reported as an out-of-date one."""
     monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: None)
     assert aiter_utils._aiter_version_supported() is False
+
+
+def test_every_doc_path_named_in_the_source_resolves():
+    """Error messages send users to these paths, so a rename that misses one
+    ships a dead pointer to whoever is already stuck. Needs no GPU."""
+    refs = list(_doc_references())
+
+    assert refs, "no doc references found -- the scan is not looking where it should"
+    missing = [f"{src}: {ref}" for src, ref in refs if not (_REPO_ROOT / ref).is_file()]
+    assert not missing, "doc paths named in source but absent: " + ", ".join(missing)
 
 
 def test_header_records_the_same_floor():

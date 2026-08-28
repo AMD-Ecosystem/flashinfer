@@ -15,7 +15,7 @@ import os
 import pytest
 import torch
 
-from flashinfer import mla_rocm, utils
+from flashinfer import aiter_utils, mla_rocm, utils
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="needs a ROCm device"
@@ -105,7 +105,7 @@ class TestLastPageLenConversion:
 
 
 class TestRequireAiterMla:
-    def test_a_missing_package_names_the_install_command(self, device, monkeypatch):
+    def test_a_missing_package_points_at_the_install_docs(self, device, monkeypatch):
         monkeypatch.setattr(
             mla_rocm,
             "_aiter_mla",
@@ -113,8 +113,10 @@ class TestRequireAiterMla:
         )
         monkeypatch.setattr(mla_rocm, "require_capability", lambda *a: None)
 
-        with pytest.raises(ImportError, match="github.com/ROCm/aiter"):
+        with pytest.raises(ImportError, match=r"docs/rocm/backends\.md") as excinfo:
             mla_rocm._require_aiter_mla(device)
+
+        assert aiter_utils.AITER_MIN_VERSION in str(excinfo.value)
 
 
 class TestUtilsHelpers:

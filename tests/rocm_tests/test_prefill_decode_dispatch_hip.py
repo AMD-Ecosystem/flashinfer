@@ -13,14 +13,19 @@ A GPU is needed only to construct tensors and read the device architecture; no
 attention kernel is launched.
 """
 
+import re
+
 import pytest
 import torch
 
-from flashinfer import decode_rocm, prefill_rocm
+from flashinfer import aiter_utils, decode_rocm, prefill_rocm
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="needs a ROCm device"
 )
+
+# That this path resolves is checked without a GPU in test_aiter_version_gate_hip.
+_INSTALL_DOC = "docs/rocm/backends.md"
 
 
 @pytest.fixture
@@ -214,11 +219,34 @@ class TestAutoBackendSelection:
 
 
 class TestRequireAiterRuntime:
-    def test_a_missing_package_names_the_install_command(self, device, monkeypatch):
+    """Both branches are pinned to the state they name, so which one raises does
+    not depend on the amd-aiter the host happens to have installed."""
+
+    @pytest.fixture(autouse=True)
+    def _no_capability_gate(self, monkeypatch):
+        """The capability check runs first and raises ArchCapabilityError, which
+        is not an ImportError -- on a gated arch it would mask both branches."""
+        monkeypatch.setattr(prefill_rocm, "require_capability", lambda *a, **k: None)
         monkeypatch.setattr(prefill_rocm, "_aiter_ops_importable", lambda: False)
 
-        with pytest.raises(ImportError, match="github.com/ROCm/aiter"):
+    def test_a_missing_package_points_at_the_install_docs(self, device, monkeypatch):
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: None)
+
+        with pytest.raises(ImportError, match=re.escape(_INSTALL_DOC)) as excinfo:
             prefill_rocm._require_aiter_runtime(device)
+
+        assert aiter_utils.AITER_MIN_VERSION in str(excinfo.value)
+
+    def test_a_too_old_package_names_the_installed_version(self, device, monkeypatch):
+        """The version branch must say what is installed; otherwise the two
+        ImportErrors are indistinguishable to whoever hits one."""
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: "0.1.10")
+        monkeypatch.setattr(aiter_utils, "_aiter_version_supported", lambda: False)
+
+        with pytest.raises(ImportError, match=r"0\.1\.10") as excinfo:
+            prefill_rocm._require_aiter_runtime(device)
+
+        assert _INSTALL_DOC not in str(excinfo.value)
 
 
 @pytest.fixture
