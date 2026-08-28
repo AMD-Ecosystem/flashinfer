@@ -966,7 +966,11 @@ def run(args: argparse.Namespace) -> int:
         json_out = _anchored(args.json_out, repo)
         json_out.parent.mkdir(parents=True, exist_ok=True)
         json_out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        print(f"wrote {json_out.relative_to(repo)}")
+        # relative_to raises for a path outside the repo, which --json-out
+        # explicitly allows; the message is not worth failing a scored run over.
+        with contextlib.suppress(ValueError):
+            json_out = json_out.relative_to(repo)
+        print(f"wrote {json_out}")
 
     if args.fail_under is not None and pct is None:
         print(

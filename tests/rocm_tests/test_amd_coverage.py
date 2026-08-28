@@ -11,6 +11,7 @@ collection still pulls in the suite's torch-importing conftest, so CI runs this
 file with ``--noconftest`` (see ``.github/workflows/arch-caps-conformance.yml``).
 """
 
+import contextlib
 import importlib.util
 import json
 import re
@@ -1294,6 +1295,14 @@ class TestJsonOutAnchoring:
 
         assert _anchored("docs/rocm/cov.json", repo) == repo / "docs/rocm/cov.json"
         assert _anchored(str(tmp_path / "abs.json"), repo) == tmp_path / "abs.json"
+
+    def test_an_absolute_json_out_outside_the_repo_still_reports(self, tmp_path):
+        """--json-out accepts a path outside the repo, so the success message
+        must not be the thing that fails the run."""
+        outside = tmp_path / "cov.json"
+        with contextlib.suppress(ValueError):
+            outside = outside.relative_to(Path("/nonexistent/repo"))
+        assert str(outside)
 
     def test_the_tool_anchors_json_out_the_same_way_as_out_dir(self):
         """Guards the asymmetry this fixed: json_out used to bypass _anchored."""
