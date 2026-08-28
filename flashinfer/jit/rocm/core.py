@@ -9,10 +9,12 @@ from typing import List, Tuple
 
 
 def check_rocm_arch() -> None:
-    """Validate that this GPU, ROCm and torch can build FlashInfer's kernels.
+    """Validate that this GPU and ROCm can build FlashInfer's kernels.
 
     Delegates to hip_utils so the ROCm version, the ported-architecture list and
-    PYTORCH_ROCM_ARCH (when set) are checked in one place.
+    PYTORCH_ROCM_ARCH are checked in one place. Torch's own architecture list is
+    only consulted when PYTORCH_ROCM_ARCH is set; unset, it reports the visible
+    cards rather than anything about the build.
     """
     import torch.utils.cpp_extension as torch_cpp_ext
 
