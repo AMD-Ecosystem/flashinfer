@@ -8,6 +8,7 @@
 #include <sstream>
 
 #include "cascade.cuh"
+#include "decode_tuning.cuh"
 #include "gpu_iface/cooperative_groups.h"
 #include "gpu_iface/gpu_runtime_compat.hpp"
 #include "gpu_iface/math_ops.hpp"
@@ -759,10 +760,9 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatched(Params params, typename Params:
   const uint32_t num_kv_heads = params.paged_kv.num_heads;
   const uint32_t padded_batch_size = params.padded_batch_size;
 
-  constexpr uint32_t vec_size = std::max(16UL / sizeof(DTypeKV), HEAD_DIM / 32UL);
+  constexpr uint32_t vec_size = decode_tuning::BatchDecodeVecSize<DTypeKV, HEAD_DIM>();
   auto compute_capacity = GetCudaComputeCapability();
-  constexpr uint32_t bdx = HEAD_DIM / vec_size;
-  static_assert(bdx <= 32);
+  constexpr uint32_t bdx = decode_tuning::BatchDecodeBdx<DTypeKV, HEAD_DIM>();
   DISPATCH_GQA_GROUP_SIZE(num_qo_heads / num_kv_heads, GROUP_SIZE, {
     constexpr uint32_t bdy = GROUP_SIZE;
     constexpr uint32_t num_threads = std::max(128U, bdx * bdy);
