@@ -1186,7 +1186,9 @@ def test_paged_softcap_guard_tracks_the_paging_route():
     # Only page sizes that divide kv_len: a partial trailing page would need a
     # kv_last_page_len this test does not model, and one larger than kv_len
     # floor-divides to zero pages.
-    native = sorted(p for p in _aiter_native_page_sizes() if p <= kv_len and kv_len % p == 0)
+    native = sorted(
+        p for p in _aiter_native_page_sizes() if p <= kv_len and kv_len % p == 0
+    )
     if not native:
         pytest.skip(f"no native AITER page size divides kv_len={kv_len}")
 
