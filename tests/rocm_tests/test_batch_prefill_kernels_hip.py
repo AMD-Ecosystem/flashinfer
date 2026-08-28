@@ -48,7 +48,7 @@ def warmup_jit():
             [128, 256],  # head_dims
             [0],  # pos_encoding_modes
             [False],  # use_sliding_windows
-            [False],  # use_logits_soft_caps
+            [False, True],  # use_logits_soft_caps
             [False],  # use_fp16_qk_reductions
         ),
         verbose=False,
@@ -1170,6 +1170,64 @@ def test_ragged_softcap_avoids_broken_aiter_kernel(kv_len, qo_len):
         kv_data_type=torch.float16,
     )
     torch.testing.assert_close(wrapper.run(q, k, v).float(), ref, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("kv_len", [512, 2048])
+@pytest.mark.parametrize("page_size", [128, 16])
+def test_paged_softcap_is_numerically_correct(kv_len, page_size):
+    """Causal soft-cap paged prefill must be correct whichever route plan() picks.
+
+    page_size=128 is advertised as native but the probe can degrade it to
+    flat-gather, and 16 never is; both land on the defective mha_varlen_fwd
+    unless the guard redirects. Asserts the numbers, not the route.
+    """
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+
+    head_dim, num_heads, soft_cap, qo_len = 128, 4, 8.0, 37
+    torch.manual_seed(0)
+    q = torch.randn(qo_len, num_heads, head_dim, dtype=torch.float16, device=device)
+    num_pages = (kv_len + page_size - 1) // page_size
+    kv_data = torch.randn(
+        num_pages, 2, page_size, num_heads, head_dim, dtype=torch.float16, device=device
+    )
+    # Flatten the pages back into the [kv_len, heads, dim] view the reference wants.
+    k = kv_data[:, 0].reshape(-1, num_heads, head_dim)[:kv_len]
+    v = kv_data[:, 1].reshape(-1, num_heads, head_dim)[:kv_len]
+
+    qs, ks, vs = (t.transpose(0, 1).float() for t in (q, k, v))
+    logits = soft_cap * torch.tanh(
+        (qs @ ks.transpose(-1, -2)) * head_dim**-0.5 / soft_cap
+    )
+    mask = torch.ones(qo_len, kv_len, dtype=torch.bool, device=device).tril(
+        diagonal=kv_len - qo_len
+    )
+    ref = (
+        torch.softmax(logits.masked_fill(~mask, float("-inf")), dim=-1) @ vs
+    ).transpose(0, 1)
+
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
+    wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
+    )
+    wrapper.plan(
+        torch.tensor([0, qo_len], dtype=torch.int32, device=device),
+        torch.tensor([0, num_pages], dtype=torch.int32, device=device),
+        torch.arange(num_pages, dtype=torch.int32, device=device),
+        torch.tensor([(kv_len - 1) % page_size + 1], dtype=torch.int32, device=device),
+        num_heads,
+        num_heads,
+        head_dim,
+        page_size,
+        causal=True,
+        logits_soft_cap=soft_cap,
+        q_data_type=torch.float16,
+        kv_data_type=torch.float16,
+    )
+    torch.testing.assert_close(
+        wrapper.run(q, kv_data).float(), ref, rtol=1e-3, atol=1e-3
+    )
 
 
 def test_paged_softcap_guard_tracks_the_paging_route():
