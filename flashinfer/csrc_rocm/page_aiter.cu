@@ -13,15 +13,14 @@
 
 #include <string>
 
-// Forward-declared rather than included: AITER's cache.h pulls in
-// <torch/extension.h>, which clashes with -DPy_LIMITED_API. Unlike the
-// norm/rope/activation entry points this one lives in namespace aiter.
-namespace aiter {
-void reshape_and_cache_flash(at::Tensor& key, at::Tensor& value, at::Tensor& key_cache,
-                             at::Tensor& value_cache, at::Tensor& slot_mapping,
-                             const std::string& kv_cache_dtype, at::Tensor& k_scale,
-                             at::Tensor& v_scale);
-}  // namespace aiter
+// AITER's real header, not a forward declaration: a signature change must be a
+// compile error, not a load-time `undefined symbol`. Includable since 0.1.16,
+// which moved cache.h off <torch/extension.h> and onto the POD aiter_tensor_t,
+// removing the pybind11 clash against -DPy_LIMITED_API.
+#include <aiter_stream.h>
+#include <cache.h>
+
+#include "aiter_tensor_compat.h"
 
 namespace {
 
@@ -172,6 +171,19 @@ void append_paged_kv_cache_aiter(at::Tensor append_key, at::Tensor append_value,
 
   // "auto" selects the no-quantization path; the scales are ignored but required.
   const std::string kv_cache_dtype = "auto";
-  aiter::reshape_and_cache_flash(append_key, append_value, paged_k_cache, paged_v_cache,
-                                 slot_mapping, kv_cache_dtype, k_scale, v_scale);
+
+  namespace compat = flashinfer::aiter_compat;
+  aiter_tensor_t key_a = compat::to_aiter(append_key);
+  aiter_tensor_t value_a = compat::to_aiter(append_value);
+  aiter_tensor_t key_cache_a = compat::to_aiter(paged_k_cache);
+  aiter_tensor_t value_cache_a = compat::to_aiter(paged_v_cache);
+  aiter_tensor_t slot_mapping_a = compat::to_aiter(slot_mapping);
+  aiter_tensor_t k_scale_a = compat::to_aiter(k_scale);
+  aiter_tensor_t v_scale_a = compat::to_aiter(v_scale);
+
+  // The POD API launches on AITER's thread_local stream, which only its Python
+  // layer otherwise sets; scoped so the value does not outlive this call.
+  const flashinfer::aiter_compat::StreamGuard stream_guard(stream);
+  aiter::reshape_and_cache_flash(key_a, value_a, key_cache_a, value_cache_a, slot_mapping_a,
+                                 kv_cache_dtype, k_scale_a, v_scale_a);
 }

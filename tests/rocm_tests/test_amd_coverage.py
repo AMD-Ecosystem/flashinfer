@@ -1279,6 +1279,39 @@ class TestJitReach:
         assert ac._jit_reach(repo, out_dir, data) is None
 
 
+class TestPathAnchoring:
+    """`--out-dir`, `--data-file` and `--json-out` all resolve against the repo
+    root. pytest runs with cwd=repo, so a cwd-relative path would be written in
+    one place and read from another."""
+
+    def test_a_relative_path_lands_under_the_repo_root(self, tmp_path):
+        assert ac._anchor(tmp_path, "docs/rocm/cov.json", tmp_path) == (
+            tmp_path / "docs/rocm/cov.json"
+        )
+
+    def test_an_absolute_path_is_honoured_as_given(self, tmp_path):
+        outside = Path("/var/tmp/cov.json")
+        assert ac._anchor(tmp_path, str(outside), tmp_path) == outside
+
+    def test_an_unset_option_falls_back_to_the_default(self, tmp_path):
+        default = tmp_path / ".coverage"
+        assert ac._anchor(tmp_path, None, default) == default
+        assert ac._anchor(tmp_path, "", default) == default
+
+    def test_every_path_option_goes_through_it(self):
+        """json_out bypassed the anchoring until this branch; the print that
+        follows also has to tolerate the out-of-repo path _anchor allows."""
+        lines = (_REPO_ROOT / "scripts" / "amd_coverage.py").read_text().splitlines()
+        # Named assignments, not a total: a fourth anchored option is a correct
+        # change and must not fail this.
+        for name in ("out_dir", "data_file", "json_out"):
+            assert any(f"{name} = _anchor(repo," in ln for ln in lines), name
+        at = next(i for i, ln in enumerate(lines) if "json_out = _anchor(repo," in ln)
+        # A line window rather than a slice delimited by the print itself, which
+        # would fail on a quote-style change that leaves the guard intact.
+        assert any("contextlib.suppress(ValueError)" in ln for ln in lines[at : at + 8])
+
+
 class TestMain:
     def _argv(self, monkeypatch, *args):
         monkeypatch.setattr(sys, "argv", ["amd_coverage.py", *args])

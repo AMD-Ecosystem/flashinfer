@@ -34,6 +34,7 @@ __all__ = [
     "Capability",
     "KnownBad",
     "Support",
+    "aiter_fallback_backend",
     "capability_available",
     "capability_reason",
     "normalize_arch",
@@ -595,6 +596,16 @@ def _blocking_reason(op: str, backend: str, arch: str) -> Optional[str]:
                 f"{link}. Set FLASHINFER_ARCH_ALLOW_KNOWN_BAD=1 to run anyway"
             )
     return None
+
+
+def aiter_fallback_backend(op: str) -> Optional[str]:
+    """The backend to suggest when AITER cannot serve ``op``, or None if unknown.
+
+    "fa2" for attention, "native" elsewhere -- naming the wrong one sends the
+    reader to a value the op rejects.
+    """
+    cap = _BY_KEY.get((op, "aiter"))
+    return cap.fallback if cap is not None and cap.fallback else None
 
 
 def capability_reason(device, op: str, backend: str) -> Optional[str]:
