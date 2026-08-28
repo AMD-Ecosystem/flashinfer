@@ -461,10 +461,13 @@ def _auto_select_prefill_backend(
             )
         else:
             reason = (
-                "aiter package not installed "
-                "(see https://github.com/ROCm/aiter for install instructions)"
+                "aiter package not installed (see docs/rocm/backends.md for the "
+                "wheel index and pinned version)"
             )
-        key = (device, "import_failed")
+        # Keyed on the reason, like the branch above: a constant key would let
+        # whichever condition fired first hide the other for the rest of the
+        # process, and "too old" and "not installed" want different actions.
+        key = (device, reason)
         if key not in _aiter_auto_warned:
             _aiter_auto_warned.add(key)
             logger.warning("auto backend falling back to fa2: %s", reason)
