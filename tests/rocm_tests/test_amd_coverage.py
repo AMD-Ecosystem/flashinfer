@@ -1279,32 +1279,34 @@ class TestJitReach:
         assert ac._jit_reach(repo, out_dir, data) is None
 
 
-class TestJsonOutAnchoring:
-    def test_a_relative_json_out_lands_under_the_repo_root(self, tmp_path):
-        """The documented refresh writes docs/rocm/coverage-gfx942.json; a
-        cwd-relative path would put it under the caller's directory instead."""
-        repo = tmp_path / "repo"
-        (repo / "sub").mkdir(parents=True)
+class TestPathAnchoring:
+    """`--out-dir`, `--data-file` and `--json-out` all resolve against the repo
+    root. pytest runs with cwd=repo, so a cwd-relative path would be written in
+    one place and read from another."""
 
-        def _anchored(value, default):
-            if not value:
-                return default
-            given = Path(value)
-            return given if given.is_absolute() else repo / given
+    def test_a_relative_path_lands_under_the_repo_root(self, tmp_path):
+        assert ac._anchor(tmp_path, "docs/rocm/cov.json", tmp_path) == (
+            tmp_path / "docs/rocm/cov.json"
+        )
 
-        assert _anchored("docs/rocm/cov.json", repo) == repo / "docs/rocm/cov.json"
-        assert _anchored(str(tmp_path / "abs.json"), repo) == tmp_path / "abs.json"
+    def test_an_absolute_path_is_honoured_as_given(self, tmp_path):
+        outside = Path("/var/tmp/cov.json")
+        assert ac._anchor(tmp_path, str(outside), tmp_path) == outside
 
-    def test_the_tool_anchors_json_out_and_tolerates_an_outside_path(self):
-        """Two regressions this pins, neither reachable without a scored run:
-        json_out used to bypass _anchored, and relative_to() then raised for the
-        absolute out-of-repo path _anchored explicitly allows."""
+    def test_an_unset_option_falls_back_to_the_default(self, tmp_path):
+        default = tmp_path / ".coverage"
+        assert ac._anchor(tmp_path, None, default) == default
+        assert ac._anchor(tmp_path, "", default) == default
+
+    def test_every_path_option_goes_through_it(self):
+        """json_out bypassed the anchoring until this branch; the print that
+        follows also has to tolerate the out-of-repo path _anchor allows."""
         source = (_REPO_ROOT / "scripts" / "amd_coverage.py").read_text()
-        assert "json_out = _anchored(args.json_out, repo)" in source
-        assert source.count("_anchored(") >= 4
-        guard = source[source.index("json_out = _anchored") :]
-        guard = guard[: guard.index('print(f"wrote')]
-        assert "contextlib.suppress(ValueError)" in guard
+        assert source.count("_anchor(repo,") == 3
+        guard = source[source.index("json_out = _anchor(repo,") :]
+        assert (
+            "contextlib.suppress(ValueError)" in guard[: guard.index('print(f"wrote')]
+        )
 
 
 class TestMain:
