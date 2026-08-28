@@ -340,6 +340,87 @@ def test_fused_cascade_epilogue(dtype, batch_size, num_heads, head_dim):
     )
 
 
+def _segment_sum_ref(v, counts, seq_len):
+    """Float32 reference: sum each row's contiguous run of index sets."""
+    seg = torch.repeat_interleave(
+        torch.arange(seq_len, device=v.device), counts.to(v.device)
+    )
+    out = torch.zeros(
+        seq_len, v.size(1), v.size(2), dtype=torch.float32, device=v.device
+    )
+    return out.index_add_(0, seg, v.float())
+
+
+def _sum_tolerance(dtype):
+    # threadblock_sum rounds each partial to the storage dtype before the
+    # cross-warp reduction, so the reference cannot be matched exactly.
+    return (1e-3, 1e-3) if dtype == torch.float16 else (8e-3, 8e-3)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("head_dim", [64, 128, 256])
+def test_variable_length_attention_sum_multi_iteration(dtype, head_dim):
+    """Persistent sum kernel, sized so each CTA runs several loop iterations.
+
+    head_dim is parametrized because it sets bdy (8/4/8), the width of the
+    cross-warp reduction that a stale accumulator is amplified through.
+    """
+    import flashinfer.cascade as cascade_mod
+
+    torch.manual_seed(42)
+    num_heads = 4
+    # Grid is num_sms * min(occupancy, ...), and occupancy approaches the
+    # 32-blocks/CU wave limit for this small kernel; oversubscribe well past it
+    # or every CTA runs a single iteration and the carry goes uncovered.
+    num_cus = torch.cuda.get_device_properties(0).multi_processor_count
+    seq_len = num_cus * 32 * 4 // num_heads
+
+    # Upper bound exceeds bdy (8 at head_dim 64/256, 4 at 128) so every head_dim
+    # also runs the inner smem-staging loop more than once.
+    counts = torch.randint(2, 11, (seq_len,), dtype=torch.int32)
+    # An empty and a single-set row adjacent to accumulating ones, so an
+    # early-out iteration is followed by one that accumulates.
+    counts[0] = 0
+    counts[1] = 1
+    counts[2] = 10
+    indptr = torch.zeros(seq_len + 1, dtype=torch.int32)
+    indptr[1:] = torch.cumsum(counts, dim=0)
+    nnz = int(indptr[-1])
+
+    v = (torch.randn(nnz, num_heads, head_dim, device="cuda") * 0.1).to(dtype)
+    v_sum = torch.empty(seq_len, num_heads, head_dim, dtype=dtype, device="cuda")
+    cascade_mod.get_cascade_module().variable_length_attention_sum(
+        v, indptr.cuda(), v_sum
+    )
+
+    assert torch.isfinite(v_sum.float()).all(), "kernel produced a non-finite value"
+
+    ref = _segment_sum_ref(v, counts, seq_len)
+    rtol, atol = _sum_tolerance(dtype)
+    torch.testing.assert_close(v_sum.float(), ref, rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("num_index_sets", [2, 7])
+def test_attention_sum(dtype, num_index_sets):
+    """Non-persistent sum kernel (the fixed-count op)."""
+    import flashinfer.cascade as cascade_mod
+
+    torch.manual_seed(42)
+    seq_len, num_heads, head_dim = 256, 4, 128
+
+    v = (
+        torch.randn(seq_len, num_index_sets, num_heads, head_dim, device="cuda") * 0.1
+    ).to(dtype)
+    v_sum = torch.empty(seq_len, num_heads, head_dim, dtype=dtype, device="cuda")
+    cascade_mod.get_cascade_module().attention_sum(v, v_sum, num_index_sets)
+
+    assert torch.isfinite(v_sum.float()).all()
+    ref = v.float().sum(dim=1)
+    rtol, atol = _sum_tolerance(dtype)
+    torch.testing.assert_close(v_sum.float(), ref, rtol=rtol, atol=atol)
+
+
 if __name__ == "__main__":
     test_merge_state(torch.float16, 64, 8, 128)
     test_merge_state_in_place(torch.float16, 64, 8, 128)
@@ -347,3 +428,5 @@ if __name__ == "__main__":
     test_merge_state_in_place_with_mask(0, 20)
     test_fused_cascade_epilogue(torch.float16, 4, 16, 128)
     test_fused_cascade_epilogue(torch.bfloat16, 4, 16, 128)
+    test_variable_length_attention_sum_multi_iteration(torch.float16, 128)
+    test_attention_sum(torch.float16, 7)
