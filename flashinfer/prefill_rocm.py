@@ -365,8 +365,12 @@ def _aiter_softcap_defect(
 
     A non-zero cap disables AITER's asm paths, leaving mha_varlen_fwd's CK
     kernel, which applies the cap wrongly for causal head_dim=128 with
-    kv_len >= 512. Non-causal is exact. kv_len=None means the caller does not
-    know it and the fallback is declined.
+    kv_len >= 512. Non-causal is exact.
+
+    kv_len=None disarms the check. Callers pass it either because they do not
+    know the length or because they know the call will not reach
+    mha_varlen_fwd -- the paged wrapper does the latter for a natively-paged
+    page size, and re-checks after the runtime probe in case it degrades.
 
     Deliberately not version-gated: auto-expiring on an AITER newer than
     _AITER_SOFTCAP_DEFECT_THROUGH would silently re-enable a wrong-answer path
