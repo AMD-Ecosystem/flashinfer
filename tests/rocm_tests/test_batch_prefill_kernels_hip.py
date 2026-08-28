@@ -1182,11 +1182,14 @@ def test_paged_softcap_guard_tracks_the_paging_route():
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
-    native = sorted(_aiter_native_page_sizes())
-    if not native:
-        pytest.skip("no native AITER page size on this aiter build")
-
     kv_len, qo_len, num_heads, head_dim, soft_cap = 512, 37, 4, 128, 8.0
+    # Only page sizes that divide kv_len: a partial trailing page would need a
+    # kv_last_page_len this test does not model, and one larger than kv_len
+    # floor-divides to zero pages.
+    native = sorted(p for p in _aiter_native_page_sizes() if p <= kv_len and kv_len % p == 0)
+    if not native:
+        pytest.skip(f"no native AITER page size divides kv_len={kv_len}")
+
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
 
     def plan(page_size):
