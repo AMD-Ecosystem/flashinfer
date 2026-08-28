@@ -102,6 +102,7 @@ ENV CPATH="/opt/rocm-headers/include${CPATH:+:$CPATH}"
 #     device bitcode also sits at lib/llvm/amdgcn rather than $ROCM_PATH/amdgcn.
 RUN set -eu; \
     for so in "$ROCM_SDK"/lib/lib*.so.[0-9]*; do \
+        [ -e "$so" ] || continue; \
         base="${so%%.so.*}.so"; [ -e "$base" ] || ln -s "$(basename "$so")" "$base"; \
     done; \
     ln -sf ../lib/llvm/bin/clang++ "$ROCM_SDK/bin/amdclang++"; \
