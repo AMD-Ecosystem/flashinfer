@@ -3,6 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#ifdef FLASHINFER_CASCADE_CUH_
+#error \
+    "include/flashinfer/attention/cascade.cuh and include/flashinfer/rocm/attention/cascade.cuh both define FLASHINFER_CASCADE_CUH_; include only one"
+#endif
 #include "flashinfer/rocm/dispatch.cuh"
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
 #include "flashinfer/rocm/math_hip.h"

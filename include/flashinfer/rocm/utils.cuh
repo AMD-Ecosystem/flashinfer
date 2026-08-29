@@ -3,6 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#ifdef FLASHINFER_UTILS_CUH_
+#error \
+    "include/flashinfer/utils.cuh and include/flashinfer/rocm/utils.cuh both define FLASHINFER_UTILS_CUH_; include only one"
+#endif
 
 #include <cstdint>
 #include <cstdlib>
@@ -73,9 +77,8 @@ inline uint32_t FA2ForcedCtaTileQ() {
     // would otherwise skip leading space and a '+' while still rejecting "64 ".
     const bool digits_only = (env[0] >= '0' && env[0] <= '9');
     if (!digits_only || *end != '\0' || (value != 16ul && value != 64ul && value != 128ul)) {
-      // Throw std:: directly: flashinfer/rocm/exception.h shares the FLASHINFER_EXCEPTION_H_
-      // guard with flashinfer/exception.h, so including it here could suppress that
-      // header's variadic FLASHINFER_CHECK.
+      // Throw std:: directly rather than pull in exception.h: this header is included
+      // widely, and exception.h tripwires against upstream's FLASHINFER_EXCEPTION_H_.
       std::ostringstream err_msg;
       err_msg << "FLASHINFER_ROCM_FORCE_CTA_TILE_Q must be 16, 64, or 128, got \"" << env << "\"";
       throw std::invalid_argument(err_msg.str());

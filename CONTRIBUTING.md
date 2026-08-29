@@ -176,13 +176,18 @@ routes to a HIP-specific code path or to AITER.
 (`math_hip.h`, `mma_hip.h`, `memory_ops_hip.h`, `vec_dtypes_hip.h`). These once
 sat behind a `gpu_iface` abstraction spanning CUDA too; that half is gone, so a
 non-HIP compiler now gets an `#error` from `macros.hpp`. Put a new intrinsic in
-the matching `_hip.h`. Don't reach for `hipcub`, `__hip_*`, or inline asm
-anywhere else under `include/flashinfer/`.
+the matching `_hip.h` if it is a general primitive. A kernel that needs
+`hipcub` or one inline-asm builtin inline is fine — several under
+`rocm/attention/` do — but anything a second kernel would want belongs in the
+shared header.
 
-Symbols live in `flashinfer::`, with a sub-namespace only where upstream has
-one too (`flashinfer::math`, `flashinfer::memory`). The exception is
-`flashinfer::mma_hip`: upstream's `flashinfer::mma` declares three of the same
-signatures, and neither header has a guard that would catch the collision.
+Symbols live in `flashinfer::`, grouped by what they do — `flashinfer::math`
+matches upstream's name, `flashinfer::memory` is ours (upstream calls the same
+area `cp_async`). Where a fork header and its upstream namesake can coexist
+they keep the same name and the fork header carries an `#error` tripwire on
+upstream's include guard; `flashinfer::mma_hip` is renamed instead, because
+three of its signatures match upstream's `flashinfer::mma` exactly and the two
+are meant to be usable together.
 
 # Additive-Only: the rule that keeps upstream syncs cheap
 

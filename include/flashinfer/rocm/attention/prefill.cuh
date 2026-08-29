@@ -3,6 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#ifdef FLASHINFER_PREFILL_CUH_
+#error \
+    "include/flashinfer/attention/prefill.cuh and include/flashinfer/rocm/attention/prefill.cuh both define FLASHINFER_PREFILL_CUH_; include only one"
+#endif
 
 #include "flashinfer/rocm/cooperative_groups.h"
 #include "flashinfer/rocm/fastdiv.cuh"

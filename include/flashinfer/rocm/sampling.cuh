@@ -42,8 +42,8 @@ namespace cub = hipcub;
 
 #include <flashinfer/rocm/utils.cuh>
 
-// The fork's allocator, not upstream's: upstream's pulls its own exception.h,
-// which loses the FLASHINFER_EXCEPTION_H_ race against ours and vanishes.
+// The fork's allocator, not upstream's: upstream's pulls upstream exception.h,
+// which our exception.h now tripwires against.
 #include <flashinfer/rocm/attention/allocator.h>
 
 #include <limits>
@@ -78,8 +78,6 @@ namespace flashinfer {
 namespace sampling {
 
 using namespace cub;
-#ifdef PLATFORM_HIP_DEVICE
-#endif
 
 // Warp/wavefront size: 32 for NVIDIA, 64 for AMD
 #ifdef PLATFORM_HIP_DEVICE

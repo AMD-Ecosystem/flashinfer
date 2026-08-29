@@ -3,6 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#ifdef FLASHINFER_POD_CUH_
+#error \
+    "include/flashinfer/attention/pod.cuh and include/flashinfer/rocm/attention/pod.cuh both define FLASHINFER_POD_CUH_; include only one"
+#endif
 
 #include "cascade.cuh"
 #include "flashinfer/rocm/dispatch.cuh"
