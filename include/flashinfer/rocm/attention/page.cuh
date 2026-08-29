@@ -6,8 +6,8 @@
 
 #include <vector>
 
-#include "gpu_iface/dispatch.cuh"
-#include "gpu_iface/exception.h"
+#include "flashinfer/rocm/dispatch.cuh"
+#include "flashinfer/rocm/exception.h"
 #include "gpu_iface/fastdiv.cuh"
 #include "gpu_iface/gpu_runtime_compat.hpp"
 #include "gpu_iface/layout.cuh"

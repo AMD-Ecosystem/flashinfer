@@ -8,7 +8,7 @@
 #include <memory>
 #include <sstream>
 
-#include "exception.h"
+#include "flashinfer/rocm/exception.h"
 
 namespace flashinfer {
 

@@ -11,7 +11,7 @@
 #include <string>
 #include <type_traits>
 
-#include "gpu_iface/dispatch.cuh"
+#include "flashinfer/rocm/dispatch.cuh"
 #include "gpu_iface/enums.hpp"
 #include "gpu_iface/gpu_runtime_compat.hpp"
 #include "gpu_iface/layout.cuh"

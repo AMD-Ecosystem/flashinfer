@@ -4,8 +4,8 @@
 
 #pragma once
 
-#include "enums.hpp"
-#include "gpu_iface/exception.h"
+#include "flashinfer/rocm/exception.h"
+#include "gpu_iface/enums.hpp"
 
 #define DISPATCH_USE_FP16_QK_REDUCTION(use_fp16_qk_reduction, USE_FP16_QK_REDUCTION, ...) \
   if (use_fp16_qk_reduction) {                                                            \
@@ -28,23 +28,24 @@
     FLASHINFER_ERROR(err_msg.str());                   \
   }
 
-#define DISPATCH_NUM_MMA_KV(max_mma_kv, NUM_MMA_KV, ...) \
-  if (max_mma_kv >= 8) {                                 \
-    constexpr size_t NUM_MMA_KV = 8;                     \
-    __VA_ARGS__                                          \
-  } else if (max_mma_kv >= 4) {                          \
-    constexpr size_t NUM_MMA_KV = 4;                     \
-    __VA_ARGS__                                          \
-  } else if (max_mma_kv >= 2) {                          \
-    constexpr size_t NUM_MMA_KV = 2;                     \
-    __VA_ARGS__                                          \
-  } else if (max_mma_kv >= 1) {                          \
-    constexpr size_t NUM_MMA_KV = 1;                     \
-    __VA_ARGS__                                          \
-  } else {                                               \
-    std::ostringstream err_msg;                          \
-    err_msg << "Unsupported max_mma_kv: " << max_mma_kv; \
-    FLASHINFER_ERROR(err_msg.str());                     \
+#define DISPATCH_NUM_MMA_KV(max_mma_kv, NUM_MMA_KV, ...)             \
+  if (max_mma_kv >= 8) {                                             \
+    constexpr size_t NUM_MMA_KV = 8;                                 \
+    __VA_ARGS__                                                      \
+  } else if (max_mma_kv >= 4) {                                      \
+    constexpr size_t NUM_MMA_KV = 4;                                 \
+    __VA_ARGS__                                                      \
+  } else if (max_mma_kv >= 2) {                                      \
+    constexpr size_t NUM_MMA_KV = 2;                                 \
+    __VA_ARGS__                                                      \
+  } else if (max_mma_kv >= 1) {                                      \
+    constexpr size_t NUM_MMA_KV = 1;                                 \
+    __VA_ARGS__                                                      \
+  } else {                                                           \
+    /* Fallback for AMD GPUs with tight shared memory constraints */ \
+    /* Use NUM_MMA_KV=1 and issue warning */                         \
+    constexpr size_t NUM_MMA_KV = 1;                                 \
+    __VA_ARGS__                                                      \
   }
 
 #define DISPATCH_CTA_TILE_Q(cta_tile_q, CTA_TILE_Q, ...)   \
@@ -205,6 +206,15 @@
     }                                                                      \
   }
 
+#define DISPATCH_COMPUTE_CAP_DECODE_NUM_STAGES_SMEM(compute_capacity, NUM_STAGES_SMEM, ...) \
+  if (compute_capacity.first >= 8) {                                                        \
+    constexpr uint32_t NUM_STAGES_SMEM = 2;                                                 \
+    __VA_ARGS__                                                                             \
+  } else {                                                                                  \
+    constexpr uint32_t NUM_STAGES_SMEM = 1;                                                 \
+    __VA_ARGS__                                                                             \
+  }
+
 #define DISPATCH_ROPE_DIM(rope_dim, ROPE_DIM, ...)           \
   switch (rope_dim) {                                        \
     case 16: {                                               \
@@ -238,13 +248,4 @@
       err_msg << ". Supported values: 16, 32, 64, 128, 256"; \
       FLASHINFER_ERROR(err_msg.str());                       \
     }                                                        \
-  }
-
-#define DISPATCH_COMPUTE_CAP_DECODE_NUM_STAGES_SMEM(compute_capacity, NUM_STAGES_SMEM, ...) \
-  if (compute_capacity.first >= 8) {                                                        \
-    constexpr uint32_t NUM_STAGES_SMEM = 2;                                                 \
-    __VA_ARGS__                                                                             \
-  } else {                                                                                  \
-    constexpr uint32_t NUM_STAGES_SMEM = 1;                                                 \
-    __VA_ARGS__                                                                             \
   }

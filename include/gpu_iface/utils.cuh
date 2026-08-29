@@ -73,7 +73,7 @@ inline uint32_t FA2ForcedCtaTileQ() {
     // would otherwise skip leading space and a '+' while still rejecting "64 ".
     const bool digits_only = (env[0] >= '0' && env[0] <= '9');
     if (!digits_only || *end != '\0' || (value != 16ul && value != 64ul && value != 128ul)) {
-      // Throw std:: directly: gpu_iface/exception.h shares the FLASHINFER_EXCEPTION_H_
+      // Throw std:: directly: flashinfer/rocm/exception.h shares the FLASHINFER_EXCEPTION_H_
       // guard with flashinfer/exception.h, so including it here could suppress that
       // header's variadic FLASHINFER_CHECK.
       std::ostringstream err_msg;

@@ -18,7 +18,7 @@
 #include <type_traits>
 
 #include "cascade.cuh"
-#include "dispatch.cuh"
+#include "flashinfer/rocm/dispatch.cuh"
 #include "frag_layout_swizzle.cuh"
 #include "page.cuh"
 #include "permuted_smem.cuh"

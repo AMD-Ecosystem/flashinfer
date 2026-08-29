@@ -24,7 +24,7 @@
 // gpu_iface portability layer provides FI_GPU_CALL, gpuError_t, gpuStream_t,
 // gpuLaunchKernel, gpuFuncSetAttribute, etc. on both CUDA and HIP.
 // macros.hpp must be first: it defines PLATFORM_HIP_DEVICE / PLATFORM_CUDA_DEVICE.
-#include <gpu_iface/dispatch.cuh>
+#include <flashinfer/rocm/dispatch.cuh>
 #include <gpu_iface/gpu_runtime_compat.hpp>
 #include <gpu_iface/macros.hpp>
 

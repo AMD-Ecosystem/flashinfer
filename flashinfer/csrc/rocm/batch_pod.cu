@@ -7,7 +7,7 @@
 
 #include <flashinfer/rocm/attention/pos_enc.cuh>
 #include <flashinfer/rocm/attention/scheduler.cuh>
-#include <gpu_iface/dispatch.cuh>
+#include <flashinfer/rocm/dispatch.cuh>
 #include <gpu_iface/enums.hpp>
 #include <gpu_iface/fastdiv.cuh>
 #include <optional>

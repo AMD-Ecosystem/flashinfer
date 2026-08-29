@@ -676,7 +676,7 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
 
     // This has been hard coded to 2U. Previous implementation involved a macro redirection that
     // always resulted in 2U for H100 or CDNA3 architecture. Please take a look at
-    // gpu_iface/dispatch.cuh - DISPATCH_COMPUTE_CAP_DECODE_NUM_STAGES_SMEM macro
+    // flashinfer/rocm/dispatch.cuh - DISPATCH_COMPUTE_CAP_DECODE_NUM_STAGES_SMEM macro
     constexpr uint32_t NUM_STAGES_SMEM = 2U;
 
     const uint32_t smem_size =

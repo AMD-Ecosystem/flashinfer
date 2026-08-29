@@ -5,7 +5,7 @@
 #pragma once
 
 #include "cascade.cuh"
-#include "dispatch.cuh"
+#include "flashinfer/rocm/dispatch.cuh"
 #include "gpu_iface/gpu_runtime_compat.hpp"
 #include "gpu_iface/math_ops.hpp"
 #include "gpu_iface/platform.hpp"
