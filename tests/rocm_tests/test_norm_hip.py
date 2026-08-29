@@ -120,7 +120,7 @@ def test_fused_add_rmsnorm(batch_size, hidden_size, dtype, enable_pdl, contiguou
     residual_fused = residual.clone()
     # Pin to native, as test_norm does — without it `auto` sends every case to
     # AITER and the native kernel has no coverage. test_fused_add_rmsnorm_aiter
-    # keeps AITER covered, though not at hidden_size 128 or contiguous=False.
+    # keeps AITER covered, though not at contiguous=False.
     flashinfer.fused_add_rmsnorm(
         x_fused, residual_fused, weight, eps, enable_pdl=enable_pdl, backend="native"
     )
@@ -164,9 +164,13 @@ def test_fused_add_rmsnorm_large_hidden_size(hidden_size, dtype, gemma):
     torch.testing.assert_close(residual_out, residual_ref, rtol=rtol, atol=atol)
 
 
+# 64 and 128 guard the CK aliasing bug: CK packs several rows per block at small
+# n, so an aliased output is silently wrong there and correct at larger sizes.
 @requires_aiter
 @pytest.mark.parametrize("batch_size", [1, 19, 99, 989])
-@pytest.mark.parametrize("hidden_size", [111, 500, 1024, 3072, 3584, 4096, 8192])
+@pytest.mark.parametrize(
+    "hidden_size", [64, 111, 128, 500, 1024, 3072, 3584, 4096, 8192]
+)
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_fused_add_rmsnorm_aiter(batch_size, hidden_size, dtype):
     eps = 1e-6

@@ -29,9 +29,9 @@ argument. Which one names the in-tree kernel depends on the op:
 ## Installing AITER
 
 Unless you are using the prebuilt Docker image, AITER is a separate
-install. Wheels are published per ROCm release on AMD's PyPI index;
-`amd-aiter` is **not** on the top-level `pypi.amd.com/simple` index, so
-use the ROCm-versioned channel:
+install. `amd-aiter` is **not** on the top-level `pypi.amd.com/simple`
+index, and the ROCm-versioned channels carry no wheel at or above the
+supported floor, so install from the nightlies index:
 
 ```bash
 pip install amd-aiter==0.1.16.post3.dev0+g620287969.d20260725 \
