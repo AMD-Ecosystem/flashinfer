@@ -21,15 +21,12 @@
 #ifndef FLASHINFER_SAMPLING_CUH_
 #define FLASHINFER_SAMPLING_CUH_
 
-// gpu_iface portability layer provides FI_GPU_CALL, gpuError_t, gpuStream_t,
-// gpuLaunchKernel, gpuFuncSetAttribute, etc. on both CUDA and HIP.
-// macros.hpp must be first: it defines PLATFORM_HIP_DEVICE / PLATFORM_CUDA_DEVICE.
+// gpu_iface supplies FI_GPU_CALL, gpuError_t, gpuStream_t, gpuLaunchKernel and
+// friends. macros.hpp stays first: it is what #errors on a non-HIP compiler.
 #include <flashinfer/rocm/dispatch.cuh>
 #include <gpu_iface/gpu_runtime_compat.hpp>
 #include <gpu_iface/macros.hpp>
 
-#ifdef PLATFORM_HIP_DEVICE
-// --- HIP-specific: hiprand, hipcub, and gpu_iface math/utils/vec_dtypes ---
 #include <hiprand/hiprand.h>
 #include <hiprand/hiprand_kernel.h>
 
@@ -39,24 +36,10 @@ namespace cub = hipcub;
 #include <gpu_iface/math_ops.hpp>
 #include <gpu_iface/utils.cuh>
 #include <gpu_iface/vec_dtypes.hpp>
-#else
-// --- CUDA-specific ---
-#include <cuda.h>
-#include <curand.h>
-#include <curand_kernel.h>
-#include <curand_philox4x32_x.h>
 
-#include <cub/cub.cuh>
-#include <cuda/functional>
-#include <cuda/std/functional>
-#include <cuda/std/limits>
-#include <flashinfer/math.cuh>
-#include <flashinfer/utils.cuh>
-#include <flashinfer/vec_dtypes.cuh>
-#endif  // PLATFORM_HIP_DEVICE
-
-// allocator.h is a pure-C++ header; include it on both CUDA and HIP.
-#include <flashinfer/allocator.h>
+// The fork's allocator, not upstream's: upstream's pulls its own exception.h,
+// which loses the FLASHINFER_EXCEPTION_H_ race against ours and vanishes.
+#include <flashinfer/rocm/attention/allocator.h>
 
 #include <limits>
 #include <numeric>
