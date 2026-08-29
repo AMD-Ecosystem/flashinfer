@@ -2,8 +2,13 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_POS_ENC_CUH_
-#define FLASHINFER_POS_ENC_CUH_
+#ifdef FLASHINFER_POS_ENC_CUH_
+#error \
+    "include/flashinfer/pos_enc.cuh and include/flashinfer/rocm/attention/pos_enc.cuh both define FLASHINFER_POS_ENC_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_POS_ENC_CUH_
+#define FLASHINFER_ROCM_ATTENTION_POS_ENC_CUH_
 
 #include <cmath>
 #include <cstdint>
@@ -1461,4 +1466,4 @@ gpuError_t RopeQuantizeAppendPagedMLACache(
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_POS_ENC_CUH_
+#endif  // FLASHINFER_ROCM_ATTENTION_POS_ENC_CUH_

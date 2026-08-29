@@ -17,8 +17,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef FLASHINFER_QUANTIZATION_CUH_
-#define FLASHINFER_QUANTIZATION_CUH_
+#ifdef FLASHINFER_QUANTIZATION_CUH_
+#error \
+    "include/flashinfer/quantization.cuh and include/flashinfer/rocm/quantization.cuh both define FLASHINFER_QUANTIZATION_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_QUANTIZATION_CUH_
+#define FLASHINFER_ROCM_QUANTIZATION_CUH_
 #include <flashinfer/rocm/gpu_runtime_compat.hpp>
 #include <flashinfer/rocm/macros.hpp>
 
@@ -128,4 +133,4 @@ gpuError_t SegmentPackBits(bool* input, uint8_t* output, IdType* input_indptr,
 }  // namespace quantization
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_QUANTIZATION_CUH_
+#endif  // FLASHINFER_ROCM_QUANTIZATION_CUH_

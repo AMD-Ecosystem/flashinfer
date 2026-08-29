@@ -3,8 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
-#ifndef FLASHINFER_MATH_CUH_
-#define FLASHINFER_MATH_CUH_
+#ifdef FLASHINFER_MATH_CUH_
+#error \
+    "include/flashinfer/math.cuh and include/flashinfer/rocm/math_hip.h both define FLASHINFER_MATH_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_MATH_HIP_H_
+#define FLASHINFER_ROCM_MATH_HIP_H_
 
 #define HIP_ENABLE_WARP_SYNC_BUILTINS 1
 
@@ -107,4 +112,4 @@ __forceinline__ __device__ __half2 tanh<__half2>(__half2 x) {
 }
 
 }  // namespace flashinfer::math
-#endif  // FLASHINFER_MATH_CUH_
+#endif  // FLASHINFER_ROCM_MATH_HIP_H_

@@ -3,8 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
-#ifndef FLASHINFER_DECODE_PARAMS_CUH_
-#define FLASHINFER_DECODE_PARAMS_CUH_
+#ifdef FLASHINFER_DECODE_PARAMS_CUH_
+#error \
+    "include/flashinfer/attention/default_decode_params.cuh and include/flashinfer/rocm/attention/default_decode_params.cuh both define FLASHINFER_DECODE_PARAMS_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_DEFAULT_DECODE_PARAMS_CUH_
+#define FLASHINFER_ROCM_ATTENTION_DEFAULT_DECODE_PARAMS_CUH_
 
 #include <cstdint>
 
@@ -265,4 +270,4 @@ struct BatchDecodeParamsMLA {
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_DECODE_PARAMS_CUH_
+#endif  // FLASHINFER_ROCM_ATTENTION_DEFAULT_DECODE_PARAMS_CUH_

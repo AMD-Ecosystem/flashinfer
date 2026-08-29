@@ -2,8 +2,13 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_ACTIVATION_CUH_
-#define FLASHINFER_ACTIVATION_CUH_
+#ifdef FLASHINFER_ACTIVATION_CUH_
+#error \
+    "include/flashinfer/activation.cuh and include/flashinfer/rocm/attention/activation.cuh both define FLASHINFER_ACTIVATION_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_ACTIVATION_CUH_
+#define FLASHINFER_ROCM_ATTENTION_ACTIVATION_CUH_
 
 #include <algorithm>
 
@@ -100,4 +105,4 @@ __global__ void act_and_mul_kernel(T* __restrict__ out, const T* __restrict__ in
 }  // namespace activation
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_ACTIVATION_CUH_
+#endif  // FLASHINFER_ROCM_ATTENTION_ACTIVATION_CUH_

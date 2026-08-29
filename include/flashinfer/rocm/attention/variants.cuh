@@ -2,8 +2,13 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_ATTENTION_VARIANTS_CUH_
-#define FLASHINFER_ATTENTION_VARIANTS_CUH_
+#ifdef FLASHINFER_ATTENTION_VARIANTS_CUH_
+#error \
+    "include/flashinfer/attention/variants.cuh and include/flashinfer/rocm/attention/variants.cuh both define FLASHINFER_ATTENTION_VARIANTS_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_VARIANTS_CUH_
+#define FLASHINFER_ROCM_ATTENTION_VARIANTS_CUH_
 
 #include <cstdint>
 #include <type_traits>
@@ -88,4 +93,4 @@ struct DefaultAttention : AttentionVariantBase {
 
 };  // namespace flashinfer
 
-#endif  // FLASHINFER_ATTENTION_VARIANTS_CUH_
+#endif  // FLASHINFER_ROCM_ATTENTION_VARIANTS_CUH_

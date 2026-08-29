@@ -2,8 +2,13 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_ALLOCATOR_H_
-#define FLASHINFER_ALLOCATOR_H_
+#ifdef FLASHINFER_ALLOCATOR_H_
+#error \
+    "include/flashinfer/allocator.h and include/flashinfer/rocm/attention/allocator.h both define FLASHINFER_ALLOCATOR_H_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_ALLOCATOR_H_
+#define FLASHINFER_ROCM_ATTENTION_ALLOCATOR_H_
 
 #include <memory>
 #include <sstream>
@@ -48,4 +53,4 @@ struct AlignedAllocator {
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_ALLOCATOR_H_
+#endif  // FLASHINFER_ROCM_ATTENTION_ALLOCATOR_H_

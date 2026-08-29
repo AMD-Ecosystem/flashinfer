@@ -3,8 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
-#ifndef VEC_DTYPES_CUH_
-#define VEC_DTYPES_CUH_
+#ifdef VEC_DTYPES_CUH_
+#error \
+    "include/flashinfer/vec_dtypes.cuh and include/flashinfer/rocm/vec_dtypes_hip.h both define VEC_DTYPES_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_VEC_DTYPES_HIP_H_
+#define FLASHINFER_ROCM_VEC_DTYPES_HIP_H_
 
 #define HIP_ENABLE_WARP_SYNC_BUILTINS 1
 

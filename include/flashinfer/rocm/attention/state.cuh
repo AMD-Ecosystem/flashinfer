@@ -2,8 +2,13 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_STATE_CUH_
-#define FLASHINFER_STATE_CUH_
+#ifdef FLASHINFER_STATE_CUH_
+#error \
+    "include/flashinfer/attention/state.cuh and include/flashinfer/rocm/attention/state.cuh both define FLASHINFER_STATE_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_STATE_CUH_
+#define FLASHINFER_ROCM_ATTENTION_STATE_CUH_
 
 #include "flashinfer/rocm/math_hip.h"
 #include "flashinfer/rocm/platform.hpp"
@@ -74,4 +79,4 @@ struct state_t {
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_STATE_CUH_
+#endif  // FLASHINFER_ROCM_ATTENTION_STATE_CUH_

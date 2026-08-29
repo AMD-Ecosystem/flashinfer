@@ -2,8 +2,13 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_PERMUTED_SMEM_CUH_
-#define FLASHINFER_PERMUTED_SMEM_CUH_
+#ifdef FLASHINFER_PERMUTED_SMEM_CUH_
+#error \
+    "include/flashinfer/permuted_smem.cuh and include/flashinfer/rocm/attention/permuted_smem.cuh both define FLASHINFER_PERMUTED_SMEM_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_PERMUTED_SMEM_CUH_
+#define FLASHINFER_ROCM_ATTENTION_PERMUTED_SMEM_CUH_
 
 #include "flashinfer/rocm/memory_ops_hip.h"
 #include "flashinfer/rocm/mma_hip.h"
@@ -322,4 +327,4 @@ struct smem_t {
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_PERMUTED_SMEM_CUH_
+#endif  // FLASHINFER_ROCM_ATTENTION_PERMUTED_SMEM_CUH_

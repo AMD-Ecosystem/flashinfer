@@ -18,8 +18,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef FLASHINFER_SAMPLING_CUH_
-#define FLASHINFER_SAMPLING_CUH_
+#ifdef FLASHINFER_SAMPLING_CUH_
+#error \
+    "include/flashinfer/sampling.cuh and include/flashinfer/rocm/sampling.cuh both define FLASHINFER_SAMPLING_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_SAMPLING_CUH_
+#define FLASHINFER_ROCM_SAMPLING_CUH_
 
 // gpu_runtime_compat supplies FI_GPU_CALL, gpuError_t, gpuStream_t and
 // friends. macros.hpp stays first: it is what #errors on a non-HIP compiler.
@@ -2381,4 +2386,4 @@ gpuError_t ChainSpeculativeSampling(DType* draft_probs, IdType* draft_token_ids,
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_SAMPLING_CUH_
+#endif  // FLASHINFER_ROCM_SAMPLING_CUH_

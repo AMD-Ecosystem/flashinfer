@@ -3,8 +3,13 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_FASTDIV_CUH_
-#define FLASHINFER_FASTDIV_CUH_
+#ifdef FLASHINFER_FASTDIV_CUH_
+#error \
+    "include/flashinfer/fastdiv.cuh and include/flashinfer/rocm/fastdiv.cuh both define FLASHINFER_FASTDIV_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_FASTDIV_CUH_
+#define FLASHINFER_ROCM_FASTDIV_CUH_
 
 #include <cstdint>
 
@@ -97,4 +102,4 @@ __host__ __device__ __forceinline__ uint32_t operator%(const uint32_t n,
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_FASTDIV_CUH_
+#endif  // FLASHINFER_ROCM_FASTDIV_CUH_

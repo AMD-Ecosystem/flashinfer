@@ -3,8 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
-#ifndef FLASHINFER_NORM_CUH_
-#define FLASHINFER_NORM_CUH_
+#ifdef FLASHINFER_NORM_CUH_
+#error \
+    "include/flashinfer/norm.cuh and include/flashinfer/rocm/attention/norm.cuh both define FLASHINFER_NORM_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_NORM_CUH_
+#define FLASHINFER_ROCM_ATTENTION_NORM_CUH_
 
 #include <numeric>
 
@@ -331,4 +336,4 @@ gpuError_t GemmaFusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_NORM_CUH_
+#endif  // FLASHINFER_ROCM_ATTENTION_NORM_CUH_

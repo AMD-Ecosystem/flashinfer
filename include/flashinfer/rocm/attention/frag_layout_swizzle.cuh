@@ -2,8 +2,13 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_FRAG_LAYOUT_SWIZZLE_CUH_
-#define FLASHINFER_FRAG_LAYOUT_SWIZZLE_CUH_
+#ifdef FLASHINFER_FRAG_LAYOUT_SWIZZLE_CUH_
+#error \
+    "include/flashinfer/frag_layout_swizzle.cuh and include/flashinfer/rocm/attention/frag_layout_swizzle.cuh both define FLASHINFER_FRAG_LAYOUT_SWIZZLE_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_FRAG_LAYOUT_SWIZZLE_CUH_
+#define FLASHINFER_ROCM_ATTENTION_FRAG_LAYOUT_SWIZZLE_CUH_
 
 #include <cstdint>
 
@@ -30,4 +35,4 @@ __device__ __forceinline__ uint32_t frag_layout_swizzle_16b_to_8b_trans(uint32_t
   return x;
 }
 
-#endif  // FLASHINFER_FRAG_LAYOUT_SWIZZLE_CUH_
+#endif  // FLASHINFER_ROCM_ATTENTION_FRAG_LAYOUT_SWIZZLE_CUH_

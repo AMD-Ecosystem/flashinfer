@@ -2,8 +2,13 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_LAYOUT_CUH_
-#define FLASHINFER_LAYOUT_CUH_
+#ifdef FLASHINFER_LAYOUT_CUH_
+#error \
+    "include/flashinfer/layout.cuh and include/flashinfer/rocm/layout.cuh both define FLASHINFER_LAYOUT_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_LAYOUT_CUH_
+#define FLASHINFER_ROCM_LAYOUT_CUH_
 
 #include <cstdint>
 #include <string>
@@ -116,4 +121,4 @@ inline std::string QKVLayoutToString(const QKVLayout& layout) {
 }
 
 }  // namespace flashinfer
-#endif  // FLASHINFER_LAYOUT_CUH_
+#endif  // FLASHINFER_ROCM_LAYOUT_CUH_

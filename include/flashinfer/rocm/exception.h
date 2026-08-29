@@ -2,8 +2,13 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_EXCEPTION_H_
-#define FLASHINFER_EXCEPTION_H_
+#ifdef FLASHINFER_EXCEPTION_H_
+#error \
+    "include/flashinfer/exception.h and include/flashinfer/rocm/exception.h both define FLASHINFER_EXCEPTION_H_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_EXCEPTION_H_
+#define FLASHINFER_ROCM_EXCEPTION_H_
 
 #include <exception>
 #include <sstream>
@@ -35,4 +40,4 @@ class Error : public std::exception {
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_EXCEPTION_H_
+#endif  // FLASHINFER_ROCM_EXCEPTION_H_
