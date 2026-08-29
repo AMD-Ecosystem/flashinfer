@@ -168,7 +168,7 @@ def test_supported_block_m_matches_the_shim():
     shim = (
         pathlib.Path(__file__).parents[2]
         / "flashinfer"
-        / "csrc_rocm"
+        / "csrc/rocm"
         / "fused_moe_aiter.cu"
     ).read_text()
     body = re.search(r"bool\s+is_supported_block_m\s*\([^)]*\)\s*\{(.*?)\}", shim, re.S)

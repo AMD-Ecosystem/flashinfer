@@ -3,22 +3,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
-#include "gpu_iface/dispatch.cuh"
-#include "gpu_iface/gpu_runtime_compat.hpp"
-#include "gpu_iface/math_ops.hpp"
-#include "gpu_iface/memory_ops.hpp"
-#include "gpu_iface/platform.hpp"
-#include "gpu_iface/utils.cuh"
+#ifdef FLASHINFER_CASCADE_CUH_
+#error \
+    "include/flashinfer/attention/cascade.cuh and include/flashinfer/rocm/attention/cascade.cuh both define FLASHINFER_CASCADE_CUH_; include only one"
+#endif
+#include "flashinfer/rocm/dispatch.cuh"
+#include "flashinfer/rocm/gpu_runtime_compat.hpp"
+#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/memory_ops_hip.h"
+#include "flashinfer/rocm/platform.hpp"
+#include "flashinfer/rocm/utils.cuh"
 #include "state.cuh"
 
 #ifdef PLATFORM_HIP_DEVICE
-#include "gpu_iface/conversion_utils.h"
+#include "flashinfer/rocm/conversion_utils.h"
 #endif
 
 namespace flashinfer {
 
-using PrefetchMode = gpu_iface::memory::PrefetchMode;
-using SharedMemFillMode = gpu_iface::memory::SharedMemFillMode;
+using PrefetchMode = memory::PrefetchMode;
+using SharedMemFillMode = memory::SharedMemFillMode;
 
 /*!
  * \brief The kernel that merges the self-attention state of two index sets
@@ -48,8 +52,8 @@ __global__ void MergeStateKernel(DTypeIn* __restrict__ v_a, float* __restrict__ 
   float s_a_val = s_a[pos * num_heads + head_idx];
   float s_b_val = s_b[pos * num_heads + head_idx];
   float s_max = max(s_a_val, s_b_val);
-  s_a_val = gpu_iface::math::ptx_exp2(s_a_val - s_max);
-  s_b_val = gpu_iface::math::ptx_exp2(s_b_val - s_max);
+  s_a_val = math::ptx_exp2(s_a_val - s_max);
+  s_b_val = math::ptx_exp2(s_b_val - s_max);
   float a_scale = s_a_val / (s_a_val + s_b_val);
   float b_scale = s_b_val / (s_a_val + s_b_val);
   vec_t<float, vec_size> v_a_vec, v_b_vec, v_merged_vec;
@@ -61,7 +65,7 @@ __global__ void MergeStateKernel(DTypeIn* __restrict__ v_a, float* __restrict__ 
   }
   v_merged_vec.cast_store(v_merged + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
   if (s_merged != nullptr) {
-    s_merged[pos * num_heads + head_idx] = gpu_iface::math::ptx_log2(s_a_val + s_b_val) + s_max;
+    s_merged[pos * num_heads + head_idx] = math::ptx_log2(s_a_val + s_b_val) + s_max;
   }
 }
 
@@ -94,8 +98,8 @@ __global__ void MergeStateInPlaceKernel(DType* __restrict__ v, float* __restrict
   float s_val = s[pos * num_heads + head_idx];
   float s_other_val = s_other[pos * num_heads + head_idx];
   float s_max = max(s_val, s_other_val);
-  s_val = gpu_iface::math::ptx_exp2(s_val - s_max);
-  s_other_val = gpu_iface::math::ptx_exp2(s_other_val - s_max);
+  s_val = math::ptx_exp2(s_val - s_max);
+  s_other_val = math::ptx_exp2(s_other_val - s_max);
   float scale = s_val / (s_val + s_other_val);
   float other_scale = s_other_val / (s_val + s_other_val);
   vec_t<float, vec_size> v_vec, v_other_vec;
@@ -107,7 +111,7 @@ __global__ void MergeStateInPlaceKernel(DType* __restrict__ v, float* __restrict
   }
   v_vec.cast_store(v + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
   if (s != nullptr) {
-    s[pos * num_heads + head_idx] = gpu_iface::math::ptx_log2(s_val + s_other_val) + s_max;
+    s[pos * num_heads + head_idx] = math::ptx_log2(s_val + s_other_val) + s_max;
   }
 }
 
@@ -188,7 +192,7 @@ __global__ void AttentionSumKernel(DTypeIn* __restrict__ V, DTypeO* __restrict__
   if (num_index_sets == 0) {
     vec_t<DTypeO, vec_size> v;
 #ifdef PLATFORM_HIP_DEVICE
-    v.fill(fi::con::explicit_casting<float, DTypeO>(0.f));
+    v.fill(explicit_casting<float, DTypeO>(0.f));
 #else
     v.fill(DTypeO(0.f));
 #endif
@@ -230,13 +234,13 @@ __global__ void MergeStatesKernel(DTypeIn* __restrict__ V, float* __restrict__ S
   if (num_index_sets == 0) {
     vec_t<DTypeO, vec_size> v;
 #ifdef PLATFORM_HIP_DEVICE
-    v.fill(fi::con::explicit_casting<float, DTypeO>(0.f));
+    v.fill(explicit_casting<float, DTypeO>(0.f));
 #else
     v.fill(DTypeO(0.f));
 #endif
     v.store(v_merged + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
     if (s_merged != nullptr) {
-      s_merged[pos * num_heads + head_idx] = -gpu_iface::math::inf;
+      s_merged[pos * num_heads + head_idx] = -math::inf;
     }
     return;
   }
@@ -305,12 +309,12 @@ __global__ void MergeStatesLargeNumIndexSetsKernel(DTypeIn* __restrict__ V, floa
 
 #pragma unroll
   for (uint32_t iter = 0; iter < num_smem_stages; ++iter) {
-    gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
+    memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
         v_smem + (iter * bdy + ty) * head_dim + tx * vec_size,
         V + ((pos * num_index_sets + (iter * bdy + ty)) * num_heads + head_idx) * head_dim +
             tx * vec_size,
         (iter * bdy + ty) < num_index_sets);
-    gpu_iface::memory::commit_group();
+    memory::commit_group();
   }
 #pragma unroll 4
   for (uint32_t iter = 0; iter < ceil_div(num_index_sets, bdy); ++iter) {
@@ -321,7 +325,7 @@ __global__ void MergeStatesLargeNumIndexSetsKernel(DTypeIn* __restrict__ V, floa
               : 0.f;
       __syncthreads();
     }
-    gpu_iface::memory::wait_group<num_smem_stages - 1>();
+    memory::wait_group<num_smem_stages - 1>();
     __syncthreads();
     vec_t<float, vec_size> v;
     v.cast_load(v_smem + ((iter % num_smem_stages) * bdy + ty) * head_dim + tx * vec_size);
@@ -330,7 +334,7 @@ __global__ void MergeStatesLargeNumIndexSetsKernel(DTypeIn* __restrict__ V, floa
       st.merge(v, s, 1);
     }
     __syncthreads();
-    gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
+    memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
         v_smem + ((iter % num_smem_stages) * bdy + ty) * head_dim + tx * vec_size,
         V +
             ((pos * num_index_sets + ((iter + num_smem_stages) * bdy + ty)) * num_heads +
@@ -338,9 +342,9 @@ __global__ void MergeStatesLargeNumIndexSetsKernel(DTypeIn* __restrict__ V, floa
                 head_dim +
             tx * vec_size,
         (iter + num_smem_stages) * bdy + ty < num_index_sets);
-    gpu_iface::memory::commit_group();
+    memory::commit_group();
   }
-  gpu_iface::memory::wait_group<0>();
+  memory::wait_group<0>();
   __syncthreads();
 
   st.normalize();
@@ -408,13 +412,13 @@ __global__ void PersistentVariableLengthMergeStatesKernel(
     if (num_index_sets == 0) {
       vec_t<DTypeO, vec_size> v;
 #ifdef PLATFORM_HIP_DEVICE
-      v.fill(fi::con::explicit_casting<float, DTypeO>(0.f));
+      v.fill(explicit_casting<float, DTypeO>(0.f));
 #else
       v.fill(DTypeO(0.f));
 #endif
       v.store(v_merged + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
       if (s_merged != nullptr) {
-        s_merged[pos * num_heads + head_idx] = -gpu_iface::math::inf;
+        s_merged[pos * num_heads + head_idx] = -math::inf;
       }
       continue;
     }
@@ -431,11 +435,11 @@ __global__ void PersistentVariableLengthMergeStatesKernel(
 
 #pragma unroll
     for (uint32_t iter = 0; iter < num_smem_stages; ++iter) {
-      gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
+      memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
           v_smem + (iter * bdy + ty) * head_dim + tx * vec_size,
           V + ((indptr[pos] + (iter * bdy + ty)) * num_heads + head_idx) * head_dim + tx * vec_size,
           (iter * bdy + ty) < num_index_sets);
-      gpu_iface::memory::commit_group();
+      memory::commit_group();
     }
 #pragma unroll 4
     for (uint32_t iter = 0; iter < ceil_div(num_index_sets, bdy); ++iter) {
@@ -446,7 +450,7 @@ __global__ void PersistentVariableLengthMergeStatesKernel(
                 : 0.f;
         __syncthreads();
       }
-      gpu_iface::memory::wait_group<num_smem_stages - 1>();
+      memory::wait_group<num_smem_stages - 1>();
       __syncthreads();
       vec_t<float, vec_size> v;
       v.cast_load(v_smem + ((iter % num_smem_stages) * bdy + ty) * head_dim + tx * vec_size);
@@ -455,16 +459,16 @@ __global__ void PersistentVariableLengthMergeStatesKernel(
         st.merge(v, s, 1);
       }
       __syncthreads();
-      gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
+      memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
           v_smem + ((iter % num_smem_stages) * bdy + ty) * head_dim + tx * vec_size,
           V +
               ((indptr[pos] + ((iter + num_smem_stages) * bdy + ty)) * num_heads + head_idx) *
                   head_dim +
               tx * vec_size,
           (iter + num_smem_stages) * bdy + ty < num_index_sets);
-      gpu_iface::memory::commit_group();
+      memory::commit_group();
     }
-    gpu_iface::memory::wait_group<0>();
+    memory::wait_group<0>();
     __syncthreads();
 
     st.normalize();
@@ -509,7 +513,7 @@ __global__ void PersistentVariableLengthAttentionSumKernel(DTypeIn* __restrict__
     if (num_index_sets == 0) {
       vec_t<DTypeO, vec_size> v;
 #ifdef PLATFORM_HIP_DEVICE
-      v.fill(fi::con::explicit_casting<float, DTypeO>(0.f));
+      v.fill(explicit_casting<float, DTypeO>(0.f));
 #else
       v.fill(DTypeO(0.f));
 #endif
@@ -526,15 +530,15 @@ __global__ void PersistentVariableLengthAttentionSumKernel(DTypeIn* __restrict__
 
 #pragma unroll
     for (uint32_t iter = 0; iter < num_smem_stages; ++iter) {
-      gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
+      memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
           v_smem + (iter * bdy + ty) * head_dim + tx * vec_size,
           V + ((indptr[pos] + (iter * bdy + ty)) * num_heads + head_idx) * head_dim + tx * vec_size,
           (iter * bdy + ty) < num_index_sets);
-      gpu_iface::memory::commit_group();
+      memory::commit_group();
     }
 #pragma unroll 4
     for (uint32_t iter = 0; iter < ceil_div(num_index_sets, bdy); ++iter) {
-      gpu_iface::memory::wait_group<num_smem_stages - 1>();
+      memory::wait_group<num_smem_stages - 1>();
       __syncthreads();
       vec_t<float, vec_size> v;
       v.cast_load(v_smem + ((iter % num_smem_stages) * bdy + ty) * head_dim + tx * vec_size);
@@ -545,16 +549,16 @@ __global__ void PersistentVariableLengthAttentionSumKernel(DTypeIn* __restrict__
         }
       }
       __syncthreads();
-      gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
+      memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
           v_smem + ((iter % num_smem_stages) * bdy + ty) * head_dim + tx * vec_size,
           V +
               ((indptr[pos] + ((iter + num_smem_stages) * bdy + ty)) * num_heads + head_idx) *
                   head_dim +
               tx * vec_size,
           (iter + num_smem_stages) * bdy + ty < num_index_sets);
-      gpu_iface::memory::commit_group();
+      memory::commit_group();
     }
-    gpu_iface::memory::wait_group<0>();
+    memory::wait_group<0>();
     __syncthreads();
 
     threadblock_sum<bdx, bdy, vec_size>(v_sum_vec, v_smem);

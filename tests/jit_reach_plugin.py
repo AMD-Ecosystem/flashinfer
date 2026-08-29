@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0
-"""Record which ``csrc_rocm/`` translation units a test run actually loaded.
+"""Record which ``csrc/rocm/`` translation units a test run actually loaded.
 
 JIT-built HIP has no line coverage; this is the honest substitute, reported
 separately from the Python percentage. Enable with ``-p jit_reach_plugin``
@@ -27,7 +27,7 @@ def _record(sources) -> None:
         if name.endswith((".cu", ".cc")):
             # Match on basename: jit/attention/modules_hip.py copies each source
             # into FLASHINFER_GEN_SRC_DIR and registers the copy, so the
-            # recorded path points into the JIT cache, not into csrc_rocm/.
+            # recorded path points into the JIT cache, not into csrc/rocm/.
             _reached.add(name)
 
 

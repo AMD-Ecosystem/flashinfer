@@ -2,13 +2,18 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_ALLOCATOR_H_
-#define FLASHINFER_ALLOCATOR_H_
+#ifdef FLASHINFER_ALLOCATOR_H_
+#error \
+    "include/flashinfer/allocator.h and include/flashinfer/rocm/attention/allocator.h both define FLASHINFER_ALLOCATOR_H_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_ALLOCATOR_H_
+#define FLASHINFER_ROCM_ATTENTION_ALLOCATOR_H_
 
 #include <memory>
 #include <sstream>
 
-#include "exception.h"
+#include "flashinfer/rocm/exception.h"
 
 namespace flashinfer {
 
@@ -32,8 +37,9 @@ struct AlignedAllocator {
       return result;
     } else {
       std::ostringstream oss;
-      oss << "Failed to allocate memory for " << name << " with size " << size << " and alignment "
-          << alignment << " in AlignedAllocator";
+      oss << "Buffer overflow when allocating memory for " << name << " with size " << size
+          << " and alignment " << alignment << ", but only " << remaining_space
+          << " bytes available in AlignedAllocator. Increase the workspace buffer size.";
       FLASHINFER_ERROR(oss.str());
     }
     return nullptr;
@@ -48,4 +54,4 @@ struct AlignedAllocator {
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_ALLOCATOR_H_
+#endif  // FLASHINFER_ROCM_ATTENTION_ALLOCATOR_H_

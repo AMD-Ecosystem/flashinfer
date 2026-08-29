@@ -2,8 +2,13 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_ATTENTION_HEAP_H
-#define FLASHINFER_ATTENTION_HEAP_H
+#ifdef FLASHINFER_ATTENTION_HEAP_H
+#error \
+    "include/flashinfer/attention/heap.h and include/flashinfer/rocm/attention/heap.h both define FLASHINFER_ATTENTION_HEAP_H; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_HEAP_H_
+#define FLASHINFER_ROCM_ATTENTION_HEAP_H_
 
 #include <algorithm>
 #include <stdexcept>
@@ -52,4 +57,4 @@ class MinHeap {
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_ATTENTION_HEAP_H
+#endif  // FLASHINFER_ROCM_ATTENTION_HEAP_H_

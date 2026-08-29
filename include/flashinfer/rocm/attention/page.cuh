@@ -3,19 +3,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#ifdef FLASHINFER_PAGE_CUH_
+#error \
+    "include/flashinfer/page.cuh and include/flashinfer/rocm/attention/page.cuh both define FLASHINFER_PAGE_CUH_; include only one"
+#endif
 
 #include <vector>
 
-#include "gpu_iface/dispatch.cuh"
-#include "gpu_iface/exception.h"
-#include "gpu_iface/fastdiv.cuh"
-#include "gpu_iface/gpu_runtime_compat.hpp"
-#include "gpu_iface/layout.cuh"
-#include "gpu_iface/utils.cuh"
-#include "gpu_iface/vec_dtypes.hpp"
+#include "flashinfer/rocm/dispatch.cuh"
+#include "flashinfer/rocm/exception.h"
+#include "flashinfer/rocm/fastdiv.cuh"
+#include "flashinfer/rocm/gpu_runtime_compat.hpp"
+#include "flashinfer/rocm/layout.cuh"
+#include "flashinfer/rocm/utils.cuh"
+#include "flashinfer/rocm/vec_dtypes_hip.h"
 
 namespace flashinfer {
-using namespace gpu_iface::vec_dtypes;
 /*!
  * \brief Paged key-value cache
  * \tparam layout The layout of last 3 dimensions in KV-Cache.

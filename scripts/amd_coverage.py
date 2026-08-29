@@ -44,7 +44,7 @@ _SURFACE = ("flashinfer", "scripts", "build_backend_rocm.py")
 
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
-_CSRC_DIR = "flashinfer/csrc_rocm"
+_CSRC_DIR = "flashinfer/csrc/rocm"
 _JIT_REACH_ENV = "FLASHINFER_JIT_REACH_DIR"
 
 _TIER_LABEL = {
@@ -584,7 +584,7 @@ def _stamp_matches(out_dir: Path, data_file: Path) -> bool:
 def _jit_reach(
     repo: Path, out_dir: Path, data_file: Path
 ) -> Optional[Tuple[int, List[str]]]:
-    """(reached, unreached) csrc_rocm translation units, merged across xdist workers.
+    """(reached, unreached) csrc/rocm translation units, merged across xdist workers.
 
     Not a coverage figure: the HIP sources are JIT-compiled and have no line
     data. It says only which of them the Python tests caused to be built at all.
@@ -699,7 +699,7 @@ def _report(
     if reach is not None:
         reached, unreached = reach
         total = reached + len(unreached)
-        print("== csrc_rocm reach ==")
+        print("== flashinfer/csrc/rocm reach ==")
         print(
             f"  {reached} of {total} translation units were built and loaded by a test"
         )
@@ -722,7 +722,9 @@ def _report(
         f"  {len(unowned)} upstream files on the measured surface, attributed to no tier"
     )
     print("  tests/ and benchmarks/ are outside the measured surface")
-    print("  C++/HIP under csrc_rocm/ and include/ has no line coverage (JIT-built)")
+    print(
+        "  C++/HIP under flashinfer/csrc/rocm/ and include/ has no line coverage (JIT-built)"
+    )
     print()
 
     # None, not 0.0: with no executable statements outside the import baseline

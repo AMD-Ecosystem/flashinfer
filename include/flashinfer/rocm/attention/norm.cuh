@@ -3,20 +3,24 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
-#ifndef FLASHINFER_NORM_CUH_
-#define FLASHINFER_NORM_CUH_
+#ifdef FLASHINFER_NORM_CUH_
+#error \
+    "include/flashinfer/norm.cuh and include/flashinfer/rocm/attention/norm.cuh both define FLASHINFER_NORM_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_NORM_CUH_
+#define FLASHINFER_ROCM_ATTENTION_NORM_CUH_
 
 #include <numeric>
 
-#include "gpu_iface/dispatch.cuh"
-#include "gpu_iface/gpu_runtime_compat.hpp"
-#include "gpu_iface/math_ops.hpp"
-#include "gpu_iface/platform.hpp"
-#include "gpu_iface/utils.cuh"
-#include "gpu_iface/vec_dtypes.hpp"
+#include "flashinfer/rocm/dispatch.cuh"
+#include "flashinfer/rocm/gpu_runtime_compat.hpp"
+#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/platform.hpp"
+#include "flashinfer/rocm/utils.cuh"
+#include "flashinfer/rocm/vec_dtypes_hip.h"
 namespace flashinfer {
 
-using namespace gpu_iface::vec_dtypes;
 namespace norm {
 
 // Threads per lane group. Must divide the wavefront so a group's shuffle
@@ -24,8 +28,8 @@ namespace norm {
 constexpr uint32_t kLaneGroupSize = 32;
 constexpr uint32_t kMaxBlockSize = 1024;
 
-static_assert(kLaneGroupSize <= static_cast<uint32_t>(gpu_iface::kWarpSize) &&
-              static_cast<uint32_t>(gpu_iface::kWarpSize) % kLaneGroupSize == 0);
+static_assert(kLaneGroupSize <= static_cast<uint32_t>(kWarpSize) &&
+              static_cast<uint32_t>(kWarpSize) % kLaneGroupSize == 0);
 // Stage 2 folds num_warps partial sums inside a single lane group. Ceiling
 // division, matching how the launchers derive num_warps.
 static_assert((kMaxBlockSize + kLaneGroupSize - 1) / kLaneGroupSize <= kLaneGroupSize);
@@ -332,4 +336,4 @@ gpuError_t GemmaFusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_NORM_CUH_
+#endif  // FLASHINFER_ROCM_ATTENTION_NORM_CUH_

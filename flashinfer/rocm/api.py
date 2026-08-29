@@ -104,4 +104,4 @@ from ..pod import PODWithPagedKVCacheWrapper as PODWithPagedKVCacheWrapper
 from ..pod import BatchPODWithPagedKVCacheWrapper as BatchPODWithPagedKVCacheWrapper
 
 from ..utils import next_positive_power_of_2 as next_positive_power_of_2
-from ..utils import use_torch_custom_ops_enabled as use_torch_custom_ops_enabled
+from .torch_compile import use_torch_custom_ops_enabled as use_torch_custom_ops_enabled

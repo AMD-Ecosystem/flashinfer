@@ -45,7 +45,7 @@ specifier.
 
 **`aiter_utils.AITER_MIN_VERSION` (0.1.16) is a hard floor**, enforced
 before routing. FlashInfer links AITER's C++ symbols by mangled name
-(`flashinfer/csrc_rocm/aiter_loader.cc`) and vendors its argument structs
+(`flashinfer/csrc/rocm/aiter_loader.cc`) and vendors its argument structs
 (`include/flashinfer/attention/aiter/`) at the 0.1.16 layout, so an older
 release shifts field offsets instead of failing to load. Below the floor
 `auto` will not select AITER and an explicit `backend="aiter"` raises.

@@ -131,7 +131,7 @@ python3 scripts/amd_coverage.py                           # re-score an existing
 
 **What gets counted.** Files we added are scored whole. Upstream files we merely edited are scored **only on the lines our diff touched**, so upstream's untested code neither flatters nor penalises the number. A third tier covers files with a zero-line Python diff whose implementation is ours anyway through the `FLASHINFER_CSRC_DIR` redirect — `sampling.py` and friends — which no diff can discover; they are declared in `scripts/coverage_ownership.toml`, one entry per file with a reason.
 
-**What is deliberately left out, and why the report says so.** Lines inside `if IS_CUDA:` are excluded and counted in the output: the port re-indented upstream code under those guards, so git attributes it to us even though no ROCm box can execute it — in `flashinfer/jit/env.py` that is about half the owned lines. Lines that run at `import flashinfer` are reported as their own bucket rather than in the headline, because `tests/conftest.py` imports the package at collection and would otherwise credit every module-level statement before a test body runs. C++ under `csrc_rocm/` is JIT-compiled and has no line data at all; instead the report counts how many of its translation units a run actually built and loaded, labelled as reach, not coverage.
+**What is deliberately left out, and why the report says so.** Lines inside `if IS_CUDA:` are excluded and counted in the output: the port re-indented upstream code under those guards, so git attributes it to us even though no ROCm box can execute it — in `flashinfer/jit/env.py` that is about half the owned lines. Lines that run at `import flashinfer` are reported as their own bucket rather than in the headline, because `tests/conftest.py` imports the package at collection and would otherwise credit every module-level statement before a test body runs. C++ under `flashinfer/csrc/rocm/` is JIT-compiled and has no line data at all; instead the report counts how many of its translation units a run actually built and loaded, labelled as reach, not coverage.
 
 **The last measured run is committed** at [`docs/rocm/coverage-gfx942.json`](docs/rocm/coverage-gfx942.json), so a change that drops coverage shows up as a reviewable diff rather than going unnoticed until someone re-runs the suite by hand (about 75 minutes under `--cov` instrumentation, against the ~20 min in the table above uninstrumented). Refresh it in the same commit as any change that moves the number, and before each `+amd.N` tag, by adding `--json-out docs/rocm/coverage-gfx942.json` to the invocation above; relative paths are anchored to the repository root, so it does not matter where you run it from. There is no automated gate — a stale payload is invisible, and the artifact records no HEAD sha to check it against, so this is a convention rather than an enforcement.
 
@@ -148,11 +148,11 @@ The classifier itself is covered by `tests/rocm_tests/test_amd_coverage.py`, whi
 ```text
 flashinfer/
 ├── include/                  # framework-agnostic kernel headers (raw pointers only)
-│   ├── flashinfer/           # FlashInfer kernel implementations
-│   └── gpu_iface/backend/hip/  # HIP intrinsics behind a common header surface
+│   └── flashinfer/           # FlashInfer kernel implementations
+│       └── rocm/             # fork-owned headers, incl. the HIP intrinsics
 ├── csrc/                     # upstream CUDA op registration (PyTorch bindings)
 ├── flashinfer/
-│   ├── csrc_rocm/            # HIP op registration (PyTorch bindings) — the ROCm analog of csrc/
+│   ├── csrc/rocm/            # HIP op registration (PyTorch bindings) — the ROCm analog of csrc/
 │   ├── jit/                  # Python JIT compilation infra (cpp_ext_hip.py is the HIP entry)
 │   └── *.py                  # Python user-facing API (e.g. attention.py, mla_rocm.py)
 ├── tests/rocm_tests/         # HIP test suite (test_*_hip.py)
@@ -162,23 +162,32 @@ flashinfer/
 
 **Framework separation.** `include/` files must remain framework-agnostic
 — no PyTorch headers, raw pointers only. PyTorch tensor handling for HIP
-ops lives in `flashinfer/csrc_rocm/`. Violating this causes subtle build
+ops lives in `flashinfer/csrc/rocm/`. Violating this causes subtle build
 failures because the same headers are pulled into the JIT compilation
 pipeline that has no PyTorch on its include path.
 
-**`csrc/` vs `flashinfer/csrc_rocm/`.** `csrc/` is the upstream CUDA op
+**`csrc/` vs `flashinfer/csrc/rocm/`.** `csrc/` is the upstream CUDA op
 registration tree — keep it in sync with upstream where possible to
 reduce merge conflicts. New HIP-specific op bindings go in
-`flashinfer/csrc_rocm/`, with a `_hip` or `_aiter` suffix when the file
+`flashinfer/csrc/rocm/`, with a `_hip` or `_aiter` suffix when the file
 routes to a HIP-specific code path or to AITER.
 
-**`include/gpu_iface/`.** A common header surface (`math_ops.hpp`,
-`mma_ops.hpp`, `memory_ops.hpp`, …) over HIP intrinsics. It once spanned
-CUDA too; that half is gone, so a non-HIP compiler now gets an `#error`
-from `macros.hpp`. When you need a new intrinsic, add the abstraction in
-`gpu_iface/` and implement it under `gpu_iface/backend/hip/`. Don't
-reach for `hipcub`, `__hip_*`, or inline asm from inside
-`include/flashinfer/` — go through `gpu_iface`.
+**HIP intrinsics.** `include/flashinfer/rocm/*_hip.h` wrap the HIP intrinsics
+(`math_hip.h`, `mma_hip.h`, `memory_ops_hip.h`, `vec_dtypes_hip.h`). These once
+sat behind a `gpu_iface` abstraction spanning CUDA too; that half is gone, so a
+non-HIP compiler now gets an `#error` from `macros.hpp`. Put a new intrinsic in
+the matching `_hip.h` if it is a general primitive. A kernel that needs
+`hipcub` or one inline-asm builtin inline is fine — several under
+`rocm/attention/` do — but anything a second kernel would want belongs in the
+shared header.
+
+Symbols live in `flashinfer::`, grouped by what they do — `flashinfer::math`
+matches upstream's name, `flashinfer::memory` is ours (upstream calls the same
+area `cp_async`). Where a fork header and its upstream namesake can coexist
+they keep the same name and the fork header carries an `#error` tripwire on
+upstream's include guard; `flashinfer::mma_hip` is renamed instead, because
+three of its signatures match upstream's `flashinfer::mma` exactly and the two
+are meant to be usable together.
 
 # Additive-Only: the rule that keeps upstream syncs cheap
 
@@ -189,13 +198,16 @@ however large — are close to free at merge time, because upstream has nothing
 to merge them against. The exception is a path upstream later adds too: that
 conflicts as add/add, with no common ancestor to help resolve it, which is how
 `CLAUDE.md` and `.claude/skills/benchmark-kernel/SKILL.md` got onto the
-conflict list. Prefer a `_rocm`/`_aiter`-suffixed name for anything upstream
-might plausibly create.
+conflict list. For anything upstream might plausibly create, prefer a
+`rocm/` subdirectory over a sibling file: `flashinfer/csrc/rocm/` and
+`include/flashinfer/rocm/` collide with nothing even as upstream grows those
+trees. A `_rocm`/`_aiter` suffix is the fallback where a subdirectory does not
+fit, as with the `_hip.h` intrinsic headers.
 
 **So: add files, don't edit them.** Concretely, prefer in this order:
 
 1. **Source-path redirect.** `FLASHINFER_CSRC_DIR` already points at
-   `flashinfer/csrc_rocm/` on ROCm (see `flashinfer/jit/env.py` and
+   `flashinfer/csrc/rocm/` on ROCm (see `flashinfer/jit/env.py` and
    `flashinfer/get_include_paths.py`), so a shared JIT generator naming
    `sampling.cu` picks up the HIP source with **zero Python diff**. This is why
    `flashinfer/sampling.py` and `flashinfer/quantization.py` contain no HIP
@@ -217,9 +229,11 @@ additions such as `prefill_rocm.py` that are not edits to anything, and an
 in-place edit under `csrc/` or `include/` never appears there at all.
 
 **Forked headers are exempt from conflicts and therefore from warnings.**
-Everything under `include/flashinfer/rocm/` is a fork of an upstream header
-re-expressed on `gpu_iface` — `rocm/attention/` for the attention headers,
-plus `rocm/sampling.cuh` and `rocm/quantization.cuh`. Their upstream
+Much of `include/flashinfer/rocm/` is a fork of an upstream header — the
+`rocm/attention/` set, plus `sampling.cuh`, `quantization.cuh`, `layout.cuh`,
+`fastdiv.cuh` and `exception.h`. The `_hip.h` intrinsics and their types headers have
+no upstream counterpart, and `utils.cuh` shares a basename without forking
+anything, so `upstream_canary.py` excludes it by exact path. Their upstream
 originals are byte-identical to the merge base and will merge cleanly forever,
 so a fix landing upstream reaches the original and *not* the fork, with nothing
 conflicting to tell you. The canary's drift report is the only signal, and a fix
@@ -242,9 +256,9 @@ state; what matters is that your change does not lengthen the list.
 # Adding a Kernel
 
 1. **Kernel implementation** — framework-agnostic header(s) in
-   `include/flashinfer/`, using `gpu_iface/` for any CUDA/HIP-divergent
+   `include/flashinfer/rocm/`, using the `_hip.h` headers for any HIP-specific
    intrinsic.
-2. **PyTorch binding** — register the op in `flashinfer/csrc_rocm/`.
+2. **PyTorch binding** — register the op in `flashinfer/csrc/rocm/`.
    The only layer that may include Torch headers.
 3. **JIT generator** — add the op's JIT spec in `flashinfer/jit/*.py`.
 4. **Python interface** — expose the user-facing API in `flashinfer/*.py`.

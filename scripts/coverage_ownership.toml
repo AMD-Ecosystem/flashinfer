@@ -12,29 +12,29 @@
 # generated artifacts, which a checkout that has never been built does not have.
 
 # Files with a zero-line Python diff whose implementation is nonetheless ours:
-# jit_env.FLASHINFER_CSRC_DIR resolves to flashinfer/csrc_rocm/ on HIP, so these
+# jit_env.FLASHINFER_CSRC_DIR resolves to flashinfer/csrc/rocm/ on HIP, so these
 # wrappers load AMD kernels through an unmodified upstream source path. A
 # diff-based classifier cannot see that, and scoring them as upstream would
 # credit none of the sampling, quantization or cascade surface to us.
 [[redirect_owned]]
 path = "flashinfer/sampling.py"
-reason = "wrapper over csrc_rocm/sampling.cu and renorm.cu"
+reason = "wrapper over flashinfer/csrc/rocm/sampling.cu and renorm.cu"
 
 [[redirect_owned]]
 path = "flashinfer/quantization.py"
-reason = "wrapper over csrc_rocm/quantization.cu"
+reason = "wrapper over flashinfer/csrc/rocm/quantization.cu"
 
 [[redirect_owned]]
 path = "flashinfer/jit/sampling.py"
-reason = "builds csrc_rocm/{sampling,renorm,flashinfer_sampling_binding}.cu"
+reason = "builds flashinfer/csrc/rocm/{sampling,renorm,flashinfer_sampling_binding}.cu"
 
 [[redirect_owned]]
 path = "flashinfer/jit/quantization.py"
-reason = "builds csrc_rocm/{quantization,flashinfer_quantization_binding}.cu"
+reason = "builds flashinfer/csrc/rocm/{quantization,flashinfer_quantization_binding}.cu"
 
 [[redirect_owned]]
 path = "flashinfer/jit/cascade.py"
-reason = "builds csrc_rocm/{cascade,flashinfer_cascade_binding}.cu"
+reason = "builds flashinfer/csrc/rocm/{cascade,flashinfer_cascade_binding}.cu"
 
 # Rulings that contradict what a heuristic would guess. Recorded so the answer
 # is reviewed once rather than re-derived per run.

@@ -3,8 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
-#ifndef FLASHINFER_ATTENTION_IMPL_CUH_
-#define FLASHINFER_ATTENTION_IMPL_CUH_
+#ifdef FLASHINFER_ATTENTION_IMPL_CUH_
+#error \
+    "include/flashinfer/attention_impl.cuh and include/flashinfer/rocm/attention/attention_impl.cuh both define FLASHINFER_ATTENTION_IMPL_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_ATTENTION_IMPL_CUH_
+#define FLASHINFER_ROCM_ATTENTION_ATTENTION_IMPL_CUH_
 
 #include "cascade.cuh"
 #include "decode.cuh"
@@ -13,4 +18,4 @@
 #include "prefill.cuh"
 #include "variants.cuh"
 
-#endif  // FLASHINFER_ATTENTION_IMPL_CUH_
+#endif  // FLASHINFER_ROCM_ATTENTION_ATTENTION_IMPL_CUH_

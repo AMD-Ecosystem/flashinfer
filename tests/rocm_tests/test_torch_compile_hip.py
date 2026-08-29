@@ -4,7 +4,7 @@
 
 """Tests for ``FLASHINFER_USE_TORCH_CUSTOM_OPS`` and ``torch.compile`` on ROCm.
 
-Because ``_USE_TORCH_CUSTOM_OPS`` is evaluated at import time, each test that
+Because the flag is evaluated at import time, each test that
 needs a different env-var value runs in a subprocess so the module is freshly
 imported with the desired setting.
 """

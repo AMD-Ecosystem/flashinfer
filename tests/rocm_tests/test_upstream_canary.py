@@ -432,6 +432,50 @@ class TestDrift:
 
         assert "no forked headers" in capsys.readouterr().out
 
+    def test_excluded_header_is_not_paired_against_upstream(self, repo, capsys):
+        """utils.cuh shares upstream's basename but forks nothing.
+
+        Without the exclusion the pairing reports upstream churn against a HIP
+        rewrite that never tracked it.
+        """
+        for path in uc._FORKED_EXCLUDE:
+            _write(repo, path, "// hip rewrite\n")
+            _write(
+                repo, f"include/flashinfer/{path.rsplit('/', 1)[1]}", "// upstream\n"
+            )
+        _commit(repo, "headers")
+
+        uc._report_drift(
+            str(repo),
+            "HEAD",
+            "HEAD",
+            {
+                f"include/flashinfer/{p.rsplit('/', 1)[1]}": uc.Churn(5, 5)
+                for p in uc._FORKED_EXCLUDE
+            },
+        )
+        out = capsys.readouterr().out
+
+        assert "no forked headers" in out
+        assert "utils.cuh" not in out
+
+    def test_a_sibling_of_an_excluded_header_is_still_paired(self, repo, capsys):
+        """The exclusion is exact paths, not a prefix or a basename match."""
+        self._forked(repo, "layout.cuh")
+        _write(repo, "include/flashinfer/layout.cuh", "// upstream\n")
+        _commit(repo, "headers")
+
+        uc._report_drift(
+            str(repo),
+            "HEAD",
+            "HEAD",
+            {"include/flashinfer/layout.cuh": uc.Churn(4, 4)},
+        )
+
+        assert (
+            "include/flashinfer/layout.cuh  upstream +4/-4" in capsys.readouterr().out
+        )
+
 
 class TestResolve:
     def test_returns_the_full_oid(self, repo):

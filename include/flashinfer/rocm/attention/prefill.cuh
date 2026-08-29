@@ -3,14 +3,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#ifdef FLASHINFER_PREFILL_CUH_
+#error \
+    "include/flashinfer/attention/prefill.cuh and include/flashinfer/rocm/attention/prefill.cuh both define FLASHINFER_PREFILL_CUH_; include only one"
+#endif
 
-#include "gpu_iface/cooperative_groups.h"
-#include "gpu_iface/fastdiv.cuh"
-#include "gpu_iface/math_ops.hpp"
-#include "gpu_iface/memory_ops.hpp"
-#include "gpu_iface/mma_ops.hpp"
-#include "gpu_iface/platform.hpp"
-#include "gpu_iface/utils.cuh"
+#include "flashinfer/rocm/cooperative_groups.h"
+#include "flashinfer/rocm/fastdiv.cuh"
+#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/memory_ops_hip.h"
+#include "flashinfer/rocm/mma_hip.h"
+#include "flashinfer/rocm/platform.hpp"
+#include "flashinfer/rocm/utils.cuh"
 
 #ifdef FP16_QK_REDUCTION_SUPPORTED
 #include "../../fp16.h"
@@ -18,7 +22,7 @@
 #include <type_traits>
 
 #include "cascade.cuh"
-#include "dispatch.cuh"
+#include "flashinfer/rocm/dispatch.cuh"
 #include "frag_layout_swizzle.cuh"
 #include "page.cuh"
 #include "permuted_smem.cuh"
@@ -30,14 +34,9 @@ namespace flashinfer {
 DEFINE_HAS_MEMBER(maybe_q_rope_offset)
 DEFINE_HAS_MEMBER(maybe_k_rope_offset)
 
-namespace cg = gpu_iface::cg;
-namespace memory = gpu_iface::memory;
-namespace mma = gpu_iface::mma;
+using mma_hip::MMAMode;
 
-using gpu_iface::vec_dtypes::vec_cast;
-using mma::MMAMode;
-
-constexpr uint32_t WARP_SIZE = gpu_iface::kWarpSize;
+constexpr uint32_t WARP_SIZE = kWarpSize;
 
 constexpr uint32_t get_num_warps_q(const uint32_t cta_tile_q) {
   if (cta_tile_q > 16) {
@@ -161,9 +160,9 @@ struct KernelTraits {
   template <typename DT>
   static constexpr DT getNegInf() {
     if constexpr (std::is_same<DT, __half>::value) {
-      return std::bit_cast<half>(fp16_ieee_from_fp32_value(-gpu_iface::math::inf));
+      return std::bit_cast<half>(fp16_ieee_from_fp32_value(-math::inf));
     } else {
-      return static_cast<DTypeQKAccum>(-gpu_iface::math::inf);
+      return static_cast<DTypeQKAccum>(-math::inf);
     }
   }
 
@@ -174,7 +173,7 @@ struct KernelTraits {
                 "Set -DFP16_QK_REDUCTION_SUPPORTED and install boost_math "
                 "then recompile to support fp16 reduction");
   static constexpr DTypeQKAccum MaskFillValue =
-      AttentionVariant::use_softmax ? DTypeQKAccum(-gpu_iface::math::inf) : DTypeQKAccum(0.f);
+      AttentionVariant::use_softmax ? DTypeQKAccum(-math::inf) : DTypeQKAccum(0.f);
 #endif
 };
 
@@ -472,7 +471,7 @@ __device__ __forceinline__ void init_states(
     for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
       for (uint32_t j = 0; j < NUM_ACCUM_ROWS_PER_THREAD; ++j) {
-        m[mma_q][j] = typename KTraits::DTypeQKAccum(-gpu_iface::math::inf);
+        m[mma_q][j] = typename KTraits::DTypeQKAccum(-math::inf);
         d[mma_q][j] = 1.f;
       }
     }
@@ -767,10 +766,10 @@ __device__ __forceinline__ void compute_qk(
       for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
         if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum, float>) {
           if (mma_d == 0) {
-            mma::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ, MMAMode::kInit>(
+            mma_hip::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ, MMAMode::kInit>(
                 s_frag[mma_q][mma_kv], a_frag[mma_q], b_frag);
           } else {
-            mma::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ>(
+            mma_hip::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ>(
                 s_frag[mma_q][mma_kv], a_frag[mma_q], b_frag);
           }
         } else if (std::is_same_v<typename KTraits::DTypeQKAccum, half>) {
@@ -928,11 +927,11 @@ __device__ __forceinline__ void update_mdo_states(
             m[mma_q][j] = max(m[mma_q][j], s_frag[mma_q][mma_kv][j]);
           }
           // Butterfly reduction across all threads in the band
-          m[mma_q][j] = max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x8));
-          m[mma_q][j] = max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x4));
-          m[mma_q][j] = max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x2));
-          m[mma_q][j] = max(m[mma_q][j], gpu_iface::math::shfl_xor_sync(m[mma_q][j], 0x1));
-          float o_scale = gpu_iface::math::ptx_exp2(m_prev * sm_scale - m[mma_q][j] * sm_scale);
+          m[mma_q][j] = max(m[mma_q][j], math::shfl_xor_sync(m[mma_q][j], 0x8));
+          m[mma_q][j] = max(m[mma_q][j], math::shfl_xor_sync(m[mma_q][j], 0x4));
+          m[mma_q][j] = max(m[mma_q][j], math::shfl_xor_sync(m[mma_q][j], 0x2));
+          m[mma_q][j] = max(m[mma_q][j], math::shfl_xor_sync(m[mma_q][j], 0x1));
+          float o_scale = math::ptx_exp2(m_prev * sm_scale - m[mma_q][j] * sm_scale);
           d[mma_q][j] *= o_scale;
 
 #pragma unroll
@@ -941,8 +940,8 @@ __device__ __forceinline__ void update_mdo_states(
           }
 #pragma unroll
           for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
-            s_frag[mma_q][mma_kv][j] = gpu_iface::math::ptx_exp2(
-                s_frag[mma_q][mma_kv][j] * sm_scale - m[mma_q][j] * sm_scale);
+            s_frag[mma_q][mma_kv][j] =
+                math::ptx_exp2(s_frag[mma_q][mma_kv][j] * sm_scale - m[mma_q][j] * sm_scale);
           }
         }
       }
@@ -982,7 +981,7 @@ __device__ __forceinline__ void compute_sfm_v(
   for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
     for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
-      mma::transpose_mma_tile(reinterpret_cast<uint32_t*>(s_frag_f16[mma_q][mma_kv]));
+      mma_hip::transpose_mma_tile(reinterpret_cast<uint32_t*>(s_frag_f16[mma_q][mma_kv]));
     }
   }
 
@@ -992,7 +991,7 @@ __device__ __forceinline__ void compute_sfm_v(
 #pragma unroll
       for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
         if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum, float>) {
-          mma::m16k16_rowsum_f16f16f32(d[mma_q], s_frag_f16[mma_q][mma_kv]);
+          mma_hip::m16k16_rowsum_f16f16f32(d[mma_q], s_frag_f16[mma_q][mma_kv]);
         } else {
           static_assert(!std::is_same_v<typename KTraits::DTypeQKAccum, __half>,
                         "FP16 reduction path not implemented for CDNA3");
@@ -1018,10 +1017,10 @@ __device__ __forceinline__ void compute_sfm_v(
 #pragma unroll
       for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
         if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum, float>) {
-          mma::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ>(
+          mma_hip::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ>(
               o_frag[mma_q][mma_d], (uint32_t*)s_frag_f16[mma_q][mma_kv], b_frag);
         } else {
-          mma::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ>(
+          mma_hip::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ>(
               o_frag[mma_q][mma_d], (uint32_t*)s_frag[mma_q][mma_kv], b_frag);
         }
       }
@@ -1059,8 +1058,8 @@ __device__ __forceinline__ void normalize_d(
     for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
       for (uint32_t j = 0; j < KTraits::NUM_ACCUM_ROWS_PER_THREAD; ++j) {
-        d_rcp[mma_q][j] = (m[mma_q][j] != typename KTraits::DTypeQKAccum(-gpu_iface::math::inf))
-                              ? gpu_iface::math::ptx_rcp(d[mma_q][j])
+        d_rcp[mma_q][j] = (m[mma_q][j] != typename KTraits::DTypeQKAccum(-math::inf))
+                              ? math::ptx_rcp(d[mma_q][j])
                               : 0.f;
       }
     }
@@ -1088,7 +1087,7 @@ __device__ __forceinline__ void finalize_m(
     for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
       for (uint32_t j = 0; j < KTraits::NUM_ACCUM_ROWS_PER_THREAD; ++j) {
-        if (m[mma_q][j] != typename KTraits::DTypeQKAccum(-gpu_iface::math::inf)) {
+        if (m[mma_q][j] != typename KTraits::DTypeQKAccum(-math::inf)) {
           m[mma_q][j] *= variant.sm_scale_log2;
         }
       }
@@ -1165,21 +1164,20 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
         float o_scale[NARPT][KTraits::NUM_WARPS_KV];
 #pragma unroll
         for (uint32_t j = 0; j < NARPT; ++j) {
-          float m_new = -gpu_iface::math::inf, d_new = 1.f;
+          float m_new = -math::inf, d_new = 1.f;
 #pragma unroll
           for (uint32_t i = 0; i < KTraits::NUM_WARPS_KV; ++i) {
             float2 md = smem_md[i * KTraits::NUM_MMA_Q * 16 + mma_q * 16 + ln_grp_idx * NARPT + j];
             float m_prev = m_new, d_prev = d_new;
             m_new = max(m_new, md.x);
-            d_new = d_prev * gpu_iface::math::ptx_exp2(m_prev - m_new) +
-                    md.y * gpu_iface::math::ptx_exp2(md.x - m_new);
+            d_new = d_prev * math::ptx_exp2(m_prev - m_new) + md.y * math::ptx_exp2(md.x - m_new);
           }
 
 #pragma unroll
           for (uint32_t i = 0; i < KTraits::NUM_WARPS_KV; ++i) {
             float2 md = smem_md[i * KTraits::NUM_MMA_Q * 16 + mma_q * 16 + ln_grp_idx * NARPT + j];
             float mi = md.x;
-            o_scale[j][i] = gpu_iface::math::ptx_exp2(float(mi - m_new));
+            o_scale[j][i] = math::ptx_exp2(float(mi - m_new));
           }
           m[mma_q][j] = typename KTraits::DTypeQKAccum(m_new);
           d[mma_q][j] = d_new;
@@ -1603,10 +1601,10 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
             if (qo_idx < qo_len) {
               if (partition_kv) {
                 lse[(qo_idx * num_chunks + chunk_idx) * num_qo_heads + qo_head_idx] =
-                    gpu_iface::math::ptx_log2(d[mma_q][j]) + float(m[mma_q][j]);
+                    math::ptx_log2(d[mma_q][j]) + float(m[mma_q][j]);
               } else {
                 lse[qo_idx * num_qo_heads + qo_head_idx] =
-                    gpu_iface::math::ptx_log2(d[mma_q][j]) + float(m[mma_q][j]);
+                    math::ptx_log2(d[mma_q][j]) + float(m[mma_q][j]);
               }
             }
           }
@@ -2054,10 +2052,10 @@ __global__ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKV
             if (qo_idx < qo_len) {
               if (partition_kv) {
                 lse[(o_indptr[request_idx] + qo_idx * num_kv_chunks + kv_tile_idx) * num_qo_heads +
-                    qo_head_idx] = gpu_iface::math::ptx_log2(d[mma_q][j]) + float(m[mma_q][j]);
+                    qo_head_idx] = math::ptx_log2(d[mma_q][j]) + float(m[mma_q][j]);
               } else {
                 lse[(o_indptr[request_idx] + qo_idx) * num_qo_heads + qo_head_idx] =
-                    gpu_iface::math::ptx_log2(d[mma_q][j]) + float(m[mma_q][j]);
+                    math::ptx_log2(d[mma_q][j]) + float(m[mma_q][j]);
               }
             }
           }
@@ -2342,7 +2340,7 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
             const uint32_t qo_head_idx = kv_head_idx * group_size + r;
             const uint32_t qo_idx = q_idx;
             if (qo_idx < qo_upper_bound) {
-              const float s_cur = gpu_iface::math::ptx_log2(d[mma_q][j]) + float(m[mma_q][j]);
+              const float s_cur = math::ptx_log2(d[mma_q][j]) + float(m[mma_q][j]);
               const float s_partial =
                   params.partial_lse[(o_indptr[request_idx] + qo_idx) * num_qo_heads + qo_head_idx];
               const float s_max = fmaxf(s_cur, s_partial);
@@ -2396,10 +2394,10 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
             if (qo_idx < qo_upper_bound) {
               if (partition_kv) {
                 lse[(o_indptr[request_idx] + qo_idx * num_kv_chunks + kv_tile_idx) * num_qo_heads +
-                    qo_head_idx] = gpu_iface::math::ptx_log2(d[mma_q][j]) + float(m[mma_q][j]);
+                    qo_head_idx] = math::ptx_log2(d[mma_q][j]) + float(m[mma_q][j]);
               } else {
                 lse[(o_indptr[request_idx] + qo_idx) * num_qo_heads + qo_head_idx] =
-                    gpu_iface::math::ptx_log2(d[mma_q][j]) + float(m[mma_q][j]);
+                    math::ptx_log2(d[mma_q][j]) + float(m[mma_q][j]);
               }
             }
           }

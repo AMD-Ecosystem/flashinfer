@@ -144,7 +144,7 @@ def _get_workspace_dir_name() -> pathlib.Path:
 if IS_CUDA:
     # These must stay gated, unlike the helpers above: jit/comm.py imports on
     # ROCm, so gen_nvshmem_module() would reach them and fail on an absent
-    # nvidia.nvshmem -- or, with NVSHMEM_* set, on a source csrc_rocm lacks.
+    # nvidia.nvshmem -- or, with NVSHMEM_* set, on a source csrc/rocm lacks.
     def get_nvshmem_include_dirs():
         paths = os.environ.get("NVSHMEM_INCLUDE_PATH")
         if paths is not None:

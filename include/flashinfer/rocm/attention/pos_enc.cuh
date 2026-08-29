@@ -2,8 +2,13 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_POS_ENC_CUH_
-#define FLASHINFER_POS_ENC_CUH_
+#ifdef FLASHINFER_POS_ENC_CUH_
+#error \
+    "include/flashinfer/pos_enc.cuh and include/flashinfer/rocm/attention/pos_enc.cuh both define FLASHINFER_POS_ENC_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_POS_ENC_CUH_
+#define FLASHINFER_ROCM_ATTENTION_POS_ENC_CUH_
 
 #include <cmath>
 #include <cstdint>
@@ -11,20 +16,19 @@
 #include <string>
 #include <type_traits>
 
-#include "gpu_iface/dispatch.cuh"
-#include "gpu_iface/enums.hpp"
-#include "gpu_iface/gpu_runtime_compat.hpp"
-#include "gpu_iface/layout.cuh"
-#include "gpu_iface/macros.hpp"
-#include "gpu_iface/math_ops.hpp"
-#include "gpu_iface/platform.hpp"
-#include "gpu_iface/utils.cuh"
-#include "gpu_iface/vec_dtypes.hpp"
+#include "flashinfer/rocm/dispatch.cuh"
+#include "flashinfer/rocm/enums.hpp"
+#include "flashinfer/rocm/gpu_runtime_compat.hpp"
+#include "flashinfer/rocm/layout.cuh"
+#include "flashinfer/rocm/macros.hpp"
+#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/platform.hpp"
+#include "flashinfer/rocm/utils.cuh"
+#include "flashinfer/rocm/vec_dtypes_hip.h"
 #include "page.cuh"
 
 namespace flashinfer {
 
-using namespace gpu_iface::vec_dtypes;
 /*!
  * \brief Convert PosEncodingMode to string
  * \param pos_encoding_mode A PosEncodingMode value
@@ -43,10 +47,9 @@ inline std::string PosEncodingModeToString(const PosEncodingMode& pos_encoding_m
 }
 
 __device__ __forceinline__ float get_alibi_slope(uint32_t head_idx, uint32_t num_heads) {
-  int n = (int)gpu_iface::math::ptx_exp2(gpu_iface::math::ptx_log2(float(num_heads)));
-  return head_idx < n
-             ? gpu_iface::math::ptx_exp2(-8.f * float(head_idx + 1) / float(n))
-             : gpu_iface::math::ptx_exp2(-4.f * float((head_idx + 1 - n) * 2 - 1) / float(n));
+  int n = (int)math::ptx_exp2(math::ptx_log2(float(num_heads)));
+  return head_idx < n ? math::ptx_exp2(-8.f * float(head_idx + 1) / float(n))
+                      : math::ptx_exp2(-4.f * float((head_idx + 1 - n) * 2 - 1) / float(n));
 }
 
 /*!
@@ -579,10 +582,10 @@ gpuError_t BatchQKApplyRotaryPosIdsCosSinCache(
   DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
     DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
       // 16-byte vectorised loads; at least one element per thread per wavefront lane
-      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / gpu_iface::kWarpSize);
+      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / kWarpSize);
       constexpr uint32_t bdx = HEAD_DIM / vec_size;
       // at least 2 wavefronts per block for occupancy on CDNA3 / 2 warps on CUDA
-      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
+      uint32_t num_threads = std::max(2U * kWarpSize, bdx);
       uint32_t bdy = num_threads / bdx;
       uint32_t nblks_x = (nnz + bdy - 1) / bdy;
       void* args[] = {(void*)&q,
@@ -649,9 +652,9 @@ gpuError_t BatchQKApplyRotaryPosIds(
 
   DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
     DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
-      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / gpu_iface::kWarpSize);
+      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / kWarpSize);
       constexpr uint32_t bdx = HEAD_DIM / vec_size;
-      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
+      uint32_t num_threads = std::max(2U * kWarpSize, bdx);
       uint32_t bdy = num_threads / bdx;
       uint32_t nblks_x = (nnz + bdy - 1) / bdy;
 
@@ -717,9 +720,9 @@ gpuError_t BatchQKApplyRotary(DType* q, DType* k, DType* q_rope, DType* k_rope,
 
   DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
     DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
-      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / gpu_iface::kWarpSize);
+      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / kWarpSize);
       constexpr uint32_t bdx = HEAD_DIM / vec_size;
-      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
+      uint32_t num_threads = std::max(2U * kWarpSize, bdx);
       uint32_t bdy = num_threads / bdx;
       dim3 nblks(batch_size * (num_qo_heads + num_kv_heads));
       dim3 nthrs(bdx, bdy);
@@ -783,9 +786,9 @@ gpuError_t BatchQKApplyLlama31Rotary(
 
   DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
     DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
-      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / gpu_iface::kWarpSize);
+      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / kWarpSize);
       constexpr uint32_t bdx = HEAD_DIM / vec_size;
-      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
+      uint32_t num_threads = std::max(2U * kWarpSize, bdx);
       uint32_t bdy = num_threads / bdx;
       dim3 nblks(batch_size * (num_qo_heads + num_kv_heads));
       dim3 nthrs(bdx, bdy);
@@ -834,9 +837,9 @@ gpuError_t BatchQKApplyLlama31RotaryPosIds(
 
   DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
     DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
-      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / gpu_iface::kWarpSize);
+      constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / kWarpSize);
       constexpr uint32_t bdx = HEAD_DIM / vec_size;
-      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
+      uint32_t num_threads = std::max(2U * kWarpSize, bdx);
       uint32_t bdy = num_threads / bdx;
       dim3 nblks((nnz + bdy - 1) / bdy);
       dim3 nthrs(bdx, bdy);
@@ -928,7 +931,7 @@ __global__ void RopeQuantizeKernel(
   uint32_t k_rope_end = q_rope_end + num_kv_heads * rope_chunks;
   uint32_t k_nope_end = k_rope_end + num_kv_heads * no_rope_chunks;
 
-  using vec_t = flashinfer::gpu_iface::vec_dtypes::vec_t<float, vec_size>;
+  using vec_t = flashinfer::vec_t<float, vec_size>;
   vec_t cos, sin;
   if (bx * bdy + ty < nnz) {
     const uint32_t idx = bx * bdy + ty;
@@ -1090,7 +1093,7 @@ __global__ void RopeQuantizeAppendPagedKVCacheKernel(
   uint32_t k_rope_end = q_rope_end + num_kv_heads * rope_chunks;
   uint32_t k_nope_end = k_rope_end + num_kv_heads * no_rope_chunks;
 
-  using vec_t = flashinfer::gpu_iface::vec_dtypes::vec_t<float, vec_size>;
+  using vec_t = flashinfer::vec_t<float, vec_size>;
   vec_t cos, sin;
   if (bx * bdy + ty < nnz) {
     const uint32_t idx = bx * bdy + ty;
@@ -1268,7 +1271,7 @@ gpuError_t RopeQuantize(
       // 16-byte vector loads — single global_load_dwordx4 on CDNA3
       constexpr uint32_t vec_size = 16 / sizeof(DType);
       constexpr uint32_t bdx = ROPE_DIM / vec_size;
-      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
+      uint32_t num_threads = std::max(2U * kWarpSize, bdx);
       uint32_t bdy = num_threads / bdx;
       uint32_t nblks_x = (nnz + bdy - 1) / bdy;
       uint32_t rope_chunk_size = rope_dim;
@@ -1338,7 +1341,7 @@ gpuError_t RopeQuantizeAppendPagedKVCache(
       // 16-byte vector loads — single global_load_dwordx4 on CDNA3
       constexpr uint32_t vec_size = 16 / sizeof(DType);
       constexpr uint32_t bdx = ROPE_DIM / vec_size;
-      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
+      uint32_t num_threads = std::max(2U * kWarpSize, bdx);
       uint32_t bdy = num_threads / bdx;
       uint32_t nblks_x = (nnz + bdy - 1) / bdy;
       uint32_t rope_chunks = 1;
@@ -1410,7 +1413,7 @@ gpuError_t RopeQuantizeAppendPagedMLACache(
     DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
       constexpr uint32_t vec_size = 16 / sizeof(DType);
       constexpr uint32_t bdx = ROPE_DIM / vec_size;
-      uint32_t num_threads = std::max(2U * gpu_iface::kWarpSize, bdx);
+      uint32_t num_threads = std::max(2U * kWarpSize, bdx);
       uint32_t bdy = num_threads / bdx;
       uint32_t nblks_x = (nnz + bdy - 1) / bdy;
       uint32_t rope_chunks = 1;
@@ -1463,4 +1466,4 @@ gpuError_t RopeQuantizeAppendPagedMLACache(
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_POS_ENC_CUH_
+#endif  // FLASHINFER_ROCM_ATTENTION_POS_ENC_CUH_

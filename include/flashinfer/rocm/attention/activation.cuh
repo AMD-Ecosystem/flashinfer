@@ -2,19 +2,23 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_ACTIVATION_CUH_
-#define FLASHINFER_ACTIVATION_CUH_
+#ifdef FLASHINFER_ACTIVATION_CUH_
+#error \
+    "include/flashinfer/activation.cuh and include/flashinfer/rocm/attention/activation.cuh both define FLASHINFER_ACTIVATION_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_ACTIVATION_CUH_
+#define FLASHINFER_ROCM_ATTENTION_ACTIVATION_CUH_
 
 #include <algorithm>
 
-#include "gpu_iface/gpu_runtime_compat.hpp"
-#include "gpu_iface/math_ops.hpp"
-#include "gpu_iface/platform.hpp"
-#include "gpu_iface/utils.cuh"
-#include "gpu_iface/vec_dtypes.hpp"
+#include "flashinfer/rocm/gpu_runtime_compat.hpp"
+#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/platform.hpp"
+#include "flashinfer/rocm/utils.cuh"
+#include "flashinfer/rocm/vec_dtypes_hip.h"
 
 namespace flashinfer {
-using namespace gpu_iface::vec_dtypes;
 namespace activation {
 
 // Adaptive launch config for act_and_mul_kernel. One block per token underfills
@@ -22,7 +26,7 @@ namespace activation {
 // across blocks_per_row blocks on gridDim.y until the total block count covers
 // the CU array. For large num_tokens this resolves to blocks_per_row == 1, i.e.
 // the original one-block-per-token launch. Single definition shared by the AOT
-// launcher (flashinfer/csrc_rocm/activation.cu) and the JIT template
+// launcher (flashinfer/csrc/rocm/activation.cu) and the JIT template
 // (flashinfer/jit/activation.py) so the two paths cannot drift.
 inline void act_and_mul_launch_dims(int d, int64_t num_tokens, uint32_t vec_size, int dev_id,
                                     dim3& grid_dim, dim3& block_dim) {
@@ -101,4 +105,4 @@ __global__ void act_and_mul_kernel(T* __restrict__ out, const T* __restrict__ in
 }  // namespace activation
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_ACTIVATION_CUH_
+#endif  // FLASHINFER_ROCM_ATTENTION_ACTIVATION_CUH_

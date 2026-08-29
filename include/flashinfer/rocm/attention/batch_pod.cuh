@@ -3,14 +3,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#ifdef FLASHINFER_BATCH_POD_CUH_
+#error \
+    "include/flashinfer/attention/batch_pod.cuh and include/flashinfer/rocm/attention/batch_pod.cuh both define FLASHINFER_BATCH_POD_CUH_; include only one"
+#endif
 
 #include "cascade.cuh"
-#include "dispatch.cuh"
-#include "gpu_iface/gpu_runtime_compat.hpp"
-#include "gpu_iface/math_ops.hpp"
-#include "gpu_iface/platform.hpp"
-#include "gpu_iface/sm_id.hpp"
-#include "gpu_iface/utils.cuh"
+#include "flashinfer/rocm/dispatch.cuh"
+#include "flashinfer/rocm/gpu_runtime_compat.hpp"
+#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/platform.hpp"
+#include "flashinfer/rocm/sm_id.hpp"
+#include "flashinfer/rocm/utils.cuh"
 #include "prefill.cuh"
 #include "variants.cuh"
 
@@ -46,7 +50,7 @@ __global__ __launch_bounds__(std::max(
     constexpr int blk_factor_p = 1;
     constexpr int blk_factor_d = 1;
 
-    linear_bid = static_cast<int>(gpu_iface::get_processor_id() % static_cast<uint32_t>(num_SMs));
+    linear_bid = static_cast<int>(get_processor_id() % static_cast<uint32_t>(num_SMs));
     const int prefill_slots = (prefill_blocks + blk_factor_p - 1) / blk_factor_p;
     const int decode_slots = (decode_blocks + blk_factor_d - 1) / blk_factor_d;
 

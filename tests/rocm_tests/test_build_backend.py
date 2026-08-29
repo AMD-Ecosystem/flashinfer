@@ -178,7 +178,7 @@ def _isolated_project(dest):
 def test_wheel_carries_the_paths_the_jit_resolves(tmp_path, monkeypatch):
     """Assert on the artifact: the helpers above do not prove what setuptools ships.
 
-    csrc_rocm reaches the wheel through both package-data and MANIFEST.in, so
+    csrc/rocm reaches the wheel through both package-data and MANIFEST.in, so
     the counts here catch losing it, not which of the two carried it.
     """
     build = pytest.importorskip("build")
@@ -201,10 +201,10 @@ def test_wheel_carries_the_paths_the_jit_resolves(tmp_path, monkeypatch):
         for f in (_REPO_ROOT / "include").rglob("*")
         if f.suffix in {".cuh", ".h", ".hpp"}
     )
-    csrc = {f for f in names if f.startswith("flashinfer/csrc_rocm/")}
+    csrc = {f for f in names if f.startswith("flashinfer/csrc/rocm/")}
     assert len(csrc) == sum(
         1
-        for f in (_REPO_ROOT / "flashinfer" / "csrc_rocm").rglob("*")
+        for f in (_REPO_ROOT / "flashinfer" / "csrc/rocm").rglob("*")
         if f.suffix in {".cu", ".cc", ".h", ".jinja"}
     )
     # The sibling projects leaked in once via an unanchored packages.find glob.

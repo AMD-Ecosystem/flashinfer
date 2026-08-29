@@ -2,19 +2,23 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_STATE_CUH_
-#define FLASHINFER_STATE_CUH_
+#ifdef FLASHINFER_STATE_CUH_
+#error \
+    "include/flashinfer/attention/state.cuh and include/flashinfer/rocm/attention/state.cuh both define FLASHINFER_STATE_CUH_; include only one"
+#endif
 
-#include "gpu_iface/math_ops.hpp"
-#include "gpu_iface/platform.hpp"
-#include "gpu_iface/vec_dtypes.hpp"
+#ifndef FLASHINFER_ROCM_ATTENTION_STATE_CUH_
+#define FLASHINFER_ROCM_ATTENTION_STATE_CUH_
+
+#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/platform.hpp"
+#include "flashinfer/rocm/vec_dtypes_hip.h"
 
 #if defined(PLATFORM_HIP_DEVICE)
 #define HIP_ENABLE_WARP_SYNC_BUILTINS 1
 #endif
 
 namespace flashinfer {
-using namespace gpu_iface::vec_dtypes;
 /*!
  * \brief The flashattention state.
  * \tparam vec_size The size of the vector used in o.
@@ -75,4 +79,4 @@ struct state_t {
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_STATE_CUH_
+#endif  // FLASHINFER_ROCM_ATTENTION_STATE_CUH_

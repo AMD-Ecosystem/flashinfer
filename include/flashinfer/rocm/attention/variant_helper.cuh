@@ -2,12 +2,17 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_ATTENTION_VARIANT_HELPER_H
-#define FLASHINFER_ATTENTION_VARIANT_HELPER_H
+#ifdef FLASHINFER_ATTENTION_VARIANT_HELPER_H
+#error \
+    "include/flashinfer/attention/variant_helper.cuh and include/flashinfer/rocm/attention/variant_helper.cuh both define FLASHINFER_ATTENTION_VARIANT_HELPER_H; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_VARIANT_HELPER_CUH_
+#define FLASHINFER_ROCM_ATTENTION_VARIANT_HELPER_CUH_
 
 #include <cstdint>
 
-#include "gpu_iface/platform.hpp"
+#include "flashinfer/rocm/platform.hpp"
 
 namespace flashinfer {
 
@@ -51,4 +56,4 @@ struct AttentionVariantBase {
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_ATTENTION_VARIANT_HELPER_H
+#endif  // FLASHINFER_ROCM_ATTENTION_VARIANT_HELPER_CUH_

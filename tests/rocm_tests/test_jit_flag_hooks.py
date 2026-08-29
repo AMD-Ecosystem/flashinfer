@@ -47,7 +47,7 @@ def _load_module():
         "flashinfer.jit": types.ModuleType("flashinfer.jit"),
         "flashinfer.jit.env": types.SimpleNamespace(
             FLASHINFER_INCLUDE_DIR=Path("/stub/include"),
-            FLASHINFER_CSRC_DIR=Path("/stub/csrc_rocm"),
+            FLASHINFER_CSRC_DIR=Path("/stub/csrc/rocm"),
         ),
     }
     saved = {k: sys.modules.get(k) for k in stubs}
@@ -259,7 +259,7 @@ class TestGeneratedNinja:
         text = _ninja(tmp_path, FLASHINFER_OWN_HEADERS_NON_SYSTEM="1")
 
         assert "-I/stub/include" in text
-        assert "-I/stub/csrc_rocm" in text
+        assert "-I/stub/csrc/rocm" in text
         assert "-isystem /stub/include" not in text
         # Third-party headers must stay -isystem regardless (ninja keeps the var).
         assert "-isystem $torch_home/include" in text

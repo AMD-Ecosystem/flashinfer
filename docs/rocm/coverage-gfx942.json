@@ -347,7 +347,7 @@
     {
       "path": "flashinfer/jit/cascade.py",
       "tier": "C",
-      "reason": "builds csrc_rocm/{cascade,flashinfer_cascade_binding}.cu",
+      "reason": "builds flashinfer/csrc/rocm/{cascade,flashinfer_cascade_binding}.cu",
       "owned": 1,
       "covered": 1,
       "import_time": 3,
@@ -429,7 +429,7 @@
     {
       "path": "flashinfer/jit/quantization.py",
       "tier": "C",
-      "reason": "builds csrc_rocm/{quantization,flashinfer_quantization_binding}.cu",
+      "reason": "builds flashinfer/csrc/rocm/{quantization,flashinfer_quantization_binding}.cu",
       "owned": 1,
       "covered": 1,
       "import_time": 3,
@@ -506,7 +506,7 @@
     {
       "path": "flashinfer/jit/sampling.py",
       "tier": "C",
-      "reason": "builds csrc_rocm/{sampling,renorm,flashinfer_sampling_binding}.cu",
+      "reason": "builds flashinfer/csrc/rocm/{sampling,renorm,flashinfer_sampling_binding}.cu",
       "owned": 1,
       "covered": 1,
       "import_time": 3,
@@ -727,7 +727,7 @@
     {
       "path": "flashinfer/quantization.py",
       "tier": "C",
-      "reason": "wrapper over csrc_rocm/quantization.cu",
+      "reason": "wrapper over flashinfer/csrc/rocm/quantization.cu",
       "owned": 19,
       "covered": 19,
       "import_time": 13,
@@ -822,7 +822,7 @@
     {
       "path": "flashinfer/sampling.py",
       "tier": "C",
-      "reason": "wrapper over csrc_rocm/sampling.cu and renorm.cu",
+      "reason": "wrapper over flashinfer/csrc/rocm/sampling.cu and renorm.cu",
       "owned": 228,
       "covered": 187,
       "import_time": 25,

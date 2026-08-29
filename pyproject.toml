@@ -82,15 +82,15 @@ include = ["flashinfer", "flashinfer.*"]
 [tool.setuptools.package-data]
 # scikit-build-core's `wheel.packages = ["flashinfer"]` swept these in
 # implicitly; setuptools requires them to be named. Both matter at runtime:
-# get_csrc_dir() resolves flashinfer/csrc_rocm and get_include() resolves
+# get_csrc_dir() resolves flashinfer/csrc/rocm and get_include() resolves
 # flashinfer/include, so dropping either ships a wheel whose JIT cannot compile.
 # flashinfer/include itself is produced by build_backend_rocm.py, not by git.
 flashinfer = [
     "py.typed",
-    "csrc_rocm/**/*.cu",
-    "csrc_rocm/**/*.cc",
-    "csrc_rocm/**/*.h",
-    "csrc_rocm/**/*.jinja",
+    "csrc/rocm/**/*.cu",
+    "csrc/rocm/**/*.cc",
+    "csrc/rocm/**/*.h",
+    "csrc/rocm/**/*.jinja",
     "include/**/*.cuh",
     "include/**/*.h",
     "include/**/*.hpp",

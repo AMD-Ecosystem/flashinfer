@@ -2,8 +2,13 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_ATTENTION_SCHEDULER_CUH_
-#define FLASHINFER_ATTENTION_SCHEDULER_CUH_
+#ifdef FLASHINFER_ATTENTION_SCHEDULER_CUH_
+#error \
+    "include/flashinfer/attention/scheduler.cuh and include/flashinfer/rocm/attention/scheduler.cuh both define FLASHINFER_ATTENTION_SCHEDULER_CUH_; include only one"
+#endif
+
+#ifndef FLASHINFER_ROCM_ATTENTION_SCHEDULER_CUH_
+#define FLASHINFER_ROCM_ATTENTION_SCHEDULER_CUH_
 
 #include <algorithm>
 #include <cstddef>
@@ -13,11 +18,11 @@
 
 #include "allocator.h"
 #include "decode_tuning.cuh"
-#include "exception.h"
-#include "gpu_iface/dispatch.cuh"
-#include "gpu_iface/gpu_runtime_compat.hpp"
-#include "gpu_iface/platform.hpp"
-#include "gpu_iface/utils.cuh"
+#include "flashinfer/rocm/dispatch.cuh"
+#include "flashinfer/rocm/exception.h"
+#include "flashinfer/rocm/gpu_runtime_compat.hpp"
+#include "flashinfer/rocm/platform.hpp"
+#include "flashinfer/rocm/utils.cuh"
 #include "heap.h"
 #include "pos_enc.cuh"
 
@@ -1346,4 +1351,4 @@ inline gpuError_t MLAPlan(void* float_buffer, size_t float_workspace_size_in_byt
 }
 
 }  // namespace flashinfer
-#endif  // FLASHINFER_ATTENTION_SCHEDULER_CUH_
+#endif  // FLASHINFER_ROCM_ATTENTION_SCHEDULER_CUH_

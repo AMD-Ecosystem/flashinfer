@@ -18,45 +18,34 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef FLASHINFER_SAMPLING_CUH_
-#define FLASHINFER_SAMPLING_CUH_
+#ifdef FLASHINFER_SAMPLING_CUH_
+#error \
+    "include/flashinfer/sampling.cuh and include/flashinfer/rocm/sampling.cuh both define FLASHINFER_SAMPLING_CUH_; include only one"
+#endif
 
-// gpu_iface portability layer provides FI_GPU_CALL, gpuError_t, gpuStream_t,
-// gpuLaunchKernel, gpuFuncSetAttribute, etc. on both CUDA and HIP.
-// macros.hpp must be first: it defines PLATFORM_HIP_DEVICE / PLATFORM_CUDA_DEVICE.
-#include <gpu_iface/dispatch.cuh>
-#include <gpu_iface/gpu_runtime_compat.hpp>
-#include <gpu_iface/macros.hpp>
+#ifndef FLASHINFER_ROCM_SAMPLING_CUH_
+#define FLASHINFER_ROCM_SAMPLING_CUH_
 
-#ifdef PLATFORM_HIP_DEVICE
-// --- HIP-specific: hiprand, hipcub, and gpu_iface math/utils/vec_dtypes ---
+// clang-format off
+// macros.hpp first: its non-HIP #error must fire before a missing hip/ header.
+#include <flashinfer/rocm/macros.hpp>
+// clang-format on
 #include <hiprand/hiprand.h>
 #include <hiprand/hiprand_kernel.h>
 
+#include <flashinfer/rocm/dispatch.cuh>
+#include <flashinfer/rocm/gpu_runtime_compat.hpp>
 #include <hipcub/hipcub.hpp>
 namespace cub = hipcub;
 
-#include <gpu_iface/math_ops.hpp>
-#include <gpu_iface/utils.cuh>
-#include <gpu_iface/vec_dtypes.hpp>
-#else
-// --- CUDA-specific ---
-#include <cuda.h>
-#include <curand.h>
-#include <curand_kernel.h>
-#include <curand_philox4x32_x.h>
+#include <flashinfer/rocm/math_hip.h>
+#include <flashinfer/rocm/vec_dtypes_hip.h>
 
-#include <cub/cub.cuh>
-#include <cuda/functional>
-#include <cuda/std/functional>
-#include <cuda/std/limits>
-#include <flashinfer/math.cuh>
-#include <flashinfer/utils.cuh>
-#include <flashinfer/vec_dtypes.cuh>
-#endif  // PLATFORM_HIP_DEVICE
+#include <flashinfer/rocm/utils.cuh>
 
-// allocator.h is a pure-C++ header; include it on both CUDA and HIP.
-#include <flashinfer/allocator.h>
+// The fork's allocator, not upstream's: upstream's pulls upstream exception.h,
+// which our exception.h now tripwires against.
+#include <flashinfer/rocm/attention/allocator.h>
 
 #include <limits>
 #include <numeric>
@@ -90,9 +79,6 @@ namespace flashinfer {
 namespace sampling {
 
 using namespace cub;
-#ifdef PLATFORM_HIP_DEVICE
-using namespace gpu_iface::vec_dtypes;
-#endif
 
 // Warp/wavefront size: 32 for NVIDIA, 64 for AMD
 #ifdef PLATFORM_HIP_DEVICE
@@ -2399,4 +2385,4 @@ gpuError_t ChainSpeculativeSampling(DType* draft_probs, IdType* draft_token_ids,
 
 }  // namespace flashinfer
 
-#endif  // FLASHINFER_SAMPLING_CUH_
+#endif  // FLASHINFER_ROCM_SAMPLING_CUH_
