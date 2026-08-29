@@ -26,14 +26,15 @@
 #ifndef FLASHINFER_ROCM_SAMPLING_CUH_
 #define FLASHINFER_ROCM_SAMPLING_CUH_
 
-// gpu_runtime_compat supplies FI_GPU_CALL, gpuError_t, gpuStream_t and
-// friends. macros.hpp stays first: it is what #errors on a non-HIP compiler.
+// clang-format off
+// macros.hpp first: its non-HIP #error must fire before a missing hip/ header.
+#include <flashinfer/rocm/macros.hpp>
+// clang-format on
 #include <hiprand/hiprand.h>
 #include <hiprand/hiprand_kernel.h>
 
 #include <flashinfer/rocm/dispatch.cuh>
 #include <flashinfer/rocm/gpu_runtime_compat.hpp>
-#include <flashinfer/rocm/macros.hpp>
 #include <hipcub/hipcub.hpp>
 namespace cub = hipcub;
 

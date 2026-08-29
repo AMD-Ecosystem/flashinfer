@@ -13,13 +13,16 @@
 
 #define HIP_ENABLE_WARP_SYNC_BUILTINS 1
 
+// clang-format off
+// macros.hpp first: its non-HIP #error must fire before a missing hip/ header.
+#include "macros.hpp"
+// clang-format on
+
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
 #include <hip/hip_runtime_api.h>
 
 #include <cstdint>
-
-#include "macros.hpp"
 
 namespace flashinfer::math {
 

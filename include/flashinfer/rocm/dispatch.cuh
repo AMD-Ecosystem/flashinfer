@@ -3,6 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+// Not a shared include guard but the same hazard: upstream's utils.cuh defines
+// eleven of the DISPATCH_* macros below, and the last definition would win.
+#ifdef FLASHINFER_UTILS_CUH_
+#error \
+    "include/flashinfer/utils.cuh and include/flashinfer/rocm/dispatch.cuh both define the DISPATCH_* macros; include only one"
+#endif
 
 #include "flashinfer/rocm/enums.hpp"
 #include "flashinfer/rocm/exception.h"
