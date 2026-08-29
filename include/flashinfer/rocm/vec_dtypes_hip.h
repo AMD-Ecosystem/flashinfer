@@ -13,6 +13,11 @@
 
 #define HIP_ENABLE_WARP_SYNC_BUILTINS 1
 
+// clang-format off
+// macros.hpp first: its non-HIP #error must fire before a missing hip/ header.
+#include "macros.hpp"
+// clang-format on
+
 #include <float.h>
 #include <hip/hip_bf16.h>
 #include <hip/hip_fp16.h>

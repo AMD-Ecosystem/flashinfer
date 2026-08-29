@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+// clang-format off
+// macros.hpp first: its non-HIP #error must fire before a missing hip/ header.
+#include "macros.hpp"
+// clang-format on
+
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
 
