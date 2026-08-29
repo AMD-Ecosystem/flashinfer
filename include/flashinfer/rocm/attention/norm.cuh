@@ -145,7 +145,7 @@ gpuError_t RMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uint32_t
 }
 
 // \param stage_x Keep the fp32 row in shared memory between the two passes. The
-// caller clears it when the row would not fit, and pass 2 then re-reads the sum
+// caller clears it when the row would not fit, and pass 2 then re-reads the row
 // from `residual` in global instead, at the cost of a dtype round-trip.
 template <uint32_t VEC_SIZE, typename T>
 __global__ void FusedAddRMSNormKernel(T* __restrict__ input, T* __restrict__ residual,
