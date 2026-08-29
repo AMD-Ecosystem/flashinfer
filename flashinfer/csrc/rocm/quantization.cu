@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <flashinfer/rocm/quantization.cuh>
 #include <flashinfer/rocm/gpu_runtime_compat.hpp>
+#include <flashinfer/rocm/quantization.cuh>
 
 #include "pytorch_extension_utils.h"
 

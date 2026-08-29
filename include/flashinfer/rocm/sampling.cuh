@@ -23,19 +23,19 @@
 
 // gpu_runtime_compat supplies FI_GPU_CALL, gpuError_t, gpuStream_t and
 // friends. macros.hpp stays first: it is what #errors on a non-HIP compiler.
-#include <flashinfer/rocm/dispatch.cuh>
-#include <flashinfer/rocm/gpu_runtime_compat.hpp>
-#include <flashinfer/rocm/macros.hpp>
-
 #include <hiprand/hiprand.h>
 #include <hiprand/hiprand_kernel.h>
 
+#include <flashinfer/rocm/dispatch.cuh>
+#include <flashinfer/rocm/gpu_runtime_compat.hpp>
+#include <flashinfer/rocm/macros.hpp>
 #include <hipcub/hipcub.hpp>
 namespace cub = hipcub;
 
 #include <flashinfer/rocm/math_hip.h>
-#include <flashinfer/rocm/utils.cuh>
 #include <flashinfer/rocm/vec_dtypes_hip.h>
+
+#include <flashinfer/rocm/utils.cuh>
 
 // The fork's allocator, not upstream's: upstream's pulls its own exception.h,
 // which loses the FLASHINFER_EXCEPTION_H_ race against ours and vanishes.

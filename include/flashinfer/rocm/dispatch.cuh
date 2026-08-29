@@ -4,8 +4,8 @@
 
 #pragma once
 
-#include "flashinfer/rocm/exception.h"
 #include "flashinfer/rocm/enums.hpp"
+#include "flashinfer/rocm/exception.h"
 
 #define DISPATCH_USE_FP16_QK_REDUCTION(use_fp16_qk_reduction, USE_FP16_QK_REDUCTION, ...) \
   if (use_fp16_qk_reduction) {                                                            \

@@ -13,8 +13,8 @@
 
 #include "allocator.h"
 #include "decode_tuning.cuh"
-#include "flashinfer/rocm/exception.h"
 #include "flashinfer/rocm/dispatch.cuh"
+#include "flashinfer/rocm/exception.h"
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"

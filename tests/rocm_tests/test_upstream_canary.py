@@ -440,7 +440,9 @@ class TestDrift:
         """
         for path in uc._FORKED_EXCLUDE:
             _write(repo, path, "// hip rewrite\n")
-            _write(repo, f"include/flashinfer/{path.rsplit('/', 1)[1]}", "// upstream\n")
+            _write(
+                repo, f"include/flashinfer/{path.rsplit('/', 1)[1]}", "// upstream\n"
+            )
         _commit(repo, "headers")
 
         uc._report_drift(
@@ -470,7 +472,9 @@ class TestDrift:
             {"include/flashinfer/layout.cuh": uc.Churn(4, 4)},
         )
 
-        assert "include/flashinfer/layout.cuh  upstream +4/-4" in capsys.readouterr().out
+        assert (
+            "include/flashinfer/layout.cuh  upstream +4/-4" in capsys.readouterr().out
+        )
 
 
 class TestResolve:

@@ -148,8 +148,8 @@ The classifier itself is covered by `tests/rocm_tests/test_amd_coverage.py`, whi
 ```text
 flashinfer/
 ├── include/                  # framework-agnostic kernel headers (raw pointers only)
-│   ├── flashinfer/           # FlashInfer kernel implementations
-│   └── gpu_iface/backend/hip/  # HIP intrinsics behind a common header surface
+│   └── flashinfer/           # FlashInfer kernel implementations
+│       └── rocm/             # fork-owned headers, incl. the HIP intrinsics
 ├── csrc/                     # upstream CUDA op registration (PyTorch bindings)
 ├── flashinfer/
 │   ├── csrc/rocm/            # HIP op registration (PyTorch bindings) — the ROCm analog of csrc/
@@ -172,13 +172,17 @@ reduce merge conflicts. New HIP-specific op bindings go in
 `flashinfer/csrc/rocm/`, with a `_hip` or `_aiter` suffix when the file
 routes to a HIP-specific code path or to AITER.
 
-**`include/gpu_iface/`.** A common header surface (`math_ops.hpp`,
-`mma_ops.hpp`, `memory_ops.hpp`, …) over HIP intrinsics. It once spanned
-CUDA too; that half is gone, so a non-HIP compiler now gets an `#error`
-from `macros.hpp`. When you need a new intrinsic, add the abstraction in
-`gpu_iface/` and implement it under `gpu_iface/backend/hip/`. Don't
-reach for `hipcub`, `__hip_*`, or inline asm from inside
-`include/flashinfer/` — go through `gpu_iface`.
+**HIP intrinsics.** `include/flashinfer/rocm/*_hip.h` wrap the HIP intrinsics
+(`math_hip.h`, `mma_hip.h`, `memory_ops_hip.h`, `vec_dtypes_hip.h`). These once
+sat behind a `gpu_iface` abstraction spanning CUDA too; that half is gone, so a
+non-HIP compiler now gets an `#error` from `macros.hpp`. Put a new intrinsic in
+the matching `_hip.h`. Don't reach for `hipcub`, `__hip_*`, or inline asm
+anywhere else under `include/flashinfer/`.
+
+Symbols live in `flashinfer::`, with a sub-namespace only where upstream has
+one too (`flashinfer::math`, `flashinfer::memory`). The exception is
+`flashinfer::mma_hip`: upstream's `flashinfer::mma` declares three of the same
+signatures, and neither header has a guard that would catch the collision.
 
 # Additive-Only: the rule that keeps upstream syncs cheap
 
@@ -189,8 +193,11 @@ however large — are close to free at merge time, because upstream has nothing
 to merge them against. The exception is a path upstream later adds too: that
 conflicts as add/add, with no common ancestor to help resolve it, which is how
 `CLAUDE.md` and `.claude/skills/benchmark-kernel/SKILL.md` got onto the
-conflict list. Prefer a `_rocm`/`_aiter`-suffixed name for anything upstream
-might plausibly create.
+conflict list. For anything upstream might plausibly create, prefer a
+`rocm/` subdirectory over a sibling file: `flashinfer/csrc/rocm/` and
+`include/flashinfer/rocm/` collide with nothing even as upstream grows those
+trees. A `_rocm`/`_aiter` suffix is the fallback where a subdirectory does not
+fit, as with the `_hip.h` intrinsic headers.
 
 **So: add files, don't edit them.** Concretely, prefer in this order:
 
@@ -217,9 +224,11 @@ additions such as `prefill_rocm.py` that are not edits to anything, and an
 in-place edit under `csrc/` or `include/` never appears there at all.
 
 **Forked headers are exempt from conflicts and therefore from warnings.**
-Everything under `include/flashinfer/rocm/` is a fork of an upstream header
-re-expressed on `gpu_iface` — `rocm/attention/` for the attention headers,
-plus `rocm/sampling.cuh` and `rocm/quantization.cuh`. Their upstream
+Much of `include/flashinfer/rocm/` is a fork of an upstream header — the
+`rocm/attention/` set, plus `sampling.cuh`, `quantization.cuh`, `layout.cuh`,
+`fastdiv.cuh` and `exception.h`. The `_hip.h` intrinsics and their types headers have
+no upstream counterpart, and `utils.cuh` shares a basename without forking
+anything, so `upstream_canary.py` excludes it by exact path. Their upstream
 originals are byte-identical to the merge base and will merge cleanly forever,
 so a fix landing upstream reaches the original and *not* the fork, with nothing
 conflicting to tell you. The canary's drift report is the only signal, and a fix
@@ -242,7 +251,7 @@ state; what matters is that your change does not lengthen the list.
 # Adding a Kernel
 
 1. **Kernel implementation** — framework-agnostic header(s) in
-   `include/flashinfer/`, using `gpu_iface/` for any CUDA/HIP-divergent
+   `include/flashinfer/rocm/`, using the `_hip.h` headers for any HIP-specific
    intrinsic.
 2. **PyTorch binding** — register the op in `flashinfer/csrc/rocm/`.
    The only layer that may include Torch headers.

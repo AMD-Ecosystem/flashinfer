@@ -30,7 +30,6 @@ namespace flashinfer {
 DEFINE_HAS_MEMBER(maybe_q_rope_offset)
 DEFINE_HAS_MEMBER(maybe_k_rope_offset)
 
-
 using mma_hip::MMAMode;
 
 constexpr uint32_t WARP_SIZE = kWarpSize;
@@ -937,8 +936,8 @@ __device__ __forceinline__ void update_mdo_states(
           }
 #pragma unroll
           for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
-            s_frag[mma_q][mma_kv][j] = math::ptx_exp2(
-                s_frag[mma_q][mma_kv][j] * sm_scale - m[mma_q][j] * sm_scale);
+            s_frag[mma_q][mma_kv][j] =
+                math::ptx_exp2(s_frag[mma_q][mma_kv][j] * sm_scale - m[mma_q][j] * sm_scale);
           }
         }
       }
@@ -1167,8 +1166,7 @@ __device__ __forceinline__ void threadblock_sync_mdo_states(
             float2 md = smem_md[i * KTraits::NUM_MMA_Q * 16 + mma_q * 16 + ln_grp_idx * NARPT + j];
             float m_prev = m_new, d_prev = d_new;
             m_new = max(m_new, md.x);
-            d_new = d_prev * math::ptx_exp2(m_prev - m_new) +
-                    md.y * math::ptx_exp2(md.x - m_new);
+            d_new = d_prev * math::ptx_exp2(m_prev - m_new) + md.y * math::ptx_exp2(md.x - m_new);
           }
 
 #pragma unroll

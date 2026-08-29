@@ -8,8 +8,6 @@
 
 #define HIP_ENABLE_WARP_SYNC_BUILTINS 1
 
-#include "platform.hpp"
-
 #include <float.h>
 #include <hip/hip_bf16.h>
 #include <hip/hip_fp16.h>
@@ -18,6 +16,8 @@
 #include <math.h>
 
 #include <type_traits>
+
+#include "platform.hpp"
 
 #define FLASHINFER_INLINE inline __attribute__((always_inline)) __device__
 
@@ -37,7 +37,6 @@ FLASHINFER_INLINE __hip_bfloat162 make_bfloat162(const __hip_bfloat16 x, const _
   return t;
 }
 }  // namespace
-
 
 #define FLASHINFER_HARDWARE_FP8_CONVERSION_ENABLED
 

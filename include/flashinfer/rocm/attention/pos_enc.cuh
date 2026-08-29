@@ -43,9 +43,8 @@ inline std::string PosEncodingModeToString(const PosEncodingMode& pos_encoding_m
 
 __device__ __forceinline__ float get_alibi_slope(uint32_t head_idx, uint32_t num_heads) {
   int n = (int)math::ptx_exp2(math::ptx_log2(float(num_heads)));
-  return head_idx < n
-             ? math::ptx_exp2(-8.f * float(head_idx + 1) / float(n))
-             : math::ptx_exp2(-4.f * float((head_idx + 1 - n) * 2 - 1) / float(n));
+  return head_idx < n ? math::ptx_exp2(-8.f * float(head_idx + 1) / float(n))
+                      : math::ptx_exp2(-4.f * float((head_idx + 1 - n) * 2 - 1) / float(n));
 }
 
 /*!
