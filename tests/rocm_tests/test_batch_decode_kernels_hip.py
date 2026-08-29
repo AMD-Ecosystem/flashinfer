@@ -501,6 +501,83 @@ def test_cuda_graph_batch_decode_with_paged_kv_cache(
         torch.testing.assert_close(o[i], o_ref_i, rtol=1e-3, atol=1e-3)
 
 
+# Sweeps GQA group size on its own axis rather than through the grid above, which
+# would multiply every other parameter. GROUP_SIZE 3 is the only non-power-of-two
+# value DISPATCH_GQA_GROUP_SIZE admits, and the only one where bdz truncates.
+@pytest.mark.parametrize("num_qo_heads", [4, 8, 12, 16, 32])
+@pytest.mark.parametrize("head_dim", [128])
+@pytest.mark.parametrize("kv_dtype", [torch.float16, torch.float8_e4m3fnuz])
+def test_batch_decode_gqa_group_sizes(num_qo_heads, head_dim, kv_dtype):
+    torch.manual_seed(0)
+    batch_size, kv_len, page_size, num_kv_heads = 12, 512, 16, 4
+    q_dtype = torch.float16
+    num_pages_per_seq = (kv_len + page_size - 1) // page_size
+    total_num_pages = num_pages_per_seq * batch_size
+
+    q = torch.randn(batch_size, num_qo_heads, head_dim, device="cuda:0", dtype=q_dtype)
+    kv_data_fp32 = torch.randn(
+        total_num_pages,
+        2,
+        page_size,
+        num_kv_heads,
+        head_dim,
+        dtype=torch.float32,
+        device="cuda:0",
+    )
+    kv_data = kv_data_fp32.to(kv_dtype)
+    kv_indptr = (
+        torch.arange(0, batch_size + 1, device="cuda:0", dtype=torch.int32)
+        * num_pages_per_seq
+    )
+    kv_indices = torch.arange(0, total_num_pages, device="cuda:0", dtype=torch.int32)
+    kv_last_page_len = torch.full(
+        (batch_size,), (kv_len - 1) % page_size + 1, dtype=torch.int32, device="cuda:0"
+    )
+
+    workspace_buffer = torch.empty(32 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
+    wrapper = flashinfer.decode.BatchDecodeWithPagedKVCacheWrapper(
+        workspace_buffer, "NHD"
+    )
+    wrapper.plan(
+        kv_indptr,
+        kv_indices,
+        kv_last_page_len,
+        num_qo_heads,
+        num_kv_heads,
+        head_dim,
+        page_size,
+        data_type=kv_dtype,
+        q_data_type=q_dtype,
+    )
+    o = wrapper.run(q, kv_data)
+
+    for i in range(batch_size):
+        ki = torch.cat(
+            [
+                kv_data_fp32[kv_indptr[i] : kv_indptr[i + 1] - 1, 0].reshape(
+                    -1, num_kv_heads, head_dim
+                ),
+                kv_data_fp32[kv_indptr[i + 1] - 1, 0, : kv_last_page_len[i], :].reshape(
+                    -1, num_kv_heads, head_dim
+                ),
+            ],
+            dim=0,
+        ).to(kv_dtype)
+        vi = torch.cat(
+            [
+                kv_data_fp32[kv_indptr[i] : kv_indptr[i + 1] - 1, 1].reshape(
+                    -1, num_kv_heads, head_dim
+                ),
+                kv_data_fp32[kv_indptr[i + 1] - 1, 1, : kv_last_page_len[i], :].reshape(
+                    -1, num_kv_heads, head_dim
+                ),
+            ],
+            dim=0,
+        ).to(kv_dtype)
+        o_ref_i = flashinfer.decode.single_decode_with_kv_cache(q[i], ki, vi)
+        torch.testing.assert_close(o[i], o_ref_i, rtol=1e-3, atol=1e-3)
+
+
 if __name__ == "__main__":
     test_batch_decode_with_paged_kv_cache(
         256,
