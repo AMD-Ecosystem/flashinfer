@@ -105,15 +105,15 @@ def test_rmsnorm_aiter_with_out_tensor():
 def test_rmsnorm_aiter_in_place_out_matches_reference(hidden_size, batch_size, dtype):
     """out=x is a documented idiom, and CK cannot alias its output onto its
     input: at small n it packs several rows per block and corrupts them."""
+    eps = 1e-6
     device = torch.device("cuda:0")
     x = torch.randn(batch_size, hidden_size, dtype=dtype, device=device)
     w = torch.randn(hidden_size, dtype=dtype, device=device)
 
-    variance = x.float().pow(2).mean(dim=-1, keepdim=True)
-    expected = (x.float() * torch.rsqrt(variance + 1e-6) * w.float()).to(dtype)
+    expected = _rms_norm_ref(x, w, eps)
 
     aliased = x.clone()
-    flashinfer.rmsnorm(aliased, w, out=aliased, backend="aiter")
+    flashinfer.rmsnorm(aliased, w, eps, out=aliased, backend="aiter")
 
     rtol, atol = (7e-2, 7e-2) if dtype == torch.bfloat16 else (4e-3, 4e-3)
     torch.testing.assert_close(aliased, expected, rtol=rtol, atol=atol)

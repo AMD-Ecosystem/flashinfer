@@ -24,7 +24,7 @@ def _doc_references():
     for src in sorted(
         (*_REPO_ROOT.glob("flashinfer/**/*.py"), *_REPO_ROOT.glob("scripts/*.py"))
     ):
-        for ref in dict.fromkeys(_DOC_REF.findall(src.read_text())):
+        for ref in dict.fromkeys(_DOC_REF.findall(src.read_text(encoding="utf-8"))):
             yield src.relative_to(_REPO_ROOT), ref
 
 
