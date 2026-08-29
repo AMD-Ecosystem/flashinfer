@@ -45,8 +45,6 @@ FLASHINFER_INLINE __hip_bfloat162 make_bfloat162(const __hip_bfloat16 x, const _
 
 #define FLASHINFER_HARDWARE_FP8_CONVERSION_ENABLED
 
-#define FLASHINFER_INLINE inline __attribute__((always_inline)) __device__
-
 #if (__CUDACC_VER_MAJOR__ * 10000 + __CUDACC_VER_MINOR__ * 100 < 120400) && \
     (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ < 800))
 // CUDA version < 12.4 and GPU architecture < 80
