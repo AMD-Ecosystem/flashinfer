@@ -5,7 +5,6 @@
 #include "platform.hpp"
 
 namespace flashinfer {
-namespace gpu_iface {
 namespace memory {
 
 /**
@@ -25,5 +24,4 @@ enum class PrefetchMode {
 };
 
 }  // namespace memory
-}  // namespace gpu_iface
 }  // namespace flashinfer

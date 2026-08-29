@@ -11,8 +11,8 @@
 #include "decode_tuning.cuh"
 #include "flashinfer/rocm/cooperative_groups.h"
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
-#include "flashinfer/rocm/math_ops.hpp"
-#include "flashinfer/rocm/memory_ops.hpp"
+#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/memory_ops_hip.h"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"
 #include "pos_enc.cuh"
@@ -35,9 +35,8 @@ inline void CheckSmemBudget(uint32_t smem_size, int dev_id) {
 }
 
 namespace cg = cooperative_groups;
-using PrefetchMode = gpu_iface::memory::PrefetchMode;
-using SharedMemFillMode = gpu_iface::memory::SharedMemFillMode;
-using namespace gpu_iface::vec_dtypes;
+using PrefetchMode = memory::PrefetchMode;
+using SharedMemFillMode = memory::SharedMemFillMode;
 namespace {
 
 /*!
@@ -279,23 +278,23 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
 #pragma unroll
   for (uint32_t iter = 0; iter < num_stages_smem; ++iter) {
     for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
-      gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
+      memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
           k_smem + (((iter * bdz + tz) * bdy + ty) * tile_size_per_bdx + j) * head_dim +
               tx * vec_size,
           k + (producer_kv_idx_base + (tz * bdy + ty) * tile_size_per_bdx + j) * kv_stride_n +
               kv_head_idx * kv_stride_h + tx * vec_size,
           producer_kv_idx_base + (tz * bdy + ty) * tile_size_per_bdx + j < chunk_end);
     }
-    gpu_iface::memory::commit_group();
+    memory::commit_group();
     for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
-      gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
+      memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
           v_smem + (((iter * bdz + tz) * bdy + ty) * tile_size_per_bdx + j) * head_dim +
               tx * vec_size,
           v + (producer_kv_idx_base + (tz * bdy + ty) * tile_size_per_bdx + j) * kv_stride_n +
               kv_head_idx * kv_stride_h + tx * vec_size,
           producer_kv_idx_base + (tz * bdy + ty) * tile_size_per_bdx + j < chunk_end);
     }
-    gpu_iface::memory::commit_group();
+    memory::commit_group();
     producer_kv_idx_base += bdy * bdz * tile_size_per_bdx;
   }
 
@@ -307,7 +306,7 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
 #pragma unroll 2
   for (uint32_t iter = 0; iter < ceil_div(kv_chunk_size, tile_size_per_bdx * bdy * bdz); ++iter) {
     // compute qk
-    gpu_iface::memory::wait_group<2 * num_stages_smem - 1>();
+    memory::wait_group<2 * num_stages_smem - 1>();
     block.sync();
     compute_qk<pos_encoding_mode, vec_size, bdx, bdy * tile_size_per_bdx>(
         params, variant, /*batch_idx=*/0,
@@ -317,17 +316,17 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
     block.sync();
     // load k
     for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
-      gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
+      memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
           k_smem + (((stage_idx * bdz + tz) * bdy + ty) * tile_size_per_bdx + j) * head_dim +
               tx * vec_size,
           k + (producer_kv_idx_base + (tz * bdy + ty) * tile_size_per_bdx + j) * kv_stride_n +
               kv_head_idx * kv_stride_h + tx * vec_size,
           producer_kv_idx_base + (tz * bdy + ty) * tile_size_per_bdx + j < chunk_end);
     }
-    gpu_iface::memory::commit_group();
+    memory::commit_group();
 
     // update m/d/o state
-    gpu_iface::memory::wait_group<2 * num_stages_smem - 1>();
+    memory::wait_group<2 * num_stages_smem - 1>();
     block.sync();
     update_local_state<vec_size, bdx, bdy * tile_size_per_bdx>(
         v_smem + (stage_idx * bdz + tz) * bdy * tile_size_per_bdx * head_dim, s, stage_idx,
@@ -336,20 +335,20 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
 
     // load v
     for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
-      gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
+      memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
           v_smem + (((stage_idx * bdz + tz) * bdy + ty) * tile_size_per_bdx + j) * head_dim +
               tx * vec_size,
           v + (producer_kv_idx_base + (tz * bdy + ty) * tile_size_per_bdx + j) * kv_stride_n +
               kv_head_idx * kv_stride_h + tx * vec_size,
           producer_kv_idx_base + (tz * bdy + ty) * tile_size_per_bdx + j < chunk_end);
     }
-    gpu_iface::memory::commit_group();
+    memory::commit_group();
 
     stage_idx = (stage_idx + 1) % num_stages_smem;
     producer_kv_idx_base += tile_size_per_bdx * bdy * bdz;
     consumer_kv_idx_base += tile_size_per_bdx * bdy * bdz;
   }
-  gpu_iface::memory::wait_group<0>();
+  memory::wait_group<0>();
   block.sync();
 
   // sync local state of all warps inside a threadblock
@@ -489,22 +488,22 @@ __device__ __inline__ void BatchDecodeWithPagedKVCacheDevice(const Params& param
     }
 #pragma unroll
     for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
-      gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
+      memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
           k_smem + (((stage_idx * bdz + tz) * bdy + ty) * tile_size_per_bdx + j) * head_dim +
               tx * vec_size,
           paged_kv.k_data + kv_offset[j],
           ((iter * bdz + tz) * bdy + ty) * tile_size_per_bdx + j < chunk_size);
     }
-    gpu_iface::memory::commit_group();
+    memory::commit_group();
 #pragma unroll
     for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
-      gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
+      memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
           v_smem + (((stage_idx * bdz + tz) * bdy + ty) * tile_size_per_bdx + j) * head_dim +
               tx * vec_size,
           paged_kv.v_data + kv_offset[j],
           ((iter * bdz + tz) * bdy + ty) * tile_size_per_bdx + j < chunk_size);
     }
-    gpu_iface::memory::commit_group();
+    memory::commit_group();
     stage_idx = (stage_idx + 1) % num_stages_smem;
   }
 
@@ -526,7 +525,7 @@ __device__ __inline__ void BatchDecodeWithPagedKVCacheDevice(const Params& param
       }
     }
     // compute qk
-    gpu_iface::memory::wait_group<2 * num_stages_smem - 1>();
+    memory::wait_group<2 * num_stages_smem - 1>();
     block.sync();
     compute_qk<POS_ENCODING_MODE, vec_size, bdx, bdy * tile_size_per_bdx>(
         params, variant, batch_idx,
@@ -548,16 +547,16 @@ __device__ __inline__ void BatchDecodeWithPagedKVCacheDevice(const Params& param
     // load k tiles
 #pragma unroll
     for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
-      gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
+      memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
           k_smem + (((stage_idx * bdz + tz) * bdy + ty) * tile_size_per_bdx + j) * head_dim +
               tx * vec_size,
           paged_kv.k_data + kv_offset[j],
           (((iter + num_stages_smem) * bdz + tz) * bdy + ty) * tile_size_per_bdx + j < chunk_size);
     }
-    gpu_iface::memory::commit_group();
+    memory::commit_group();
 
     // update m/d/o states
-    gpu_iface::memory::wait_group<2 * num_stages_smem - 1>();
+    memory::wait_group<2 * num_stages_smem - 1>();
     block.sync();
     update_local_state<vec_size, bdx, bdy * tile_size_per_bdx>(
         v_smem + (stage_idx * bdz + tz) * bdy * tile_size_per_bdx * head_dim, s, stage_idx, st, tx);
@@ -566,16 +565,16 @@ __device__ __inline__ void BatchDecodeWithPagedKVCacheDevice(const Params& param
     // load v tiles
 #pragma unroll
     for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
-      gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
+      memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
           v_smem + (((stage_idx * bdz + tz) * bdy + ty) * tile_size_per_bdx + j) * head_dim +
               tx * vec_size,
           paged_kv.v_data + kv_offset[j],
           (((iter + num_stages_smem) * bdz + tz) * bdy + ty) * tile_size_per_bdx + j < chunk_size);
     }
-    gpu_iface::memory::commit_group();
+    memory::commit_group();
     stage_idx = (stage_idx + 1) % num_stages_smem;
   }
-  gpu_iface::memory::wait_group<0>();
+  memory::wait_group<0>();
   block.sync();
 
   // sync local state of all warps inside a threadblock
@@ -990,25 +989,25 @@ __global__ void BatchDecodeWithPagedKVCacheKernelMLA(Params params) {
     is_valid_range = (iter * kv_iter_len + dim2_offset(bdy, tz, ty)) < cur_chunk_len;
 
     offset_bytes = ckv_offset_smem[dim3_offset(bdz, bdy, iter, tz, ty)] + tx * vec_size_ckv;
-    gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
+    memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
         ckv_smem + (stage_idx * kv_iter_len + dim2_offset(bdy, tz, ty)) * head_dim_ckv +
             tx * vec_size_ckv,
         paged_kv.ckv_data + offset_bytes, is_valid_range);
 
     offset_bytes =
         kpe_offset_smem[dim3_offset(bdz, bdy, iter, tz, ty)] + tx / tx_fold * vec_size_ckv;
-    gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
+    memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
         kpe_smem + (stage_idx * kv_iter_len + dim2_offset(bdy, tz, ty)) * head_dim_kpe +
             tx / tx_fold * vec_size_ckv,
         paged_kv.kpe_data + offset_bytes, is_valid_range);
 
-    gpu_iface::memory::commit_group();
+    memory::commit_group();
     stage_idx = (stage_idx + 1) % num_stages_smem;
   }
 
 #pragma unroll
   for (uint32_t iter = 0; iter < ceil_div(cur_chunk_len, kv_iter_len); ++iter) {
-    gpu_iface::memory::wait_group<1 * num_stages_smem - 1>();
+    memory::wait_group<1 * num_stages_smem - 1>();
     block.sync();
     const int32_t kv_idx_base =
         (paged_kv.rope_pos_offset == nullptr ? 0 : paged_kv.rope_pos_offset[mapped_batch_idx]) +
@@ -1038,22 +1037,22 @@ __global__ void BatchDecodeWithPagedKVCacheKernelMLA(Params params) {
         ((iter + num_stages_smem) * kv_iter_len + dim2_offset(bdy, tz, ty)) < cur_chunk_len;
     offset_bytes = ckv_offset_smem[dim3_offset(bdz, bdy, (iter + num_stages_smem) % bdx, tz, ty)] +
                    tx * vec_size_ckv;
-    gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
+    memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
         ckv_smem + (stage_idx * kv_iter_len + dim2_offset(bdy, tz, ty)) * head_dim_ckv +
             tx * vec_size_ckv,
         paged_kv.ckv_data + offset_bytes, is_valid_range);
 
     offset_bytes = kpe_offset_smem[dim3_offset(bdz, bdy, (iter + num_stages_smem) % bdx, tz, ty)] +
                    tx / tx_fold * vec_size_ckv;
-    gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
+    memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kFillZero>(
         kpe_smem + (stage_idx * kv_iter_len + dim2_offset(bdy, tz, ty)) * head_dim_kpe +
             tx / tx_fold * vec_size_ckv,
         paged_kv.kpe_data + offset_bytes, is_valid_range);
-    gpu_iface::memory::commit_group();
+    memory::commit_group();
 
     stage_idx = (stage_idx + 1) % num_stages_smem;
   }
-  gpu_iface::memory::wait_group<0>();
+  memory::wait_group<0>();
   block.sync();
 
   if (bdz != 1) {

@@ -4,14 +4,12 @@
 #pragma once
 
 namespace flashinfer {
-namespace gpu_iface {
-namespace mma {
+namespace mma_hip {
 
 enum class MMAMode {
   kInit = 0U,
   kInplaceUpdate = 1U,
 };
 
-}  // namespace mma
-}  // namespace gpu_iface
+}  // namespace mma_hip
 }  // namespace flashinfer

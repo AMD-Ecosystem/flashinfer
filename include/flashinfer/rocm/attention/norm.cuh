@@ -10,13 +10,12 @@
 
 #include "flashinfer/rocm/dispatch.cuh"
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
-#include "flashinfer/rocm/math_ops.hpp"
+#include "flashinfer/rocm/math_hip.h"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"
-#include "flashinfer/rocm/vec_dtypes.hpp"
+#include "flashinfer/rocm/vec_dtypes_hip.h"
 namespace flashinfer {
 
-using namespace gpu_iface::vec_dtypes;
 namespace norm {
 
 // Threads per lane group. Must divide the wavefront so a group's shuffle
@@ -24,8 +23,8 @@ namespace norm {
 constexpr uint32_t kLaneGroupSize = 32;
 constexpr uint32_t kMaxBlockSize = 1024;
 
-static_assert(kLaneGroupSize <= static_cast<uint32_t>(gpu_iface::kWarpSize) &&
-              static_cast<uint32_t>(gpu_iface::kWarpSize) % kLaneGroupSize == 0);
+static_assert(kLaneGroupSize <= static_cast<uint32_t>(kWarpSize) &&
+              static_cast<uint32_t>(kWarpSize) % kLaneGroupSize == 0);
 // Stage 2 folds num_warps partial sums inside a single lane group. Ceiling
 // division, matching how the launchers derive num_warps.
 static_assert((kMaxBlockSize + kLaneGroupSize - 1) / kLaneGroupSize <= kLaneGroupSize);

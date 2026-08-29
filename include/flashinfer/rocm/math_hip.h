@@ -8,6 +8,8 @@
 
 #define HIP_ENABLE_WARP_SYNC_BUILTINS 1
 
+#include "macros.hpp"
+
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
 #include <hip/hip_runtime_api.h>

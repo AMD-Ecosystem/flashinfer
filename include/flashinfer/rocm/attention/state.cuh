@@ -5,16 +5,15 @@
 #ifndef FLASHINFER_STATE_CUH_
 #define FLASHINFER_STATE_CUH_
 
-#include "flashinfer/rocm/math_ops.hpp"
+#include "flashinfer/rocm/math_hip.h"
 #include "flashinfer/rocm/platform.hpp"
-#include "flashinfer/rocm/vec_dtypes.hpp"
+#include "flashinfer/rocm/vec_dtypes_hip.h"
 
 #if defined(PLATFORM_HIP_DEVICE)
 #define HIP_ENABLE_WARP_SYNC_BUILTINS 1
 #endif
 
 namespace flashinfer {
-using namespace gpu_iface::vec_dtypes;
 /*!
  * \brief The flashattention state.
  * \tparam vec_size The size of the vector used in o.

@@ -22,7 +22,7 @@ pytestmark = pytest.mark.skipif(
 
 # ROCm's variant contract differs from the CUDA examples in
 # tests/utils/test_jit_example.py: window_left is read unconditionally by
-# prefill.cuh, and the math helpers live in gpu_iface::math.
+# prefill.cuh, and the math helpers live in math.
 FLASH_SIGMOID_DECL = r"""
 struct FlashSigmoid : AttentionVariantBase {
   static constexpr bool use_softmax = false;
@@ -33,8 +33,8 @@ struct FlashSigmoid : AttentionVariantBase {
   template <typename Params>
   __device__ __host__ FlashSigmoid(const Params& params, uint32_t batch_idx,
                                    uint8_t* smem_ptr) {
-    logits_scale_log2 = params.logits_scale * gpu_iface::math::log2e;
-    sigmoid_bias_log2e = params.sigmoid_bias * gpu_iface::math::log2e;
+    logits_scale_log2 = params.logits_scale * math::log2e;
+    sigmoid_bias_log2e = params.sigmoid_bias * math::log2e;
     qo_len = params.get_qo_len(batch_idx);
     kv_len = params.get_kv_len(batch_idx);
     window_left = kv_len;
@@ -42,8 +42,8 @@ struct FlashSigmoid : AttentionVariantBase {
 
   REGISTER_LOGITS_TRANSFORM(params, logits, batch_idx, qo_idx, kv_idx, qo_head_idx,
                             kv_head_idx, {
-    return gpu_iface::math::ptx_rcp(
-        1.f + gpu_iface::math::ptx_exp2(-float(logits) * logits_scale_log2 -
+    return math::ptx_rcp(
+        1.f + math::ptx_exp2(-float(logits) * logits_scale_log2 -
                                         sigmoid_bias_log2e));
   })
 };

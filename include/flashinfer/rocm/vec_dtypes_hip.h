@@ -8,6 +8,8 @@
 
 #define HIP_ENABLE_WARP_SYNC_BUILTINS 1
 
+#include "platform.hpp"
+
 #include <float.h>
 #include <hip/hip_bf16.h>
 #include <hip/hip_fp16.h>
@@ -22,8 +24,6 @@
 // Opened here, after the system includes: this header used to be included from
 // inside these namespaces, so wrapping the includes too would nest them.
 namespace flashinfer {
-namespace gpu_iface {
-namespace vec_dtypes {
 
 namespace {
 __host__ __device__ inline __hip_bfloat162 __float2bfloat162_rn(const float a) {
@@ -38,8 +38,6 @@ FLASHINFER_INLINE __hip_bfloat162 make_bfloat162(const __hip_bfloat16 x, const _
 }
 }  // namespace
 
-namespace detail {
-namespace hip {
 
 #define FLASHINFER_HARDWARE_FP8_CONVERSION_ENABLED
 
@@ -1912,9 +1910,5 @@ struct vec_t<float, vec_size> {
     }
   }
 };
-}  // namespace hip
-}  // namespace detail
 
-}  // namespace vec_dtypes
-}  // namespace gpu_iface
 }  // namespace flashinfer

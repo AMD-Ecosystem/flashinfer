@@ -7,7 +7,7 @@
 #include "cascade.cuh"
 #include "flashinfer/rocm/dispatch.cuh"
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
-#include "flashinfer/rocm/math_ops.hpp"
+#include "flashinfer/rocm/math_hip.h"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/sm_id.hpp"
 #include "flashinfer/rocm/utils.cuh"
@@ -46,7 +46,7 @@ __global__ __launch_bounds__(std::max(
     constexpr int blk_factor_p = 1;
     constexpr int blk_factor_d = 1;
 
-    linear_bid = static_cast<int>(gpu_iface::get_processor_id() % static_cast<uint32_t>(num_SMs));
+    linear_bid = static_cast<int>(get_processor_id() % static_cast<uint32_t>(num_SMs));
     const int prefill_slots = (prefill_blocks + blk_factor_p - 1) / blk_factor_p;
     const int decode_slots = (decode_blocks + blk_factor_d - 1) / blk_factor_d;
 

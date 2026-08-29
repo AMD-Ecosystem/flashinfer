@@ -12,10 +12,9 @@
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
 #include "flashinfer/rocm/layout.cuh"
 #include "flashinfer/rocm/utils.cuh"
-#include "flashinfer/rocm/vec_dtypes.hpp"
+#include "flashinfer/rocm/vec_dtypes_hip.h"
 
 namespace flashinfer {
-using namespace gpu_iface::vec_dtypes;
 /*!
  * \brief Paged key-value cache
  * \tparam layout The layout of last 3 dimensions in KV-Cache.

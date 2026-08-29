@@ -20,7 +20,7 @@
 #endif
 
 #else
-// The CUDA backend was removed; gpu_iface serves HIP only. Fail here with a
+// The CUDA backend was removed; these headers serve HIP only. Fail here with a
 // named diagnostic rather than deeper in a missing hip/ header.
 #error "flashinfer ROCm requires a HIP compiler (__HIP__ / __HIPCC__)."
 #endif

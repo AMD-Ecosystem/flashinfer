@@ -8,15 +8,15 @@
 #include <cstdint>
 #include <type_traits>
 
-#include "flashinfer/rocm/math_ops.hpp"
-#include "flashinfer/rocm/memory_ops.hpp"
+#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/memory_ops_hip.h"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"
 #include "variant_helper.cuh"
 
 namespace flashinfer {
 
-using gpu_iface::memory::SharedMemFillMode;
+using memory::SharedMemFillMode;
 
 DEFINE_HAS_MEMBER(maybe_mask_indptr)
 
@@ -37,13 +37,13 @@ struct DefaultAttention : AttentionVariantBase {
     qo_len = params.get_qo_len(batch_idx);
     kv_len = params.get_kv_len(batch_idx);
     if constexpr (use_logits_soft_cap) {
-      soft_cap_pre_tanh_scale = params.sm_scale * gpu_iface::math::ptx_rcp(params.logits_soft_cap);
-      sm_scale_log2 = gpu_iface::math::log2e * params.logits_soft_cap;
+      soft_cap_pre_tanh_scale = params.sm_scale * math::ptx_rcp(params.logits_soft_cap);
+      sm_scale_log2 = math::log2e * params.logits_soft_cap;
     } else {
       if constexpr (use_alibi) {
-        sm_scale_log2 = gpu_iface::math::log2e;
+        sm_scale_log2 = math::log2e;
       } else {
-        sm_scale_log2 = params.sm_scale * gpu_iface::math::log2e;
+        sm_scale_log2 = params.sm_scale * math::log2e;
       }
     }
     if constexpr (use_custom_mask) {
@@ -64,7 +64,7 @@ struct DefaultAttention : AttentionVariantBase {
                params.maybe_alibi_slopes[qo_head_idx] * float(int(kv_idx) - int(qo_idx));
     }
     if constexpr (use_logits_soft_cap) {
-      logits = float(gpu_iface::math::tanh(logits * soft_cap_pre_tanh_scale));
+      logits = float(math::tanh(logits * soft_cap_pre_tanh_scale));
     }
     return logits;
   })

@@ -5,11 +5,11 @@
 #ifndef FLASHINFER_PERMUTED_SMEM_CUH_
 #define FLASHINFER_PERMUTED_SMEM_CUH_
 
-#include "flashinfer/rocm/memory_ops.hpp"
-#include "flashinfer/rocm/mma_ops.hpp"
+#include "flashinfer/rocm/memory_ops_hip.h"
+#include "flashinfer/rocm/mma_hip.h"
 #include "flashinfer/rocm/platform.hpp"
 
-namespace gpu_mem = flashinfer::gpu_iface::memory;
+namespace gpu_mem = flashinfer::memory;
 
 namespace flashinfer {
 
@@ -239,7 +239,7 @@ struct smem_t {
   template <typename T = uint32_t>
   __device__ __forceinline__ void load_matrix_m16n16_trans(uint32_t offset, T* frag) {
     load_fragment(offset, frag);
-    gpu_iface::mma::transpose_mma_tile(frag);
+    mma_hip::transpose_mma_tile(frag);
   }
 #endif
 

@@ -6,12 +6,10 @@
 #include <hip/hip_runtime.h>
 
 #include "memory_types.hpp"
+#include "platform.hpp"
 
 namespace flashinfer {
-namespace gpu_iface {
 namespace memory {
-namespace detail {
-namespace hip {
 
 __device__ __forceinline__ void commit_group() {
   // Currently a no-op for HIP
@@ -85,8 +83,5 @@ __device__ __forceinline__ void pred_load(T* smem_ptr, const T* gmem_ptr, bool p
   }
 }
 
-}  // namespace hip
-}  // namespace detail
 }  // namespace memory
-}  // namespace gpu_iface
 }  // namespace flashinfer

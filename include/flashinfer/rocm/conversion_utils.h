@@ -9,7 +9,7 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_runtime_api.h>
 
-namespace fi::con {
+namespace flashinfer {
 template <typename DTypeIn, typename DTypeOut>
 __host__ __device__ __inline__ DTypeOut explicit_casting(DTypeIn value) {
   return DTypeOut(value);
@@ -51,4 +51,4 @@ __host__ __device__ __inline__ __hip_bfloat16 explicit_casting<__hip_bfloat16, _
     __hip_bfloat16 value) {
   return value;
 }
-}  // namespace fi::con
+}  // namespace flashinfer

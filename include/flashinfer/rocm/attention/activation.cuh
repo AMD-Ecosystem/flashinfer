@@ -8,13 +8,12 @@
 #include <algorithm>
 
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
-#include "flashinfer/rocm/math_ops.hpp"
+#include "flashinfer/rocm/math_hip.h"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"
-#include "flashinfer/rocm/vec_dtypes.hpp"
+#include "flashinfer/rocm/vec_dtypes_hip.h"
 
 namespace flashinfer {
-using namespace gpu_iface::vec_dtypes;
 namespace activation {
 
 // Adaptive launch config for act_and_mul_kernel. One block per token underfills

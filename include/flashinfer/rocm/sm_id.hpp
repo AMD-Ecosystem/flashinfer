@@ -7,7 +7,6 @@
 #include "macros.hpp"
 
 namespace flashinfer {
-namespace gpu_iface {
 
 __device__ __forceinline__ uint32_t get_processor_id() {
   // Read HW_ID (id=4, offset=0, size=32) and extract bits [15:8], which pack
@@ -18,5 +17,4 @@ __device__ __forceinline__ uint32_t get_processor_id() {
   return (hw_id >> 8) & 0xFF;
 }
 
-}  // namespace gpu_iface
 }  // namespace flashinfer

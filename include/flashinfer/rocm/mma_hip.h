@@ -16,9 +16,7 @@ using f32x4 = float __attribute__((ext_vector_type(4)));
 }  // namespace
 
 namespace flashinfer {
-namespace gpu_iface {
-namespace mma_impl {
-namespace hip {
+namespace mma_hip {
 
 #define FLASHINFER_RUNTIME_ASSERT(x) assert(0 && x)
 
@@ -140,7 +138,7 @@ __device__ __forceinline__ void load_fragment(uint32_t* R, const T* smem_ptr) {
 }
 
 // MMA operation for FP16 inputs with FP32 accumulator
-template <typename T, mma::MMAMode mma_mode = mma::MMAMode::kInplaceUpdate>
+template <typename T, mma_hip::MMAMode mma_mode = mma_hip::MMAMode::kInplaceUpdate>
 __device__ __forceinline__ void mma_sync_m16n16k16_row_col_f16f16f32(float* C, uint32_t* A,
                                                                      uint32_t* B) {
 #if defined(__HIP_DEVICE_COMPILE__) && (__gfx90a__ || __gfx908__ || __gfx942__ || __gfx950__)
@@ -149,7 +147,7 @@ __device__ __forceinline__ void mma_sync_m16n16k16_row_col_f16f16f32(float* C, u
                 "T must be __half or __hip_bfloat16");
 
   // Initialize C if requested
-  if constexpr (mma_mode == mma::MMAMode::kInit) {
+  if constexpr (mma_mode == mma_hip::MMAMode::kInit) {
     C[0] = 0.0f;
     C[1] = 0.0f;
     C[2] = 0.0f;
@@ -246,7 +244,5 @@ __device__ __forceinline__ void m16k32_rowsum_f8f8f32(float* d_frag, DType* s_fr
   FLASHINFER_RUNTIME_ASSERT("FP8 rowsum not implemented for AMD");
 }
 
-}  // namespace hip
-}  // namespace mma_impl
-}  // namespace gpu_iface
+}  // namespace mma_hip
 }  // namespace flashinfer

@@ -21,7 +21,7 @@
 #ifndef FLASHINFER_SAMPLING_CUH_
 #define FLASHINFER_SAMPLING_CUH_
 
-// gpu_iface supplies FI_GPU_CALL, gpuError_t, gpuStream_t, gpuLaunchKernel and
+// gpu_runtime_compat supplies FI_GPU_CALL, gpuError_t, gpuStream_t and
 // friends. macros.hpp stays first: it is what #errors on a non-HIP compiler.
 #include <flashinfer/rocm/dispatch.cuh>
 #include <flashinfer/rocm/gpu_runtime_compat.hpp>
@@ -33,9 +33,9 @@
 #include <hipcub/hipcub.hpp>
 namespace cub = hipcub;
 
-#include <flashinfer/rocm/math_ops.hpp>
+#include <flashinfer/rocm/math_hip.h>
 #include <flashinfer/rocm/utils.cuh>
-#include <flashinfer/rocm/vec_dtypes.hpp>
+#include <flashinfer/rocm/vec_dtypes_hip.h>
 
 // The fork's allocator, not upstream's: upstream's pulls its own exception.h,
 // which loses the FLASHINFER_EXCEPTION_H_ race against ours and vanishes.
@@ -74,7 +74,6 @@ namespace sampling {
 
 using namespace cub;
 #ifdef PLATFORM_HIP_DEVICE
-using namespace gpu_iface::vec_dtypes;
 #endif
 
 // Warp/wavefront size: 32 for NVIDIA, 64 for AMD

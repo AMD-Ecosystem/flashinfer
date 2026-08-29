@@ -10,7 +10,5 @@
 #include <hip/hip_cooperative_groups.h>
 // clang-format on
 namespace flashinfer {
-namespace gpu_iface {
 namespace cg = ::cooperative_groups;
-}  // namespace gpu_iface
 }  // namespace flashinfer
