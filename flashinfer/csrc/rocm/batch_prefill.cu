@@ -17,7 +17,7 @@
 
 #include <flashinfer/rocm/attention/pos_enc.cuh>
 #include <flashinfer/rocm/attention/scheduler.cuh>
-#include <gpu_iface/enums.hpp>
+#include <flashinfer/rocm/enums.hpp>
 #include <optional>
 
 #include "batch_prefill_config.inc"

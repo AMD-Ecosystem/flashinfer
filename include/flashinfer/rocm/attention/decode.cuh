@@ -9,12 +9,12 @@
 
 #include "cascade.cuh"
 #include "decode_tuning.cuh"
-#include "gpu_iface/cooperative_groups.h"
-#include "gpu_iface/gpu_runtime_compat.hpp"
-#include "gpu_iface/math_ops.hpp"
-#include "gpu_iface/memory_ops.hpp"
-#include "gpu_iface/platform.hpp"
-#include "gpu_iface/utils.cuh"
+#include "flashinfer/rocm/cooperative_groups.h"
+#include "flashinfer/rocm/gpu_runtime_compat.hpp"
+#include "flashinfer/rocm/math_ops.hpp"
+#include "flashinfer/rocm/memory_ops.hpp"
+#include "flashinfer/rocm/platform.hpp"
+#include "flashinfer/rocm/utils.cuh"
 #include "pos_enc.cuh"
 #include "state.cuh"
 

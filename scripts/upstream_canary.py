@@ -40,6 +40,10 @@ _EXPECTED_PREFIXES = ("benchmarks/samples/",)
 
 _FORKED_DIR = "include/flashinfer/rocm"
 
+# Shares a basename with an upstream header but forks nothing: a HIP rewrite
+# that happens to reuse the names. Pairing it would report drift forever.
+_FORKED_EXCLUDE = frozenset({f"{_FORKED_DIR}/utils.cuh"})
+
 # rocm/ mirrors upstream's layout but flattens one level: rocm/attention/ holds
 # headers upstream keeps both in attention/ and directly under flashinfer/.
 _UPSTREAM_HEADER_DIRS = ("include/flashinfer/attention", "include/flashinfer")
@@ -254,7 +258,9 @@ def _report_drift(repo: str, ours: str, theirs: str, churn: Dict[str, Churn]) ->
     """
     print("== forked-header drift ==")
     forked = sorted(
-        p for p in _ls_tree(repo, ours, _FORKED_DIR) if p.endswith(_HEADER_SUFFIXES)
+        p
+        for p in _ls_tree(repo, ours, _FORKED_DIR)
+        if p.endswith(_HEADER_SUFFIXES) and p not in _FORKED_EXCLUDE
     )
     if not forked:
         print(f"no forked headers under {_FORKED_DIR} in {ours[:12]}")

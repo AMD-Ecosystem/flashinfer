@@ -5,9 +5,9 @@
 #ifndef FLASHINFER_STATE_CUH_
 #define FLASHINFER_STATE_CUH_
 
-#include "gpu_iface/math_ops.hpp"
-#include "gpu_iface/platform.hpp"
-#include "gpu_iface/vec_dtypes.hpp"
+#include "flashinfer/rocm/math_ops.hpp"
+#include "flashinfer/rocm/platform.hpp"
+#include "flashinfer/rocm/vec_dtypes.hpp"
 
 #if defined(PLATFORM_HIP_DEVICE)
 #define HIP_ENABLE_WARP_SYNC_BUILTINS 1

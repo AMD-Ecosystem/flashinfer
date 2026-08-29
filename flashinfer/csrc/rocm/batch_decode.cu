@@ -15,7 +15,7 @@
  */
 #include <flashinfer/rocm/attention/pos_enc.cuh>
 #include <flashinfer/rocm/attention/scheduler.cuh>
-#include <gpu_iface/utils.cuh>
+#include <flashinfer/rocm/utils.cuh>
 #include <optional>
 
 #include "batch_decode_config.inc"

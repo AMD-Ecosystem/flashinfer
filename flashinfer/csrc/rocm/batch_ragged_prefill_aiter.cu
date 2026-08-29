@@ -13,8 +13,8 @@
 
 #include <cmath>
 #include <flashinfer/attention/aiter/batch_prefill.cuh>
-#include <gpu_iface/enums.hpp>
-#include <gpu_iface/layout.cuh>
+#include <flashinfer/rocm/enums.hpp>
+#include <flashinfer/rocm/layout.cuh>
 #include <optional>
 
 #include "batch_prefill_aiter_config.inc"

@@ -5,7 +5,7 @@
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
 
-#include "../../memory_types.hpp"
+#include "memory_types.hpp"
 
 namespace flashinfer {
 namespace gpu_iface {

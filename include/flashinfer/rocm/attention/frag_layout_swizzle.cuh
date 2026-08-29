@@ -7,7 +7,7 @@
 
 #include <cstdint>
 
-#include "gpu_iface/platform.hpp"
+#include "flashinfer/rocm/platform.hpp"
 
 // Define platform-specific full mask for warp/wavefront operations
 constexpr uint64_t WARP_FULL_MASK = 0xffffffffffffffffULL;  // 64-bit mask for HIP

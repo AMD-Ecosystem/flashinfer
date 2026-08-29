@@ -9,11 +9,11 @@
 #include <numeric>
 
 #include "flashinfer/rocm/dispatch.cuh"
-#include "gpu_iface/gpu_runtime_compat.hpp"
-#include "gpu_iface/math_ops.hpp"
-#include "gpu_iface/platform.hpp"
-#include "gpu_iface/utils.cuh"
-#include "gpu_iface/vec_dtypes.hpp"
+#include "flashinfer/rocm/gpu_runtime_compat.hpp"
+#include "flashinfer/rocm/math_ops.hpp"
+#include "flashinfer/rocm/platform.hpp"
+#include "flashinfer/rocm/utils.cuh"
+#include "flashinfer/rocm/vec_dtypes.hpp"
 namespace flashinfer {
 
 using namespace gpu_iface::vec_dtypes;

@@ -5,7 +5,7 @@
 #pragma once
 
 #include "flashinfer/rocm/exception.h"
-#include "gpu_iface/enums.hpp"
+#include "flashinfer/rocm/enums.hpp"
 
 #define DISPATCH_USE_FP16_QK_REDUCTION(use_fp16_qk_reduction, USE_FP16_QK_REDUCTION, ...) \
   if (use_fp16_qk_reduction) {                                                            \

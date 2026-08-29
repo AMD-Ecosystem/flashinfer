@@ -19,8 +19,8 @@
  */
 #ifndef FLASHINFER_QUANTIZATION_CUH_
 #define FLASHINFER_QUANTIZATION_CUH_
-#include <gpu_iface/gpu_runtime_compat.hpp>
-#include <gpu_iface/macros.hpp>
+#include <flashinfer/rocm/gpu_runtime_compat.hpp>
+#include <flashinfer/rocm/macros.hpp>
 
 // CUB/hipCUB abstraction
 #ifdef PLATFORM_HIP_DEVICE
@@ -31,7 +31,7 @@ namespace block_ops = hipcub;
 namespace block_ops = cub;
 #endif
 
-#include <gpu_iface/utils.cuh>
+#include <flashinfer/rocm/utils.cuh>
 
 namespace flashinfer {
 namespace quantization {

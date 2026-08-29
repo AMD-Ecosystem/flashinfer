@@ -7,7 +7,7 @@
 
 #include <cstdint>
 
-#include "gpu_iface/platform.hpp"
+#include "flashinfer/rocm/platform.hpp"
 
 namespace flashinfer {
 

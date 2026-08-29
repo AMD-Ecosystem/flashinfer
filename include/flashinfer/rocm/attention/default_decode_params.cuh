@@ -8,8 +8,8 @@
 
 #include <cstdint>
 
-#include "gpu_iface/layout.cuh"
-#include "gpu_iface/platform.hpp"
+#include "flashinfer/rocm/layout.cuh"
+#include "flashinfer/rocm/platform.hpp"
 #include "page.cuh"
 
 namespace flashinfer {

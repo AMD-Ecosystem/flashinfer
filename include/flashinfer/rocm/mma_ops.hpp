@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
-#include "gpu_iface/mma_types.hpp"
-#include "gpu_iface/platform.hpp"
+#include "flashinfer/rocm/mma_types.hpp"
+#include "flashinfer/rocm/platform.hpp"
 
 // Include platform-specific implementations
-#include "backend/hip/mma_hip.h"
+#include "mma_hip.h"
 namespace mma_detail = flashinfer::gpu_iface::mma_impl::hip;
 
 namespace flashinfer {

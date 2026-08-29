@@ -7,7 +7,7 @@
 #include <cmath>
 #include <cstdint>
 
-#include "gpu_iface/gpu_runtime_compat.hpp"
+#include "flashinfer/rocm/gpu_runtime_compat.hpp"
 #include "page.cuh"
 
 namespace flashinfer {

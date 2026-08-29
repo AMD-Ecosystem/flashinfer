@@ -8,8 +8,8 @@
 
 #include <cmath>
 #include <flashinfer/attention/aiter/single_prefill.cuh>
-#include <gpu_iface/enums.hpp>
-#include <gpu_iface/layout.cuh>
+#include <flashinfer/rocm/enums.hpp>
+#include <flashinfer/rocm/layout.cuh>
 #include <mutex>
 #include <optional>
 #include <tuple>

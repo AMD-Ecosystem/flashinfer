@@ -8,10 +8,10 @@
 #include <cstdint>
 #include <type_traits>
 
-#include "gpu_iface/math_ops.hpp"
-#include "gpu_iface/memory_ops.hpp"
-#include "gpu_iface/platform.hpp"
-#include "gpu_iface/utils.cuh"
+#include "flashinfer/rocm/math_ops.hpp"
+#include "flashinfer/rocm/memory_ops.hpp"
+#include "flashinfer/rocm/platform.hpp"
+#include "flashinfer/rocm/utils.cuh"
 #include "variant_helper.cuh"
 
 namespace flashinfer {

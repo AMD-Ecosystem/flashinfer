@@ -5,8 +5,8 @@
 
 #include <type_traits>
 
-#include "gpu_iface/mma_types.hpp"
-#include "gpu_iface/platform.hpp"
+#include "flashinfer/rocm/mma_types.hpp"
+#include "flashinfer/rocm/platform.hpp"
 
 namespace {
 using f16 = _Float16;

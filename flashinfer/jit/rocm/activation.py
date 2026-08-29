@@ -5,7 +5,7 @@
 """The HIP source template for the act-and-mul kernels."""
 
 activation_templ = r"""
-  #include <gpu_iface/platform.hpp>
+  #include <flashinfer/rocm/platform.hpp>
   #include <flashinfer/rocm/attention/activation.cuh>
   #include "pytorch_extension_utils.h"
   #include <hip/hip_runtime.h>

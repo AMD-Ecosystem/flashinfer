@@ -24,8 +24,8 @@
 // gpu_iface supplies FI_GPU_CALL, gpuError_t, gpuStream_t, gpuLaunchKernel and
 // friends. macros.hpp stays first: it is what #errors on a non-HIP compiler.
 #include <flashinfer/rocm/dispatch.cuh>
-#include <gpu_iface/gpu_runtime_compat.hpp>
-#include <gpu_iface/macros.hpp>
+#include <flashinfer/rocm/gpu_runtime_compat.hpp>
+#include <flashinfer/rocm/macros.hpp>
 
 #include <hiprand/hiprand.h>
 #include <hiprand/hiprand_kernel.h>
@@ -33,9 +33,9 @@
 #include <hipcub/hipcub.hpp>
 namespace cub = hipcub;
 
-#include <gpu_iface/math_ops.hpp>
-#include <gpu_iface/utils.cuh>
-#include <gpu_iface/vec_dtypes.hpp>
+#include <flashinfer/rocm/math_ops.hpp>
+#include <flashinfer/rocm/utils.cuh>
+#include <flashinfer/rocm/vec_dtypes.hpp>
 
 // The fork's allocator, not upstream's: upstream's pulls its own exception.h,
 // which loses the FLASHINFER_EXCEPTION_H_ race against ours and vanishes.

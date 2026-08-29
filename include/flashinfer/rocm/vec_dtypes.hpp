@@ -7,7 +7,7 @@
 
 #include "platform.hpp"
 
-#include "backend/hip/vec_dtypes_hip.h"
+#include "vec_dtypes_hip.h"
 
 namespace flashinfer {
 namespace gpu_iface {

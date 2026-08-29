@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 #include <flashinfer/rocm/quantization.cuh>
-#include <gpu_iface/gpu_runtime_compat.hpp>
+#include <flashinfer/rocm/gpu_runtime_compat.hpp>
 
 #include "pytorch_extension_utils.h"
 

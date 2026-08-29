@@ -5,7 +5,7 @@
 #include "macros.hpp"
 
 // Include platform-specific implementations
-#include "backend/hip/math_hip.h"
+#include "math_hip.h"
 
 namespace flashinfer {
 namespace gpu_iface {

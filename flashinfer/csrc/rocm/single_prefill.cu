@@ -16,8 +16,8 @@
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 
 #include <flashinfer/rocm/attention/pos_enc.cuh>
-#include <gpu_iface/enums.hpp>
-#include <gpu_iface/fastdiv.cuh>
+#include <flashinfer/rocm/enums.hpp>
+#include <flashinfer/rocm/fastdiv.cuh>
 #include <optional>
 
 #include "pytorch_extension_utils.h"

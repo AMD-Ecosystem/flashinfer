@@ -5,9 +5,9 @@
 #ifndef FLASHINFER_PERMUTED_SMEM_CUH_
 #define FLASHINFER_PERMUTED_SMEM_CUH_
 
-#include "gpu_iface/memory_ops.hpp"
-#include "gpu_iface/mma_ops.hpp"
-#include "gpu_iface/platform.hpp"
+#include "flashinfer/rocm/memory_ops.hpp"
+#include "flashinfer/rocm/mma_ops.hpp"
+#include "flashinfer/rocm/platform.hpp"
 
 namespace gpu_mem = flashinfer::gpu_iface::memory;
 

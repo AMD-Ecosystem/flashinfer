@@ -6,11 +6,11 @@
 
 #include "cascade.cuh"
 #include "flashinfer/rocm/dispatch.cuh"
-#include "gpu_iface/gpu_runtime_compat.hpp"
-#include "gpu_iface/math_ops.hpp"
-#include "gpu_iface/platform.hpp"
-#include "gpu_iface/sm_id.hpp"
-#include "gpu_iface/utils.cuh"
+#include "flashinfer/rocm/gpu_runtime_compat.hpp"
+#include "flashinfer/rocm/math_ops.hpp"
+#include "flashinfer/rocm/platform.hpp"
+#include "flashinfer/rocm/sm_id.hpp"
+#include "flashinfer/rocm/utils.cuh"
 #include "prefill.cuh"
 #include "variants.cuh"
 

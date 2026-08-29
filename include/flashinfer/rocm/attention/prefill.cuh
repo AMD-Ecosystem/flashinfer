@@ -4,13 +4,13 @@
 
 #pragma once
 
-#include "gpu_iface/cooperative_groups.h"
-#include "gpu_iface/fastdiv.cuh"
-#include "gpu_iface/math_ops.hpp"
-#include "gpu_iface/memory_ops.hpp"
-#include "gpu_iface/mma_ops.hpp"
-#include "gpu_iface/platform.hpp"
-#include "gpu_iface/utils.cuh"
+#include "flashinfer/rocm/cooperative_groups.h"
+#include "flashinfer/rocm/fastdiv.cuh"
+#include "flashinfer/rocm/math_ops.hpp"
+#include "flashinfer/rocm/memory_ops.hpp"
+#include "flashinfer/rocm/mma_ops.hpp"
+#include "flashinfer/rocm/platform.hpp"
+#include "flashinfer/rocm/utils.cuh"
 
 #ifdef FP16_QK_REDUCTION_SUPPORTED
 #include "../../fp16.h"

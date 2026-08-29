@@ -15,9 +15,9 @@
 #include "decode_tuning.cuh"
 #include "flashinfer/rocm/exception.h"
 #include "flashinfer/rocm/dispatch.cuh"
-#include "gpu_iface/gpu_runtime_compat.hpp"
-#include "gpu_iface/platform.hpp"
-#include "gpu_iface/utils.cuh"
+#include "flashinfer/rocm/gpu_runtime_compat.hpp"
+#include "flashinfer/rocm/platform.hpp"
+#include "flashinfer/rocm/utils.cuh"
 #include "heap.h"
 #include "pos_enc.cuh"
 

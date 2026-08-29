@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
-#include "backend/hip/memory_ops_hip.h"
+#include "memory_ops_hip.h"
 #include "memory_types.hpp"
 #include "platform.hpp"
 
