@@ -118,6 +118,12 @@ ENV ROCM_HOME="$ROCM_SDK"
 ENV LIBRARY_PATH="${LIBRARY_PATH:+$LIBRARY_PATH:}$ROCM_SDK/lib"
 ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$ROCM_SDK/lib"
 
+# Hand over the venv *directories* only, then install as the dev user so every
+# package added below is owned by them. A recursive chown would instead copy the
+# base image's whole 19 GB venv into a new layer.
+RUN find "$VIRTUAL_ENV" -type d -exec chown $USER_UID:$USER_GID {} +
+USER $USERNAME
+
 # setuptools and setuptools-scm are the in-tree backend's build requirements.
 # They must be in the image because the documented install passes
 # --no-build-isolation, which is itself required: isolation resolves torch from
@@ -136,10 +142,6 @@ RUN pip install --no-cache-dir \
     pip install --no-cache-dir "amd-aiter==${AITER_VERSION}" --extra-index-url "${AITER_INDEX}" && \
     python3 -c "import importlib.metadata as m; print('amd-aiter', m.version('amd-aiter'))"
 
-# Editable installs write into the venv, so hand it to the dev user.
-RUN chown -R $USER_UID:$USER_GID $VIRTUAL_ENV
-
-USER $USERNAME
 WORKDIR /home/$USERNAME
 
 CMD ["/bin/bash"]
