@@ -30,6 +30,21 @@ static_assert(kLaneGroupSize <= static_cast<uint32_t>(gpu_iface::kWarpSize) &&
 // division, matching how the launchers derive num_warps.
 static_assert((kMaxBlockSize + kLaneGroupSize - 1) / kLaneGroupSize <= kLaneGroupSize);
 
+/*!
+ * \brief Shared memory for the fused kernels, staging the fp32 row if it fits.
+ *
+ * Staging costs `d` floats, which exceeds CDNA3's 64 KB above d = 16352. Both
+ * fused launchers must decide this identically.
+ */
+inline uint32_t FusedRMSNormSmemSize(uint32_t num_warps, uint32_t d, bool* stage_x) {
+  const uint32_t reduce_bytes = ceil_div(num_warps, 4) * 4 * sizeof(float);
+  const uint32_t staged_bytes = reduce_bytes + d * sizeof(float);
+  int dev_id = 0;
+  FI_GPU_CALL(gpuGetDevice(&dev_id));
+  *stage_x = staged_bytes <= static_cast<uint32_t>(getMaxSharedMemPerBlock(dev_id));
+  return *stage_x ? staged_bytes : reduce_bytes;
+}
+
 template <uint32_t VEC_SIZE, typename T>
 __global__ void RMSNormKernel(T* __restrict__ input, T* __restrict__ weight, T* __restrict__ output,
                               const uint32_t d, const uint32_t stride_input,
@@ -129,11 +144,14 @@ gpuError_t RMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uint32_t
   return gpuSuccess;
 }
 
+// \param stage_x Keep the fp32 row in shared memory between the two passes. The
+// caller clears it when the row would not fit, and pass 2 then re-reads the row
+// from `residual` in global instead, at the cost of a dtype round-trip.
 template <uint32_t VEC_SIZE, typename T>
 __global__ void FusedAddRMSNormKernel(T* __restrict__ input, T* __restrict__ residual,
                                       T* __restrict__ weight, const uint32_t d,
                                       const uint32_t stride_input, const uint32_t stride_residual,
-                                      float weight_bias, float eps) {
+                                      float weight_bias, float eps, bool stage_x) {
   const uint32_t bx = blockIdx.x;
   const uint32_t tx = threadIdx.x, ty = threadIdx.y;
   const uint32_t num_warps = blockDim.y;
@@ -141,7 +159,7 @@ __global__ void FusedAddRMSNormKernel(T* __restrict__ input, T* __restrict__ res
   const uint32_t num_threads = num_warps * kLaneGroupSize;
   const uint32_t rounds = ceil_div(d, VEC_SIZE * num_threads);
   extern __shared__ float smem[];
-  float* smem_x = smem + ceil_div(num_warps, 4) * 4;
+  float* smem_x = stage_x ? smem + ceil_div(num_warps, 4) * 4 : nullptr;
 
   float sum_sq = 0.f;
 #if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
@@ -171,7 +189,9 @@ __global__ void FusedAddRMSNormKernel(T* __restrict__ input, T* __restrict__ res
     if ((i * num_threads + thread_id) * VEC_SIZE < d) {
       residual_vec.store(residual + bx * stride_residual + i * num_threads * VEC_SIZE +
                          thread_id * VEC_SIZE);
-      x_vec.store(smem_x + i * num_threads * VEC_SIZE + thread_id * VEC_SIZE);
+      if (stage_x) {
+        x_vec.store(smem_x + i * num_threads * VEC_SIZE + thread_id * VEC_SIZE);
+      }
     }
   }
 
@@ -205,7 +225,18 @@ __global__ void FusedAddRMSNormKernel(T* __restrict__ input, T* __restrict__ res
     x_vec.fill(0.f);
     if ((i * num_threads + thread_id) * VEC_SIZE < d) {
       weight_vec.load(weight + i * num_threads * VEC_SIZE + thread_id * VEC_SIZE);
-      x_vec.load(smem_x + i * num_threads * VEC_SIZE + thread_id * VEC_SIZE);
+      if (stage_x) {
+        x_vec.load(smem_x + i * num_threads * VEC_SIZE + thread_id * VEC_SIZE);
+      } else {
+        // Same thread, same address pass 1 stored to; only the dtype round-trip differs.
+        vec_t<T, VEC_SIZE> residual_vec;
+        residual_vec.load(residual + bx * stride_residual + i * num_threads * VEC_SIZE +
+                          thread_id * VEC_SIZE);
+#pragma unroll
+        for (uint32_t j = 0; j < VEC_SIZE; j++) {
+          x_vec[j] = float(residual_vec[j]);
+        }
+      }
     }
 #pragma unroll
     for (uint32_t j = 0; j < VEC_SIZE; j++) {
@@ -231,10 +262,11 @@ gpuError_t FusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch_size
   const uint32_t num_warps = ceil_div(block_size, kLaneGroupSize);
   dim3 nblks(batch_size);
   dim3 nthrs(kLaneGroupSize, num_warps);
-  const uint32_t smem_size = (ceil_div(num_warps, 4) * 4 + d) * sizeof(float);
+  bool stage_x = true;
+  const uint32_t smem_size = FusedRMSNormSmemSize(num_warps, d, &stage_x);
   float weight_bias = 0.f;
-  void* args[] = {&input,        &residual,        &weight,      &d,
-                  &stride_input, &stride_residual, &weight_bias, &eps};
+  void* args[] = {&input,           &residual,    &weight, &d,      &stride_input,
+                  &stride_residual, &weight_bias, &eps,    &stage_x};
 
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = FusedAddRMSNormKernel<VEC_SIZE, T>;
@@ -279,12 +311,11 @@ gpuError_t GemmaFusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch
   const uint32_t num_warps = ceil_div(block_size, kLaneGroupSize);
   dim3 nblks(batch_size);
   dim3 nthrs(kLaneGroupSize, num_warps);
-  // NOTE(Zihao): use ceil_div(num_warps, 4) * 4 for address alignment to 16
-  // bytes
-  const uint32_t smem_size = (ceil_div(num_warps, 4) * 4 + d) * sizeof(float);
+  bool stage_x = true;
+  const uint32_t smem_size = FusedRMSNormSmemSize(num_warps, d, &stage_x);
   float weight_bias = 1.f;
-  void* args[] = {&input,        &residual,        &weight,      &d,
-                  &stride_input, &stride_residual, &weight_bias, &eps};
+  void* args[] = {&input,           &residual,    &weight, &d,      &stride_input,
+                  &stride_residual, &weight_bias, &eps,    &stage_x};
 
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = FusedAddRMSNormKernel<VEC_SIZE, T>;

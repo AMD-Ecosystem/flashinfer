@@ -40,6 +40,25 @@ constexpr uint32_t BatchDecodeBdx() {
   return bdx;
 }
 
+/*! \brief KV chunks a block processes concurrently. */
+template <typename DTypeKV, uint32_t HEAD_DIM, uint32_t GROUP_SIZE>
+constexpr uint32_t BatchDecodeBdz() {
+  constexpr uint32_t plane = BatchDecodeBdx<DTypeKV, HEAD_DIM>() * GROUP_SIZE;
+  return std::max(128U, plane) / plane;
+}
+
+/*!
+ * \brief Threads per block, i.e. what dim3(bdx, bdy, bdz) actually launches.
+ *
+ * Derived from bdz, not the reverse: bdz truncates for a non-power-of-two
+ * GROUP_SIZE, so max(128, bdx*bdy) over-states the block.
+ */
+template <typename DTypeKV, uint32_t HEAD_DIM, uint32_t GROUP_SIZE>
+constexpr uint32_t BatchDecodeNumThreads() {
+  return BatchDecodeBdx<DTypeKV, HEAD_DIM>() * GROUP_SIZE *
+         BatchDecodeBdz<DTypeKV, HEAD_DIM, GROUP_SIZE>();
+}
+
 }  // namespace decode_tuning
 }  // namespace flashinfer
 

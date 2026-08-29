@@ -196,6 +196,17 @@ being ignored.
 
 ## Per-op notes
 
+### `fused_add_rmsnorm` and `gemma_fused_add_rmsnorm` at large `hidden_size`
+
+The `native` fused kernels stage the fp32 row in shared memory, costing
+`hidden_size` floats. Above 16352 on gfx942 (40928 on gfx950) that exceeds the
+per-block limit, so the kernel re-reads the row from `residual` instead — one
+extra dtype round-trip of precision, on those sizes only.
+
+`gemma_fused_add_rmsnorm` takes no `backend=` argument, so it is always native
+and always takes this path above the threshold. `fused_add_rmsnorm` reaches it
+only under `backend="native"`, since `auto` routes to AITER.
+
 ### Batch prefill: page size and the flat-gather path
 
 AITER's CK FMHA kernels natively serve page sizes `{16, 1024}`, or
