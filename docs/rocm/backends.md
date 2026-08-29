@@ -29,32 +29,32 @@ argument. Which one names the in-tree kernel depends on the op:
 ## Installing AITER
 
 Unless you are using the prebuilt Docker image, AITER is a separate
-install. Wheels are published per ROCm release on AMD's PyPI index;
-`amd-aiter` is **not** on the top-level `pypi.amd.com/simple` index, so
-use the ROCm-versioned channel:
+install. `amd-aiter` is **not** on the top-level `pypi.amd.com/simple`
+index, and the ROCm-versioned channels carry no wheel at or above the
+supported floor, so install from the nightlies index:
 
 ```bash
-pip install amd-aiter==0.1.10 --extra-index-url https://pypi.amd.com/rocm-7.1.1/simple
+pip install amd-aiter==0.1.16.post3.dev0+g620287969.d20260725 \
+  --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/vllm-cdna/
 ```
 
 Use `--extra-index-url`, not `--index-url`, so AITER's own dependencies
-still resolve from PyPI.
+still resolve from PyPI, and spell the version out in full including the
+local `+g...` segment — pip will not select a local version from a loose
+specifier.
 
-**Pin `0.1.10`.** It is the version this repo is built and tested against,
-and the only one published on that channel. FlashInfer links AITER's C++
-symbols by mangled name (`flashinfer/csrc_rocm/aiter_loader.cc`) and
-vendors its argument structs (`include/flashinfer/attention/aiter/`), so a
-different AITER build can fail at `dlsym` — or, if a struct layout
-changed, misinterpret kernel arguments silently. Both the CI image
-(`docker/Dockerfile.rocm_ci`) and the devcontainer install this exact
-version.
+**`aiter_utils.AITER_MIN_VERSION` (0.1.16) is a hard floor**, enforced
+before routing. FlashInfer links AITER's C++ symbols by mangled name
+(`flashinfer/csrc_rocm/aiter_loader.cc`) and vendors its argument structs
+(`include/flashinfer/attention/aiter/`) at the 0.1.16 layout, so an older
+release shifts field offsets instead of failing to load. Below the floor
+`auto` will not select AITER and an explicit `backend="aiter"` raises.
 
-Only cp310 and cp312 wheels exist on that channel.
-On any other interpreter the command fails with
-`No matching distribution found`, and there is no good fallback: public
-PyPI tops out at a stale `0.1.7.post2.dev18` and the nightlies index only
-carries `>= 0.1.16`. Use CPython 3.12 unless you are prepared to run an
-unvalidated AITER.
+That rules out `pypi.amd.com/rocm-7.1.1/simple`, which carries only
+`0.1.10` and only cp310/cp312 wheels. The CI image
+(`docker/Dockerfile.rocm_ci`) still installs `0.1.10` and so runs without
+the AITER backends; the devcontainer bundles the wheel above, on CPython
+3.14, and needs no separate install.
 
 A source build tracks master, which is many releases ahead of the pin
 **with a different C ABI** — symbols the shim expects are renamed, hidden

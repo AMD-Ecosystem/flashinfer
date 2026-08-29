@@ -96,3 +96,24 @@ def test_rmsnorm_aiter_with_out_tensor():
     ret = flashinfer.rmsnorm(x, w, out=out, backend="aiter")
     assert ret.data_ptr() == out.data_ptr()
     assert not torch.all(out == 0)
+
+
+@requires_aiter
+@pytest.mark.parametrize("hidden_size", [64, 128, 1024])
+@pytest.mark.parametrize("batch_size", [19, 989])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_rmsnorm_aiter_in_place_out_matches_reference(hidden_size, batch_size, dtype):
+    """out=x is a documented idiom, and CK cannot alias its output onto its
+    input: at small n it packs several rows per block and corrupts them."""
+    eps = 1e-6
+    device = torch.device("cuda:0")
+    x = torch.randn(batch_size, hidden_size, dtype=dtype, device=device)
+    w = torch.randn(hidden_size, dtype=dtype, device=device)
+
+    expected = _rms_norm_ref(x, w, eps)
+
+    aliased = x.clone()
+    flashinfer.rmsnorm(aliased, w, eps, out=aliased, backend="aiter")
+
+    rtol, atol = (7e-2, 7e-2) if dtype == torch.bfloat16 else (4e-3, 4e-3)
+    torch.testing.assert_close(aliased, expected, rtol=rtol, atol=atol)
