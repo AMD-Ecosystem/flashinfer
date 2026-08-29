@@ -7,12 +7,12 @@
 
 #include "platform.hpp"
 
+#include "backend/hip/vec_dtypes_hip.h"
+
 namespace flashinfer {
 namespace gpu_iface {
 namespace vec_dtypes {
 
-// Include the appropriate backend implementation
-#include "backend/hip/vec_dtypes_hip.h"
 namespace vec_t_detail = flashinfer::gpu_iface::vec_dtypes::detail::hip;
 
 // Re-export types and functions from the appropriate backend

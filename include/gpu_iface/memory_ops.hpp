@@ -2,30 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#include "backend/hip/memory_ops_hip.h"
+#include "memory_types.hpp"
 #include "platform.hpp"
 
 namespace flashinfer {
 namespace gpu_iface {
 namespace memory {
 
-/**
- * @brief Control options for shared memory fill behavior
- */
-enum class SharedMemFillMode {
-  kFillZero,  // Fill zero to shared memory when predicate is false
-  kNoFill     // Do not fill zero to shared memory when predicate is false
-};
-
-/**
- * @brief Control options for memory prefetch behavior
- */
-enum class PrefetchMode {
-  kNoPrefetch,  // Do not fetch additional data from global memory to L2
-  kPrefetch     // Fetch additional data from global memory to L2
-};
-
-// Include platform-specific implementations
-#include "backend/hip/memory_ops_hip.h"
 namespace mem_detail = flashinfer::gpu_iface::memory::detail::hip;
 
 /**

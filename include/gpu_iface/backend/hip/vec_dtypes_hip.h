@@ -19,6 +19,12 @@
 
 #define FLASHINFER_INLINE inline __attribute__((always_inline)) __device__
 
+// Opened here, after the system includes: this header used to be included from
+// inside these namespaces, so wrapping the includes too would nest them.
+namespace flashinfer {
+namespace gpu_iface {
+namespace vec_dtypes {
+
 namespace {
 __host__ __device__ inline __hip_bfloat162 __float2bfloat162_rn(const float a) {
   return __hip_bfloat162{__float2bfloat16(a), __float2bfloat16(a)};
@@ -1908,3 +1914,7 @@ struct vec_t<float, vec_size> {
 };
 }  // namespace hip
 }  // namespace detail
+
+}  // namespace vec_dtypes
+}  // namespace gpu_iface
+}  // namespace flashinfer
