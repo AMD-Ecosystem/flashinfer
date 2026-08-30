@@ -89,21 +89,20 @@ def _git_describe() -> str:
 
 
 def _staging_pair(dtype: torch.dtype) -> tuple[int, int]:
-    """The largest hidden_size the native fused kernel can stage in LDS, and the
-    first one it cannot. Derived from the device, not hard-coded: the limit is
-    65536 B on CDNA3 and 163840 B on CDNA4.
+    """The largest hidden_size the native fused kernel stages in LDS, and the
+    next one it cannot. 16352/16360 on CDNA3, 40928/40936 on CDNA4.
 
     Mirrors FusedRMSNormSmemSize in include/flashinfer/rocm/attention/norm.cuh.
     """
     smem = torch.cuda.get_device_properties(0).shared_memory_per_block
-    itemsize = torch.tensor([], dtype=dtype).element_size()
-    vec = math.gcd(16 // itemsize, 8)  # 8 for both fp16 and bf16 at aligned d
-    block = min(1024, max(1, 1024 // max(1, vec)))
-    num_warps = max(1, -(-block // 32))
+    vec = math.gcd(16 // torch.tensor([], dtype=dtype).element_size(), 8)
+    # At the cliff d is large, so block_size saturates at kMaxBlockSize and
+    # num_warps is 1024/32; the reduction scratch is then a constant 128 B.
+    num_warps = 1024 // 32
     reduce_bytes = -(-num_warps // 4) * 4 * 4
     fits = (smem - reduce_bytes) // 4
-    fits -= fits % 32  # keep it 8-aligned so vec_size does not also change
-    return fits, fits + 32
+    fits -= fits % vec  # stay vec-aligned, or vec_size changes too
+    return fits, fits + vec
 
 
 def _provenance() -> dict:
@@ -288,12 +287,13 @@ def main() -> None:
     for k, v in prov.items():
         print(f"# {k}: {v}")
 
+    # --accuracy is AITER-only, so it needs the same guard as the A/B sweep.
+    if not args.aa and not is_aiter_available(torch.device("cuda:0"), "rmsnorm"):
+        raise SystemExit("AITER unavailable; nothing to compare. Use --aa.")
+
     if args.accuracy:
         _accuracy(args.ops)
         return
-
-    if not args.aa and not is_aiter_available(torch.device("cuda:0"), "rmsnorm"):
-        raise SystemExit("AITER unavailable; nothing to compare. Use --aa.")
 
     backends = ["native", "native2"] if args.aa else ["native", "aiter"]
     rows = _sweep(args.ops, backends, args.dry_run_iters, args.repeat_iters, args.aa)

@@ -109,31 +109,25 @@ Two consequences worth planning for:
 
 ## How `backend="auto"` resolves
 
-There are four policies. Which one applies is a property of the op, not of
+There are three policies. Which one applies is a property of the op, not of
 the call:
 
 | Policy | Ops |
 | :--- | :--- |
-| AITER when the call is compatible, else the in-tree kernel | `single_prefill`, `batch_prefill`, `batch_decode`, `fused_add_rmsnorm` |
-| AITER for 2-D fp16/bf16 whose weight dtype matches, else `native` | `rmsnorm` |
-| Always the in-tree `native` kernel — AITER is opt-in | `silu_and_mul`, `rope`, `append_paged_kv_cache` |
+| AITER when the call is compatible, else the in-tree kernel | `single_prefill`, `batch_prefill`, `batch_decode` |
+| Always the in-tree `native` kernel — AITER is opt-in | `rmsnorm`, `fused_add_rmsnorm`, `silu_and_mul`, `rope`, `append_paged_kv_cache` |
 | AITER only — no HIP kernel exists | `mla` |
 
 `single_decode_with_kv_cache` (HIP-only) and `aiter_fused_moe`
 (AITER-only) take no `backend=` argument at all.
 
-**`fused_add_rmsnorm` is in the first row, not the second.** Unlike
-`rmsnorm`, its selector inspects only the device — not rank, dtype, or
-weight dtype. A 2-D fp16 input with an fp32 `weight` therefore *does*
-reach AITER's CK kernel, which derives one dtype from the input and reads
-the weight bytes with it: the result is NaN or garbage, in place, with no
-error. Pass `backend="native"` when the weight dtype does not match.
+When `auto` declines AITER for the attention ops it falls back to the
+in-tree kernel and usually warns once with the reason. A few `batch_decode`
+short-circuits (CUDA-graph capture, `use_tensor_cores=True`) fall back
+silently. The always-native ops make no per-call decision, so they neither
+warn nor report a reason.
 
-When `auto` declines AITER it falls back to the in-tree kernel and usually
-warns once with the reason. A few `batch_decode` short-circuits (CUDA-graph
-capture, `use_tensor_cores=True`) fall back silently.
-
-The three "always native" ops are that way because measurement said so,
+The "always native" ops are that way because measurement said so,
 not because AITER is unavailable:
 
 * **`append_paged_kv_cache`** — AITER's `reshape_and_cache_flash` is
@@ -143,6 +137,18 @@ not because AITER is unavailable:
 * **`silu_and_mul`** and **`rope`** (cos/sin-cache) — the in-tree kernel
   was the better default in experiment. The AITER C++ path is reachable
   only via an explicit `backend="aiter"`.
+* **`rmsnorm`** and **`fused_add_rmsnorm`** — at every 8-aligned
+  `hidden_size`, AITER won 0 of 230 configs on gfx942 and 0 of 226 on
+  gfx950. `fused_add_rmsnorm` is 1.6-1.8x slower, because CK cannot alias
+  its output onto its input and the shim must stage two extra buffers on a
+  bandwidth-bound kernel; `rmsnorm` is level on speed and less accurate.
+  AITER does win up to 2x at `hidden_size` 111 and 500, where the native
+  kernel's `vec_size` (`gcd(16/sizeof(T), d)`) collapses to 1 or 4 — but no
+  model uses those widths, and the win is absent on gfx942 for the shapes
+  where gfx950 shows it. Re-run with
+  `python benchmarks/rocm_benchmarks/bench_norm.py --aa` for the noise floor
+  and then without `--aa`; read the A/A first, since a margin inside it is
+  not a result.
 
 ## Known limitations
 
@@ -203,9 +209,10 @@ The `native` fused kernels stage the fp32 row in shared memory, costing
 per-block limit, so the kernel re-reads the row from `residual` instead — one
 extra dtype round-trip of precision, on those sizes only.
 
-`gemma_fused_add_rmsnorm` takes no `backend=` argument, so it is always native
-and always takes this path above the threshold. `fused_add_rmsnorm` reaches it
-only under `backend="native"`, since `auto` routes to AITER.
+Both `fused_add_rmsnorm` and `gemma_fused_add_rmsnorm` always take this path
+above the threshold: the Gemma variant has no `backend=` argument, and
+`fused_add_rmsnorm` now resolves `auto` to native. Only an explicit
+`backend="aiter"` avoids it.
 
 ### Batch prefill: page size and the flat-gather path
 

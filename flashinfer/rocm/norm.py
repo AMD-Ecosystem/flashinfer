@@ -17,31 +17,25 @@ def get_norm_aiter_module():
     return gen_norm_aiter_module().build_and_load()
 
 
-def _auto_select_norm_backend(input: torch.Tensor, weight: torch.Tensor) -> str:
-    # CK rmsnorm2d only accepts 2D fp16/bf16 and reads weight with the input
-    # dtype, so anything else routes native.
-    from ..aiter_utils import is_aiter_available
+# Both selectors return "native" unconditionally: measured, not assumed. See
+# benchmarks/rocm_benchmarks/bench_norm.py, which is the re-runnable evidence.
+# At every 8-aligned hidden_size -- every width a real model uses -- AITER won
+# 0 of 230 configs on gfx942 and 0 of 226 on gfx950. `backend="aiter"` stays
+# supported and opt-in, as it is for silu_and_mul and rope.
 
-    if (
-        input.ndim == 2
-        and input.dtype in (torch.float16, torch.bfloat16)
-        and weight.dtype == input.dtype
-        and is_aiter_available(input.device, "rmsnorm")
-    ):
-        return "aiter"
+
+def _auto_select_norm_backend(input: torch.Tensor, weight: torch.Tensor) -> str:
+    # A wash on speed (median 1.00 gfx942 / 0.98 gfx950) and native is the more
+    # accurate kernel, so there is nothing to trade.
+    del input, weight  # signature kept: callers and tests pass them
     return "native"
 
 
 def _auto_select_fused_add_rmsnorm_backend(input: torch.Tensor) -> str:
-    # auto routes fused_add_rmsnorm to the C++ AITER CK kernel on supported
-    # devices and falls back to native everywhere else (incl. when AITER is not
-    # installed, so auto never raises). (Shape/precision tuning is deferred to
-    # a later performance pass.)
-    from ..aiter_utils import is_aiter_available
-
-    return (
-        "aiter" if is_aiter_available(input.device, "fused_add_rmsnorm") else "native"
-    )
+    # AITER is 1.6-1.8x slower here: correctness required staging two extra
+    # buffers (PR #331), which doubles traffic on a bandwidth-bound kernel.
+    del input  # signature kept: callers and tests pass it
+    return "native"
 
 
 def maybe_rmsnorm(

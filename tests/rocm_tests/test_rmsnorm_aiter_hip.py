@@ -41,23 +41,28 @@ def test_rmsnorm_aiter_vs_ref(dtype, hidden_size, batch_size):
     torch.testing.assert_close(got.float(), ref.float(), rtol=rtol, atol=atol)
 
 
-@requires_aiter
-def test_rmsnorm_auto_backend_selects_aiter_for_2d():
-    """auto routes 2D fp16/bf16 (matching weight) to AITER; 3D, fp32, or a
-    mismatched weight dtype to native."""
+def test_rmsnorm_auto_backend_is_native(monkeypatch):
+    """auto is native for every shape and dtype, including the 2-D fp16 case
+    that used to route to AITER: the two are level on speed and native is the
+    more accurate kernel (benchmarks/rocm_benchmarks/bench_norm.py).
+
+    AITER is forced available so a revert is caught even on a box without the
+    wheel, where "native" would otherwise be right for the wrong reason. Both
+    the wrapper and the probe it is built from are stubbed.
+    """
+    import flashinfer.aiter_utils as aiter_utils
     from flashinfer.rocm.norm import _auto_select_norm_backend
+
+    monkeypatch.setattr(aiter_utils, "is_aiter_available", lambda device, op: True)
+    monkeypatch.setattr(aiter_utils, "_aiter_importable", lambda: True)
 
     device = torch.device("cuda:0")
     x2d = torch.randn(8, 128, dtype=torch.float16, device=device)
     w = torch.randn(128, dtype=torch.float16, device=device)
     x3d = torch.randn(8, 4, 128, dtype=torch.float16, device=device)
-    x2d_fp32 = torch.randn(8, 128, dtype=torch.float32, device=device)
     w_fp32 = torch.randn(128, dtype=torch.float32, device=device)
-    assert _auto_select_norm_backend(x2d, w) == "aiter"
+    assert _auto_select_norm_backend(x2d, w) == "native"
     assert _auto_select_norm_backend(x3d, w) == "native"
-    # CK rmsnorm2d rejects fp32, so auto must not select it (routes to native).
-    assert _auto_select_norm_backend(x2d_fp32, w_fp32) == "native"
-    # CK reads weight with the input dtype, so a mismatch must not select AITER.
     assert _auto_select_norm_backend(x2d, w_fp32) == "native"
 
 
