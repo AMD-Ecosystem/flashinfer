@@ -57,7 +57,7 @@ dev = [
     # pytest-cov specifically, not bare `coverage run`: only the plugin measures
     # the xdist worker subprocesses that `pytest -n auto` spawns.
     "pytest-cov",
-    # tests/rocm_tests/test_build_backend.py parses pyproject.toml; tomllib is 3.11+.
+    # tests/rocm/test_build_backend.py parses pyproject.toml; tomllib is 3.11+.
     "tomli; python_version < '3.11'",
     "build",
 ]
@@ -180,11 +180,11 @@ filterwarnings = [
 addopts = "-q -rfE --tb=short --import-mode=importlib"
 norecursedirs = ["test_helpers"]
 pythonpath = ["tests", "tests/test_helpers", "benchmarks"]
-# AMD/HIP test suite: rocm_tests/ directory for all AMD-authored tests,
+# AMD/HIP test suite: rocm/ directory for all AMD-authored tests,
 # plus explicit upstream test paths that are verified HIP-compatible.
 # Running 'pytest' with no args runs exactly these tests.
 testpaths = [
-    "tests/rocm_tests",
+    "tests/rocm",
     "tests/attention/test_decode_prefill_lse.py",
     "tests/attention/test_non_contiguous_decode.py",
     "tests/attention/test_non_contiguous_prefill.py",

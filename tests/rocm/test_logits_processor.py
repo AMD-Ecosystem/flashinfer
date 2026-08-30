@@ -87,7 +87,7 @@ class TestLogitsPipeCompilationHIP:
 
     Every test in this class runs the sampling kernel TWICE per case (once
     with compile=True, once with compile=False) at num_trials=1_000_000, so
-    each test is ~2× the cost of the equivalent test in test_sampling_hip.py.
+    each test is ~2× the cost of the equivalent test in test_sampling.py.
     Marked slow so default fast-iteration runs (`pytest -m "not slow"`)
     skip them; nightly / pre-merge runs include them.
     """

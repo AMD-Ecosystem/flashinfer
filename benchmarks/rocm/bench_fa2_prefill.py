@@ -16,13 +16,13 @@ limitations under the License.
 FA2 prefill benchmark: single-prefill, batch-ragged, and batch-paged via backend="fa2".
 
 Run:
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py                        # full pipeline
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --timing-only          # no profiling
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --replot               # regenerate plot
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --model llama3-8b      # GQA shape
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --batch 0 --paged 0   # single only
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --counters stall       # stall preset
-    python benchmarks/rocm_benchmarks/bench_fa2_prefill.py --list-presets         # preset names
+    python benchmarks/rocm/bench_fa2_prefill.py                        # full pipeline
+    python benchmarks/rocm/bench_fa2_prefill.py --timing-only          # no profiling
+    python benchmarks/rocm/bench_fa2_prefill.py --replot               # regenerate plot
+    python benchmarks/rocm/bench_fa2_prefill.py --model llama3-8b      # GQA shape
+    python benchmarks/rocm/bench_fa2_prefill.py --batch 0 --paged 0   # single only
+    python benchmarks/rocm/bench_fa2_prefill.py --counters stall       # stall preset
+    python benchmarks/rocm/bench_fa2_prefill.py --list-presets         # preset names
 
 Design note: bench flags are parsed at module level because rocprofv3 re-executes this
 script as a subprocess per PMC pass with the same sys.argv.  Module-level parsing ensures
@@ -43,7 +43,9 @@ from flashinfer.jit.core import logger as _jit_logger
 # Suppress routine JIT INFO/DEBUG output; WARNING still surfaces compile errors.
 _jit_logger.setLevel(logging.WARNING)
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "rocm_profiler"))
+sys.path.insert(
+    0, str(Path(__file__).resolve().parent.parent.parent / "profiler" / "rocm")
+)
 from rocm_profiler import KernelConfig, RocmProfiler
 
 # vLLM max_num_batched_tokens=2048 at seq_len≈512 → ~4 seqs; paged burst mid-range → 8.

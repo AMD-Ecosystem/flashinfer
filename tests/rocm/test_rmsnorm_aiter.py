@@ -16,7 +16,7 @@ from tests.test_helpers.test_helpers import requires_aiter
 
 
 def _rms_norm_ref(x: torch.Tensor, w: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-    """Float32 reference matching the test in test_norm_hip.py."""
+    """Float32 reference matching the test in test_norm.py."""
     orig = x.dtype
     x = x.float()
     variance = x.pow(2).mean(dim=-1, keepdim=True)

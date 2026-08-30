@@ -25,7 +25,7 @@ roofline PNG.  Import in a driver script:
                               theoretical_flops=..., theoretical_bytes=...)],
         counters="roofline",          # preset name or path to rocprofv3 YAML
         kernel_name_regex="SinglePrefill",
-        output_dir="benchmarks/rocm_benchmarks",
+        output_dir="benchmarks/rocm",
         label="fa2",
     )
     if __name__ == "__main__":

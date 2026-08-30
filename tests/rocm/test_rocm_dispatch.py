@@ -4,7 +4,7 @@
 
 """Conformance for the ROCm dispatch registry in ``flashinfer.rocm``.
 
-The CUDA-only import gate is covered by ``test_comm_import_gate_hip.py``; this
+The CUDA-only import gate is covered by ``test_comm_import_gate.py``; this
 file covers the shadow table and the gate's install/widen behaviour.
 """
 

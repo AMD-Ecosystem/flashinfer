@@ -23,7 +23,7 @@ For a complete worked example to copy, read these together:
 | 4 (opt) | `flashinfer/csrc/rocm/<op>_customize_config.jinja` | Compile-time type specialization. Skip if runtime dispatch is enough. |
 | 5 | `flashinfer/jit/<op>.py` | `gen_<op>_module() -> JitSpec` via `gen_jit_spec(...)`. |
 | 6 | `flashinfer/<op>.py` | Python API: `@functools.cache` module loader, destination-passing (`out=`). |
-| 7 | `tests/rocm_tests/test_<op>_hip.py` | Correctness tests; FP32 reference math, loose BF16 tolerances. |
+| 7 | `tests/rocm/test_<op>.py` | Correctness tests; FP32 reference math, loose BF16 tolerances. |
 | 8 | `flashinfer/jit/__init__.py` (`IS_HIP` branch) | `from .<op> import gen_<op>_module as gen_<op>_module`. |
 | 9 | `flashinfer/__init__.py` (`IS_HIP` branch) | `from .<op> import <op> as <op>`. |
 | 10 (opt) | `flashinfer/aot_hip.py` | Register `gen_<op>_module` for pre-compiled wheels. |
@@ -46,7 +46,7 @@ When porting an upstream kernel, mechanically rewrite:
 | `c10::cuda::OptionalCUDAGuard` | `c10::hip::OptionalHIPGuardMasqueradingAsCUDA` |
 | `nvcc` flags via `extra_cuda_cflags=[...]` | **Same kwarg name** (`extra_cuda_cflags`) — internally routed to `hipcc`. |
 | `flashinfer/aot.py` registration | `flashinfer/aot_hip.py` |
-| `tests/test_op.py` | `tests/rocm_tests/test_op_hip.py` |
+| `tests/test_op.py` | `tests/rocm/test_op.py` |
 | `supported_major_versions=[9, 10]` | No analogue. Guard at Python layer via `FLASHINFER_SUPPORTED_ROCM_ARCHS`. |
 | `csrc/` (hardcoded) | `jit_env.FLASHINFER_CSRC_DIR` resolves to `flashinfer/csrc/rocm/` on HIP. **Never hardcode `csrc/`.** |
 | `PYBIND11_MODULE(...)` | **Don't.** Use `TORCH_LIBRARY_FRAGMENT` (integrates with `torch.compile`). |
@@ -74,5 +74,5 @@ When porting an upstream kernel, mechanically rewrite:
 - [ ] Binding registered via `TORCH_LIBRARY_FRAGMENT`.
 - [ ] JIT generator uses `jit_env.FLASHINFER_CSRC_DIR` (not hardcoded `csrc/`).
 - [ ] Both `flashinfer/jit/__init__.py` and `flashinfer/__init__.py` IS_HIP branches updated.
-- [ ] Test file under `tests/rocm_tests/` named `test_*_hip.py`.
+- [ ] Test file under `tests/rocm/` named `test_*.py`.
 - [ ] `pre-commit run -a` clean.

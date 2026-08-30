@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the ROCm run-descriptor header in tests/rocm_tests/conftest.py.
+"""Tests for the ROCm run-descriptor header in tests/rocm/conftest.py.
 
 GPU-free: the branch worth protecting here is the one no GPU run ever takes --
 a host with no supported card must say so, rather than reporting the same

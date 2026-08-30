@@ -35,12 +35,12 @@ quantized inside the shim, so that cost is in the measurement; the number to rea
 is the speedup over the same shape in bf16, which is what justifies the path.
 
 Run:
-    python benchmarks/rocm_benchmarks/bench_fused_moe_aiter.py                  # full pipeline
-    python benchmarks/rocm_benchmarks/bench_fused_moe_aiter.py --timing-only    # no profiling
-    python benchmarks/rocm_benchmarks/bench_fused_moe_aiter.py --fp8            # fp8 weights
-    python benchmarks/rocm_benchmarks/bench_fused_moe_aiter.py --block-m-sweep  # tile-size table
-    python benchmarks/rocm_benchmarks/bench_fused_moe_aiter.py --replot         # regenerate plot
-    python benchmarks/rocm_benchmarks/bench_fused_moe_aiter.py --counters       # PMC passes
+    python benchmarks/rocm/bench_fused_moe_aiter.py                  # full pipeline
+    python benchmarks/rocm/bench_fused_moe_aiter.py --timing-only    # no profiling
+    python benchmarks/rocm/bench_fused_moe_aiter.py --fp8            # fp8 weights
+    python benchmarks/rocm/bench_fused_moe_aiter.py --block-m-sweep  # tile-size table
+    python benchmarks/rocm/bench_fused_moe_aiter.py --replot         # regenerate plot
+    python benchmarks/rocm/bench_fused_moe_aiter.py --counters       # PMC passes
 """
 
 import functools
@@ -61,7 +61,9 @@ from flashinfer.jit.core import logger as _jit_logger
 
 _jit_logger.setLevel(logging.WARNING)
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "rocm_profiler"))
+sys.path.insert(
+    0, str(Path(__file__).resolve().parent.parent.parent / "profiler" / "rocm")
+)
 from rocm_profiler import KernelConfig, RocmProfiler
 
 _OUTPUT_DIR = str(Path(__file__).parent)

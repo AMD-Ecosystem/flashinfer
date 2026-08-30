@@ -197,7 +197,7 @@ cython_debug/
 .nfs*
 *.png
 # rocm_profiler generated outputs (timing CSVs, counter YAMLs, counter CSVs, roofline PNGs)
-# These live in benchmarks/rocm_benchmarks/ at runtime and must not be committed.
+# These live in benchmarks/rocm/ at runtime and must not be committed.
 *_counters.yml
 *_timing.csv
 *_counter_collection.csv

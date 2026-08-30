@@ -100,7 +100,7 @@ def resolve_target_archs(arch_list: str = None) -> str:
 
     Detection uses rocminfo rather than ``torch.cuda`` so this stays callable
     before the HIP runtime starts, and keeps this module importable without
-    torch -- see ``tests/rocm_tests/test_arch_caps_hip.py``.
+    torch -- see ``tests/rocm/test_arch_caps.py``.
     """
     import os
 

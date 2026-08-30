@@ -32,12 +32,12 @@ zero-copy view; --separate forces the two-allocation layout and its
 concatenation fallback.
 
 Run:
-    python benchmarks/rocm_benchmarks/bench_mla_hip.py --timing-only
-    python benchmarks/rocm_benchmarks/bench_mla_hip.py --timing-only --separate
-    python benchmarks/rocm_benchmarks/bench_mla_hip.py --mode pool --timing-only
-    python benchmarks/rocm_benchmarks/bench_mla_hip.py --heads 16,128
-    python benchmarks/rocm_benchmarks/bench_mla_hip.py --batches 1,8,32,64,128,256
-    python benchmarks/rocm_benchmarks/bench_mla_hip.py                 # + roofline
+    python benchmarks/rocm/bench_mla.py --timing-only
+    python benchmarks/rocm/bench_mla.py --timing-only --separate
+    python benchmarks/rocm/bench_mla.py --mode pool --timing-only
+    python benchmarks/rocm/bench_mla.py --heads 16,128
+    python benchmarks/rocm/bench_mla.py --batches 1,8,32,64,128,256
+    python benchmarks/rocm/bench_mla.py                 # + roofline
 
 Bench flags are parsed at module level because rocprofv3 re-executes this script
 per PMC pass with the same sys.argv; the subprocess must build identical configs.
@@ -57,7 +57,9 @@ from flashinfer.jit.core import logger as _jit_logger
 # Suppress routine JIT INFO/DEBUG output; WARNING still surfaces compile errors.
 _jit_logger.setLevel(logging.WARNING)
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "rocm_profiler"))
+sys.path.insert(
+    0, str(Path(__file__).resolve().parent.parent.parent / "profiler" / "rocm")
+)
 from rocm_profiler import KernelConfig, RocmProfiler
 
 # ---------------------------------------------------------------------------

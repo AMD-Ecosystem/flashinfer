@@ -28,11 +28,11 @@ Shapes: decode (q_len=1), GQA 32/8, HD=128, bf16, page_size=16.
 Sweep: batch x kv_len.
 
 Run:
-    python benchmarks/rocm_benchmarks/bench_batch_decode_hip.py               # full pipeline
-    python benchmarks/rocm_benchmarks/bench_batch_decode_hip.py --timing-only # no profiling
-    python benchmarks/rocm_benchmarks/bench_batch_decode_hip.py --backend fa2
-    python benchmarks/rocm_benchmarks/bench_batch_decode_hip.py --backend aiter
-    python benchmarks/rocm_benchmarks/bench_batch_decode_hip.py --counters stall
+    python benchmarks/rocm/bench_batch_decode.py               # full pipeline
+    python benchmarks/rocm/bench_batch_decode.py --timing-only # no profiling
+    python benchmarks/rocm/bench_batch_decode.py --backend fa2
+    python benchmarks/rocm/bench_batch_decode.py --backend aiter
+    python benchmarks/rocm/bench_batch_decode.py --counters stall
 
 Design note: bench flags are parsed at module level because rocprofv3
 re-executes this script as a subprocess per PMC pass with the same sys.argv.
@@ -54,7 +54,9 @@ from flashinfer.jit.core import logger as _jit_logger
 # Suppress routine JIT INFO/DEBUG output; WARNING still surfaces compile errors.
 _jit_logger.setLevel(logging.WARNING)
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "rocm_profiler"))
+sys.path.insert(
+    0, str(Path(__file__).resolve().parent.parent.parent / "profiler" / "rocm")
+)
 from rocm_profiler import KernelConfig, RocmProfiler
 
 # ---------------------------------------------------------------------------

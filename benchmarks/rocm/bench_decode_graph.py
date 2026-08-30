@@ -20,7 +20,7 @@ replays *correctly* for shorter sequences (the kernel early-exits per-seq on
 context_lens), and times aiter-under-graph vs fa2-under-graph.
 
 Run:
-    python benchmarks/rocm_benchmarks/bench_decode_graph_hip.py
+    python benchmarks/rocm/bench_decode_graph.py
 """
 
 import os

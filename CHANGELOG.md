@@ -5,7 +5,7 @@
 - Add Jupyter notebook tutorial for using amd-flashinfer on ROCm (#213) @diptorupd
 - Add ROCm profiler module (`flashinfer/rocm_profiler/`) and FA2 single-prefill benchmark driver using rocprofv3 (#205) @diptorupd
 - Gate `torch.compile` integration behind `FLASHINFER_USE_TORCH_CUSTOM_OPS`, with HIP pytest coverage (#210) @demandal25
-- Support CUDA-graph capture on the AITER batch-decode path via an explicit `backend="aiter"`: capture at a maximum sequence length and replay for shorter sequences (the launch grid and `.so` variant are fixed at capture-time shapes; the kernel early-exits per sequence on `context_lens`). Previously `backend="aiter"` raised under `use_cuda_graph=True`. `backend="auto"` continues to use the in-tree `fa2` kernel under capture (fa2's graph path is capacity-based and capture-order-independent). Adds `benchmarks/rocm_benchmarks/bench_decode_graph_hip.py` and HIP graph-replay tests. @demandal25
+- Support CUDA-graph capture on the AITER batch-decode path via an explicit `backend="aiter"`: capture at a maximum sequence length and replay for shorter sequences (the launch grid and `.so` variant are fixed at capture-time shapes; the kernel early-exits per sequence on `context_lens`). Previously `backend="aiter"` raised under `use_cuda_graph=True`. `backend="auto"` continues to use the in-tree `fa2` kernel under capture (fa2's graph path is capacity-based and capture-order-independent). Adds `benchmarks/rocm/bench_decode_graph_hip.py` and HIP graph-replay tests. @demandal25
 
 ## Changed
 
@@ -63,7 +63,7 @@
 - Fix HIP import errors blocking canary test on ROCm (pynvml lazy import, fp4 guard, modules_hip generate_additional_params, mypy) (#173) @diptorupd
 - Fix flaky Sampling Tests (#189) @rtmadduri
 - Reduce sampling threshold from 0.99 to 0.98 (#190) @diptorupd
-- Improve test_logits_processor_hip tolerances (#192) @rtmadduri
+- Improve test_logits_processor tolerances (#192) @rtmadduri
 - Fix arch check (#187) @diptorupd
 
 ## Maintenance

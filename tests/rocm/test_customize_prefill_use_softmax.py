@@ -5,7 +5,7 @@
 
 That branch dispatches to the sum merge rather than the LSE merge, and the shape
 below is chosen to split KV so the merge actually runs. The unit tests in
-test_cascade_hip.py pin the sum kernels; this pins the dispatch that reaches them.
+test_cascade.py pin the sum kernels; this pins the dispatch that reaches them.
 """
 
 import math

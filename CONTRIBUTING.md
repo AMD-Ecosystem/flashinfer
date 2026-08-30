@@ -16,7 +16,7 @@ building from source and everything else specific to contributing code.
 Build the development image with the repository's Dockerfile:
 
 ```bash
-docker build -t flashinfer-dev:rocm7.14 -f .devcontainer/rocm/Dockerfile .
+docker build -t flashinfer-dev:rocm7.14 -f docker/Dockerfile.rocm.dev .
 ```
 
 `ROCM_VERSION`, `UBUNTU_VERSION`, `PY_VERSION`, and `TORCH_VERSION` default to
@@ -88,8 +88,8 @@ pytest -n auto --reruns 2
 pytest -n auto --reruns 2 -m "slow"
 
 # One file, or a pattern:
-pytest tests/rocm_tests/test_batch_decode_kernels_hip.py
-pytest -k "test_batch_decode_kernels_hip"
+pytest tests/rocm/test_batch_decode_kernels.py
+pytest -k "test_batch_decode_kernels"
 ```
 
 `testpaths` in [pyproject.toml](pyproject.toml) sets the default
@@ -141,7 +141,7 @@ python3 scripts/amd_coverage.py                           # re-score an existing
 
 **Running it in a container against a worktree** needs the *parent* repository mounted, not just the worktree: a linked worktree's `.git` is a file pointing into the main checkout, so git — and therefore the whole classifier — fails without it. Mount the repo root at its host path and set `git config --global --add safe.directory '*'` inside the container.
 
-The classifier itself is covered by `tests/rocm_tests/test_amd_coverage.py`, which needs no GPU and runs in the CPU conformance workflow.
+The classifier itself is covered by `tests/rocm/test_amd_coverage.py`, which needs no GPU and runs in the CPU conformance workflow.
 
 # Code Structure
 
@@ -155,8 +155,8 @@ flashinfer/
 │   ├── csrc/rocm/            # HIP op registration (PyTorch bindings) — the ROCm analog of csrc/
 │   ├── jit/                  # Python JIT compilation infra (cpp_ext_hip.py is the HIP entry)
 │   └── *.py                  # Python user-facing API (e.g. attention.py, mla_rocm.py)
-├── tests/rocm_tests/         # HIP test suite (test_*_hip.py)
-├── benchmarks/rocm_benchmarks/  # ROCm-specific benchmarks
+├── tests/rocm/         # HIP test suite (test_*.py)
+├── benchmarks/rocm/  # ROCm-specific benchmarks
 └── 3rdparty/                 # vendored dependencies (cutlass, composable_kernel, …)
 ```
 
@@ -265,9 +265,9 @@ state; what matters is that your change does not lengthen the list.
    The only layer that may include Torch headers.
 3. **JIT generator** — add the op's JIT spec in `flashinfer/jit/*.py`.
 4. **Python interface** — expose the user-facing API in `flashinfer/*.py`.
-5. **Tests** — `test_*_hip.py` under `tests/rocm_tests/`. Reuse the
-   fixtures in `tests/rocm_tests/conftest.py`.
-6. **(Optional) Benchmark** — script under `benchmarks/rocm_benchmarks/`.
+5. **Tests** — `test_*.py` under `tests/rocm/`. Reuse the
+   fixtures in `tests/rocm/conftest.py`.
+6. **(Optional) Benchmark** — script under `benchmarks/rocm/`.
 7. **Pre-commit** — `pre-commit run -a` before submitting.
 
 A step-by-step Claude Code skill (`add-rocm-kernel`) walks through this

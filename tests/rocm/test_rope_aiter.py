@@ -18,7 +18,7 @@ from tests.test_helpers.test_helpers import requires_aiter
 
 # Skip when the arch is unsupported OR the aiter package is missing — checking
 # arch alone would let these tests run and then fail on a supported GPU without
-# aiter installed. Matches the other test_*_aiter_hip.py modules.
+# aiter installed. Matches the other test_*_aiter.py modules.
 pytestmark = requires_aiter
 
 

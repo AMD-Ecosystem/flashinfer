@@ -26,11 +26,11 @@ bound (reads + writes q and k per token), so the roofline sits on the HBM
 ceiling and tokens/sec is the headline metric.
 
 Run:
-    python benchmarks/rocm_benchmarks/bench_rope.py                  # full pipeline (both op modes)
-    python benchmarks/rocm_benchmarks/bench_rope.py --timing-only    # no profiling
-    python benchmarks/rocm_benchmarks/bench_rope.py --op outplace    # out-of-place only (inplace|outplace)
-    python benchmarks/rocm_benchmarks/bench_rope.py --accuracy       # native-vs-aiter error table, no profiling
-    python benchmarks/rocm_benchmarks/bench_rope.py --replot         # regenerate plot
+    python benchmarks/rocm/bench_rope.py                  # full pipeline (both op modes)
+    python benchmarks/rocm/bench_rope.py --timing-only    # no profiling
+    python benchmarks/rocm/bench_rope.py --op outplace    # out-of-place only (inplace|outplace)
+    python benchmarks/rocm/bench_rope.py --accuracy       # native-vs-aiter error table, no profiling
+    python benchmarks/rocm/bench_rope.py --replot         # regenerate plot
 """
 
 import logging
@@ -48,7 +48,9 @@ from flashinfer.rope import (
 
 _jit_logger.setLevel(logging.WARNING)
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "rocm_profiler"))
+sys.path.insert(
+    0, str(Path(__file__).resolve().parent.parent.parent / "profiler" / "rocm")
+)
 from rocm_profiler import KernelConfig, RocmProfiler
 
 _OUTPUT_DIR = str(Path(__file__).parent)

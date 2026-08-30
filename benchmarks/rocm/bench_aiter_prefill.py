@@ -19,12 +19,12 @@ Shapes: q=256, GQA 16/4, HD=64, causal, kv ∈ {512, 1024, 2048, 3072, 4096, 819
 Paged regimes: page_size=256 (native-paged) and page_size=16 (flat-gather).
 
 Run:
-    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py               # full pipeline
-    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --timing-only # no profiling
-    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --replot      # regenerate plot
-    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --batch 0    # single only
-    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --counters stall
-    python benchmarks/rocm_benchmarks/bench_aiter_prefill.py --list-presets
+    python benchmarks/rocm/bench_aiter_prefill.py               # full pipeline
+    python benchmarks/rocm/bench_aiter_prefill.py --timing-only # no profiling
+    python benchmarks/rocm/bench_aiter_prefill.py --replot      # regenerate plot
+    python benchmarks/rocm/bench_aiter_prefill.py --batch 0    # single only
+    python benchmarks/rocm/bench_aiter_prefill.py --counters stall
+    python benchmarks/rocm/bench_aiter_prefill.py --list-presets
 
 Design note: bench flags are parsed at module level because rocprofv3 re-executes this
 script as a subprocess per PMC pass with the same sys.argv.  Module-level parsing ensures
@@ -45,7 +45,9 @@ from flashinfer.jit.core import logger as _jit_logger
 # Suppress routine JIT INFO/DEBUG output; WARNING still surfaces compile errors.
 _jit_logger.setLevel(logging.WARNING)
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "rocm_profiler"))
+sys.path.insert(
+    0, str(Path(__file__).resolve().parent.parent.parent / "profiler" / "rocm")
+)
 from rocm_profiler import KernelConfig, RocmProfiler
 
 # vLLM max_num_seqs=256 with mixed prefill+decode → prefill burst of ~8 seqs is mid-range.

@@ -183,7 +183,7 @@ decisions the library makes. Do not edit it by hand; run
 <!-- END GENERATED: arch support matrix -->
 
 Every row is covered by the default `pytest` selection. Most have a
-matching `tests/rocm_tests/test_*_hip.py`; `single_decode` is exercised
+matching `tests/rocm/test_*.py`; `single_decode` is exercised
 from the batch-decode, sliding-window, and logits-cap files, and
 `quantization` by `tests/utils/test_quantization.py`.
 
@@ -212,7 +212,7 @@ The unified runner drives every ROCm attention path from one testlist:
 
 ```bash
 cd benchmarks
-python flashinfer_benchmark.py --testlist rocm_benchmarks/testlist_rocm.txt \
+python flashinfer_benchmark.py --testlist rocm/testlist_rocm.txt \
     --output_path run-$(date +%F).csv
 ```
 
@@ -220,7 +220,7 @@ Each line requests both `fa2` and `auto`, so `--refcheck` compares them
 side by side. **Read the `backend_resolved` column** — `auto` is a
 request, not a result, and `backend_fallback_reason` says why AITER was
 declined. Per-op drivers live in
-[`benchmarks/rocm_benchmarks/`](https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/benchmarks/rocm_benchmarks).
+[`benchmarks/rocm/`](https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/benchmarks/rocm).
 -->
 
 ## Environment variables

@@ -48,7 +48,6 @@ prune .github
 prune .devcontainer
 prune .claude
 prune profiler
-prune rocm_profiler
 exclude Jenkinsfile
 exclude CHANGELOG.md
 global-exclude CLAUDE.md

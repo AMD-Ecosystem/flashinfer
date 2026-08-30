@@ -23,10 +23,10 @@ limitations under the License.
 #   (covers the None-branch in all 8 public-API wrappers)
 # - test_rope_cos_sin_cache: cos/sin-cache path with bfloat16 inputs
 # - test_rope_with_cos_sin_cache_nonplace: non-inplace apply_rope_with_cos_sin_cache
-# - test_generalized_rope_quantize_hip: GQA/MHA/MLA rope + FP8 quantize (AMD-added)
+# - test_generalized_rope_quantize: GQA/MHA/MLA rope + FP8 quantize (AMD-added)
 # - test_mla_rope_quantize: MLA rope + FP8 quantize (2D K)
-# - test_generalized_rope_quantize_append_kv_cache_hip: fused rope+FP8+paged KV append (AMD-added)
-# - test_rope_quantize_fp8_append_paged_kv_cache_decode_hip: decode scenario (AMD-added)
+# - test_generalized_rope_quantize_append_kv_cache: fused rope+FP8+paged KV append (AMD-added)
+# - test_rope_quantize_fp8_append_paged_kv_cache_decode: decode scenario (AMD-added)
 #
 # Notes:
 # - CPX flakiness: batch_size=989 and qkv_len=204 dropped from test_rope / test_rope_pos_ids;
@@ -607,7 +607,7 @@ def _rope_apply_interleave_f32(
 @pytest.mark.parametrize("num_tokens", [1, 128])
 @pytest.mark.parametrize("input_dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("quant_dtype", [torch.float8_e4m3fnuz, torch.float8_e5m2fnuz])
-def test_generalized_rope_quantize_hip(
+def test_generalized_rope_quantize(
     attention_type,
     num_qo_heads,
     num_kv_heads,
@@ -785,7 +785,7 @@ def test_mla_rope_quantize(num_tokens, input_dtype, quant_dtype):
 @pytest.mark.parametrize("quant_dtype", [torch.float8_e4m3fnuz])
 @pytest.mark.parametrize("kv_layout", ["NHD", "HND"])
 @pytest.mark.parametrize("page_size", [16])
-def test_generalized_rope_quantize_append_kv_cache_hip(
+def test_generalized_rope_quantize_append_kv_cache(
     attention_type,
     num_qo_heads,
     num_kv_heads,
@@ -1051,7 +1051,7 @@ def test_generalized_rope_quantize_append_kv_cache_hip(
 @pytest.mark.parametrize("quant_dtype", [torch.float8_e4m3fnuz])
 @pytest.mark.parametrize("kv_layout", ["NHD", "HND"])
 @pytest.mark.parametrize("page_size", [16])
-def test_rope_quantize_fp8_append_paged_kv_cache_decode_hip(
+def test_rope_quantize_fp8_append_paged_kv_cache_decode(
     attention_type,
     num_qo_heads,
     num_kv_heads,
@@ -1067,7 +1067,7 @@ def test_rope_quantize_fp8_append_paged_kv_cache_decode_hip(
     Verifies that:
     - New token Q outputs match the native-RoPE reference.
     - Existing cache entries are left unchanged after the append.
-    GQA/MHA only (MLA decode is covered separately by test_generalized_rope_quantize_append_kv_cache_hip).
+    GQA/MHA only (MLA decode is covered separately by test_generalized_rope_quantize_append_kv_cache).
     """
     device = "cuda:0"
     torch.manual_seed(42)

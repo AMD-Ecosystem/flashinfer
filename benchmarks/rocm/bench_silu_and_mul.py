@@ -21,9 +21,9 @@ This kernel is memory-bandwidth bound (reads 2*d, writes d per token), so the
 roofline sits on the HBM ceiling and tokens/sec is the headline metric.
 
 Run:
-    python benchmarks/rocm_benchmarks/bench_silu_and_mul.py                 # full pipeline
-    python benchmarks/rocm_benchmarks/bench_silu_and_mul.py --timing-only   # no profiling
-    python benchmarks/rocm_benchmarks/bench_silu_and_mul.py --replot        # regenerate plot
+    python benchmarks/rocm/bench_silu_and_mul.py                 # full pipeline
+    python benchmarks/rocm/bench_silu_and_mul.py --timing-only   # no profiling
+    python benchmarks/rocm/bench_silu_and_mul.py --replot        # regenerate plot
 """
 
 import logging
@@ -37,7 +37,9 @@ from flashinfer.jit.core import logger as _jit_logger
 
 _jit_logger.setLevel(logging.WARNING)
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "rocm_profiler"))
+sys.path.insert(
+    0, str(Path(__file__).resolve().parent.parent.parent / "profiler" / "rocm")
+)
 from rocm_profiler import KernelConfig, RocmProfiler
 
 _OUTPUT_DIR = str(Path(__file__).parent)

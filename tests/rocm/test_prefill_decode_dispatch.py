@@ -24,7 +24,7 @@ pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="needs a ROCm device"
 )
 
-# That this path resolves is checked without a GPU in test_aiter_version_gate_hip.
+# That this path resolves is checked without a GPU in test_aiter_version_gate.
 _INSTALL_DOC = "docs/rocm/backends.md"
 
 

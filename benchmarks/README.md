@@ -286,7 +286,7 @@ known-bad entry.
 
 ```bash
 cd benchmarks
-python flashinfer_benchmark.py --testlist rocm_benchmarks/testlist_rocm.txt \
+python flashinfer_benchmark.py --testlist rocm/testlist_rocm.txt \
     --output_path run-$(date +%F).csv
 ```
 
@@ -312,13 +312,13 @@ capture was enabled. The testlist avoids both, so treat it as worth investigatin
 design — AITER's launch grid is fixed at the shapes seen during capture, so
 replaying at a longer sequence is silently wrong. Graph-mode AITER decode is the
 explicit capture-at-max path in
-[`rocm_benchmarks/bench_decode_graph_hip.py`](rocm_benchmarks/bench_decode_graph_hip.py).
+[`rocm/bench_decode_graph.py`](rocm/bench_decode_graph.py).
 
 ### Two tiers
 
 This runner answers "did anything regress" across model-shaped configs. For
 "why is this kernel slow", use [`rocm_profiler`](../rocm_profiler/rocm_profiler.py)
-and the per-op drivers in [`rocm_benchmarks/`](rocm_benchmarks/), which collect
+and the per-op drivers in [`rocm/`](rocm/), which collect
 `rocprofv3` hardware counters and plot a roofline.
 
 ### Comparing numbers

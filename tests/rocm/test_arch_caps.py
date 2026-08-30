@@ -507,8 +507,8 @@ class TestArchCapabilityError:
         """Routing three divergent exception types through one class only works
         if the old ones still catch it.
 
-        ValueError: test_activation_aiter_hip.py:67 asserts on it.
-        RuntimeError: test_batch_prefill_bf16_custom_mask_hip.py:157 catches it.
+        ValueError: test_activation_aiter.py:67 asserts on it.
+        RuntimeError: test_batch_prefill_bf16_custom_mask.py:157 catches it.
         """
         err = arch_caps.ArchCapabilityError("boom")
         assert isinstance(err, ValueError)

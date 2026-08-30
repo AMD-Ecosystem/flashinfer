@@ -8,7 +8,7 @@ resolve it later and shadow edits under ``include/``.
 
 The assertions are filesystem-only and need no GPU, but collection still pulls
 in the suite's torch-importing conftest — there is no CPU-only lane to put this
-in, and ``tests/rocm_tests`` is the only directory ``testpaths`` covers.
+in, and ``tests/rocm`` is the only directory ``testpaths`` covers.
 """
 
 import importlib.util

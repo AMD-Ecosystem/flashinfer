@@ -30,9 +30,9 @@ kernel re-reads from global instead of staging the row.
 believing any ratio: a margin inside the A/A spread is not a result.
 
 Run:
-    python benchmarks/rocm_benchmarks/bench_norm.py --aa
-    python benchmarks/rocm_benchmarks/bench_norm.py --csv norm-gfx942.csv
-    python benchmarks/rocm_benchmarks/bench_norm.py --accuracy
+    python benchmarks/rocm/bench_norm.py --aa
+    python benchmarks/rocm/bench_norm.py --csv norm-gfx942.csv
+    python benchmarks/rocm/bench_norm.py --accuracy
 """
 
 import argparse

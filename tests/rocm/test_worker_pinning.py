@@ -10,7 +10,7 @@ index names a device that does not exist. That value is harmless in the worker
 itself -- HIP is already initialized by then -- and fatal in every subprocess
 the worker spawns, which is what makes it hard to attribute.
 
-The conftest is loaded by path, as in test_run_header_hip.py: pytest owns
+The conftest is loaded by path, as in test_run_header.py: pytest owns
 conftest import, and a second module object can be exercised without touching
 the hooks pytest is actually running.
 """

@@ -6,7 +6,7 @@ description: Guide for benchmarking FlashInfer+ROCm kernels on AMD Instinct (CDN
 # Benchmarking FlashInfer+ROCm Kernels
 
 For a real driver script to copy, see
-[`benchmarks/rocm_benchmarks/bench_fa2_prefill.py`](../../../benchmarks/rocm_benchmarks/bench_fa2_prefill.py) and [`benchmarks/rocm_benchmarks/bench_aiter_prefill.py`](../../../benchmarks/rocm_benchmarks/bench_aiter_prefill.py)
+[`benchmarks/rocm/bench_fa2_prefill.py`](../../../benchmarks/rocm/bench_fa2_prefill.py) and [`benchmarks/rocm/bench_aiter_prefill.py`](../../../benchmarks/rocm/bench_aiter_prefill.py)
 For the in-repo profiler wrapper, see [`rocm_profiler/rocm_profiler.py`](../../../rocm_profiler/rocm_profiler.py).
 
 ## Timing method matrix
@@ -53,7 +53,7 @@ Or pass a path to a `rocprofv3`-native YAML for a custom counter set.
 
 Driver script flags: `--timing-only` (skip rocprofv3), `--skip-roofline`, `--replot` (regen PNG from existing CSVs, no GPU), `--list-presets`.
 
-Output (under `benchmarks/rocm_benchmarks/`, gitignored):
+Output (under `benchmarks/rocm/`, gitignored):
 
 ```text
 <label>_timing.csv             # median + std per config
