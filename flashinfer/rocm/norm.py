@@ -86,6 +86,49 @@ def maybe_rmsnorm(
     return None
 
 
+def _check_aiter_fused_add_args(
+    input: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor
+) -> None:
+    """The native kernel enforces these in C++; the AITER path enforced nothing,
+    so a mismatch reached CK and came back as garbage rather than an error."""
+    if input.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(
+            f"AITER fused_add_rmsnorm only supports float16/bfloat16 inputs; "
+            f"got {input.dtype}."
+        )
+    if weight.dtype != input.dtype:
+        # CK derives one dtype from input and reads weight bytes with it.
+        raise ValueError(
+            f"AITER fused_add_rmsnorm requires weight.dtype == input.dtype; got "
+            f"weight {weight.dtype} vs input {input.dtype}."
+        )
+    if residual.dtype != input.dtype:
+        raise ValueError(
+            f"AITER fused_add_rmsnorm requires residual.dtype == input.dtype; got "
+            f"residual {residual.dtype} vs input {input.dtype}."
+        )
+    if residual.shape != input.shape:
+        raise ValueError(
+            f"AITER fused_add_rmsnorm requires residual.shape == input.shape; got "
+            f"residual {tuple(residual.shape)} vs input {tuple(input.shape)}."
+        )
+    if weight.numel() != input.size(-1):
+        raise ValueError(
+            f"AITER fused_add_rmsnorm requires weight of length {input.size(-1)}; "
+            f"got {weight.numel()}."
+        )
+    if residual.device != input.device or weight.device != input.device:
+        raise ValueError(
+            "AITER fused_add_rmsnorm requires input, residual and weight on the "
+            f"same device; got {input.device}, {residual.device}, {weight.device}."
+        )
+    if input.stride(-1) != 1 or residual.stride(-1) != 1:
+        raise ValueError(
+            "AITER fused_add_rmsnorm requires a contiguous last dimension on "
+            "input and residual."
+        )
+
+
 def maybe_fused_add_rmsnorm(
     input: torch.Tensor,
     residual: torch.Tensor,
@@ -101,6 +144,7 @@ def maybe_fused_add_rmsnorm(
         from ..aiter_utils import require_aiter
 
         require_aiter(input.device, "fused_add_rmsnorm")
+        _check_aiter_fused_add_args(input, residual, weight)
         get_norm_aiter_module().fused_add_rmsnorm_aiter(input, residual, weight, eps)
         return True
     if resolved != "native":

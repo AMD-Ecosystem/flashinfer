@@ -214,6 +214,59 @@ def test_fused_add_rmsnorm_rejects_non_2d(backend):
 
 
 @requires_aiter
+class TestAiterFusedAddArgChecks:
+    """CK derives one dtype from `input` and reads the other buffers with it, so
+    a mismatch is silent garbage rather than an error. The native kernel rejects
+    all of these in C++; the AITER path used to accept them."""
+
+    @pytest.fixture
+    def base(self):
+        x = torch.randn(8, 128, dtype=torch.float16, device="cuda")
+        return (
+            x,
+            torch.randn_like(x),
+            torch.randn(128, dtype=torch.float16, device="cuda"),
+        )
+
+    def test_fp32_input_is_rejected(self):
+        x = torch.randn(8, 128, dtype=torch.float32, device="cuda")
+        w = torch.randn(128, dtype=torch.float32, device="cuda")
+        with pytest.raises(ValueError, match="float16/bfloat16"):
+            flashinfer.fused_add_rmsnorm(x, torch.randn_like(x), w, backend="aiter")
+
+    def test_mismatched_weight_dtype_is_rejected(self, base):
+        x, residual, _ = base
+        w = torch.randn(128, dtype=torch.bfloat16, device="cuda")
+        with pytest.raises(ValueError, match="weight.dtype == input.dtype"):
+            flashinfer.fused_add_rmsnorm(x, residual, w, backend="aiter")
+
+    def test_mismatched_residual_dtype_is_rejected(self, base):
+        x, _, w = base
+        residual = torch.randn(8, 128, dtype=torch.bfloat16, device="cuda")
+        with pytest.raises(ValueError, match="residual.dtype == input.dtype"):
+            flashinfer.fused_add_rmsnorm(x, residual, w, backend="aiter")
+
+    def test_mismatched_residual_shape_is_rejected(self, base):
+        x, _, w = base
+        residual = torch.randn(4, 128, dtype=torch.float16, device="cuda")
+        with pytest.raises(ValueError, match="residual.shape == input.shape"):
+            flashinfer.fused_add_rmsnorm(x, residual, w, backend="aiter")
+
+    def test_wrong_weight_length_is_rejected(self, base):
+        x, residual, _ = base
+        w = torch.randn(64, dtype=torch.float16, device="cuda")
+        with pytest.raises(ValueError, match="weight of length 128"):
+            flashinfer.fused_add_rmsnorm(x, residual, w, backend="aiter")
+
+    def test_non_contiguous_last_dim_is_rejected(self, base):
+        _, _, w = base
+        wide = torch.randn(8, 256, dtype=torch.float16, device="cuda")
+        x = wide[:, ::2]
+        with pytest.raises(ValueError, match="contiguous last dimension"):
+            flashinfer.fused_add_rmsnorm(x, torch.randn_like(x), w, backend="aiter")
+
+
+@requires_aiter
 @pytest.mark.parametrize("batch_size", [128, 2048])
 @pytest.mark.parametrize("hidden_size", [4096, 8192])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
