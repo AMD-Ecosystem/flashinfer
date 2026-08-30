@@ -115,13 +115,12 @@ instead, as the devcontainer does.
 
 Every op has an in-tree HIP kernel unless noted; a subset also has an
 AITER backend, selected by a `backend=` argument that defaults to
-`"auto"`. There are four policies for what `auto` picks:
+`"auto"`. There are three policies for what `auto` picks:
 
 | `backend="auto"` picks | Ops |
 | :--- | :--- |
-| AITER when the call is compatible, else the in-tree kernel | `single_prefill`, `batch_prefill`, `batch_decode`, `fused_add_rmsnorm` |
-| AITER for 2-D fp16/bf16 whose weight dtype matches, else `native` | `rmsnorm` |
-| Always the in-tree `native` kernel — AITER is opt-in | `silu_and_mul`, `rope`, `append_paged_kv_cache` |
+| AITER when the call is compatible, else the in-tree kernel | `single_prefill`, `batch_prefill`, `batch_decode` |
+| Always the in-tree `native` kernel — AITER is opt-in | `rmsnorm`, `fused_add_rmsnorm`, `silu_and_mul`, `rope`, `append_paged_kv_cache` |
 | AITER only — no HIP kernel exists | `mla` |
 
 To override, pass `backend="aiter"`, or name the in-tree kernel:
@@ -154,8 +153,8 @@ decisions the library makes. Do not edit it by hand; run
 | `mla` | `aiter` | ✅ | ✅ | DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here. |
 | `rope` | `aiter` | ✅ | ✅ | `apply_rope_with_cos_sin_cache` and its inplace variant, linked at the C++ level. Opt-in. |
 | `append_paged_kv_cache` | `aiter` | ✅ | ✅ | fp16/bf16 + NHD. Bit-exact with the in-tree kernel but slower, so `auto` picks `native`. |
-| `rmsnorm` | `aiter` | ✅ | ✅ | CK `rmsnorm2d`. `auto` routes only 2-D fp16/bf16 with a matching weight dtype here. |
-| `fused_add_rmsnorm` | `aiter` | ✅ | ✅ | CK `rmsnorm2d_with_add`; 2-D only. `auto` does NOT check weight dtype — a mismatch silently yields garbage. |
+| `rmsnorm` | `aiter` | ✅ | ✅ | CK `rmsnorm2d`; 2-D fp16/bf16, weight dtype must match. Opt-in: level with native on speed and less accurate. |
+| `fused_add_rmsnorm` | `aiter` | ✅ | ✅ | CK `rmsnorm2d_with_add`; 2-D, weight dtype must match. Opt-in: 1.6-1.8x slower, since correctness needs two staging buffers. |
 | `silu_and_mul` | `aiter` | ✅ | ✅ | `aiter::silu_and_mul`, linked at the C++ level. Opt-in; matches native in fp16, lower in bf16. |
 | `fused_moe` | `aiter` | ✅ | ✅ | `aiter_fused_moe`; bf16/fp16. Weights must be pre-shuffled with `shuffle_moe_weight` or results are silently wrong. |
 | `fused_moe_fp8` | `aiter` | ✅ | ✅ | `aiter_fused_moe` with fp8 weights in `moe_fp8_dtype()` plus both scales; activations are quantized per token in the shim. |
@@ -167,8 +166,8 @@ decisions the library makes. Do not edit it by hand; run
 | `pod` | `hip` | ◻️ | ◻️ | `PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream. |
 | `rope` | `hip` | ◻️ | ◻️ | LLaMA and LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). |
 | `append_paged_kv_cache` | `hip` | ◻️ | ◻️ | fp8 KV-cache supported. Sustains 3.62 TB/s against AITER's 2.86 on gfx942, so `auto` picks this. |
-| `rmsnorm` | `hip` | ◻️ | ◻️ | The fallback for 3-D inputs, fp32, or a weight dtype that does not match the input. |
-| `fused_add_rmsnorm` | `hip` | ◻️ | ◻️ | The fallback whenever the AITER path is unavailable. |
+| `rmsnorm` | `hip` | ◻️ | ◻️ | What `auto` always picks: level with AITER on speed and more accurate. |
+| `fused_add_rmsnorm` | `hip` | ◻️ | ◻️ | What `auto` always picks: 1.6-1.8x faster than AITER on both arches. |
 | `layernorm` | `hip` | ◻️ | ◻️ | `layernorm` plus the Gemma RMSNorm variants. No AITER path. |
 | `sampling` | `hip` | ◻️ | ◻️ | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits. |
 | `logits_processor` | `hip` | ◻️ | ◻️ | Composable processor pipeline (cap, mask, temperature, ...). |

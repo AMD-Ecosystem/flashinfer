@@ -370,14 +370,14 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "rmsnorm",
         "aiter",
         _archs(_OK_942, _OK_950),
-        note="CK `rmsnorm2d`. `auto` routes only 2-D fp16/bf16 with a matching weight dtype here.",
+        note="CK `rmsnorm2d`; 2-D fp16/bf16, weight dtype must match. Opt-in: level with native on speed and less accurate.",
         fallback="native",
     ),
     Capability(
         "fused_add_rmsnorm",
         "aiter",
         _archs(_OK_942, _OK_950),
-        note="CK `rmsnorm2d_with_add`; 2-D only. `auto` does NOT check weight dtype — a mismatch silently yields garbage.",
+        note="CK `rmsnorm2d_with_add`; 2-D, weight dtype must match. Opt-in: 1.6-1.8x slower, since correctness needs two staging buffers.",
         fallback="native",
     ),
     Capability(
@@ -453,13 +453,13 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "rmsnorm",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="The fallback for 3-D inputs, fp32, or a weight dtype that does not match the input.",
+        note="What `auto` always picks: level with AITER on speed and more accurate.",
     ),
     Capability(
         "fused_add_rmsnorm",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="The fallback whenever the AITER path is unavailable.",
+        note="What `auto` always picks: 1.6-1.8x faster than AITER on both arches.",
     ),
     Capability(
         "layernorm",

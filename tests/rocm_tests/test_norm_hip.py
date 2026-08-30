@@ -82,9 +82,8 @@ def test_norm(batch_size, hidden_size, dtype, specify_out, enable_pdl, contiguou
     w = torch.randn(hidden_size).to(0).to(dtype)
 
     y_ref = llama_rms_norm(x, w)
-    # Pin to native: this test checks the native kernel against a tight float32
-    # reference. On ROCm, backend="auto" routes 2D inputs to AITER's lower-precision
-    # rms_norm, whose accuracy is validated separately in test_rmsnorm_aiter_hip.py.
+    # Explicit, though `auto` now resolves here too: this test asserts the
+    # native kernel against a tight float32 reference.
     if specify_out:
         y = torch.empty_like(x)
         flashinfer.norm.rmsnorm(x, w, out=y, enable_pdl=enable_pdl, backend="native")
@@ -118,9 +117,8 @@ def test_fused_add_rmsnorm(batch_size, hidden_size, dtype, enable_pdl, contiguou
 
     x_fused = x.clone()
     residual_fused = residual.clone()
-    # Pin to native, as test_norm does — without it `auto` sends every case to
-    # AITER and the native kernel has no coverage. test_fused_add_rmsnorm_aiter
-    # keeps AITER covered, though not at contiguous=False.
+    # Explicit, though `auto` now resolves here too: this test asserts the
+    # native kernel specifically. test_fused_add_rmsnorm_aiter covers AITER.
     flashinfer.fused_add_rmsnorm(
         x_fused, residual_fused, weight, eps, enable_pdl=enable_pdl, backend="native"
     )
@@ -131,8 +129,7 @@ def test_fused_add_rmsnorm(batch_size, hidden_size, dtype, enable_pdl, contiguou
 
 
 # 16384 crosses the gfx942 LDS threshold and 40960 the gfx950 one, so the
-# re-read-from-global fallback is exercised on both arches. backend="native" is
-# required — `auto` routes to AITER and would not reach the kernel under test.
+# re-read-from-global fallback is exercised on both arches.
 @pytest.mark.parametrize("hidden_size", [16352, 16384, 40960])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("gemma", [False, True])
@@ -193,13 +190,23 @@ def test_fused_add_rmsnorm_aiter(batch_size, hidden_size, dtype):
     torch.testing.assert_close(residual_fused, residual_native, rtol=rtol, atol=atol)
 
 
-@requires_aiter
-def test_fused_add_rmsnorm_auto_selection():
-    """auto routes fused_add_rmsnorm to the C++ AITER kernel on supported devices."""
+def test_fused_add_rmsnorm_auto_selection(monkeypatch):
+    """auto is native even where AITER is fully available -- AITER is 1.6-1.8x
+    slower here (benchmarks/rocm_benchmarks/bench_norm.py).
+
+    AITER is forced available rather than skipped, so a revert is caught even
+    on a box without the wheel, where "native" would otherwise be the right
+    answer for the wrong reason. Both the wrapper and the probe it is built
+    from are stubbed, since a revert could consult either.
+    """
+    import flashinfer.aiter_utils as aiter_utils
     from flashinfer.rocm.norm import _auto_select_fused_add_rmsnorm_backend
 
+    monkeypatch.setattr(aiter_utils, "is_aiter_available", lambda device, op: True)
+    monkeypatch.setattr(aiter_utils, "_aiter_importable", lambda: True)
+
     x = torch.empty(512, 8192, dtype=torch.float16, device="cuda")
-    assert _auto_select_fused_add_rmsnorm_backend(x) == "aiter"
+    assert _auto_select_fused_add_rmsnorm_backend(x) == "native"
 
 
 @pytest.mark.parametrize("backend", ["auto", "native", "aiter"])
@@ -214,13 +221,81 @@ def test_fused_add_rmsnorm_rejects_non_2d(backend):
 
 
 @requires_aiter
+class TestAiterFusedAddArgChecks:
+    """CK derives one dtype from `input` and reads the other buffers with it, so
+    a mismatch is silent garbage rather than an error. The native kernel rejects
+    all of these in C++; the AITER path used to accept them."""
+
+    @pytest.fixture
+    def base(self):
+        x = torch.randn(8, 128, dtype=torch.float16, device="cuda")
+        return (
+            x,
+            torch.randn_like(x),
+            torch.randn(128, dtype=torch.float16, device="cuda"),
+        )
+
+    def test_fp32_input_is_rejected(self):
+        x = torch.randn(8, 128, dtype=torch.float32, device="cuda")
+        w = torch.randn(128, dtype=torch.float32, device="cuda")
+        with pytest.raises(ValueError, match="float16/bfloat16"):
+            flashinfer.fused_add_rmsnorm(x, torch.randn_like(x), w, backend="aiter")
+
+    def test_mismatched_weight_dtype_is_rejected(self, base):
+        x, residual, _ = base
+        w = torch.randn(128, dtype=torch.bfloat16, device="cuda")
+        with pytest.raises(ValueError, match="weight.dtype == input.dtype"):
+            flashinfer.fused_add_rmsnorm(x, residual, w, backend="aiter")
+
+    def test_mismatched_residual_dtype_is_rejected(self, base):
+        x, _, w = base
+        residual = torch.randn(8, 128, dtype=torch.bfloat16, device="cuda")
+        with pytest.raises(ValueError, match="residual.dtype == input.dtype"):
+            flashinfer.fused_add_rmsnorm(x, residual, w, backend="aiter")
+
+    def test_mismatched_residual_shape_is_rejected(self, base):
+        x, _, w = base
+        residual = torch.randn(4, 128, dtype=torch.float16, device="cuda")
+        with pytest.raises(ValueError, match="residual.shape == input.shape"):
+            flashinfer.fused_add_rmsnorm(x, residual, w, backend="aiter")
+
+    def test_wrong_weight_length_is_rejected(self, base):
+        x, residual, _ = base
+        w = torch.randn(64, dtype=torch.float16, device="cuda")
+        with pytest.raises(ValueError, match="1-D weight of length 128"):
+            flashinfer.fused_add_rmsnorm(x, residual, w, backend="aiter")
+
+    def test_non_1d_weight_is_rejected(self, base):
+        """Native raises "weight must be a 1D tensor"; AITER accepted a (1, n)
+        weight of the right numel, so the two backends disagreed on validity."""
+        x, residual, _ = base
+        w = torch.randn(1, 128, dtype=torch.float16, device="cuda")
+        with pytest.raises(ValueError, match="1-D weight of length 128"):
+            flashinfer.fused_add_rmsnorm(x, residual, w, backend="aiter")
+
+    def test_non_contiguous_last_dim_is_rejected(self, base):
+        _, _, w = base
+        wide = torch.randn(8, 256, dtype=torch.float16, device="cuda")
+        x = wide[:, ::2]
+        with pytest.raises(ValueError, match="contiguous last dimension"):
+            flashinfer.fused_add_rmsnorm(x, torch.randn_like(x), w, backend="aiter")
+
+    def test_strided_weight_is_rejected(self, base):
+        """The shim's reshape({1, -1}) keeps the stride rather than packing, so
+        CK would read a strided weight as contiguous: 9.6 abs error, silently."""
+        x, residual, _ = base
+        w = torch.randn(256, dtype=torch.float16, device="cuda")[::2]
+        with pytest.raises(ValueError, match="contiguous weight"):
+            flashinfer.fused_add_rmsnorm(x, residual, w, backend="aiter")
+
+
+# The default path end to end through the public API. Not a routing guard --
+# AITER also passes the native tolerance at these shapes, so this stays green
+# either way; test_fused_add_rmsnorm_auto_selection is what pins the policy.
 @pytest.mark.parametrize("batch_size", [128, 2048])
 @pytest.mark.parametrize("hidden_size", [4096, 8192])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_fused_add_rmsnorm_auto_correct(batch_size, hidden_size, dtype):
-    # The 2048-row shapes land above the 4M cutoff, so this grid exercises the
-    # AITER path under backend="auto" (not just native), confirming auto stays
-    # correct there.
     eps = 1e-6
     x = torch.randn(batch_size, hidden_size, dtype=dtype, device="cuda")
     residual = torch.randn_like(x)
@@ -234,10 +309,24 @@ def test_fused_add_rmsnorm_auto_correct(batch_size, hidden_size, dtype):
     residual_auto = residual.clone()
     flashinfer.fused_add_rmsnorm(x_auto, residual_auto, weight, eps, backend="auto")
 
-    # auto may pick AITER (CK lower precision) for large shapes, so use relaxed tol.
-    rtol, atol = (7e-2, 7e-2) if dtype == torch.bfloat16 else (4e-3, 4e-3)
+    rtol, atol = (1.6e-2, 1.6e-2) if dtype == torch.bfloat16 else (1e-3, 1e-3)
     torch.testing.assert_close(x_auto, x_native, rtol=rtol, atol=atol)
     torch.testing.assert_close(residual_auto, residual_native, rtol=rtol, atol=atol)
+
+
+# rmsnorm had no public-API auto test at all; same scope as above.
+@pytest.mark.parametrize("batch_size", [128, 2048])
+@pytest.mark.parametrize("hidden_size", [4096, 8192])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_rmsnorm_auto_correct(batch_size, hidden_size, dtype):
+    x = torch.randn(batch_size, hidden_size, dtype=dtype, device="cuda")
+    weight = torch.randn(hidden_size, dtype=dtype, device="cuda")
+
+    y_ref = llama_rms_norm(x, weight)
+    y_auto = flashinfer.rmsnorm(x, weight, backend="auto")
+
+    rtol, atol = (1.6e-2, 1.6e-2) if dtype == torch.bfloat16 else (1e-3, 1e-3)
+    torch.testing.assert_close(y_auto, y_ref, rtol=rtol, atol=atol)
 
 
 @pytest.mark.parametrize("batch_size", [1, 19, 99, 989])

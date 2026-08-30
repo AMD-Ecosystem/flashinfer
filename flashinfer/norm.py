@@ -58,9 +58,9 @@ def rmsnorm(
         Whether to enable `programmatic dependent launch
         <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
     backend: str
-        Kernel backend to use. ``"auto"`` (default) selects the best available backend:
-        the AITER C++ kernel for 2D fp16/bf16 inputs on supported ROCm devices, else native.
-        ``"native"`` uses the FlashInfer JIT kernel on all platforms.
+        Kernel backend to use. ``"auto"`` (default) is the FlashInfer JIT kernel
+        everywhere, including ROCm — see ``docs/rocm/backends.md``.
+        ``"native"`` is the same kernel, requested explicitly.
         ``"aiter"`` uses AMD AITER's CK ``rmsnorm2d`` C++ kernel — ROCm (gfx942/gfx950)
         only, 2D fp16/bf16 inputs only. Precision is slightly lower than ``"native"`` at
         ``hidden_size >= 1024`` (fp16 atol ~4e-3, bf16 ~7e-2).
@@ -135,13 +135,12 @@ def fused_add_rmsnorm(
         Whether to enable `programmatic dependent launch
         <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
     backend: str
-        Kernel backend to use. ``"auto"`` (default) routes to the C++ AITER CK
-        kernel on ROCm (gfx942/gfx950) and to the native FlashInfer JIT kernel
-        everywhere else.
-        ``"native"`` uses the FlashInfer JIT kernel on all platforms.
+        Kernel backend to use. ``"auto"`` (default) is the FlashInfer JIT kernel
+        everywhere, including ROCm — see ``docs/rocm/backends.md``.
+        ``"native"`` is the same kernel, requested explicitly.
         ``"aiter"`` uses AMD AITER's CK ``rmsnorm2d_with_add`` C++ kernel — ROCm
-        (gfx942/gfx950) only, 2D inputs only. Precision is slightly lower than
-        ``"native"`` at ``hidden_size >= 1024``.
+        (gfx942/gfx950) only, 2D inputs only. Measurably slower than ``"native"``
+        on both arches, and slightly lower precision at ``hidden_size >= 1024``.
     """
     # Both the native and AITER kernels are 2D-only (the native kernel enforces
     # CHECK_DIM(2) on input/residual), so reject other ranks up front with a clear
