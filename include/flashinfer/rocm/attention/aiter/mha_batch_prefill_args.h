@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Vendored fmha_batch_prefill_args from AITER amd-aiter>=0.1.10.
+// Vendored fmha_batch_prefill_args, following the amd-aiter 0.1.20 layout.
 // Extracted from
-// aiter_meta/3rdparty/composable_kernel/example/ck_tile/01_fmha/fmha_fwd.hpp:501-594.
+// aiter_meta/3rdparty/composable_kernel/example/ck_tile/01_fmha/fmha_fwd.hpp.
+// Still correct on 0.1.16: the struct is MEMORY-class, so an older callee simply
+// never reads the trailing fields 0.1.20 added.
 //
 // ABI note: aiter::mha_batch_prefill() is called via dlsym. The struct layout here must
 // match the .so exactly. ck_tile::index_t = int32_t.
@@ -108,6 +110,11 @@ struct fmha_batch_prefill_args {
   // Dropout seed/offset: zero-initialize when dropout disabled (p_drop=0).
   // std::variant layout is libstdc++ ABI-dependent; we always use the first alternative.
   std::variant<std::pair<uint64_t, uint64_t>, std::pair<const void*, const void*>> drop_seed_offset;
+
+  // Added in 0.1.20 for KV_BLOCKSCALE (per-page K/V descales). Unused here, but
+  // the struct goes by value, so omitting them leaves AITER reading past it.
+  int32_t nblock_stride_kv_block_descale = 0;
+  int32_t nhead_stride_kv_block_descale = 0;
 };
 
 namespace aiter {
