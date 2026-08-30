@@ -98,18 +98,20 @@ python examples/single_prefill_example.py
 | | Supported |
 | :--- | :--- |
 | GPUs | gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI350X, MI355X) |
-| ROCm | 7.0.2, 7.1.1, 7.2, 7.14 |
+| ROCm | 7.0.2, 7.1.1, 7.2, 7.14, 10.0 |
 | PyTorch+ROCm | 2.8.0, 2.9.1, 2.12.0 |
-| Python | 3.10+ (the published images use 3.12; the devcontainer uses 3.14) |
+| Python | 3.10+ (both the published images and the devcontainer use 3.12) |
 
 Other versions may work but are untested. Replace `7.2` in the torch
 install command with the ROCm version you need; see
 <https://repo.radeon.com/rocm/manylinux/> for what is available.
 
-ROCm 7.14 is the exception: `repo.radeon.com` publishes no `rocm-rel-7.14/`
-directory, so there is no pip recipe for it. Take torch from the
-`rocm/pytorch:rocm7.14_ubuntu26.04_py3.14_pytorch_release_2.12.0` image
-instead, as the devcontainer does.
+ROCm 7.14 and 10.0 are the exceptions: `repo.radeon.com` publishes no
+`rocm-rel-` directory for either, so there is no pip recipe. Take torch from
+the `rocm/pytorch:rocm10.0_ubuntu24.04_py3.12_pytorch_release_2.12.0` image
+instead, as the devcontainer does. Stay on torch 2.12: 2.13 removes a `c10`
+symbol that every published `amd-aiter` build's prebuilt prefill kernels need,
+so AITER prefill fails to load there.
 
 ## Support matrix
 

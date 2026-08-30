@@ -34,14 +34,15 @@ index, and the ROCm-versioned channels carry no wheel at or above the
 supported floor, so install from the nightlies index:
 
 ```bash
-pip install amd-aiter==0.1.16.post3.dev0+g620287969.d20260725 \
-  --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/vllm-cdna/
+pip install amd-aiter==0.1.20+rocm10.1.0a20260819.3135022 \
+  --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/
 ```
 
 Use `--extra-index-url`, not `--index-url`, so AITER's own dependencies
 still resolve from PyPI, and spell the version out in full including the
-local `+g...` segment — pip will not select a local version from a loose
-specifier.
+local `+rocm...` segment — pip will not select a local version from a loose
+specifier. Check afterwards that the install did not pull a CPU-only torch
+over your ROCm one: `python -c "import torch; assert torch.version.hip"`.
 
 **`aiter_utils.AITER_MIN_VERSION` (0.1.16) is a hard floor**, enforced
 before routing. FlashInfer links AITER's C++ symbols by mangled name
@@ -54,7 +55,13 @@ That rules out `pypi.amd.com/rocm-7.1.1/simple`, which carries only
 `0.1.10` and only cp310/cp312 wheels. The CI image
 (`docker/Dockerfile.rocm_ci`) still installs `0.1.10` and so runs without
 the AITER backends; the devcontainer bundles the wheel above, on CPython
-3.14, and needs no separate install.
+3.12, and needs no separate install.
+
+Every 0.1.20 wheel is cp312 only, and none is built against ROCm 10.0 —
+they share one source revision (build id `3135022`) retargeted to
+`+rocm10.1.0a`, `+rocm7.14.0` and `+rocm7.2.3`. Only the first of those and
+`+rocm7.2.3` are reachable by version specifier; pip normalises the project
+name, so the sibling `amd_aiter/` directory needs a direct wheel URL.
 
 A source build tracks master, which is many releases ahead of the pin
 **with a different C ABI** — symbols the shim expects are renamed, hidden
