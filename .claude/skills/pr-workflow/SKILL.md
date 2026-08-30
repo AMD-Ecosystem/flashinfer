@@ -151,7 +151,7 @@ headers live in `include/` at the repo root.
   `<pkg>/include`, and the JIT passes that through `.resolve()` into
   `-isystem`. Both failure modes emit a well-formed flag pointing at a
   directory that isn't there, so the compile fails with
-  `'flashinfer/attention/aiter/batch_prefill.cuh' file not found` rather than
+  `'flashinfer/rocm/attention/aiter/batch_prefill.cuh' file not found` rather than
   anything naming the include path:
   - missing entirely → `-isystem <pkg>/include`, a path that does not exist.
   - copied as an **absolute** symlink into a container mount point

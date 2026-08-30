@@ -17,7 +17,7 @@
 #include <hip/hip_runtime.h>
 
 #include <cmath>
-#include <flashinfer/attention/aiter/batch_decode.cuh>
+#include <flashinfer/rocm/attention/aiter/batch_decode.cuh>
 #include <optional>
 #include <string>
 #include <unordered_map>

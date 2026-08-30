@@ -4,7 +4,7 @@
 // No AITER or CK Tile headers needed here — we work with void* function pointers.
 
 #include <dlfcn.h>
-#include <flashinfer/attention/aiter/aiter_loader.h>
+#include <flashinfer/rocm/attention/aiter/aiter_loader.h>
 
 #include <cstdlib>
 #include <functional>

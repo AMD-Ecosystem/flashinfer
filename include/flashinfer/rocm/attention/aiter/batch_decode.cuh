@@ -9,7 +9,7 @@
 
 #pragma once
 
-#include <flashinfer/attention/aiter/aiter_loader.h>
+#include <flashinfer/rocm/attention/aiter/aiter_loader.h>
 #include <hip/hip_runtime.h>
 
 #include <cstdint>

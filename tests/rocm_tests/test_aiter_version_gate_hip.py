@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The amd-aiter ABI floor.
 
-The vendored structs under include/flashinfer/attention/aiter/ follow the 0.1.16
+The vendored structs under include/flashinfer/rocm/attention/aiter/ follow the 0.1.16
 layout and travel by value through dlsym'd pointers, so an older AITER shifts
 field offsets instead of failing to load. Nothing downstream can detect that,
 which is why the floor is enforced before routing rather than at the call.
@@ -72,7 +72,7 @@ def test_header_records_the_same_floor():
     """The vendored header's stated minimum must track AITER_MIN_VERSION."""
     header = (
         pathlib.Path(__file__).resolve().parents[2]
-        / "include/flashinfer/attention/aiter/mha_fwd_args.h"
+        / "include/flashinfer/rocm/attention/aiter/mha_fwd_args.h"
     )
     text = header.read_text()
     assert f"amd-aiter>={aiter_utils.AITER_MIN_VERSION}" in text

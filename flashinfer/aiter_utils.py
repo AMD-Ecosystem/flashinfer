@@ -50,7 +50,7 @@ def _ensure_aiter_gpu_archs() -> None:
         os.environ["GPU_ARCHS"] = arch
 
 
-# The vendored structs in include/flashinfer/attention/aiter/ follow the 0.1.16
+# The vendored structs in include/flashinfer/rocm/attention/aiter/ follow the 0.1.16
 # layout. They travel by value through dlsym'd pointers, so an older AITER
 # mismatches offsets silently instead of failing to load -- hence a hard floor
 # rather than a warning.

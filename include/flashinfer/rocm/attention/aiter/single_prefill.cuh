@@ -6,8 +6,8 @@
 
 #pragma once
 
-#include <flashinfer/attention/aiter/aiter_loader.h>
-#include <flashinfer/attention/aiter/mha_fwd_args.h>
+#include <flashinfer/rocm/attention/aiter/aiter_loader.h>
+#include <flashinfer/rocm/attention/aiter/mha_fwd_args.h>
 #include <hip/hip_runtime.h>
 
 #include <ck_tile/host/stream_config.hpp>

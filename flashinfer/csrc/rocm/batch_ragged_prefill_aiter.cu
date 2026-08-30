@@ -12,7 +12,7 @@
 #include <hip/hip_runtime.h>
 
 #include <cmath>
-#include <flashinfer/attention/aiter/batch_prefill.cuh>
+#include <flashinfer/rocm/attention/aiter/batch_prefill.cuh>
 #include <flashinfer/rocm/enums.hpp>
 #include <flashinfer/rocm/layout.cuh>
 #include <optional>
