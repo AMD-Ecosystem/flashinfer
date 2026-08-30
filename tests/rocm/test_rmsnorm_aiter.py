@@ -44,7 +44,7 @@ def test_rmsnorm_aiter_vs_ref(dtype, hidden_size, batch_size):
 def test_rmsnorm_auto_backend_is_native(monkeypatch):
     """auto is native for every shape and dtype, including the 2-D fp16 case
     that used to route to AITER: the two are level on speed and native is the
-    more accurate kernel (benchmarks/rocm_benchmarks/bench_norm.py).
+    more accurate kernel (benchmarks/rocm/bench_norm.py).
 
     AITER is forced available so a revert is caught even on a box without the
     wheel, where "native" would otherwise be right for the wrong reason. Both

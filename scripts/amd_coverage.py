@@ -701,7 +701,7 @@ def _report(
     if reach is not None:
         reached, unreached = reach
         total = reached + len(unreached)
-        print("== flashinfer/csrc/rocm reach ==")
+        print("== csrc/rocm reach ==")
         print(
             f"  {reached} of {total} translation units were built and loaded by a test"
         )
@@ -724,9 +724,7 @@ def _report(
         f"  {len(unowned)} upstream files on the measured surface, attributed to no tier"
     )
     print("  tests/ and benchmarks/ are outside the measured surface")
-    print(
-        "  C++/HIP under flashinfer/csrc/rocm/ and include/ has no line coverage (JIT-built)"
-    )
+    print("  C++/HIP under csrc/rocm/ and include/ has no line coverage (JIT-built)")
     print()
 
     # None, not 0.0: with no executable statements outside the import baseline

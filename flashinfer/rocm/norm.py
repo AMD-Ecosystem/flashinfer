@@ -18,7 +18,7 @@ def get_norm_aiter_module():
 
 
 # Both selectors return "native" unconditionally: measured, not assumed. See
-# benchmarks/rocm_benchmarks/bench_norm.py, which is the re-runnable evidence.
+# benchmarks/rocm/bench_norm.py, which is the re-runnable evidence.
 # At every 8-aligned hidden_size -- every width a real model uses -- AITER won
 # 0 of 230 configs on gfx942 and 0 of 226 on gfx950. `backend="aiter"` stays
 # supported and opt-in, as it is for silu_and_mul and rope.

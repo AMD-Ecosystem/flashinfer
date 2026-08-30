@@ -317,7 +317,7 @@ explicit capture-at-max path in
 ### Two tiers
 
 This runner answers "did anything regress" across model-shaped configs. For
-"why is this kernel slow", use [`rocm_profiler`](../rocm_profiler/rocm_profiler.py)
+"why is this kernel slow", use [`rocm_profiler`](../profiler/rocm/rocm_profiler.py)
 and the per-op drivers in [`rocm/`](rocm/), which collect
 `rocprofv3` hardware counters and plot a roofline.
 

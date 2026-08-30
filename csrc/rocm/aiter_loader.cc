@@ -26,7 +26,7 @@ constexpr const char* kAbiPinNote =
     "\n  C++ ABI. If AITER was upgraded, that is the likely cause. Reinstall the pin:"
     "\n    pip install amd-aiter==0.1.10 \\"
     "\n      --extra-index-url https://pypi.amd.com/rocm-7.1.1/simple"
-    "\n  or re-pin the symbols in flashinfer/csrc/rocm/aiter_loader.cc.";
+    "\n  or re-pin the symbols in csrc/rocm/aiter_loader.cc.";
 
 std::string get_jit_dir() {
   if (const char* env = std::getenv("AITER_JIT_DIR")) return env;

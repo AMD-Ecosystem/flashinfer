@@ -7,7 +7,7 @@ description: Guide for benchmarking FlashInfer+ROCm kernels on AMD Instinct (CDN
 
 For a real driver script to copy, see
 [`benchmarks/rocm/bench_fa2_prefill.py`](../../../benchmarks/rocm/bench_fa2_prefill.py) and [`benchmarks/rocm/bench_aiter_prefill.py`](../../../benchmarks/rocm/bench_aiter_prefill.py)
-For the in-repo profiler wrapper, see [`rocm_profiler/rocm_profiler.py`](../../../rocm_profiler/rocm_profiler.py).
+For the in-repo profiler wrapper, see [`profiler/rocm/rocm_profiler.py`](../../../profiler/rocm/rocm_profiler.py).
 
 ## Timing method matrix
 

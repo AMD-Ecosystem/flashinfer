@@ -192,7 +192,7 @@ def test_fused_add_rmsnorm_aiter(batch_size, hidden_size, dtype):
 
 def test_fused_add_rmsnorm_auto_selection(monkeypatch):
     """auto is native even where AITER is fully available -- AITER is 1.6-1.8x
-    slower here (benchmarks/rocm_benchmarks/bench_norm.py).
+    slower here (benchmarks/rocm/bench_norm.py).
 
     AITER is forced available rather than skipped, so a revert is caught even
     on a box without the wheel, where "native" would otherwise be the right

@@ -105,7 +105,7 @@ def test_rocm_env_constants_do_not_come_from_the_cuda_helpers():
         e._get_workspace_dir_name()
 
 
-def test_nvshmem_helpers_stay_absent_on():
+def test_nvshmem_helpers_stay_absent_on_rocm():
     """gen_nvshmem_module() must fail at the env layer, naming a CUDA-only API.
 
     jit/comm.py imports fine on ROCm, so with these defined the failure moves

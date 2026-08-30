@@ -129,11 +129,20 @@ def test_wheel_copy_is_real_and_header_filtered(backend):
         assert names == {"attention.cuh", "utils.h", "traits.hpp"}, names
 
 
-def test_editable_symlink_is_relative(backend):
-    """An absolute link would break under a container bind mount."""
+@pytest.mark.parametrize(
+    "index, target",
+    [(0, "../include"), (1, "../../csrc/rocm")],
+    ids=["include", "csrc"],
+)
+def test_editable_symlink_is_relative(backend, index, target):
+    """An absolute link would break under a container bind mount.
+
+    Both trees, because csrc/rocm sits a level deeper and its target is
+    derived rather than literal.
+    """
     _seed(backend, "absent")
     backend._prepare_for_editable()
-    assert _inc(backend)[1].readlink() == Path("../include")
+    assert backend._trees()[index][1].readlink() == Path(target)
 
 
 def test_find_patterns_exclude_sibling_projects():
