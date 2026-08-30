@@ -132,21 +132,29 @@ literal path fails with `not a directory`.
 
 ### A fresh worktree is source-only
 
-Two gitignored, generated files must be recreated or the JIT will not build:
+Three gitignored, generated paths must be recreated or the JIT will not build:
 
 ```bash
 cd tmp/worktrees/<branch-name>
-rm -rf flashinfer/include                    # -f alone will not clear a real dir
+rm -rf flashinfer/include flashinfer/csrc    # -f alone will not clear a real dir
 ln -s ../include flashinfer/include          # MUST be relative
+mkdir -p flashinfer/csrc && ln -s ../../csrc/rocm flashinfer/csrc/rocm
 cp <main-checkout>/flashinfer/_version.py flashinfer/_version.py   # see below if absent
 ```
 
 Clear the path first. `-f` replaces a dangling or stale *symlink*, but against
 a real directory `ln` silently creates `flashinfer/include/include` **inside**
-it and exits 0 — leaving a broken tree with no error to go on. Deleting
-`flashinfer/include` is safe: it is gitignored and generated, and the real
-headers live in `include/` at the repo root.
+it and exits 0 — leaving a broken tree with no error to go on. Deleting both is
+safe: they are gitignored and generated, and the real sources live in
+`include/` and `csrc/rocm/` at the repo root.
 
+Link `flashinfer/csrc/rocm`, never `flashinfer/csrc` — the latter would expose
+upstream's 850-file CUDA `csrc/` tree inside the package.
+
+- `flashinfer/csrc/rocm` — `get_include_paths.get_csrc_dir()` returns
+  `<pkg>/csrc/rocm`, which becomes `FLASHINFER_CSRC_DIR`. Missing, the JIT
+  fails on a missing `.cu` rather than on the directory, because
+  `jit/core.py` creates it with `exist_ok=True` at import.
 - `flashinfer/include` — `get_include_paths.get_include()` returns
   `<pkg>/include`, and the JIT passes that through `.resolve()` into
   `-isystem`. Both failure modes emit a well-formed flag pointing at a

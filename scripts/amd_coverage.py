@@ -44,7 +44,9 @@ _SURFACE = ("flashinfer", "scripts", "build_backend_rocm.py")
 
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
-_CSRC_DIR = "flashinfer/csrc/rocm"
+# The source tree, not the generated flashinfer/csrc/rocm copy: that one only
+# exists after an install, and this runs against a plain checkout.
+_CSRC_DIR = "csrc/rocm"
 _JIT_REACH_ENV = "FLASHINFER_JIT_REACH_DIR"
 
 _TIER_LABEL = {

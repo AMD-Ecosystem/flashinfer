@@ -728,8 +728,8 @@ class TestDataFileHygiene:
         A cutoff on mtime therefore rejects every genuine run; the stamp is what
         distinguishes "this run" from a previous one left in the same directory.
         """
-        (tmp_path / "flashinfer" / "csrc/rocm").mkdir(parents=True)
-        (tmp_path / "flashinfer" / "csrc/rocm" / "a.cu").write_text("x")
+        (tmp_path / "csrc/rocm").mkdir(parents=True)
+        (tmp_path / "csrc/rocm" / "a.cu").write_text("x")
         data = tmp_path / ".coverage"
         shard = tmp_path / "jit-reach.gw0.json"
         shard.write_text('["a.cu"]', encoding="utf-8")
@@ -753,9 +753,9 @@ class TestDataFileHygiene:
         The plugin writes a shard even with nothing loaded, so an empty shard
         must survive as a real result rather than collapsing to None.
         """
-        (tmp_path / "flashinfer" / "csrc/rocm").mkdir(parents=True)
+        (tmp_path / "csrc/rocm").mkdir(parents=True)
         for name in ("a.cu", "b.cu"):
-            (tmp_path / "flashinfer" / "csrc/rocm" / name).write_text("x")
+            (tmp_path / "csrc/rocm" / name).write_text("x")
         data = tmp_path / ".coverage"
         (tmp_path / "jit-reach.gw0.json").write_text("[]", encoding="utf-8")
         data.write_text("x", encoding="utf-8")

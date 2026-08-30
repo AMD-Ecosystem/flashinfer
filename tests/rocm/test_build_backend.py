@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Postconditions for the in-tree PEP 517 backend's ``flashinfer/include`` handling.
 
-Guards the regressions in ``_restoring_pkg_include``: a wheel or sdist build
+Guards the regressions in ``_restoring_pkg_trees``: a wheel or sdist build
 must never leave a header copy in the checkout, because ``get_include()`` would
 resolve it later and shadow edits under ``include/``.
 
@@ -30,17 +30,24 @@ def _load_backend():
     return module
 
 
+def _inc(bb):
+    """(source, destination) of the include tree — the first entry in _trees()."""
+    src, dst, _suffixes = bb._trees()[0]
+    return src, dst
+
+
 def _seed(bb, state):
-    """Put ``_pkg_include`` into ``state``."""
-    bb._clear(bb._pkg_include)
+    """Put the include tree's destination into ``state``."""
+    src, dst = _inc(bb)
+    bb._clear(dst)
     if state == "symlink":
-        bb._pkg_include.symlink_to(Path("..") / "include", target_is_directory=True)
+        dst.symlink_to(Path("..") / "include", target_is_directory=True)
     elif state == "realdir":
-        shutil.copytree(bb._src_include, bb._pkg_include)
+        shutil.copytree(src, dst)
     elif state == "abslink":
-        bb._pkg_include.symlink_to(bb._src_include, target_is_directory=True)
+        dst.symlink_to(src, target_is_directory=True)
     elif state == "file":
-        bb._pkg_include.write_text("not a directory")
+        dst.write_text("not a directory")
     elif state != "absent":
         raise ValueError(state)
 
@@ -61,9 +68,13 @@ def backend(tmp_path):
     (src / "flashinfer").mkdir(parents=True)
     for name in ("attention.cuh", "utils.h", "traits.hpp", "notes.txt", "gen.jinja"):
         (src / "flashinfer" / name).write_text("// x\n")
-    pkg = tmp_path / "flashinfer"
-    pkg.mkdir()
-    bb._root, bb._src_include, bb._pkg_include = tmp_path, src, pkg / "include"
+    # The csrc tree must exist too: _prepare_for_wheel materializes both, and a
+    # missing source raises before the include assertions are ever reached.
+    csrc = tmp_path / "csrc" / "rocm"
+    csrc.mkdir(parents=True)
+    (csrc / "op.cu").write_text("// x\n")
+    (tmp_path / "flashinfer").mkdir()
+    bb._root = tmp_path
     return bb
 
 
@@ -81,9 +92,9 @@ def backend(tmp_path):
 def test_restore_leaves_symlink_or_nothing(backend, prepare, state, expected):
     """A symlink survives a build; every other prior state is cleared, not left stale."""
     _seed(backend, state)
-    with backend._restoring_pkg_include():
+    with backend._restoring_pkg_trees():
         getattr(backend, prepare)()
-    assert _describe(backend._pkg_include) == expected
+    assert _describe(_inc(backend)[1]) == expected
 
 
 @pytest.mark.parametrize("state", ["symlink", "abslink", "realdir", "absent"])
@@ -92,27 +103,27 @@ def test_restore_runs_when_the_build_raises(backend, state):
     _seed(backend, state)
     with (
         pytest.raises(RuntimeError, match="build failed"),
-        backend._restoring_pkg_include(),
+        backend._restoring_pkg_trees(),
     ):
         backend._prepare_for_wheel()
         raise RuntimeError("build failed")
-    assert _describe(backend._pkg_include) == expected
+    assert _describe(_inc(backend)[1]) == expected
 
 
 def test_restore_survives_a_vanished_source_tree(backend):
     """The finally must not raise: that would mask whatever failed the build."""
     _seed(backend, "symlink")
-    with backend._restoring_pkg_include():
-        shutil.rmtree(backend._src_include)
-    assert _describe(backend._pkg_include) == "symlink:../include"
+    with backend._restoring_pkg_trees():
+        shutil.rmtree(_inc(backend)[0])
+    assert _describe(_inc(backend)[1]) == "symlink:../include"
 
 
 def test_wheel_copy_is_real_and_header_filtered(backend):
     """Inside the build the copy must be real (symlinks are not followed into a wheel)."""
     _seed(backend, "symlink")
-    with backend._restoring_pkg_include():
+    with backend._restoring_pkg_trees():
         backend._prepare_for_wheel()
-        pkg = backend._pkg_include
+        pkg = _inc(backend)[1]
         assert not pkg.is_symlink() and pkg.is_dir()
         names = {p.name for p in pkg.rglob("*") if p.is_file()}
         assert names == {"attention.cuh", "utils.h", "traits.hpp"}, names
@@ -122,7 +133,7 @@ def test_editable_symlink_is_relative(backend):
     """An absolute link would break under a container bind mount."""
     _seed(backend, "absent")
     backend._prepare_for_editable()
-    assert backend._pkg_include.readlink() == Path("../include")
+    assert _inc(backend)[1].readlink() == Path("../include")
 
 
 def test_find_patterns_exclude_sibling_projects():
@@ -159,11 +170,13 @@ def _isolated_project(dest):
     ):
         shutil.copy2(_REPO_ROOT / name, dest / name)
     shutil.copytree(_REPO_ROOT / "include", dest / "include")
+    # Both source trees, or the inventory assertions below compare 0 to 0.
+    shutil.copytree(_REPO_ROOT / "csrc" / "rocm", dest / "csrc" / "rocm")
     shutil.copytree(
         _REPO_ROOT / "flashinfer",
         dest / "flashinfer",
         symlinks=True,
-        ignore=shutil.ignore_patterns("__pycache__", "include"),
+        ignore=shutil.ignore_patterns("__pycache__", "include", "csrc"),
     )
     # The sibling project roots must be present or the packages.find assertion
     # below is vacuous — an unanchored glob is exactly what swept them in.
@@ -178,8 +191,9 @@ def _isolated_project(dest):
 def test_wheel_carries_the_paths_the_jit_resolves(tmp_path, monkeypatch):
     """Assert on the artifact: the helpers above do not prove what setuptools ships.
 
-    csrc/rocm reaches the wheel through both package-data and MANIFEST.in, so
-    the counts here catch losing it, not which of the two carried it.
+    csrc/rocm lives at the repo root and reaches the wheel only because
+    build_backend_rocm.py materializes it into flashinfer/csrc/rocm, so this
+    also covers that step.
     """
     build = pytest.importorskip("build")
     project = _isolated_project(tmp_path / "src")
@@ -202,9 +216,10 @@ def test_wheel_carries_the_paths_the_jit_resolves(tmp_path, monkeypatch):
         if f.suffix in {".cuh", ".h", ".hpp"}
     )
     csrc = {f for f in names if f.startswith("flashinfer/csrc/rocm/")}
+    assert csrc, "csrc/rocm did not reach the wheel at all"
     assert len(csrc) == sum(
         1
-        for f in (_REPO_ROOT / "flashinfer" / "csrc/rocm").rglob("*")
+        for f in (_REPO_ROOT / "csrc" / "rocm").rglob("*")
         if f.suffix in {".cu", ".cc", ".h", ".jinja"}
     )
     # The sibling projects leaked in once via an unanchored packages.find glob.
@@ -234,10 +249,13 @@ def hooks(backend, monkeypatch):
     return backend, recorder
 
 
-def test_missing_source_tree_is_named(backend):
-    shutil.rmtree(backend._src_include)
-    with pytest.raises(RuntimeError, match="missing source header tree"):
-        backend._materialize_include(use_symlink=True)
+@pytest.mark.parametrize("index", [0, 1], ids=["include", "csrc"])
+def test_missing_source_tree_is_named(backend, index):
+    """Either missing source must name itself, not fail later as a missing file."""
+    src = backend._trees()[index][0]
+    shutil.rmtree(src)
+    with pytest.raises(RuntimeError, match=f"missing source tree: {src}"):
+        backend._prepare_for_editable()
 
 
 @pytest.mark.parametrize(
@@ -256,7 +274,7 @@ def test_passthrough_hooks_delegate_unchanged(hooks, hook, args, delegated):
     assert getattr(backend, hook)(*args) == f"{hook}-result"
 
     assert recorder.calls == [(hook, delegated)]
-    assert not backend._pkg_include.exists()
+    assert not _inc(backend)[1].exists()
 
 
 def test_editable_metadata_materializes_a_symlink_first(hooks):
@@ -266,7 +284,7 @@ def test_editable_metadata_materializes_a_symlink_first(hooks):
 
     assert result == "prepare_metadata_for_build_editable-result"
     assert recorder.calls == [("prepare_metadata_for_build_editable", ("md", None))]
-    assert _describe(backend._pkg_include) == "symlink:../include"
+    assert _describe(_inc(backend)[1]) == "symlink:../include"
 
 
 def test_build_editable_materializes_a_symlink_and_leaves_it(hooks):
@@ -275,21 +293,21 @@ def test_build_editable_materializes_a_symlink_and_leaves_it(hooks):
     assert backend.build_editable("wd") == "build_editable-result"
 
     assert recorder.calls == [("build_editable", ("wd", None, None))]
-    assert _describe(backend._pkg_include) == "symlink:../include"
+    assert _describe(_inc(backend)[1]) == "symlink:../include"
 
 
 def test_build_wheel_sees_a_real_copy_and_leaves_nothing(hooks):
     backend, recorder = hooks
     seen = {}
     backend._orig.build_wheel = lambda *a: seen.setdefault(
-        "state", _describe(backend._pkg_include)
+        "state", _describe(_inc(backend)[1])
     )
 
     backend.build_wheel("wd")
 
     # Real directory during the build; gone once the context manager unwinds.
     assert seen["state"] == "realdir"
-    assert _describe(backend._pkg_include) == "absent"
+    assert _describe(_inc(backend)[1]) == "absent"
 
 
 def test_build_sdist_sees_no_copy_and_leaves_nothing(hooks):
@@ -297,10 +315,10 @@ def test_build_sdist_sees_no_copy_and_leaves_nothing(hooks):
     _seed(backend, "realdir")
     seen = {}
     backend._orig.build_sdist = lambda *a: seen.setdefault(
-        "state", _describe(backend._pkg_include)
+        "state", _describe(_inc(backend)[1])
     )
 
     backend.build_sdist("sd")
 
     assert seen["state"] == "absent"
-    assert _describe(backend._pkg_include) == "absent"
+    assert _describe(_inc(backend)[1]) == "absent"

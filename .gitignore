@@ -12,6 +12,7 @@ docs/generated/
 flashinfer/_build_meta.py
 flashinfer/data/
 flashinfer/include
+flashinfer/csrc/
 flashinfer/_version.py
 flashinfer/__config__.py
 flashinfer/jit/aot_config.py
