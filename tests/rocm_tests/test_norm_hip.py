@@ -282,7 +282,7 @@ class TestAiterFusedAddArgChecks:
 
     def test_strided_weight_is_rejected(self, base):
         """The shim's reshape({1, -1}) keeps the stride rather than packing, so
-        CK read a strided weight as contiguous: 9.6 abs error, silently."""
+        CK would read a strided weight as contiguous: 9.6 abs error, silently."""
         x, residual, _ = base
         w = torch.randn(256, dtype=torch.float16, device="cuda")[::2]
         with pytest.raises(ValueError, match="contiguous weight"):
