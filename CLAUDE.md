@@ -104,7 +104,7 @@ JIT generator (the HIP path injects `-O3` before `extra_cuda_cflags`, so trailin
 
 **Framework separation**: Torch headers **must not** be included in `include/`
 files. `include/` is framework-agnostic (raw pointers only);
-`flashinfer/csrc/rocm/` is where PyTorch tensor handling lives. Violations
+`csrc/rocm/` is where PyTorch tensor handling lives. Violations
 cause subtle build failures.
 
 **Test parallelism**: `pytest -n auto` automatically halves the physical GPU
