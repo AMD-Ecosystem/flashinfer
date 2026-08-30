@@ -288,8 +288,15 @@ def main() -> None:
         print(f"# {k}: {v}")
 
     # --accuracy is AITER-only, so it needs the same guard as the A/B sweep.
-    if not args.aa and not is_aiter_available(torch.device("cuda:0"), "rmsnorm"):
-        raise SystemExit("AITER unavailable; nothing to compare. Use --aa.")
+    # Capability is per-op, so ask about the ops actually selected.
+    caps = {"fused_add_rmsnorm": "fused_add_rmsnorm"}
+    dev = torch.device("cuda:0")
+    if not args.aa and not any(
+        is_aiter_available(dev, caps.get(op, "rmsnorm")) for op in args.ops
+    ):
+        raise SystemExit(
+            f"AITER unavailable for {args.ops}; nothing to compare. Use --aa."
+        )
 
     if args.accuracy:
         _accuracy(args.ops)

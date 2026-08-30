@@ -106,10 +106,10 @@ def _check_aiter_fused_add_args(
             f"AITER fused_add_rmsnorm requires residual.shape == input.shape; got "
             f"residual {tuple(residual.shape)} vs input {tuple(input.shape)}."
         )
-    if weight.numel() != input.size(-1):
+    if weight.ndim != 1 or weight.numel() != input.size(-1):
         raise ValueError(
-            f"AITER fused_add_rmsnorm requires weight of length {input.size(-1)}; "
-            f"got {weight.numel()}."
+            f"AITER fused_add_rmsnorm requires a 1-D weight of length "
+            f"{input.size(-1)}; got shape {tuple(weight.shape)}."
         )
     if residual.device != input.device or weight.device != input.device:
         raise ValueError(

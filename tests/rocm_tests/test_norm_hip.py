@@ -262,7 +262,15 @@ class TestAiterFusedAddArgChecks:
     def test_wrong_weight_length_is_rejected(self, base):
         x, residual, _ = base
         w = torch.randn(64, dtype=torch.float16, device="cuda")
-        with pytest.raises(ValueError, match="weight of length 128"):
+        with pytest.raises(ValueError, match="1-D weight of length 128"):
+            flashinfer.fused_add_rmsnorm(x, residual, w, backend="aiter")
+
+    def test_non_1d_weight_is_rejected(self, base):
+        """Native raises "weight must be a 1D tensor"; AITER accepted a (1, n)
+        weight of the right numel, so the two backends disagreed on validity."""
+        x, residual, _ = base
+        w = torch.randn(1, 128, dtype=torch.float16, device="cuda")
+        with pytest.raises(ValueError, match="1-D weight of length 128"):
             flashinfer.fused_add_rmsnorm(x, residual, w, backend="aiter")
 
     def test_non_contiguous_last_dim_is_rejected(self, base):
