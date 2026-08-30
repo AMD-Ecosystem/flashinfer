@@ -22,10 +22,10 @@ namespace {
 // Appended to failures on the paths that resolve the pinned mangled symbols
 // below. Keep the version in step with _AITER_LAST_VALIDATED in prefill_rocm.py.
 constexpr const char* kAbiPinNote =
-    "\n  These symbols and .so names are pinned to amd-aiter 0.1.10, which has no stable"
+    "\n  These symbols and .so names are pinned to amd-aiter 0.1.20, which has no stable"
     "\n  C++ ABI. If AITER was upgraded, that is the likely cause. Reinstall the pin:"
-    "\n    pip install amd-aiter==0.1.10 \\"
-    "\n      --extra-index-url https://pypi.amd.com/rocm-7.1.1/simple"
+    "\n    pip install amd-aiter==0.1.20+rocm10.1.0a20260819.3135022 \\"
+    "\n      --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/"
     "\n  or re-pin the symbols in csrc/rocm/aiter_loader.cc.";
 
 std::string get_jit_dir() {

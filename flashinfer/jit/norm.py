@@ -36,7 +36,9 @@ def gen_norm_module() -> JitSpec:
 def gen_norm_aiter_module() -> JitSpec:
     from .aiter_source import aiter_jitspec_flags, refresh_aiter_jitspec
 
-    extra_include_paths, extra_ldflags = aiter_jitspec_flags("module_rmsnorm")
+    # aiter::rmsnorm / aiter::add_rmsnorm live in module_rmsnorm_quant; the
+    # module_rmsnorm "opus" sources export neither.
+    extra_include_paths, extra_ldflags = aiter_jitspec_flags("module_rmsnorm_quant")
     return refresh_aiter_jitspec(
         gen_jit_spec(
             "norm_aiter",
