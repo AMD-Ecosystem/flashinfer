@@ -280,6 +280,14 @@ class TestAiterFusedAddArgChecks:
         with pytest.raises(ValueError, match="contiguous last dimension"):
             flashinfer.fused_add_rmsnorm(x, torch.randn_like(x), w, backend="aiter")
 
+    def test_strided_weight_is_rejected(self, base):
+        """The shim's reshape({1, -1}) keeps the stride rather than packing, so
+        CK read a strided weight as contiguous: 9.6 abs error, silently."""
+        x, residual, _ = base
+        w = torch.randn(256, dtype=torch.float16, device="cuda")[::2]
+        with pytest.raises(ValueError, match="contiguous weight"):
+            flashinfer.fused_add_rmsnorm(x, residual, w, backend="aiter")
+
 
 # The default path end to end through the public API. Not a routing guard --
 # AITER also passes the native tolerance at these shapes, so this stays green

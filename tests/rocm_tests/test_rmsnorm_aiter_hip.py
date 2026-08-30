@@ -92,6 +92,18 @@ def test_rmsnorm_aiter_rejects_weight_dtype_mismatch():
 
 
 @requires_aiter
+def test_rmsnorm_aiter_rejects_strided_weight():
+    """The shim's reshape({1, -1}) keeps the stride rather than packing, so CK
+    read a strided weight as contiguous: 7.1 abs error, silently. Native
+    rejects it, so this keeps the two backends on one contract."""
+    device = torch.device("cuda:0")
+    x = torch.randn(8, 128, dtype=torch.float16, device=device)
+    w = torch.randn(256, dtype=torch.float16, device=device)[::2]
+    with pytest.raises(ValueError, match="contiguous weight"):
+        flashinfer.rmsnorm(x, w, backend="aiter")
+
+
+@requires_aiter
 def test_rmsnorm_aiter_with_out_tensor():
     """backend='aiter' respects the out= argument."""
     device = torch.device("cuda:0")

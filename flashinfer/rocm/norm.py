@@ -69,6 +69,13 @@ def maybe_rmsnorm(
                 f"AITER rmsnorm requires weight.dtype == input.dtype; got "
                 f"weight {weight.dtype} vs input {input.dtype}."
             )
+        if weight.stride(-1) != 1:
+            # reshape({1, -1}) in the shim keeps the stride, so CK would read a
+            # strided weight as if it were packed.
+            raise ValueError(
+                f"AITER rmsnorm requires a contiguous weight; got stride "
+                f"{weight.stride()}."
+            )
         if out is None:
             out = torch.empty_like(input)
         get_norm_aiter_module().rmsnorm_aiter(out, input, weight, eps)
@@ -120,6 +127,13 @@ def _check_aiter_fused_add_args(
         raise ValueError(
             "AITER fused_add_rmsnorm requires a contiguous last dimension on "
             "input and residual."
+        )
+    if weight.stride(-1) != 1:
+        # reshape({1, -1}) in the shim keeps the stride, so CK would read a
+        # strided weight as if it were packed.
+        raise ValueError(
+            "AITER fused_add_rmsnorm requires a contiguous weight; got stride "
+            f"{weight.stride()}."
         )
 
 

@@ -33,9 +33,9 @@ void fused_add_rmsnorm_aiter(at::Tensor input, at::Tensor residual, at::Tensor w
   // The copy-back below is an autograd-visible in-place op, unlike the native
   // kernel's raw pointer writes; without this a leaf input would start raising.
   const c10::AutoGradMode no_grad(false);
-  // CK expects weight as [1, n]; FlashInfer passes [n]. reshape (not view) so a
-  // non-contiguous weight is handled rather than throwing — weight is read-only,
-  // so the copy is harmless.
+  // CK expects weight as [1, n]; FlashInfer passes [n]. This does NOT fix a
+  // strided weight -- reshape returns a view and keeps the stride -- so the
+  // Python layer rejects that before we get here.
   at::Tensor weight2d = weight.reshape({1, -1});
   // Aliasing either output onto its input corrupts results silently: CK packs
   // several rows per block for small n, so a write lands on a row still unread.
