@@ -4,7 +4,7 @@
 
 #ifdef FLASHINFER_FRAG_LAYOUT_SWIZZLE_CUH_
 #error \
-    "include/flashinfer/frag_layout_swizzle.cuh and include/flashinfer/rocm/attention/frag_layout_swizzle.cuh both define FLASHINFER_FRAG_LAYOUT_SWIZZLE_CUH_; include only one"
+    "include/flashinfer/frag_layout_swizzle.cuh and include/flashinfer/rocm/attention/frag_layout_swizzle.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_FRAG_LAYOUT_SWIZZLE_CUH_

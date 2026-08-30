@@ -5,7 +5,7 @@
 #pragma once
 #ifdef FLASHINFER_UTILS_CUH_
 #error \
-    "include/flashinfer/utils.cuh and include/flashinfer/rocm/utils.cuh both define FLASHINFER_UTILS_CUH_; include only one"
+    "include/flashinfer/utils.cuh and include/flashinfer/rocm/utils.cuh define the same symbols; include only one"
 #endif
 
 #include <cstdint>

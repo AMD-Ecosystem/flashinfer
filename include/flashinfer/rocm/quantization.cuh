@@ -19,7 +19,7 @@
  */
 #ifdef FLASHINFER_QUANTIZATION_CUH_
 #error \
-    "include/flashinfer/quantization.cuh and include/flashinfer/rocm/quantization.cuh both define FLASHINFER_QUANTIZATION_CUH_; include only one"
+    "include/flashinfer/quantization.cuh and include/flashinfer/rocm/quantization.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_QUANTIZATION_CUH_

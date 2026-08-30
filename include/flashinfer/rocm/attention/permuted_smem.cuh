@@ -4,7 +4,7 @@
 
 #ifdef FLASHINFER_PERMUTED_SMEM_CUH_
 #error \
-    "include/flashinfer/permuted_smem.cuh and include/flashinfer/rocm/attention/permuted_smem.cuh both define FLASHINFER_PERMUTED_SMEM_CUH_; include only one"
+    "include/flashinfer/permuted_smem.cuh and include/flashinfer/rocm/attention/permuted_smem.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_PERMUTED_SMEM_CUH_
@@ -244,7 +244,7 @@ struct smem_t {
   template <typename T = uint32_t>
   __device__ __forceinline__ void load_matrix_m16n16_trans(uint32_t offset, T* frag) {
     load_fragment(offset, frag);
-    mma_hip::transpose_mma_tile(frag);
+    mma::transpose_mma_tile(frag);
   }
 #endif
 

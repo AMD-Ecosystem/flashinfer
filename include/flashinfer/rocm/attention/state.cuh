@@ -4,7 +4,7 @@
 
 #ifdef FLASHINFER_STATE_CUH_
 #error \
-    "include/flashinfer/attention/state.cuh and include/flashinfer/rocm/attention/state.cuh both define FLASHINFER_STATE_CUH_; include only one"
+    "include/flashinfer/attention/state.cuh and include/flashinfer/rocm/attention/state.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_STATE_CUH_

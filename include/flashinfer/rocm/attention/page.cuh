@@ -5,7 +5,7 @@
 #pragma once
 #ifdef FLASHINFER_PAGE_CUH_
 #error \
-    "include/flashinfer/page.cuh and include/flashinfer/rocm/attention/page.cuh both define FLASHINFER_PAGE_CUH_; include only one"
+    "include/flashinfer/page.cuh and include/flashinfer/rocm/attention/page.cuh define the same symbols; include only one"
 #endif
 
 #include <vector>

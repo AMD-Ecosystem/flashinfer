@@ -183,11 +183,14 @@ shared header.
 
 Symbols live in `flashinfer::`, grouped by what they do — `flashinfer::math`
 matches upstream's name, `flashinfer::memory` is ours (upstream calls the same
-area `cp_async`). Where a fork header and its upstream namesake can coexist
-they keep the same name and the fork header carries an `#error` tripwire on
-upstream's include guard; `flashinfer::mma_hip` is renamed instead, because
-three of its signatures match upstream's `flashinfer::mma` exactly and the two
-are meant to be usable together.
+area `cp_async`). A fork header keeps its upstream namesake's symbol names and
+carries an `#error` tripwire on upstream's include guard, so pulling both into
+one translation unit is a compile error rather than a silent shadow.
+
+The tripwire fires only when the upstream header is included **first**. The
+reverse order is caught by the compiler as a redefinition instead. Do not try
+to close that gap by defining upstream's guard here: that suppresses upstream's
+body entirely and reintroduces the silent shadow the tripwire exists to stop.
 
 # Additive-Only: the rule that keeps upstream syncs cheap
 

@@ -5,7 +5,7 @@
 #pragma once
 #ifdef FLASHINFER_MATH_CUH_
 #error \
-    "include/flashinfer/math.cuh and include/flashinfer/rocm/math_hip.h both define FLASHINFER_MATH_CUH_; include only one"
+    "include/flashinfer/math.cuh and include/flashinfer/rocm/math_hip.h define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_MATH_HIP_H_

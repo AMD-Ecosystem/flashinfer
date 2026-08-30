@@ -4,7 +4,7 @@
 
 #ifdef FLASHINFER_ATTENTION_SCHEDULER_CUH_
 #error \
-    "include/flashinfer/attention/scheduler.cuh and include/flashinfer/rocm/attention/scheduler.cuh both define FLASHINFER_ATTENTION_SCHEDULER_CUH_; include only one"
+    "include/flashinfer/attention/scheduler.cuh and include/flashinfer/rocm/attention/scheduler.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_SCHEDULER_CUH_

@@ -4,7 +4,7 @@
 
 #ifdef FLASHINFER_LAYOUT_CUH_
 #error \
-    "include/flashinfer/layout.cuh and include/flashinfer/rocm/layout.cuh both define FLASHINFER_LAYOUT_CUH_; include only one"
+    "include/flashinfer/layout.cuh and include/flashinfer/rocm/layout.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_LAYOUT_CUH_

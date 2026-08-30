@@ -5,7 +5,7 @@
 #pragma once
 #ifdef FLASHINFER_PREFILL_CUH_
 #error \
-    "include/flashinfer/attention/prefill.cuh and include/flashinfer/rocm/attention/prefill.cuh both define FLASHINFER_PREFILL_CUH_; include only one"
+    "include/flashinfer/attention/prefill.cuh and include/flashinfer/rocm/attention/prefill.cuh define the same symbols; include only one"
 #endif
 
 #include "flashinfer/rocm/cooperative_groups.h"
@@ -34,7 +34,7 @@ namespace flashinfer {
 DEFINE_HAS_MEMBER(maybe_q_rope_offset)
 DEFINE_HAS_MEMBER(maybe_k_rope_offset)
 
-using mma_hip::MMAMode;
+using mma::MMAMode;
 
 constexpr uint32_t WARP_SIZE = kWarpSize;
 
@@ -766,10 +766,10 @@ __device__ __forceinline__ void compute_qk(
       for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
         if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum, float>) {
           if (mma_d == 0) {
-            mma_hip::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ, MMAMode::kInit>(
+            mma::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ, MMAMode::kInit>(
                 s_frag[mma_q][mma_kv], a_frag[mma_q], b_frag);
           } else {
-            mma_hip::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ>(
+            mma::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ>(
                 s_frag[mma_q][mma_kv], a_frag[mma_q], b_frag);
           }
         } else if (std::is_same_v<typename KTraits::DTypeQKAccum, half>) {
@@ -981,7 +981,7 @@ __device__ __forceinline__ void compute_sfm_v(
   for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
 #pragma unroll
     for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
-      mma_hip::transpose_mma_tile(reinterpret_cast<uint32_t*>(s_frag_f16[mma_q][mma_kv]));
+      mma::transpose_mma_tile(reinterpret_cast<uint32_t*>(s_frag_f16[mma_q][mma_kv]));
     }
   }
 
@@ -991,7 +991,7 @@ __device__ __forceinline__ void compute_sfm_v(
 #pragma unroll
       for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
         if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum, float>) {
-          mma_hip::m16k16_rowsum_f16f16f32(d[mma_q], s_frag_f16[mma_q][mma_kv]);
+          mma::m16k16_rowsum_f16f16f32(d[mma_q], s_frag_f16[mma_q][mma_kv]);
         } else {
           static_assert(!std::is_same_v<typename KTraits::DTypeQKAccum, __half>,
                         "FP16 reduction path not implemented for CDNA3");
@@ -1017,10 +1017,10 @@ __device__ __forceinline__ void compute_sfm_v(
 #pragma unroll
       for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
         if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum, float>) {
-          mma_hip::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ>(
+          mma::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ>(
               o_frag[mma_q][mma_d], (uint32_t*)s_frag_f16[mma_q][mma_kv], b_frag);
         } else {
-          mma_hip::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ>(
+          mma::mma_sync_m16n16k16_row_col_f16f16f32<typename KTraits::DTypeQ>(
               o_frag[mma_q][mma_d], (uint32_t*)s_frag[mma_q][mma_kv], b_frag);
         }
       }

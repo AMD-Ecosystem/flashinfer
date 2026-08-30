@@ -5,7 +5,7 @@
 #pragma once
 #ifdef FLASHINFER_BATCH_POD_CUH_
 #error \
-    "include/flashinfer/attention/batch_pod.cuh and include/flashinfer/rocm/attention/batch_pod.cuh both define FLASHINFER_BATCH_POD_CUH_; include only one"
+    "include/flashinfer/attention/batch_pod.cuh and include/flashinfer/rocm/attention/batch_pod.cuh define the same symbols; include only one"
 #endif
 
 #include "cascade.cuh"

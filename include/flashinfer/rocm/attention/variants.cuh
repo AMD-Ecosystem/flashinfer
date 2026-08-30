@@ -4,7 +4,7 @@
 
 #ifdef FLASHINFER_ATTENTION_VARIANTS_CUH_
 #error \
-    "include/flashinfer/attention/variants.cuh and include/flashinfer/rocm/attention/variants.cuh both define FLASHINFER_ATTENTION_VARIANTS_CUH_; include only one"
+    "include/flashinfer/attention/variants.cuh and include/flashinfer/rocm/attention/variants.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_VARIANTS_CUH_

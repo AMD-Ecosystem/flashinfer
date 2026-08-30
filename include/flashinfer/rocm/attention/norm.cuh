@@ -5,7 +5,7 @@
 #pragma once
 #ifdef FLASHINFER_NORM_CUH_
 #error \
-    "include/flashinfer/norm.cuh and include/flashinfer/rocm/attention/norm.cuh both define FLASHINFER_NORM_CUH_; include only one"
+    "include/flashinfer/norm.cuh and include/flashinfer/rocm/attention/norm.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_NORM_CUH_

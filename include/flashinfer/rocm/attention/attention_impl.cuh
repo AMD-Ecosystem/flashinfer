@@ -5,7 +5,7 @@
 #pragma once
 #ifdef FLASHINFER_ATTENTION_IMPL_CUH_
 #error \
-    "include/flashinfer/attention_impl.cuh and include/flashinfer/rocm/attention/attention_impl.cuh both define FLASHINFER_ATTENTION_IMPL_CUH_; include only one"
+    "include/flashinfer/attention_impl.cuh and include/flashinfer/rocm/attention/attention_impl.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_ATTENTION_IMPL_CUH_

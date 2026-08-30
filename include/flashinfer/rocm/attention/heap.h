@@ -4,7 +4,7 @@
 
 #ifdef FLASHINFER_ATTENTION_HEAP_H
 #error \
-    "include/flashinfer/attention/heap.h and include/flashinfer/rocm/attention/heap.h both define FLASHINFER_ATTENTION_HEAP_H; include only one"
+    "include/flashinfer/attention/heap.h and include/flashinfer/rocm/attention/heap.h define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_HEAP_H_
