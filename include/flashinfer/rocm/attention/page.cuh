@@ -16,7 +16,7 @@
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
 #include "flashinfer/rocm/layout.cuh"
 #include "flashinfer/rocm/utils.cuh"
-#include "flashinfer/rocm/vec_dtypes_hip.h"
+#include "flashinfer/rocm/vec_dtypes.h"
 
 namespace flashinfer {
 /*!

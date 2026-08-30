@@ -13,8 +13,8 @@
 #include <cstdint>
 #include <type_traits>
 
-#include "flashinfer/rocm/math_hip.h"
-#include "flashinfer/rocm/memory_ops_hip.h"
+#include "flashinfer/rocm/math.h"
+#include "flashinfer/rocm/memory_ops.h"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"
 #include "variant_helper.cuh"

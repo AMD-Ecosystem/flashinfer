@@ -4,7 +4,7 @@
 #pragma once
 #ifdef FLASHINFER_MMA_CUH_
 #error \
-    "include/flashinfer/mma.cuh and include/flashinfer/rocm/mma_hip.h define the same symbols; include only one"
+    "include/flashinfer/mma.cuh and include/flashinfer/rocm/mma.h define the same symbols; include only one"
 #endif
 
 #include <type_traits>

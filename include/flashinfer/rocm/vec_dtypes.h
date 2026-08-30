@@ -5,7 +5,7 @@
 #pragma once
 #ifdef VEC_DTYPES_CUH_
 #error \
-    "include/flashinfer/vec_dtypes.cuh and include/flashinfer/rocm/vec_dtypes_hip.h define the same symbols; include only one"
+    "include/flashinfer/vec_dtypes.cuh and include/flashinfer/rocm/vec_dtypes.h define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_VEC_DTYPES_HIP_H_

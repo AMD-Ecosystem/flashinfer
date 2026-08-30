@@ -172,11 +172,11 @@ reduce merge conflicts. New HIP-specific op bindings go in
 `flashinfer/csrc/rocm/`, with a `_hip` or `_aiter` suffix when the file
 routes to a HIP-specific code path or to AITER.
 
-**HIP intrinsics.** `include/flashinfer/rocm/*_hip.h` wrap the HIP intrinsics
-(`math_hip.h`, `mma_hip.h`, `memory_ops_hip.h`, `vec_dtypes_hip.h`). These once
+**HIP intrinsics.** `math.h`, `mma.h`, `memory_ops.h` and `vec_dtypes.h` under
+`include/flashinfer/rocm/` wrap the HIP intrinsics. These once
 sat behind a `gpu_iface` abstraction spanning CUDA too; that half is gone, so a
 non-HIP compiler now gets an `#error` from `macros.hpp`. Put a new intrinsic in
-the matching `_hip.h` if it is a general primitive. A kernel that needs
+the matching header if it is a general primitive. A kernel that needs
 `hipcub` or one inline-asm builtin inline is fine — several under
 `rocm/attention/` do — but anything a second kernel would want belongs in the
 shared header.
@@ -204,8 +204,9 @@ conflicts as add/add, with no common ancestor to help resolve it, which is how
 conflict list. For anything upstream might plausibly create, prefer a
 `rocm/` subdirectory over a sibling file: `flashinfer/csrc/rocm/` and
 `include/flashinfer/rocm/` collide with nothing even as upstream grows those
-trees. A `_rocm`/`_aiter` suffix is the fallback where a subdirectory does not
-fit, as with the `_hip.h` intrinsic headers.
+trees. A `_rocm`/`_aiter` suffix is the fallback only where a subdirectory does
+not fit — inside a `rocm/` directory the suffix is redundant, so files there
+carry the upstream name.
 
 **So: add files, don't edit them.** Concretely, prefer in this order:
 
@@ -234,7 +235,7 @@ in-place edit under `csrc/` or `include/` never appears there at all.
 **Forked headers are exempt from conflicts and therefore from warnings.**
 Much of `include/flashinfer/rocm/` is a fork of an upstream header — the
 `rocm/attention/` set, plus `sampling.cuh`, `quantization.cuh`, `layout.cuh`,
-`fastdiv.cuh` and `exception.h`. The `_hip.h` intrinsics and their types headers have
+`fastdiv.cuh` and `exception.h`. The HIP intrinsic headers and their types headers have
 no upstream counterpart, and `utils.cuh` shares a basename without forking
 anything, so `upstream_canary.py` excludes it by exact path. Their upstream
 originals are byte-identical to the merge base and will merge cleanly forever,
@@ -259,8 +260,8 @@ state; what matters is that your change does not lengthen the list.
 # Adding a Kernel
 
 1. **Kernel implementation** — framework-agnostic header(s) in
-   `include/flashinfer/rocm/`, using the `_hip.h` headers for any HIP-specific
-   intrinsic.
+   `include/flashinfer/rocm/`, using the intrinsic headers there for any
+   HIP-specific intrinsic.
 2. **PyTorch binding** — register the op in `flashinfer/csrc/rocm/`.
    The only layer that may include Torch headers.
 3. **JIT generator** — add the op's JIT spec in `flashinfer/jit/*.py`.

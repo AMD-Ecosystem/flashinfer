@@ -10,9 +10,9 @@
 
 #include "flashinfer/rocm/cooperative_groups.h"
 #include "flashinfer/rocm/fastdiv.cuh"
-#include "flashinfer/rocm/math_hip.h"
-#include "flashinfer/rocm/memory_ops_hip.h"
-#include "flashinfer/rocm/mma_hip.h"
+#include "flashinfer/rocm/math.h"
+#include "flashinfer/rocm/memory_ops.h"
+#include "flashinfer/rocm/mma.h"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"
 

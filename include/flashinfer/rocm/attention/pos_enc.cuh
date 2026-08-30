@@ -21,10 +21,10 @@
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
 #include "flashinfer/rocm/layout.cuh"
 #include "flashinfer/rocm/macros.hpp"
-#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/math.h"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"
-#include "flashinfer/rocm/vec_dtypes_hip.h"
+#include "flashinfer/rocm/vec_dtypes.h"
 #include "page.cuh"
 
 namespace flashinfer {

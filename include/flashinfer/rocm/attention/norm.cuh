@@ -15,10 +15,10 @@
 
 #include "flashinfer/rocm/dispatch.cuh"
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
-#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/math.h"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"
-#include "flashinfer/rocm/vec_dtypes_hip.h"
+#include "flashinfer/rocm/vec_dtypes.h"
 namespace flashinfer {
 
 namespace norm {

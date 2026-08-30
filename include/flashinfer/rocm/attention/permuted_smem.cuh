@@ -10,8 +10,8 @@
 #ifndef FLASHINFER_ROCM_ATTENTION_PERMUTED_SMEM_CUH_
 #define FLASHINFER_ROCM_ATTENTION_PERMUTED_SMEM_CUH_
 
-#include "flashinfer/rocm/memory_ops_hip.h"
-#include "flashinfer/rocm/mma_hip.h"
+#include "flashinfer/rocm/memory_ops.h"
+#include "flashinfer/rocm/mma.h"
 #include "flashinfer/rocm/platform.hpp"
 
 namespace gpu_mem = flashinfer::memory;

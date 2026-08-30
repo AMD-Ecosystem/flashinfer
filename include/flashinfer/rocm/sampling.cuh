@@ -38,8 +38,8 @@
 #include <hipcub/hipcub.hpp>
 namespace cub = hipcub;
 
-#include <flashinfer/rocm/math_hip.h>
-#include <flashinfer/rocm/vec_dtypes_hip.h>
+#include <flashinfer/rocm/math.h>
+#include <flashinfer/rocm/vec_dtypes.h>
 
 #include <flashinfer/rocm/utils.cuh>
 
