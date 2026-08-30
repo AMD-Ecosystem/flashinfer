@@ -24,6 +24,16 @@ def get_norm_aiter_module():
 # supported and opt-in, as it is for silu_and_mul and rope.
 
 
+def _aiter_odd_hidden_defect(input: torch.Tensor) -> bool:
+    """True when AITER's rmsnorm kernels return wrong results for this shape.
+
+    Odd hidden sizes mis-handle the non-vectorized tail: measured on amd-aiter
+    0.1.20 against an fp32 reference, abs error ~1-7 where native is ~0.015.
+    Only reachable via an explicit backend="aiter"; auto is native regardless.
+    """
+    return input.ndim == 2 and input.shape[-1] % 2 != 0
+
+
 def _auto_select_norm_backend(input: torch.Tensor, weight: torch.Tensor) -> str:
     # A wash on speed (median 1.00 gfx942 / 0.98 gfx950) and native is the more
     # accurate kernel, so there is nothing to trade.
@@ -87,6 +97,11 @@ def maybe_rmsnorm(
             raise ValueError(
                 "AITER rmsnorm requires input and weight on the same device; "
                 f"got {input.device} and {weight.device}."
+            )
+        if _aiter_odd_hidden_defect(input):
+            raise ValueError(
+                f"AITER rmsnorm returns wrong results for odd hidden sizes; got "
+                f"{input.shape[-1]}. Use backend='native'."
             )
         if out is None:
             out = torch.empty_like(input)
@@ -165,6 +180,11 @@ def maybe_fused_add_rmsnorm(
 
         require_aiter(input.device, "fused_add_rmsnorm")
         _check_aiter_fused_add_args(input, residual, weight)
+        if _aiter_odd_hidden_defect(input):
+            raise ValueError(
+                f"AITER fused_add_rmsnorm returns wrong results for odd hidden "
+                f"sizes; got {input.shape[-1]}. Use backend='native'."
+            )
         get_norm_aiter_module().fused_add_rmsnorm_aiter(input, residual, weight, eps)
         return True
     if resolved != "native":

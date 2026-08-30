@@ -171,6 +171,8 @@ def test_fused_add_rmsnorm_large_hidden_size(hidden_size, dtype, gemma):
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_fused_add_rmsnorm_aiter(batch_size, hidden_size, dtype):
     eps = 1e-6
+    if hidden_size % 2 != 0:
+        pytest.skip("AITER rmsnorm mis-handles odd hidden sizes (amd-aiter 0.1.20)")
 
     x = torch.randn(batch_size, hidden_size, dtype=dtype, device="cuda")
     residual = torch.randn_like(x)
@@ -207,6 +209,18 @@ def test_fused_add_rmsnorm_auto_selection(monkeypatch):
 
     x = torch.empty(512, 8192, dtype=torch.float16, device="cuda")
     assert _auto_select_fused_add_rmsnorm_backend(x) == "native"
+
+
+@requires_aiter
+@pytest.mark.parametrize("hidden_size", [111, 63])
+def test_odd_hidden_explicit_aiter_raises(hidden_size):
+    x = torch.randn(32, hidden_size, dtype=torch.float16, device="cuda")
+    residual = torch.randn_like(x)
+    weight = torch.randn(hidden_size, dtype=torch.float16, device="cuda")
+    with pytest.raises(ValueError, match="odd hidden"):
+        flashinfer.rmsnorm(x, weight, backend="aiter")
+    with pytest.raises(ValueError, match="odd hidden"):
+        flashinfer.fused_add_rmsnorm(x, residual, weight, backend="aiter")
 
 
 @pytest.mark.parametrize("backend", ["auto", "native", "aiter"])

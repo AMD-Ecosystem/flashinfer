@@ -75,13 +75,21 @@ def test_single_prefill_with_kv_cache(
 
     # A non-zero soft cap disables AITER's asm paths, leaving mha_varlen_fwd's
     # CK kernel, which applies the cap wrongly. Non-causal is unaffected, and
-    # mha_batch_prefill is exact on the same inputs.
+    # mha_batch_prefill is exact on the same inputs. The kv_len where it starts
+    # is architecture-dependent, so take it from the capability table rather
+    # than repeating a literal that is only right on gfx942.
+    from flashinfer.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
+
+    softcap_floor = aiter_softcap_defect_min_kv_len(
+        _device_arch(torch.device("cuda:0"))
+    )
     if (
         backend == "aiter"
         and logits_soft_cap > 0
         and causal
         and head_dim == 128
-        and kv_len >= 512
+        and softcap_floor is not None
+        and kv_len >= softcap_floor
     ):
         pytest.skip("AITER mha_varlen_fwd soft-cap defect (aiter<=0.1.21)")
 
@@ -338,7 +346,9 @@ _SOFTCAP_ROUTING = [
     (False, 8.0, 128, 512, True),  # non-causal: exact
     (True, 8.0, 64, 512, True),  # other head dims unaffected
     (True, 8.0, 256, 512, True),
-    (True, 8.0, 128, 128, True),  # short kv unaffected
+    # Short kv is arch-dependent: below gfx942's floor of 512 but inside the
+    # defect on gfx950, where no kv_len is safe. None = derive from the floor.
+    (True, 8.0, 128, 128, None),
 ]
 
 
@@ -356,6 +366,15 @@ def test_auto_backend_avoids_aiter_softcap_defect(
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+
+    if expect_aiter is None:
+        from flashinfer.arch_caps import (
+            _device_arch,
+            aiter_softcap_defect_min_kv_len,
+        )
+
+        floor = aiter_softcap_defect_min_kv_len(_device_arch(device))
+        expect_aiter = floor is None or kv_len < floor
 
     from flashinfer.prefill_rocm import _auto_select_prefill_backend
 
