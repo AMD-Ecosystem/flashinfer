@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import math
+
 import pytest
 import torch
 from attention_reference import naive_attention
@@ -423,3 +425,38 @@ def test_explicit_aiter_backend_rejects_softcap_defect():
     # Same shape without the cap must still be served by AITER, so the guard is
     # not quietly disabling the backend outright.
     flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="aiter")
+
+
+def test_aiter_is_correct_just_below_the_softcap_floor():
+    """AITER must actually be right at the largest kv_len the table calls safe.
+
+    The routing test and the numeric skip both read the floor from arch_caps, so
+    on their own they stay green if the floor is edited to the wrong value. This
+    asserts the boundary against an fp32 reference instead.
+    """
+    from flashinfer.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
+
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    floor = aiter_softcap_defect_min_kv_len(_device_arch(device))
+    if not floor:
+        pytest.skip("no kv_len is declared safe on this architecture")
+
+    kv_len, qo_len, num_heads, head_dim, cap = floor - 1, 17, 4, 128, 8.0
+    torch.manual_seed(0)
+    q = torch.randn(qo_len, num_heads, head_dim, dtype=torch.bfloat16, device=device)
+    k = torch.randn(kv_len, num_heads, head_dim, dtype=torch.bfloat16, device=device)
+    v = torch.randn_like(k)
+
+    s = torch.einsum("qhd,khd->hqk", q.float(), k.float()) / math.sqrt(head_dim)
+    s = cap * torch.tanh(s / cap)
+    i = torch.arange(qo_len, device=device)[:, None]
+    j = torch.arange(kv_len, device=device)[None, :]
+    s = s.masked_fill((j > i + (kv_len - qo_len))[None], float("-inf"))
+    ref = torch.einsum("hqk,khd->qhd", s.softmax(-1), v.float())
+
+    got = flashinfer.single_prefill_with_kv_cache(
+        q, k, v, causal=True, logits_soft_cap=cap, backend="aiter"
+    )
+    torch.testing.assert_close(got.float(), ref, rtol=2e-2, atol=2e-2)

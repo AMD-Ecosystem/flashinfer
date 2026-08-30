@@ -44,11 +44,12 @@ local `+rocm...` segment — pip will not select a local version from a loose
 specifier. Check afterwards that the install did not pull a CPU-only torch
 over your ROCm one: `python -c "import torch; assert torch.version.hip"`.
 
-**`aiter_utils.AITER_MIN_VERSION` (0.1.16) is a hard floor**, enforced
+**`aiter_utils.AITER_MIN_VERSION` (0.1.20) is a hard floor**, enforced
 before routing. FlashInfer links AITER's C++ symbols by mangled name
 (`csrc/rocm/aiter_loader.cc`) and vendors its argument structs
-(`include/flashinfer/rocm/attention/aiter/`) at the 0.1.16 layout, so an older
-release shifts field offsets instead of failing to load. Below the floor
+(`include/flashinfer/rocm/attention/aiter/`) at the 0.1.20 layout, so an older
+release shifts field offsets instead of failing to load -- and 0.1.20 renamed
+the RMSNorm entry points, so an older one cannot resolve them. Below the floor
 `auto` will not select AITER and an explicit `backend="aiter"` raises.
 
 That rules out `pypi.amd.com/rocm-7.1.1/simple`, which carries only
@@ -79,13 +80,13 @@ Nothing stops you running one, but treat it as untested here.
 The `rmsnorm`, `fused_add_rmsnorm`, `silu_and_mul`, and `rope`
 (cos/sin-cache) AITER backends are integrated at the **C++ level**: the
 JIT compiles a small HIP shim that calls AITER's C++ kernels
-(`rmsnorm2d`, `rmsnorm2d_with_add`, `aiter::silu_and_mul`,
+(`aiter::rmsnorm`, `aiter::add_rmsnorm`, `aiter::silu_and_mul`,
 `rope_cached_positions_2c_fwd_impl`) and links a symbol-visible AITER
 `.so`. There is no runtime `import aiter` on these paths.
 
 The first JIT build of each op builds the corresponding AITER module once
 with `AITER_SYMBOL_VISIBLE=1` and caches it under
-`~/.cache/flashinfer/aiter_libs/`. The CK `module_rmsnorm` build is large
+`~/.cache/flashinfer/aiter_libs/`. The `module_rmsnorm_quant` build is large
 and can take many minutes the first time.
 
 ### `mha_fwd` ships no prebuilt kernels at all

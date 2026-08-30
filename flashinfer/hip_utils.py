@@ -344,9 +344,21 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
     # Add new tuple for adding a new version group
     _ROCM_ARCH_GROUPS = [
         (
-            # "7.15" is what the ROCm 10.0 images report: hipconfig gives the HIP
-            # version, which does not track the ROCm marketing version.
-            ["7.15", "7.14", "7.13", "7.12", "7.11", "7.3", "7.2", "7.1", "7.0"],
+            # Both names for ROCm 10: a stock install reports "10.0" via
+            # .info/version, while a pip-SDK build short-circuits to hipconfig,
+            # which gives the HIP version instead.
+            [
+                "10.0",
+                "7.15",
+                "7.14",
+                "7.13",
+                "7.12",
+                "7.11",
+                "7.3",
+                "7.2",
+                "7.1",
+                "7.0",
+            ],
             [
                 "gfx950",
                 "gfx1201",

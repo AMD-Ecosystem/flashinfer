@@ -212,6 +212,23 @@ def test_fused_add_rmsnorm_auto_selection(monkeypatch):
 
 
 @requires_aiter
+@pytest.mark.parametrize("hidden_size", [8448, 16384])
+def test_oversized_hidden_explicit_aiter_raises(hidden_size):
+    """AITER's kernel gives up past 8192; raise before it does, with the size.
+
+    The CK kernel this replaced had no ceiling, so without the guard a caller
+    that pinned backend="aiter" gets a bare "not support n:" from inside AITER.
+    """
+    x = torch.randn(8, hidden_size, dtype=torch.float16, device="cuda")
+    residual = torch.randn_like(x)
+    weight = torch.randn(hidden_size, dtype=torch.float16, device="cuda")
+    with pytest.raises(ValueError, match="hidden sizes up to"):
+        flashinfer.rmsnorm(x, weight, backend="aiter")
+    with pytest.raises(ValueError, match="hidden sizes up to"):
+        flashinfer.fused_add_rmsnorm(x, residual, weight, backend="aiter")
+
+
+@requires_aiter
 @pytest.mark.parametrize("hidden_size", [111, 63])
 def test_odd_hidden_explicit_aiter_raises(hidden_size):
     x = torch.randn(32, hidden_size, dtype=torch.float16, device="cuda")

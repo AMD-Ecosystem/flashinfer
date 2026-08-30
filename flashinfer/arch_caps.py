@@ -392,14 +392,14 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "rmsnorm",
         "aiter",
         _archs(_OK_942, _OK_950),
-        note="CK `rmsnorm2d`; 2-D fp16/bf16, weight dtype must match. Opt-in: level with native on speed and less accurate.",
+        note="`aiter::rmsnorm`; 2-D fp16/bf16, hidden size even and <= 8192, weight dtype must match. Opt-in: level with native on speed and less accurate.",
         fallback="native",
     ),
     Capability(
         "fused_add_rmsnorm",
         "aiter",
         _archs(_OK_942, _OK_950),
-        note="CK `rmsnorm2d_with_add`; 2-D, weight dtype must match. Opt-in: 1.6-1.8x slower, since correctness needs two staging buffers.",
+        note="`aiter::add_rmsnorm`; 2-D, hidden size even and <= 8192, weight dtype must match. Opt-in: 1.6-1.8x slower, since correctness needs two staging buffers.",
         fallback="native",
     ),
     Capability(

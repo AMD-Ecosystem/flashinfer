@@ -101,7 +101,7 @@ void* load_and_cache_sym(std::shared_mutex& mu, std::unordered_map<Key, void*, H
 // Mangled symbol for aiter::mha_fwd(aiter::mha_fwd_args, ck_tile::stream_config const&).
 // Stable across GCC/Clang Itanium ABI; verified by `nm -D` on all shipped variants.
 // Both the mha_fwd and mha_varlen_fwd .so files export this same dispatcher symbol.
-// Pinned to amd-aiter 0.1.10. Regenerate with: nm -D <variant.so> | grep mha_fwd
+// Pinned to amd-aiter 0.1.20. Regenerate with: nm -D <variant.so> | grep mha_fwd
 constexpr const char* kMhaFwdSymbol =
     "_ZN5aiter7mha_fwdENS_12mha_fwd_argsERKN7ck_tile13stream_configE";
 
@@ -132,7 +132,7 @@ std::string batch_prefill_variant_so_name(BatchPrefillVariantKey const& key) {
 }
 
 // Itanium-ABI mangled symbol for aiter::mha_batch_prefill(...).
-// Pinned to amd-aiter 0.1.10. Regenerate with: nm -D <.so> | grep mha_batch_prefill
+// Pinned to amd-aiter 0.1.20. Regenerate with: nm -D <.so> | grep mha_batch_prefill
 // Note: '23' encodes len("fmha_batch_prefill_args") == 23.
 constexpr const char* kMhaBatchPrefillSymbol =
     "_ZN5aiter17mha_batch_prefillE23fmha_batch_prefill_argsRKN7ck_tile13stream_configE"

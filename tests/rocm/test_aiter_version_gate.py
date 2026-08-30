@@ -39,10 +39,13 @@ def _doc_references():
         # A pre-release of the floor is below it. Comparing on base_version
         # strips the segment and wrongly admits this one.
         ("0.1.16.dev0", False),
-        ("0.1.16", True),
-        # The nightly wheel, and the only cp314 build: .dev0 *of post3*, which
-        # sorts above 0.1.16 rather than below it.
-        ("0.1.16.post3.dev0+g620287969.d20260725", True),
+        # 0.1.16 declared rmsnorm without gemma_norm, so its mangled name differs.
+        ("0.1.16", False),
+        ("0.1.20.dev0", False),
+        ("0.1.20", True),
+        # A .dev0 *of post3* sorts above 0.1.16, which is what makes the
+        # nightly-vs-prerelease distinction non-obvious -- still below 0.1.20.
+        ("0.1.16.post3.dev0+g620287969.d20260725", False),
         ("0.1.21", True),
         ("0.2.0", True),
     ],

@@ -61,7 +61,7 @@ def rmsnorm(
         Kernel backend to use. ``"auto"`` (default) is the FlashInfer JIT kernel
         everywhere, including ROCm — see ``docs/rocm/backends.md``.
         ``"native"`` is the same kernel, requested explicitly.
-        ``"aiter"`` uses AMD AITER's CK ``rmsnorm2d`` C++ kernel — ROCm (gfx942/gfx950)
+        ``"aiter"`` uses AMD AITER's ``aiter::rmsnorm`` C++ kernel — ROCm (gfx942/gfx950)
         only, 2D fp16/bf16 inputs only. Precision is slightly lower than ``"native"`` at
         ``hidden_size >= 1024`` (fp16 atol ~4e-3, bf16 ~7e-2).
 
@@ -138,7 +138,7 @@ def fused_add_rmsnorm(
         Kernel backend to use. ``"auto"`` (default) is the FlashInfer JIT kernel
         everywhere, including ROCm — see ``docs/rocm/backends.md``.
         ``"native"`` is the same kernel, requested explicitly.
-        ``"aiter"`` uses AMD AITER's CK ``rmsnorm2d_with_add`` C++ kernel — ROCm
+        ``"aiter"`` uses AMD AITER's ``aiter::add_rmsnorm`` C++ kernel — ROCm
         (gfx942/gfx950) only, 2D inputs only. Measurably slower than ``"native"``
         on both arches, and slightly lower precision at ``hidden_size >= 1024``.
     """
