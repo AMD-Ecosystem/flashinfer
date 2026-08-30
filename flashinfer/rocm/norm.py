@@ -76,6 +76,17 @@ def maybe_rmsnorm(
                 f"AITER rmsnorm requires a contiguous weight; got stride "
                 f"{weight.stride()}."
             )
+        if weight.ndim != 1 or weight.numel() != input.size(-1):
+            # A short weight is an out-of-bounds read inside CK, not an error.
+            raise ValueError(
+                f"AITER rmsnorm requires a 1-D weight of length "
+                f"{input.size(-1)}; got shape {tuple(weight.shape)}."
+            )
+        if weight.device != input.device:
+            raise ValueError(
+                "AITER rmsnorm requires input and weight on the same device; "
+                f"got {input.device} and {weight.device}."
+            )
         if out is None:
             out = torch.empty_like(input)
         get_norm_aiter_module().rmsnorm_aiter(out, input, weight, eps)

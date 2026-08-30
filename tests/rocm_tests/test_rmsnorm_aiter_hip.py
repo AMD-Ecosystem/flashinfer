@@ -104,6 +104,18 @@ def test_rmsnorm_aiter_rejects_strided_weight():
 
 
 @requires_aiter
+@pytest.mark.parametrize("shape", [(1, 128), (64,)])
+def test_rmsnorm_aiter_rejects_wrong_weight_shape(shape):
+    """Native rejects both; AITER accepted them, and the short one is an
+    out-of-bounds read inside CK rather than an error."""
+    device = torch.device("cuda:0")
+    x = torch.randn(8, 128, dtype=torch.float16, device=device)
+    w = torch.randn(*shape, dtype=torch.float16, device=device)
+    with pytest.raises(ValueError, match="1-D weight of length 128"):
+        flashinfer.rmsnorm(x, w, backend="aiter")
+
+
+@requires_aiter
 def test_rmsnorm_aiter_with_out_tensor():
     """backend='aiter' respects the out= argument."""
     device = torch.device("cuda:0")
