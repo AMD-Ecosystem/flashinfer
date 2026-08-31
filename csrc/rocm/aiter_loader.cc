@@ -22,10 +22,10 @@ namespace {
 // Appended to failures on the paths that resolve the pinned mangled symbols
 // below. Keep the version in step with _AITER_LAST_VALIDATED in prefill_rocm.py.
 constexpr const char* kAbiPinNote =
-    "\n  These symbols and .so names are pinned to amd-aiter 0.1.10, which has no stable"
+    "\n  These symbols and .so names are pinned to amd-aiter 0.1.20, which has no stable"
     "\n  C++ ABI. If AITER was upgraded, that is the likely cause. Reinstall the pin:"
-    "\n    pip install amd-aiter==0.1.10 \\"
-    "\n      --extra-index-url https://pypi.amd.com/rocm-7.1.1/simple"
+    "\n    pip install amd-aiter==0.1.20+rocm10.1.0a20260819.3135022 \\"
+    "\n      --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/"
     "\n  or re-pin the symbols in csrc/rocm/aiter_loader.cc.";
 
 std::string get_jit_dir() {
@@ -47,7 +47,7 @@ std::string get_jit_dir() {
 // mha_fwd:           prefix="mha_fwd_",          include_logits=false,
 //                    suffix="_ndropout_nqscale.so"
 // mha_batch_prefill: prefix="mha_batch_prefill_", include_logits=true,
-//                    suffix="_ndropout_nqscale.so"
+//                    suffix="_ndropout_nqscale_nsink.so"
 std::string build_so_name(VariantKey const& key, std::string_view prefix, std::string_view suffix,
                           bool include_logits) {
   std::string name(prefix);
@@ -101,7 +101,7 @@ void* load_and_cache_sym(std::shared_mutex& mu, std::unordered_map<Key, void*, H
 // Mangled symbol for aiter::mha_fwd(aiter::mha_fwd_args, ck_tile::stream_config const&).
 // Stable across GCC/Clang Itanium ABI; verified by `nm -D` on all shipped variants.
 // Both the mha_fwd and mha_varlen_fwd .so files export this same dispatcher symbol.
-// Pinned to amd-aiter 0.1.10. Regenerate with: nm -D <variant.so> | grep mha_fwd
+// Pinned to amd-aiter 0.1.20. Regenerate with: nm -D <variant.so> | grep mha_fwd
 constexpr const char* kMhaFwdSymbol =
     "_ZN5aiter7mha_fwdENS_12mha_fwd_argsERKN7ck_tile13stream_configE";
 
@@ -127,12 +127,15 @@ std::unordered_map<VariantKey, void*, VariantKeyHash> s_vl_cache;
 // ----- batch-prefill cache -----
 
 std::string batch_prefill_variant_so_name(BatchPrefillVariantKey const& key) {
-  return build_so_name(key, "mha_batch_prefill_", "_ndropout_nqscale.so",
+  // 0.1.20 appended a sink axis to this family only -- mha_fwd and
+  // mha_varlen_fwd keep their names. Without it every lookup misses and the
+  // paged path degrades to flat-gather instead of using native paging.
+  return build_so_name(key, "mha_batch_prefill_", "_ndropout_nqscale_nsink.so",
                        /*include_logits=*/true);
 }
 
 // Itanium-ABI mangled symbol for aiter::mha_batch_prefill(...).
-// Pinned to amd-aiter 0.1.10. Regenerate with: nm -D <.so> | grep mha_batch_prefill
+// Pinned to amd-aiter 0.1.20. Regenerate with: nm -D <.so> | grep mha_batch_prefill
 // Note: '23' encodes len("fmha_batch_prefill_args") == 23.
 constexpr const char* kMhaBatchPrefillSymbol =
     "_ZN5aiter17mha_batch_prefillE23fmha_batch_prefill_argsRKN7ck_tile13stream_configE"

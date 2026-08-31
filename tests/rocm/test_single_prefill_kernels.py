@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import math
+
 import pytest
 import torch
 from attention_reference import naive_attention
@@ -75,13 +77,21 @@ def test_single_prefill_with_kv_cache(
 
     # A non-zero soft cap disables AITER's asm paths, leaving mha_varlen_fwd's
     # CK kernel, which applies the cap wrongly. Non-causal is unaffected, and
-    # mha_batch_prefill is exact on the same inputs.
+    # mha_batch_prefill is exact on the same inputs. The kv_len where it starts
+    # is architecture-dependent, so take it from the capability table rather
+    # than repeating a literal that is only right on gfx942.
+    from flashinfer.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
+
+    softcap_floor = aiter_softcap_defect_min_kv_len(
+        _device_arch(torch.device("cuda:0"))
+    )
     if (
         backend == "aiter"
         and logits_soft_cap > 0
         and causal
         and head_dim == 128
-        and kv_len >= 512
+        and softcap_floor is not None
+        and kv_len >= softcap_floor
     ):
         pytest.skip("AITER mha_varlen_fwd soft-cap defect (aiter<=0.1.21)")
 
@@ -338,7 +348,9 @@ _SOFTCAP_ROUTING = [
     (False, 8.0, 128, 512, True),  # non-causal: exact
     (True, 8.0, 64, 512, True),  # other head dims unaffected
     (True, 8.0, 256, 512, True),
-    (True, 8.0, 128, 128, True),  # short kv unaffected
+    # Short kv is arch-dependent: below gfx942's floor of 512 but inside the
+    # defect on gfx950, where no kv_len is safe. None = derive from the floor.
+    (True, 8.0, 128, 128, None),
 ]
 
 
@@ -356,6 +368,15 @@ def test_auto_backend_avoids_aiter_softcap_defect(
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+
+    if expect_aiter is None:
+        from flashinfer.arch_caps import (
+            _device_arch,
+            aiter_softcap_defect_min_kv_len,
+        )
+
+        floor = aiter_softcap_defect_min_kv_len(_device_arch(device))
+        expect_aiter = floor is None or kv_len < floor
 
     from flashinfer.prefill_rocm import _auto_select_prefill_backend
 
@@ -404,3 +425,38 @@ def test_explicit_aiter_backend_rejects_softcap_defect():
     # Same shape without the cap must still be served by AITER, so the guard is
     # not quietly disabling the backend outright.
     flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="aiter")
+
+
+def test_aiter_is_correct_just_below_the_softcap_floor():
+    """AITER must actually be right at the largest kv_len the table calls safe.
+
+    The routing test and the numeric skip both read the floor from arch_caps, so
+    on their own they stay green if the floor is edited to the wrong value. This
+    asserts the boundary against an fp32 reference instead.
+    """
+    from flashinfer.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
+
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    floor = aiter_softcap_defect_min_kv_len(_device_arch(device))
+    if floor is None or floor == 0:
+        pytest.skip("no kv_len is declared safe on this architecture")
+
+    kv_len, qo_len, num_heads, head_dim, cap = floor - 1, 17, 4, 128, 8.0
+    torch.manual_seed(0)
+    q = torch.randn(qo_len, num_heads, head_dim, dtype=torch.bfloat16, device=device)
+    k = torch.randn(kv_len, num_heads, head_dim, dtype=torch.bfloat16, device=device)
+    v = torch.randn_like(k)
+
+    s = torch.einsum("qhd,khd->hqk", q.float(), k.float()) / math.sqrt(head_dim)
+    s = cap * torch.tanh(s / cap)
+    i = torch.arange(qo_len, device=device)[:, None]
+    j = torch.arange(kv_len, device=device)[None, :]
+    s = s.masked_fill((j > i + (kv_len - qo_len))[None], float("-inf"))
+    ref = torch.einsum("hqk,khd->qhd", s.softmax(-1), v.float())
+
+    got = flashinfer.single_prefill_with_kv_cache(
+        q, k, v, causal=True, logits_soft_cap=cap, backend="aiter"
+    )
+    torch.testing.assert_close(got.float(), ref, rtol=2e-2, atol=2e-2)

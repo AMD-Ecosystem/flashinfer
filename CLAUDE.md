@@ -84,9 +84,11 @@ ranks higher than a same-version PyPI wheel. Supported versions are in the
 [Supported hardware and toolchain](README.md#supported-hardware-and-toolchain)
 table in `README.md`.
 
-ROCm 7.14 has no `rocm-rel-7.14/` directory on `repo.radeon.com` at all, so
-there is no pip recipe for it. The devcontainer gets torch 2.12 from its
-`rocm/pytorch:rocm7.14_*` base image instead.
+Neither ROCm 7.14 nor 10.0 has a `rocm-rel-` directory on `repo.radeon.com`,
+so there is no pip recipe for either. The devcontainer gets torch 2.12 from
+its `rocm/pytorch:rocm10.0_*` base image instead. Torch 2.13 is not usable
+here: it removes `c10::impl::cow::materialize_cow_storage`, which every
+published `amd-aiter` build's prebuilt prefill kernels link against.
 
 ## Non-Obvious Gotchas
 
@@ -112,9 +114,9 @@ count to avoid HSA/HIPBLAS flakiness under concurrent load. The `slow` marker
 gates 1M-trial sampling and 4 GB tensor tests — exclude with `-m "not slow"`
 for fast iteration.
 
-**AITER is version-pinned, and the pin depends on the interpreter**: the
-devcontainer bundles the wheel, so no separate install is needed there. The
-pin differs by channel because the channels carry different builds.
+**AITER is version-pinned, and the pin depends on the channel**: the
+devcontainer bundles the wheel, so no separate install is needed there. CI and
+the devcontainer differ because the two channels carry different builds.
 
 On CPython 3.12 (the CI image, ROCm 7.1.1):
 
@@ -129,17 +131,21 @@ that channel (verified 2026-08-20); on 3.11, 3.13 or 3.14 it fails with
 `No matching distribution found`, and public PyPI tops out at a stale
 `0.1.7.post2.dev18`.
 
-The devcontainer runs CPython 3.14, for which the nightlies index carries the
-only wheel that exists:
+The devcontainer runs CPython 3.12 and takes 0.1.20 from the nightlies index.
+Every 0.1.20 build is cp312 only, and none targets ROCm 10.0 — they are one
+source revision (build id `3135022`) retargeted to `+rocm10.1.0a`,
+`+rocm7.14.0` and `+rocm7.2.3`:
 
 ```bash
-pip install amd-aiter==0.1.16.post3.dev0+g620287969.d20260725 \
-  --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/vllm-cdna/
+pip install amd-aiter==0.1.20+rocm10.1.0a20260819.3135022 \
+  --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/
 ```
 
-Spell the version out in full including the local `+g...` segment; pip will
-not select a local version from a loose specifier. `prefill_rocm.py` records
-whatever is validated as `_AITER_LAST_VALIDATED`, and
+Spell the version out in full including the local `+rocm...` segment; pip will
+not select a local version from a loose specifier. pip normalises the project
+name to `amd-aiter/`, so the sibling `amd_aiter/` directory on that index —
+which carries the other retargets — needs a direct wheel URL.
+`prefill_rocm.py` records whatever is validated as `_AITER_LAST_VALIDATED`, and
 [`docs/rocm/backends.md`](docs/rocm/backends.md) explains the index choice.
 `aiter_utils.AITER_MIN_VERSION` is the hard floor below which the vendored
 struct layouts stop matching.
