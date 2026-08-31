@@ -243,7 +243,7 @@ in-place edit under `csrc/` or `include/` never appears there at all.
 Much of `include/flashinfer/rocm/` is a fork of an upstream header — the
 `rocm/attention/` set, plus `sampling.cuh`, `quantization.cuh`, `layout.cuh`,
 `fastdiv.cuh`, `utils.cuh` and `exception.h`. The HIP intrinsic headers and their
-types headers have no upstream counterpart, so `upstream_canary.py` reports them
+type headers have no upstream counterpart, so `upstream_canary.py` reports them
 as orphans rather than pairing them. Their upstream
 originals are byte-identical to the merge base and will merge cleanly forever,
 so a fix landing upstream reaches the original and *not* the fork, with nothing
