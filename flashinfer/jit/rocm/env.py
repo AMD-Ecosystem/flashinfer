@@ -4,13 +4,19 @@
 
 """Where the ROCm JIT puts its AOT and workspace directories."""
 
+import json
 import os
 import pathlib
 import re
+import warnings
 from typing import Callable
 
 from ..._version import __version__ as flashinfer_version
 from ...arch_caps import normalize_arch
+
+#: Records which architectures an AOT kernel tree was compiled for. Lives here
+#: rather than in aot_hip so the reader owns the name and the writer imports it.
+AOT_MANIFEST_NAME = "aot_manifest.json"
 
 
 def get_aot_dir(
@@ -37,7 +43,57 @@ def get_aot_dir(
             "Please install the same version of both packages. "
             "Set FLASHINFER_DISABLE_VERSION_CHECK=1 to bypass this check."
         )
-    return pathlib.Path(amd_flashinfer_jit_cache.get_jit_cache_dir())
+
+    cache_dir = pathlib.Path(amd_flashinfer_jit_cache.get_jit_cache_dir())
+    if _aot_arch_matches(cache_dir):
+        return cache_dir
+    # Fall back to the in-tree dir, which is normally empty, so JitSpec.is_aot
+    # goes False and every module JITs for the architecture actually present.
+    return package_root / "data" / "aot"
+
+
+def _aot_arch_matches(cache_dir: pathlib.Path) -> bool:
+    """Whether prebuilt kernels in ``cache_dir`` target an arch we can run.
+
+    ``JitSpec.is_aot`` is a bare ``aot_path.exists()`` and AOT beats JIT
+    unconditionally, while the wheel tag carries no gfx architecture -- so
+    nothing else stops a gfx942 wheel serving gfx950. That costs a wrong-ISA
+    load on ops in every forward pass, not just attention.
+
+    A wheel with no manifest predates this check; assume it is right rather
+    than breaking every install that already works.
+    """
+    if os.getenv("FLASHINFER_DISABLE_VERSION_CHECK"):
+        return True
+
+    manifest = cache_dir / AOT_MANIFEST_NAME
+    if not manifest.exists():
+        return True
+
+    try:
+        built_for = json.loads(manifest.read_text())["rocm_arch_list"]
+    except (OSError, ValueError, KeyError):
+        warnings.warn(
+            f"Could not read {manifest}; using its prebuilt kernels unchecked.",
+            stacklevel=2,
+        )
+        return True
+
+    from ...hip_utils import resolve_target_archs
+
+    built = {normalize_arch(a) for a in built_for.split(",") if a}
+    target = {normalize_arch(a) for a in resolve_target_archs().split(",") if a}
+    if target <= built:
+        return True
+
+    warnings.warn(
+        f"amd-flashinfer-jit-cache was built for {sorted(built)} but this "
+        f"system needs {sorted(target)}; ignoring the prebuilt kernels and "
+        f"compiling from source. Install a matching wheel to avoid this. "
+        f"Set FLASHINFER_DISABLE_VERSION_CHECK=1 to use them anyway.",
+        stacklevel=2,
+    )
+    return False
 
 
 def get_workspace_dir(cache_dir: pathlib.Path) -> pathlib.Path:

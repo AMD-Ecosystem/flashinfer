@@ -11,6 +11,7 @@ Tests the flashinfer.aot_hip module to ensure:
 3. .so files are created and can be loaded
 """
 
+import json
 import os
 import shutil
 import sys
@@ -315,9 +316,10 @@ def test_module_naming_convention():
             if pattern in spec.name:
                 found_patterns[pattern] = True
 
-    # At least some expected patterns should be found
-    assert any(found_patterns.values()), (
-        f"No expected module patterns found in: {[s.name for s in jit_specs]}"
+    # `any` would pass while three of the four kinds were missing.
+    assert all(found_patterns.values()), (
+        f"Missing module kinds {sorted(k for k, v in found_patterns.items() if not v)} "
+        f"in: {[s.name for s in jit_specs]}"
     )
 
 
@@ -540,6 +542,30 @@ class TestCopyBuiltKernels:
         with pytest.raises(FileNotFoundError, match="never_built"):
             aot_hip.copy_built_kernels(specs, out_dir, build_dir)
 
+    def test_the_built_arch_is_recorded_next_to_the_kernels(self, tmp_path):
+        """Nothing in a .so name or the wheel tag says which ISA it holds."""
+        from flashinfer.jit.rocm.env import AOT_MANIFEST_NAME
+
+        build_dir, out_dir = tmp_path / "build", tmp_path / "out"
+        specs = _built(build_dir, "mod_a")
+
+        aot_hip.copy_built_kernels(specs, out_dir, build_dir, "gfx942,gfx950")
+
+        written = json.loads((out_dir / AOT_MANIFEST_NAME).read_text())
+        assert written == {"rocm_arch_list": "gfx942,gfx950"}
+
+    def test_no_manifest_is_written_when_the_arch_is_unknown(self, tmp_path):
+        """Better absent than wrong -- a missing manifest disables the check,
+        a fabricated one would silently authorise the wrong kernels."""
+        from flashinfer.jit.rocm.env import AOT_MANIFEST_NAME
+
+        build_dir, out_dir = tmp_path / "build", tmp_path / "out"
+        specs = _built(build_dir, "mod_a")
+
+        aot_hip.copy_built_kernels(specs, out_dir, build_dir)
+
+        assert not (out_dir / AOT_MANIFEST_NAME).exists()
+
     def test_a_previous_output_directory_is_replaced_not_merged(self, tmp_path):
         """A stale .so left from an earlier build would ship in the wheel."""
         build_dir, out_dir = tmp_path / "build", tmp_path / "out"
@@ -551,6 +577,119 @@ class TestCopyBuiltKernels:
 
         assert not (out_dir / "stale_mod").exists()
         assert (out_dir / "mod_a" / "mod_a.so").exists()
+
+
+ACT_MODULES = {"silu_and_mul", "gelu_and_mul", "gelu_tanh_and_mul"}
+MISC_MODULES = {"cascade", "norm", "page", "quantization", "rope", "sampling"}
+
+
+def _default_spec_names(**overrides):
+    """Spec names for the default add_* groups over one FA2 combination.
+
+    The attention axes are narrowed deliberately: none of the singletons vary
+    with them, and generating the full cross-product writes source for 96
+    modules into the real cache dir on every call (gen_act_and_mul_module and
+    the attention generators both write at spec-generation time).
+    """
+    config = get_default_config()
+    config.update(overrides)
+    return {
+        spec.name
+        for spec in gen_all_modules(
+            [torch.float16],
+            [(128, 128)],
+            [False],
+            [False],
+            config["add_act"],
+            config["add_misc"],
+        )
+    }
+
+
+class TestSingletonCoverage:
+    """The ops `auto` always resolves to a native HIP kernel must ship prebuilt.
+
+    Five selectors return "native" unconditionally and sampling/quantization/
+    cascade have no AITER path, so without these the jit-cache wheel leaves
+    every forward pass compiling on first use -- the thing the wheel exists to
+    prevent.
+    """
+
+    def test_the_activation_modules_are_built_by_default(self):
+        assert _default_spec_names() >= ACT_MODULES
+
+    def test_the_misc_modules_are_built_by_default(self):
+        assert _default_spec_names() >= MISC_MODULES
+
+    def test_add_act_false_drops_only_the_activations(self):
+        names = _default_spec_names(add_act=False)
+
+        assert not (ACT_MODULES & names)
+        assert names >= MISC_MODULES
+
+    def test_add_misc_false_drops_only_the_misc_group(self):
+        names = _default_spec_names(add_misc=False)
+
+        assert not (MISC_MODULES & names)
+        assert names >= ACT_MODULES
+
+    def test_disabling_both_leaves_the_attention_set_untouched(self):
+        """The singletons must be additive -- they cannot cost FA2 coverage."""
+        attention_only = _default_spec_names(add_act=False, add_misc=False)
+
+        assert attention_only == _default_spec_names() - ACT_MODULES - MISC_MODULES
+        assert attention_only, "attention specs disappeared"
+
+
+# CUDA-only groups: no ROCm counterpart exists, so their absence is correct
+# rather than drift. Anything outside this set is a real divergence.
+_CUDA_ONLY_ADD_GROUPS = {
+    "add_comm",  # nvshmem / trtllm collectives
+    "add_gemma",
+    "add_moe",  # cutlass fused MoE; ROCm's is a separate AITER shim
+    "add_oai_oss",
+    "add_xqa",
+}
+
+
+def _add_group_keys_of(module_path):
+    """The `add_*` keys of a module's get_default_config, read without importing.
+
+    flashinfer/aot.py imports CUDA-only modules (jit.fp4_quantization at :35),
+    so it cannot be imported on a HIP build -- and a test that skips itself on
+    the only platform that runs it would never catch anything.
+    """
+    import ast
+
+    tree = ast.parse(module_path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "get_default_config":
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Dict):
+                    return {
+                        k.value
+                        for k in sub.keys
+                        if isinstance(k, ast.Constant)
+                        and str(k.value).startswith("add_")
+                    }
+    raise AssertionError(f"no get_default_config dict literal in {module_path}")
+
+
+def test_the_rocm_default_config_carries_the_same_add_groups_as_cuda():
+    """aot_hip.py is a hand-maintained fork of aot.py and drifts silently.
+
+    That drift is why the singletons were missing here while CUDA shipped them.
+    Comparing the group toggles is the cheap tripwire for the next divergence.
+    """
+    pkg = Path(aot_hip.__file__).parent
+    cuda_keys = _add_group_keys_of(pkg / "aot.py")
+    rocm_keys = _add_group_keys_of(pkg / "aot_hip.py")
+
+    assert cuda_keys, "parsed no add_* groups from aot.py -- the parser is broken"
+    assert cuda_keys - rocm_keys <= _CUDA_ONLY_ADD_GROUPS, (
+        "CUDA grew an add_* group with no ROCm counterpart. Add it to aot_hip, "
+        "or to _CUDA_ONLY_ADD_GROUPS if ROCm genuinely has no equivalent."
+    )
 
 
 class TestRegisterDefaultModules:

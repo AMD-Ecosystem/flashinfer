@@ -5,6 +5,7 @@
 
 import argparse
 import contextlib
+import json
 import os
 import shutil
 from itertools import product
@@ -120,11 +121,50 @@ def gen_attention(
         )
 
 
+def gen_act_and_mul() -> Iterator:
+    """The gated-activation kernels, one module per activation function."""
+    from .jit import gen_act_and_mul_module
+    from .jit.activation import act_func_def_str
+
+    for act_name in act_func_def_str:
+        yield gen_act_and_mul_module(act_name)
+
+
+def gen_misc() -> Iterator:
+    """Ops `backend="auto"` always resolves to a native HIP kernel.
+
+    Five selectors return "native" unconditionally (rocm/norm.py, rocm/rope.py,
+    rocm/activation.py, rocm/page.py) and sampling/quantization/cascade have no
+    AITER path at all, so every one of these is compiled on first use unless it
+    ships prebuilt. Mirrors the CUDA `add_misc` group in aot.py.
+    """
+    from .jit import (
+        gen_norm_module,
+        gen_page_module,
+        gen_quantization_module,
+        gen_rope_module,
+        gen_sampling_module,
+    )
+
+    # Not re-exported on HIP (jit/rocm/api.py), so reach it by module path --
+    # flashinfer/cascade.py imports it the same way.
+    from .jit.cascade import gen_cascade_module
+
+    yield gen_cascade_module()
+    yield gen_norm_module()
+    yield gen_page_module()
+    yield gen_quantization_module()
+    yield gen_rope_module()
+    yield gen_sampling_module()
+
+
 def gen_all_modules(
     f16_dtype_: List[torch.dtype],
     fa2_head_dim_: List[Tuple[int, int]],
     use_sliding_window_: List[bool],
     use_logits_soft_cap_: List[bool],
+    add_act: bool = True,
+    add_misc: bool = True,
 ) -> List:
     from .jit import JitSpec
 
@@ -138,6 +178,12 @@ def gen_all_modules(
             use_logits_soft_cap_,
         )
     )
+
+    if add_act:
+        jit_specs += list(gen_act_and_mul())
+
+    if add_misc:
+        jit_specs += list(gen_misc())
 
     # dedup
     names = set()
@@ -153,8 +199,15 @@ def copy_built_kernels(
     jit_specs: List,
     out_dir: Path,
     build_dir: Path,
+    rocm_arch_list: Optional[str] = None,
 ) -> None:
-    """Copy built kernel .so files from build_dir to out_dir"""
+    """Copy built kernel .so files from build_dir to out_dir.
+
+    ``rocm_arch_list`` is recorded next to the kernels so a consumer can tell
+    what they were compiled for; nothing in a ``.so``'s name or the wheel tag
+    carries the architecture. Written here rather than by the caller so it
+    cannot disagree with what was actually copied.
+    """
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=False)
@@ -167,6 +220,13 @@ def copy_built_kernels(
             raise FileNotFoundError(f"Built kernel not found: {src}")
         dst.parent.mkdir(exist_ok=False, parents=False)
         shutil.copy2(src, dst)
+
+    if rocm_arch_list is not None:
+        from .jit.rocm.env import AOT_MANIFEST_NAME
+
+        (out_dir / AOT_MANIFEST_NAME).write_text(
+            json.dumps({"rocm_arch_list": rocm_arch_list}) + "\n"
+        )
 
 
 @contextlib.contextmanager
@@ -304,6 +364,8 @@ def _compile_and_package_modules(
         print("  f16_dtype:", config["f16_dtype"])
         print("  use_sliding_window:", config["use_sliding_window"])
         print("  use_logits_soft_cap:", config["use_logits_soft_cap"])
+        print("  add_act:", config["add_act"])
+        print("  add_misc:", config["add_misc"])
         print("  FLASHINFER_ROCM_ARCH_LIST:", rocm_arch_list)
 
     # Generate JIT specs
@@ -314,6 +376,8 @@ def _compile_and_package_modules(
         config["fa2_head_dim"],
         config["use_sliding_window"],
         config["use_logits_soft_cap"],
+        config["add_act"],
+        config["add_misc"],
     )
     if verbose:
         print("Total ops:", len(jit_specs))
@@ -323,7 +387,7 @@ def _compile_and_package_modules(
 
     # Copy built kernels
     if out_dir is not None:
-        copy_built_kernels(jit_specs, out_dir, build_dir)
+        copy_built_kernels(jit_specs, out_dir, build_dir, rocm_arch_list)
         if verbose:
             print("AOT kernels saved to:", out_dir)
 
@@ -350,6 +414,8 @@ def get_default_config():
         "f16_dtype": [torch.float16, torch.bfloat16],
         "use_sliding_window": [False, True],
         "use_logits_soft_cap": [False, True],
+        "add_act": True,
+        "add_misc": True,
     }
 
 
@@ -362,6 +428,8 @@ def register_default_modules() -> int:
         config["fa2_head_dim"],
         config["use_sliding_window"],
         config["use_logits_soft_cap"],
+        config["add_act"],
+        config["add_misc"],
     )
     return len(jit_specs)
 
@@ -395,6 +463,16 @@ def main():
         "--use-sliding-window", nargs="*", help="Use sliding window attention"
     )
     parser.add_argument("--use-logits-soft-cap", nargs="*", help="Use logits soft cap")
+    # Scalar, unlike the axes above: these select whole groups rather than
+    # values to iterate, so `type=` rather than `nargs="*"`.
+    parser.add_argument(
+        "--add-act", type=parse_bool, help="Build the gated-activation modules"
+    )
+    parser.add_argument(
+        "--add-misc",
+        type=parse_bool,
+        help="Build cascade/norm/page/quantization/rope/sampling",
+    )
     args = parser.parse_args()
 
     # Setup paths
@@ -416,6 +494,11 @@ def main():
         config["use_logits_soft_cap"] = [
             parse_bool(s) for s in args.use_logits_soft_cap
         ]
+    # `is not None`, not truthiness: `--add-act false` must survive.
+    if args.add_act is not None:
+        config["add_act"] = args.add_act
+    if args.add_misc is not None:
+        config["add_misc"] = args.add_misc
 
     # Use the reusable compile_and_package_modules function
     compile_and_package_modules(

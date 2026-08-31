@@ -63,6 +63,106 @@ def test_aot_dir_version_check_can_be_bypassed(monkeypatch):
     )
 
 
+def _wheel_with_manifest(monkeypatch, tmp_path, manifest_text, target_archs):
+    """A fake jit-cache wheel whose kernels were built for `manifest_text`.
+
+    `target_archs` is what this system resolves to, patched so the test does not
+    depend on the GPU it runs on -- the guard has to work on both.
+    """
+    import sys
+    import types
+
+    from flashinfer._version import __version__
+    from flashinfer.jit.rocm.env import AOT_MANIFEST_NAME
+
+    cache = tmp_path / "wheel_cache"
+    cache.mkdir()
+    if manifest_text is not None:
+        (cache / AOT_MANIFEST_NAME).write_text(manifest_text)
+
+    fake = types.ModuleType("amd_flashinfer_jit_cache")
+    fake.__version__ = __version__
+    fake.get_jit_cache_dir = lambda: str(cache)
+    monkeypatch.setitem(sys.modules, "amd_flashinfer_jit_cache", fake)
+    monkeypatch.delenv("FLASHINFER_DISABLE_VERSION_CHECK", raising=False)
+    monkeypatch.setattr(
+        "flashinfer.hip_utils.resolve_target_archs", lambda *a, **k: target_archs
+    )
+    return cache
+
+
+def test_matching_arch_uses_the_prebuilt_kernels(monkeypatch, tmp_path):
+    from flashinfer.jit.rocm.env import get_aot_dir
+
+    cache = _wheel_with_manifest(
+        monkeypatch, tmp_path, '{"rocm_arch_list": "gfx942"}', "gfx942"
+    )
+
+    assert get_aot_dir(pathlib.Path("/unused"), lambda: True) == cache
+
+
+def test_mismatched_arch_falls_back_to_jit_rather_than_serving_wrong_kernels(
+    monkeypatch, tmp_path
+):
+    """A gfx942 wheel on a gfx950 box must not be used.
+
+    JitSpec.is_aot is a bare exists() check, so returning the wheel dir here is
+    what would load gfx942 code on CDNA4. Falling back to the (empty) in-tree
+    dir is what makes is_aot False and sends every module to the JIT.
+    """
+    from flashinfer.jit.rocm.env import get_aot_dir
+
+    _wheel_with_manifest(
+        monkeypatch, tmp_path, '{"rocm_arch_list": "gfx942"}', "gfx950"
+    )
+
+    root = pathlib.Path("/pkg")
+    with pytest.warns(UserWarning, match="built for.*gfx942"):
+        assert get_aot_dir(root, lambda: True) == root / "data" / "aot"
+
+
+def test_a_fat_wheel_covers_a_single_target_arch(monkeypatch, tmp_path):
+    """Superset is a match -- otherwise a gfx942+gfx950 wheel serves nobody."""
+    from flashinfer.jit.rocm.env import get_aot_dir
+
+    cache = _wheel_with_manifest(
+        monkeypatch, tmp_path, '{"rocm_arch_list": "gfx942,gfx950"}', "gfx950"
+    )
+
+    assert get_aot_dir(pathlib.Path("/unused"), lambda: True) == cache
+
+
+def test_a_wheel_without_a_manifest_keeps_working(monkeypatch, tmp_path):
+    """Wheels built before this check must not break on upgrade."""
+    from flashinfer.jit.rocm.env import get_aot_dir
+
+    cache = _wheel_with_manifest(monkeypatch, tmp_path, None, "gfx950")
+
+    assert get_aot_dir(pathlib.Path("/unused"), lambda: True) == cache
+
+
+def test_an_unreadable_manifest_warns_but_does_not_break_the_install(
+    monkeypatch, tmp_path
+):
+    from flashinfer.jit.rocm.env import get_aot_dir
+
+    cache = _wheel_with_manifest(monkeypatch, tmp_path, "not json{", "gfx950")
+
+    with pytest.warns(UserWarning, match="Could not read"):
+        assert get_aot_dir(pathlib.Path("/unused"), lambda: True) == cache
+
+
+def test_the_arch_check_honours_the_documented_bypass(monkeypatch, tmp_path):
+    from flashinfer.jit.rocm.env import get_aot_dir
+
+    cache = _wheel_with_manifest(
+        monkeypatch, tmp_path, '{"rocm_arch_list": "gfx942"}', "gfx950"
+    )
+    monkeypatch.setenv("FLASHINFER_DISABLE_VERSION_CHECK", "1")
+
+    assert get_aot_dir(pathlib.Path("/unused"), lambda: True) == cache
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="No GPU available")
 def test_workspace_dir_is_keyed_by_version_and_arch():
     """<cache>/<version>/<arch> -- the arch segment keeps gfx942 and gfx950 apart.

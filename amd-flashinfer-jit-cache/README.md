@@ -14,11 +14,26 @@ This package is intended to be installed alongside the main `amd-flashinfer` pac
 pip install amd-flashinfer amd-flashinfer-jit-cache
 ```
 
+## Contents
+
+- FA2 attention: single/batch prefill and decode, across the head dims, dtypes,
+  sliding-window and logits-soft-cap combinations in `get_default_config()`.
+- The ops `backend="auto"` always resolves to a native HIP kernel: `rmsnorm`,
+  rope, paged-KV append, sampling, quantization, cascade, and the gated
+  activations. Build without them via `--add-misc false` / `--add-act false`.
+
+The AITER shims are deliberately absent: they link against a per-user,
+per-architecture AITER cache directory, so a prebuilt one cannot be relocated
+to another machine.
+
 ## Architecture Support
 
 This package is built specifically for the **AMD MI300 series (gfx942)** architecture.
 
-Check the package version and tags to ensure compatibility with your GPU architecture.
+The architecture it was built for is recorded in `jit_cache/aot_manifest.json`.
+On a GPU it does not cover, FlashInfer ignores the prebuilt kernels, warns, and
+compiles from source rather than loading the wrong ISA. The wheel tag carries no
+architecture, so nothing prevents installing it on an unsupported GPU.
 
 ## Development
 
