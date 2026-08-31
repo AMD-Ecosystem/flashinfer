@@ -14,8 +14,13 @@
  * limitations under the License.
  */
 #pragma once
-#include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
+// clang-format off
+// Python.h first: CPython requires it ahead of system headers, and the torch
+// and ATen headers below pull those in.
 #include <Python.h>
+// clang-format on
+
+#include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <c10/hip/HIPGuard.h>
 #include <c10/hip/HIPStream.h>
 #include <torch/library.h>

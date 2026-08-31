@@ -282,7 +282,7 @@ def main() -> int:
             )
             print(
                 "README.md arch support matrix is out of date with "
-                "flashinfer/arch_caps.py.\n"
+                "flashinfer/rocm/arch_caps.py.\n"
                 "Regenerate it with:\n"
                 "    python3 scripts/gen_arch_support_matrix.py\n",
                 file=sys.stderr,

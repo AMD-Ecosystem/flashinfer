@@ -11,6 +11,8 @@ in the suite's torch-importing conftest — there is no CPU-only lane to put thi
 in, and ``tests/rocm`` is the only directory ``testpaths`` covers.
 """
 
+import pathlib
+import re
 import importlib.util
 import shutil
 import zipfile
@@ -354,3 +356,65 @@ def test_build_sdist_sees_no_copy_and_leaves_nothing(hooks):
 
     assert seen["state"] == "absent"
     assert _describe(_inc(backend)[1]) == "absent"
+
+
+def test_the_kept_header_set_covers_every_include_that_escapes_rocm():
+    """The prune is safe only if nothing under rocm/ reaches a header it drops.
+
+    The wheel assertions above check policy -- everything shipped is one we meant
+    to ship. They cannot catch the opposite failure: a new `#include` pointing at
+    an upstream header, which leaves the wheel's JIT unable to compile while both
+    assertions still pass. Covers the Python-emitted includes too, since
+    jit/rocm/modules.py writes `#include` lines into generated sources.
+    """
+    bb = _load_backend()
+    pattern = re.compile(r'#\s*include\s*[<"](flashinfer/[^">]+)[>"]')
+
+    roots = [
+        _REPO_ROOT / "include" / "flashinfer" / "rocm",
+        _REPO_ROOT / "csrc" / "rocm",
+        _REPO_ROOT / "flashinfer" / "jit" / "rocm",
+    ]
+    escaping = {}
+    for root in roots:
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix not in {
+                ".cuh",
+                ".h",
+                ".hpp",
+                ".cu",
+                ".cc",
+                ".jinja",
+                ".py",
+            }:
+                continue
+            for inc in pattern.findall(
+                path.read_text(encoding="utf-8", errors="ignore")
+            ):
+                if not inc.startswith("flashinfer/rocm/"):
+                    escaping.setdefault(inc, []).append(
+                        path.relative_to(_REPO_ROOT).as_posix()
+                    )
+
+    unshipped = {
+        inc: where
+        for inc, where in escaping.items()
+        if not bb._wanted_in_wheel(pathlib.Path(inc))
+    }
+    # jit/rocm/modules.py emits an fa3-only include; fa3 raises before any source
+    # is written on ROCm, so it is unreachable rather than missing.
+    unshipped.pop("flashinfer/attention/hopper/variants.cuh", None)
+    assert not unshipped, (
+        "these includes escape rocm/ but are not in _WHEEL_HEADER_FILES, so the "
+        f"wheel would ship without them: {unshipped}"
+    )
+
+
+def test_pruning_everything_is_an_error_not_a_silent_empty_wheel(backend, tmp_path):
+    """The guard in _prune_unshipped_headers; nothing else covers it."""
+    empty = tmp_path / "only-upstream"
+    (empty / "flashinfer").mkdir(parents=True)
+    (empty / "flashinfer" / "upstream.cuh").write_text("// x\n")
+
+    with pytest.raises(RuntimeError, match="pruned every header"):
+        backend._prune_unshipped_headers(empty)

@@ -258,7 +258,7 @@ Backend Legend:
 On AMD the supported-backend table above does not apply: gfx942 and gfx950 report
 compute capability 9.4 and 9.5, which match no entry in it. The ROCm branch keys
 off the GPU architecture instead and derives the backend list from
-[`flashinfer/arch_caps.py`](../flashinfer/arch_caps.py), so it tracks the
+[`flashinfer/rocm/arch_caps.py`](../flashinfer/rocm/arch_caps.py), so it tracks the
 arch-support matrix rather than restating it.
 
 Only the attention routines are available. `gemm` and `moe` are not built on

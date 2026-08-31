@@ -137,7 +137,7 @@ python3 scripts/amd_coverage.py                           # re-score an existing
 
 **The last measured run is committed** at [`docs/rocm/coverage-gfx942.json`](docs/rocm/coverage-gfx942.json), so a change that drops coverage shows up as a reviewable diff rather than going unnoticed until someone re-runs the suite by hand (about 75 minutes under `--cov` instrumentation, against the ~20 min in the table above uninstrumented). Refresh it in the same commit as any change that moves the number, and before each `+amd.N` tag, by adding `--json-out docs/rocm/coverage-gfx942.json` to the invocation above; relative paths are anchored to the repository root, so it does not matter where you run it from. There is no automated gate — a stale payload is invisible, and the artifact records no HEAD sha to check it against, so this is a convention rather than an enforcement.
 
-**Say what the AITER lib cache was.** `jit/aiter_source.py`'s build path executes only when `ensure_aiter_lib` actually builds, so that file measures **32 lines higher** on a cold `~/.cache/flashinfer` than on a warm one — 120/124 against 88/124, observed across two runs on gfx942 on 2026-08-28. Neither is wrong, but two numbers only compare if the cache policy matched, and roughly 0.9 points of the headline turns on it. The committed payload above is a **warm-cache** run; regenerate it warm unless you also update this sentence. (The two runs differed by other commits as well, so they do not isolate the effect at the headline level — the per-file figure is what was measured.)
+**Say what the AITER lib cache was.** `jit/rocm/aiter_source.py`'s build path executes only when `ensure_aiter_lib` actually builds, so that file measures **32 lines higher** on a cold `~/.cache/flashinfer` than on a warm one — 120/124 against 88/124, observed across two runs on gfx942 on 2026-08-28. Neither is wrong, but two numbers only compare if the cache policy matched, and roughly 0.9 points of the headline turns on it. The committed payload above is a **warm-cache** run; regenerate it warm unless you also update this sentence. (The two runs differed by other commits as well, so they do not isolate the effect at the headline level — the per-file figure is what was measured.)
 
 **There is no GPU CI**, so nobody produces this number for you — every `.github/workflows` job runs on `ubuntu-latest` or a CPU self-hosted runner, and the `Jenkinsfile` is upstream's unused CUDA pipeline. Run it on a GPU box and say which architecture it came from: `arch_caps.py` gates behaviour per gfx942/gfx950, so a single-arch run leaves the other's branches unexecuted. The honest union is `coverage combine` across both, which needs `[tool.coverage.paths]` **and** must run from a checkout containing the sources — coverage only aliases onto a path that exists on disk, and is otherwise a silent no-op that halves the number.
 
@@ -155,7 +155,7 @@ flashinfer/
 ├── csrc/                     # upstream CUDA op registration (PyTorch bindings)
 │   └── rocm/                 # HIP op registration — fork-owned, upstream has nothing here
 ├── flashinfer/
-│   ├── jit/                  # Python JIT compilation infra (cpp_ext_hip.py is the HIP entry)
+│   ├── jit/                  # Python JIT compilation infra (jit/rocm/ holds the HIP entry points)
 │   └── *.py                  # Python user-facing API (e.g. attention.py, mla_rocm.py)
 ├── tests/rocm/         # HIP test suite (test_*.py)
 ├── benchmarks/rocm/  # ROCm-specific benchmarks
@@ -224,7 +224,7 @@ carry the upstream name.
    `flashinfer/sampling.py` and `flashinfer/quantization.py` contain no HIP
    references at all. Use it whenever only the kernel differs.
 2. **A ROCm module beside the upstream one**, swapped into `sys.modules` in
-   `flashinfer/__init__.py` — how `prefill_rocm.py` and `decode_rocm.py` are
+   `flashinfer/__init__.py` — how `rocm/prefill.py` and `rocm/decode.py` are
    reached.
 3. **A declared-unsupported gate**, so an op the port does not implement raises
    a named error rather than `AttributeError`. See the meta-path loader in
@@ -236,7 +236,7 @@ mechanisms above cannot serve. `scripts/upstream_canary.py` is the authoritative
 list — it reports exactly which files a merge would conflict on. The ownership
 tiers that `scripts/amd_coverage.py` reports are *not* that list: they cover
 `flashinfer/**/*.py` plus the build backend and `scripts/`, they count ROCm-only
-additions such as `prefill_rocm.py` that are not edits to anything, and an
+additions such as `rocm/prefill.py` that are not edits to anything, and an
 in-place edit under `csrc/` or `include/` never appears there at all.
 
 **Forked headers are exempt from conflicts and therefore from warnings.**
