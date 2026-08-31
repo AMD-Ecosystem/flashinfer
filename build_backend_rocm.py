@@ -8,33 +8,40 @@ Kept separate from upstream's ``build_backend.py``, which stays byte-identical
 and unused, so rebases never conflict on it. ``pyproject.toml`` selects this one.
 
 This is a thin wrapper around ``setuptools.build_meta`` whose only extra job is
-managing ``flashinfer/include``, materialized from the top-level ``include/``.
+materializing two generated trees inside the package, from sources that live at
+the repository root: ``flashinfer/include`` from ``include/``, and
+``flashinfer/csrc/rocm`` from ``csrc/rocm/``.
 
-Why that matters: ``flashinfer/get_include_paths.py`` resolves headers as
-``Path(__file__).parent / "include"``, which becomes ``FLASHINFER_INCLUDE_DIR``
-in ``flashinfer/jit/env.py`` and is passed as ``-isystem`` on every HIP JIT
-compile. Without it, nothing builds at *runtime*, not just at build time.
+Why that matters: ``flashinfer/get_include_paths.py`` resolves both as
+``Path(__file__).parent / ...``, which become ``FLASHINFER_INCLUDE_DIR`` and
+``FLASHINFER_CSRC_DIR`` in ``flashinfer/jit/env.py``. One is passed as
+``-isystem`` on every HIP JIT compile and the other is where the ``.cu`` sources
+are read from, so without them nothing builds at *runtime*, not just at build
+time. Keeping the destinations unchanged is what lets the sources move to the
+root without touching the packaging globs or the public path helpers.
 
 Three materialization modes, and the differences are load-bearing:
 
-- editable -> a relative symlink, so edits under ``include/`` are picked up with
-  no rebuild (and it matches the manual worktree setup documented in CLAUDE.md).
+- editable -> a relative symlink, so edits under the source tree are picked up
+  with no rebuild (and it matches the manual worktree setup in CLAUDE.md).
 - wheel -> a real recursive copy, because a symlink is not followed into a wheel
   and would ship a dangling link.
-- sdist -> cleared; the tarball carries top-level ``include/`` via MANIFEST.in.
+- sdist -> cleared; the tarball carries the root trees, ``include/`` via
+  MANIFEST.in and ``csrc/rocm/`` via setuptools-scm's tracked-file finder.
 
 Wheel and sdist build in the checkout, so neither leaves a copy behind: a
-symlink is put back, and any other ``flashinfer/include`` is deleted rather
-than left to shadow ``include/`` (see ``_restoring_pkg_include``).
+symlink is put back, and any other generated tree is deleted rather than left to
+shadow the source (see ``_restoring_pkg_trees``).
 
-The header filter mirrors what the retired CMake ``install(DIRECTORY ...)`` rule
-did, so wheel contents do not change with this backend swap.
+The per-tree suffix filters mirror the ``package-data`` globs in
+``pyproject.toml``, so wheel contents do not change with a source move.
 
 Versioning is handled entirely by setuptools-scm via ``[tool.setuptools_scm]``
 (which writes ``flashinfer/_version.py``). This backend deliberately does not
 implement the upstream ``version.txt`` / ``_build_meta.py`` scheme.
 """
 
+import os
 import shutil
 from contextlib import contextmanager
 from pathlib import Path
@@ -42,11 +49,23 @@ from pathlib import Path
 from setuptools import build_meta as _orig
 
 _root = Path(__file__).parent.resolve()
-_src_include = _root / "include"
-_pkg_include = _root / "flashinfer" / "include"
 
-# Matches the old CMake rule: FILES_MATCHING REGEX "\\.(cuh|h|hpp)$".
-_HEADER_SUFFIXES = {".cuh", ".h", ".hpp"}
+
+def _trees():
+    """(source at the repo root, destination in the package, suffixes to copy).
+
+    Computed per call rather than at import so rebinding ``_root`` redirects
+    every tree at once; the link target follows the destination's depth.
+    """
+    return (
+        # Header suffixes match the old CMake rule: REGEX "\\.(cuh|h|hpp)$".
+        (_root / "include", _root / "flashinfer" / "include", {".cuh", ".h", ".hpp"}),
+        (
+            _root / "csrc" / "rocm",
+            _root / "flashinfer" / "csrc" / "rocm",
+            {".cu", ".cc", ".h", ".jinja"},
+        ),
+    )
 
 
 def _clear(path: Path) -> None:
@@ -61,66 +80,79 @@ def _clear(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def _materialize_include(use_symlink: bool) -> None:
-    if not _src_include.is_dir():
-        raise RuntimeError(f"missing source header tree: {_src_include}")
+def _link_target(src: Path, dst: Path) -> Path:
+    """Relative path from ``dst``'s parent back to ``src``."""
+    return Path(os.path.relpath(src, dst.parent))
 
-    _clear(_pkg_include)
+
+def _materialize(src: Path, dst: Path, suffixes: set, use_symlink: bool) -> None:
+    if not src.is_dir():
+        raise RuntimeError(f"missing source tree: {src}")
+
+    _clear(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
 
     if use_symlink:
         # Relative, so the link stays valid if the checkout is moved or bind
         # mounted at a different path inside a container.
-        _pkg_include.symlink_to(Path("..") / "include", target_is_directory=True)
+        dst.symlink_to(_link_target(src, dst), target_is_directory=True)
         return
 
     shutil.copytree(
-        _src_include,
-        _pkg_include,
+        src,
+        dst,
         symlinks=False,
         ignore=lambda _dir, names: [
             n
             for n in names
-            if not (Path(_dir) / n).is_dir() and Path(n).suffix not in _HEADER_SUFFIXES
+            if not (Path(_dir) / n).is_dir() and Path(n).suffix not in suffixes
         ],
     )
 
 
 def _prepare_for_editable() -> None:
-    _materialize_include(use_symlink=True)
+    for src, dst, suffixes in _trees():
+        _materialize(src, dst, suffixes, use_symlink=True)
 
 
 def _prepare_for_wheel() -> None:
-    _materialize_include(use_symlink=False)
+    for src, dst, suffixes in _trees():
+        _materialize(src, dst, suffixes, use_symlink=False)
 
 
 def _prepare_for_sdist() -> None:
-    """Clear the generated copy; the sdist ships top-level ``include/``.
+    """Clear the generated copies; the sdist ships the root trees instead.
 
-    A real copy would duplicate the header tree in the tarball, a symlink would
-    dangle, and a wheel built from the sdist re-materializes it anyway.
+    A real copy would duplicate them in the tarball, a symlink would dangle, and
+    a wheel built from the sdist re-materializes them anyway.
     """
-    _clear(_pkg_include)
+    for _src, dst, _suffixes in _trees():
+        _clear(dst)
 
 
 @contextmanager
-def _restoring_pkg_include():
-    """Leave ``flashinfer/include`` a symlink, or leave it absent.
+def _restoring_pkg_trees():
+    """Leave each generated tree a symlink, or leave it absent.
 
-    A generated copy left in the checkout is what ``get_include()`` resolves
-    later, shadowing edits under ``include/``. Absent fails loudly; stale does
-    not. A restored link is re-made relative, since the retired CMake hook wrote
-    absolute ones and those break under a bind mount.
+    A generated copy left in the checkout is what ``get_include()`` and
+    ``get_csrc_dir()`` resolve later, shadowing edits under the real source.
+    Absent fails loudly; stale does not. A restored link is re-made relative,
+    since the retired CMake hook wrote absolute ones and those break under a
+    bind mount.
     """
-    had_link = _pkg_include.is_symlink()
+    trees = _trees()
+    had_link = [dst.is_symlink() for _src, dst, _suffixes in trees]
     try:
         yield
     finally:
-        _clear(_pkg_include)
-        if had_link:
-            # Linked directly, not via _prepare_for_editable: that validates
-            # include/ and would raise out of this finally, masking the build's
-            # own error and leaving nothing behind.
-            _pkg_include.symlink_to(Path("..") / "include", target_is_directory=True)
+        for (src, dst, _suffixes), was_link in zip(trees, had_link, strict=True):
+            _clear(dst)
+            if was_link:
+                # Linked directly, not via _prepare_for_editable: that validates
+                # the source and would raise out of this finally, masking the
+                # build's own error and leaving nothing behind.
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.symlink_to(_link_target(src, dst), target_is_directory=True)
 
 
 # --------------------------------------------------------------- PEP 517 hooks
@@ -152,13 +184,13 @@ def prepare_metadata_for_build_editable(metadata_directory, config_settings=None
 
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
-    with _restoring_pkg_include():
+    with _restoring_pkg_trees():
         _prepare_for_wheel()
         return _orig.build_wheel(wheel_directory, config_settings, metadata_directory)
 
 
 def build_sdist(sdist_directory, config_settings=None):
-    with _restoring_pkg_include():
+    with _restoring_pkg_trees():
         _prepare_for_sdist()
         return _orig.build_sdist(sdist_directory, config_settings)
 

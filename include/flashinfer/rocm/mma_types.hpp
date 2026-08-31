@@ -4,12 +4,12 @@
 #pragma once
 
 namespace flashinfer {
-namespace mma_hip {
+namespace mma {
 
 enum class MMAMode {
   kInit = 0U,
   kInplaceUpdate = 1U,
 };
 
-}  // namespace mma_hip
+}  // namespace mma
 }  // namespace flashinfer

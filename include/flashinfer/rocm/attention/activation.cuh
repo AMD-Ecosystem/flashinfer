@@ -4,7 +4,7 @@
 
 #ifdef FLASHINFER_ACTIVATION_CUH_
 #error \
-    "include/flashinfer/activation.cuh and include/flashinfer/rocm/attention/activation.cuh both define FLASHINFER_ACTIVATION_CUH_; include only one"
+    "include/flashinfer/activation.cuh and include/flashinfer/rocm/attention/activation.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_ACTIVATION_CUH_
@@ -13,10 +13,10 @@
 #include <algorithm>
 
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
-#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/math.h"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"
-#include "flashinfer/rocm/vec_dtypes_hip.h"
+#include "flashinfer/rocm/vec_dtypes.h"
 
 namespace flashinfer {
 namespace activation {
@@ -26,7 +26,7 @@ namespace activation {
 // across blocks_per_row blocks on gridDim.y until the total block count covers
 // the CU array. For large num_tokens this resolves to blocks_per_row == 1, i.e.
 // the original one-block-per-token launch. Single definition shared by the AOT
-// launcher (flashinfer/csrc/rocm/activation.cu) and the JIT template
+// launcher (csrc/rocm/activation.cu) and the JIT template
 // (flashinfer/jit/activation.py) so the two paths cannot drift.
 inline void act_and_mul_launch_dims(int d, int64_t num_tokens, uint32_t vec_size, int dev_id,
                                     dim3& grid_dim, dim3& block_dim) {

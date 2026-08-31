@@ -5,7 +5,7 @@
 #pragma once
 #ifdef FLASHINFER_NORM_CUH_
 #error \
-    "include/flashinfer/norm.cuh and include/flashinfer/rocm/attention/norm.cuh both define FLASHINFER_NORM_CUH_; include only one"
+    "include/flashinfer/norm.cuh and include/flashinfer/rocm/attention/norm.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_NORM_CUH_
@@ -15,10 +15,10 @@
 
 #include "flashinfer/rocm/dispatch.cuh"
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
-#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/math.h"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"
-#include "flashinfer/rocm/vec_dtypes_hip.h"
+#include "flashinfer/rocm/vec_dtypes.h"
 namespace flashinfer {
 
 namespace norm {

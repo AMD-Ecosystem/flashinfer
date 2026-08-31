@@ -4,7 +4,7 @@
 
 #ifdef FLASHINFER_POS_ENC_CUH_
 #error \
-    "include/flashinfer/pos_enc.cuh and include/flashinfer/rocm/attention/pos_enc.cuh both define FLASHINFER_POS_ENC_CUH_; include only one"
+    "include/flashinfer/pos_enc.cuh and include/flashinfer/rocm/attention/pos_enc.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_POS_ENC_CUH_
@@ -21,10 +21,10 @@
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
 #include "flashinfer/rocm/layout.cuh"
 #include "flashinfer/rocm/macros.hpp"
-#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/math.h"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"
-#include "flashinfer/rocm/vec_dtypes_hip.h"
+#include "flashinfer/rocm/vec_dtypes.h"
 #include "page.cuh"
 
 namespace flashinfer {

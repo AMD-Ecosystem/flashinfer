@@ -4,15 +4,15 @@
 
 #ifdef FLASHINFER_STATE_CUH_
 #error \
-    "include/flashinfer/attention/state.cuh and include/flashinfer/rocm/attention/state.cuh both define FLASHINFER_STATE_CUH_; include only one"
+    "include/flashinfer/attention/state.cuh and include/flashinfer/rocm/attention/state.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_STATE_CUH_
 #define FLASHINFER_ROCM_ATTENTION_STATE_CUH_
 
-#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/math.h"
 #include "flashinfer/rocm/platform.hpp"
-#include "flashinfer/rocm/vec_dtypes_hip.h"
+#include "flashinfer/rocm/vec_dtypes.h"
 
 #if defined(PLATFORM_HIP_DEVICE)
 #define HIP_ENABLE_WARP_SYNC_BUILTINS 1

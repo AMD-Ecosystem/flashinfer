@@ -4,7 +4,7 @@
 
 #ifdef FLASHINFER_ALLOCATOR_H_
 #error \
-    "include/flashinfer/allocator.h and include/flashinfer/rocm/attention/allocator.h both define FLASHINFER_ALLOCATOR_H_; include only one"
+    "include/flashinfer/allocator.h and include/flashinfer/rocm/attention/allocator.h define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_ALLOCATOR_H_

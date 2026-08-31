@@ -1,7 +1,7 @@
 # Hardware-less conformance check for the per-op/per-arch capability table.
 #
 # Every other ROCm test in this repo needs an MI300X/MI355X and a ROCm toolchain,
-# so nothing in tests/rocm_tests/ runs on a pull request today. The capability
+# so nothing in tests/rocm/ runs on a pull request today. The capability
 # table is the one piece that can: it is pure data plus routing logic, and its
 # suite is written to load flashinfer/arch_caps.py and flashinfer/hip_utils.py
 # directly rather than importing the package (flashinfer/__init__.py raises on a
@@ -45,29 +45,29 @@ jobs:
           python -m pip install --upgrade pip pytest build
           python -m pip install 'setuptools>=80' 'setuptools-scm>=9.2' 'packaging>=24'
 
-      # --noconftest: tests/conftest.py and tests/rocm_tests/conftest.py both
+      # --noconftest: tests/conftest.py and tests/rocm/conftest.py both
       # import torch and flashinfer at module scope, so collecting under
-      # tests/rocm_tests/ would fail here long before this file is reached. The
+      # tests/rocm/ would fail here long before this file is reached. The
       # suite defines its own fixtures and needs nothing from either conftest;
       # test_suite_loads_without_torch is what keeps that true.
       - name: Capability-table conformance (no GPU, no torch)
-        run: pytest --noconftest tests/rocm_tests/test_arch_caps_hip.py
+        run: pytest --noconftest tests/rocm/test_arch_caps.py
 
       # Flag plumbing in the HIP JIT ninja generator. It stubs torch to load
       # cpp_ext_hip.py, which is what lets it run here; without this step that
-      # stubbing buys nothing, since no other lane collects tests/rocm_tests/.
+      # stubbing buys nothing, since no other lane collects tests/rocm/.
       - name: HIP JIT flag plumbing (no GPU, no torch)
-        run: pytest --noconftest tests/rocm_tests/test_jit_flag_hooks.py
+        run: pytest --noconftest tests/rocm/test_jit_flag_hooks.py
 
       # The other hardware-less suite: ownership classification for
       # scripts/amd_coverage.py. Mostly throwaway git repositories, but one case
       # resolves the base against this checkout and skips when it cannot, so -rs
       # keeps that from vanishing silently.
       - name: Coverage-ownership classification (no GPU, no torch)
-        run: pytest -rs --noconftest tests/rocm_tests/test_amd_coverage.py
+        run: pytest -rs --noconftest tests/rocm/test_amd_coverage.py
 
       # The repo-maintenance scripts. Git and filesystem only, so this is the
-      # only lane that runs them -- tests/rocm_tests/ is otherwise GPU-gated.
+      # only lane that runs them -- tests/rocm/ is otherwise GPU-gated.
       # The matrix suite doubles as the README staleness check for anyone who
       # committed with pre-commit disabled.
       # -rs because test_build_backend.py importorskips `build`; without it a
@@ -75,10 +75,10 @@ jobs:
       - name: Repo-maintenance scripts (no GPU, no torch)
         run: |
           pytest -rs --noconftest \
-            tests/rocm_tests/test_upstream_canary.py \
-            tests/rocm_tests/test_git_describe_rocm.py \
-            tests/rocm_tests/test_gen_arch_support_matrix.py \
-            tests/rocm_tests/test_build_backend.py
+            tests/rocm/test_upstream_canary.py \
+            tests/rocm/test_git_describe.py \
+            tests/rocm/test_gen_arch_support_matrix.py \
+            tests/rocm/test_build_backend.py
 
       # The unit tests once stayed green while the tool itself raised on every
       # invocation, so CI has to actually invoke it. This also fails loudly if

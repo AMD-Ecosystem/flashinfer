@@ -5,12 +5,12 @@
 #pragma once
 #ifdef FLASHINFER_CASCADE_CUH_
 #error \
-    "include/flashinfer/attention/cascade.cuh and include/flashinfer/rocm/attention/cascade.cuh both define FLASHINFER_CASCADE_CUH_; include only one"
+    "include/flashinfer/attention/cascade.cuh and include/flashinfer/rocm/attention/cascade.cuh define the same symbols; include only one"
 #endif
 #include "flashinfer/rocm/dispatch.cuh"
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
-#include "flashinfer/rocm/math_hip.h"
-#include "flashinfer/rocm/memory_ops_hip.h"
+#include "flashinfer/rocm/math.h"
+#include "flashinfer/rocm/memory_ops.h"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"
 #include "state.cuh"

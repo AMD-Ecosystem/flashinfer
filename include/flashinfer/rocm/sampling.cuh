@@ -20,7 +20,7 @@
  */
 #ifdef FLASHINFER_SAMPLING_CUH_
 #error \
-    "include/flashinfer/sampling.cuh and include/flashinfer/rocm/sampling.cuh both define FLASHINFER_SAMPLING_CUH_; include only one"
+    "include/flashinfer/sampling.cuh and include/flashinfer/rocm/sampling.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_SAMPLING_CUH_
@@ -38,8 +38,8 @@
 #include <hipcub/hipcub.hpp>
 namespace cub = hipcub;
 
-#include <flashinfer/rocm/math_hip.h>
-#include <flashinfer/rocm/vec_dtypes_hip.h>
+#include <flashinfer/rocm/math.h>
+#include <flashinfer/rocm/vec_dtypes.h>
 
 #include <flashinfer/rocm/utils.cuh>
 

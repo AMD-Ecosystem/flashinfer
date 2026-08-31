@@ -4,7 +4,7 @@
 
 #ifdef FLASHINFER_EXCEPTION_H_
 #error \
-    "include/flashinfer/exception.h and include/flashinfer/rocm/exception.h both define FLASHINFER_EXCEPTION_H_; include only one"
+    "include/flashinfer/exception.h and include/flashinfer/rocm/exception.h define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_EXCEPTION_H_

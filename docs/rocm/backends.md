@@ -45,8 +45,8 @@ specifier.
 
 **`aiter_utils.AITER_MIN_VERSION` (0.1.16) is a hard floor**, enforced
 before routing. FlashInfer links AITER's C++ symbols by mangled name
-(`flashinfer/csrc/rocm/aiter_loader.cc`) and vendors its argument structs
-(`include/flashinfer/attention/aiter/`) at the 0.1.16 layout, so an older
+(`csrc/rocm/aiter_loader.cc`) and vendors its argument structs
+(`include/flashinfer/rocm/attention/aiter/`) at the 0.1.16 layout, so an older
 release shifts field offsets instead of failing to load. Below the floor
 `auto` will not select AITER and an explicit `backend="aiter"` raises.
 
@@ -146,7 +146,7 @@ not because AITER is unavailable:
   kernel's `vec_size` (`gcd(16/sizeof(T), d)`) collapses to 1 or 4 — but no
   model uses those widths, and the win is absent on gfx942 for the shapes
   where gfx950 shows it. Re-run with
-  `python benchmarks/rocm_benchmarks/bench_norm.py --aa` for the noise floor
+  `python benchmarks/rocm/bench_norm.py --aa` for the noise floor
   and then without `--aa`; read the A/A first, since a margin inside it is
   not a result.
 
@@ -311,8 +311,8 @@ fp8 on the AITER attention paths is work in progress.
 
 Every row in the README matrix is covered by the default `pytest`
 selection (`testpaths` in `pyproject.toml`). Most have a matching
-`tests/rocm_tests/test_*_hip.py`. Two are covered from elsewhere:
-`single_decode` from `test_batch_decode_kernels_hip.py`,
-`test_sliding_window_hip.py`, and `test_logits_cap_hip.py`; `quantization`
+`tests/rocm/test_*.py`. Two are covered from elsewhere:
+`single_decode` from `test_batch_decode_kernels.py`,
+`test_sliding_window.py`, and `test_logits_cap.py`; `quantization`
 (`packbits`, `segment_packbits`) from `tests/utils/test_quantization.py`,
 which is shared with the CUDA suite rather than ROCm-specific.

@@ -5,7 +5,7 @@
 #pragma once
 #ifdef FLASHINFER_DECODE_PARAMS_CUH_
 #error \
-    "include/flashinfer/attention/default_decode_params.cuh and include/flashinfer/rocm/attention/default_decode_params.cuh both define FLASHINFER_DECODE_PARAMS_CUH_; include only one"
+    "include/flashinfer/attention/default_decode_params.cuh and include/flashinfer/rocm/attention/default_decode_params.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_DEFAULT_DECODE_PARAMS_CUH_

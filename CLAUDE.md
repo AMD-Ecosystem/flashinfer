@@ -35,12 +35,19 @@ stale-binary failures.
 git worktree add -b <branch-name> tmp/worktrees/<branch-name> origin/amd-integration
 ```
 
-A fresh worktree is source-only: recreate `flashinfer/include` as a **relative**
-symlink (`rm -rf flashinfer/include && ln -s ../include flashinfer/include` — the
-`rm` matters, since `ln -f` will not clear a real directory) and copy
-`flashinfer/_version.py` from the main checkout, or the JIT will not build.
-`_version.py` only exists there once that checkout has been installed or built.
-Details: `pr-workflow` skill.
+A fresh worktree is source-only. Recreate both generated trees as **relative**
+symlinks and copy `flashinfer/_version.py` from the main checkout, or the JIT
+will not build:
+
+```bash
+rm -rf flashinfer/include flashinfer/csrc     # ln -f will not clear a real dir
+ln -s ../include flashinfer/include
+mkdir -p flashinfer/csrc && ln -s ../../csrc/rocm flashinfer/csrc/rocm
+cp <main-checkout>/flashinfer/_version.py flashinfer/_version.py
+```
+
+`_version.py` only exists in the main checkout once it has been installed or
+built. Details: `pr-workflow` skill.
 
 ## Essential Commands
 
@@ -97,7 +104,7 @@ JIT generator (the HIP path injects `-O3` before `extra_cuda_cflags`, so trailin
 
 **Framework separation**: Torch headers **must not** be included in `include/`
 files. `include/` is framework-agnostic (raw pointers only);
-`flashinfer/csrc/rocm/` is where PyTorch tensor handling lives. Violations
+`csrc/rocm/` is where PyTorch tensor handling lives. Violations
 cause subtle build failures.
 
 **Test parallelism**: `pytest -n auto` automatically halves the physical GPU

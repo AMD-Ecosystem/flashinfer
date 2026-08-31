@@ -5,7 +5,7 @@
 #pragma once
 #ifdef FLASHINFER_PAGE_CUH_
 #error \
-    "include/flashinfer/page.cuh and include/flashinfer/rocm/attention/page.cuh both define FLASHINFER_PAGE_CUH_; include only one"
+    "include/flashinfer/page.cuh and include/flashinfer/rocm/attention/page.cuh define the same symbols; include only one"
 #endif
 
 #include <vector>
@@ -16,7 +16,7 @@
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
 #include "flashinfer/rocm/layout.cuh"
 #include "flashinfer/rocm/utils.cuh"
-#include "flashinfer/rocm/vec_dtypes_hip.h"
+#include "flashinfer/rocm/vec_dtypes.h"
 
 namespace flashinfer {
 /*!

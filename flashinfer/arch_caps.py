@@ -73,10 +73,10 @@ class ArchCapabilityError(ValueError, RuntimeError):
     ROCm arch checks through one type churns no call sites:
 
     - ``ValueError`` -- ``aiter_utils.require_aiter`` raised ``ValueError``, and
-      ``tests/rocm_tests/test_activation_aiter_hip.py:67`` asserts on it.
+      ``tests/rocm/test_activation_aiter.py:67`` asserts on it.
     - ``RuntimeError`` -- ``prefill_rocm`` and ``mla_rocm`` raised
       ``RuntimeError``, and
-      ``tests/rocm_tests/test_batch_prefill_bf16_custom_mask_hip.py:157``
+      ``tests/rocm/test_batch_prefill_bf16_custom_mask.py:157``
       catches it.
 
     Deliberately *not* an ``ImportError``: a missing ``aiter`` package is a

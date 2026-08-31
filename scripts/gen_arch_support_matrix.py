@@ -25,7 +25,7 @@ row.
 Deliberately imports nothing from the ``flashinfer`` package: ``__init__.py``
 raises on a CPU-only torch build, and this script must run in the same
 hardware-less environment as pre-commit. The loader below mirrors the one in
-``tests/rocm_tests/test_arch_caps_hip.py``; the duplication is intentional, as
+``tests/rocm/test_arch_caps.py``; the duplication is intentional, as
 each has to stand alone in an environment where the other may not be importable.
 """
 

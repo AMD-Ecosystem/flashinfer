@@ -5,7 +5,7 @@
 
 #ifdef FLASHINFER_FASTDIV_CUH_
 #error \
-    "include/flashinfer/fastdiv.cuh and include/flashinfer/rocm/fastdiv.cuh both define FLASHINFER_FASTDIV_CUH_; include only one"
+    "include/flashinfer/fastdiv.cuh and include/flashinfer/rocm/fastdiv.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_FASTDIV_CUH_

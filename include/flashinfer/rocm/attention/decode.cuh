@@ -4,7 +4,7 @@
 
 #ifdef FLASHINFER_DECODE_CUH_
 #error \
-    "include/flashinfer/attention/decode.cuh and include/flashinfer/rocm/attention/decode.cuh both define FLASHINFER_DECODE_CUH_; include only one"
+    "include/flashinfer/attention/decode.cuh and include/flashinfer/rocm/attention/decode.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_DECODE_CUH_
@@ -16,8 +16,8 @@
 #include "decode_tuning.cuh"
 #include "flashinfer/rocm/cooperative_groups.h"
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
-#include "flashinfer/rocm/math_hip.h"
-#include "flashinfer/rocm/memory_ops_hip.h"
+#include "flashinfer/rocm/math.h"
+#include "flashinfer/rocm/memory_ops.h"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"
 #include "pos_enc.cuh"

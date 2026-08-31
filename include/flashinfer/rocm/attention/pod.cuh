@@ -5,13 +5,13 @@
 #pragma once
 #ifdef FLASHINFER_POD_CUH_
 #error \
-    "include/flashinfer/attention/pod.cuh and include/flashinfer/rocm/attention/pod.cuh both define FLASHINFER_POD_CUH_; include only one"
+    "include/flashinfer/attention/pod.cuh and include/flashinfer/rocm/attention/pod.cuh define the same symbols; include only one"
 #endif
 
 #include "cascade.cuh"
 #include "flashinfer/rocm/dispatch.cuh"
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
-#include "flashinfer/rocm/math_hip.h"
+#include "flashinfer/rocm/math.h"
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/sm_id.hpp"
 #include "flashinfer/rocm/utils.cuh"

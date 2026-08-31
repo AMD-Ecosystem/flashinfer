@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #ifdef FLASHINFER_PREFILL_PARAMS_CUH_
 #error \
-    "include/flashinfer/attention/default_prefill_params.cuh and include/flashinfer/rocm/attention/default_prefill_params.cuh both define FLASHINFER_PREFILL_PARAMS_CUH_; include only one"
+    "include/flashinfer/attention/default_prefill_params.cuh and include/flashinfer/rocm/attention/default_prefill_params.cuh define the same symbols; include only one"
 #endif
 
 #ifndef FLASHINFER_ROCM_ATTENTION_DEFAULT_PREFILL_PARAMS_CUH_
