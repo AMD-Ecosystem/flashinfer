@@ -957,8 +957,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
             workspace scales with this value, so an over-generous capacity costs memory.
 
             ``plan()`` only sees batches routed through it — a replay that writes the
-            persistent buffers directly is not checked against the capacity, and
-            exceeding it there reads out of bounds.
+            persistent buffers directly is not checked against the capacity, and an
+            over-length replay is silently clamped to the declared max_seq_len (truncated attention).
         """
         _check_kv_layout(kv_layout)
 
