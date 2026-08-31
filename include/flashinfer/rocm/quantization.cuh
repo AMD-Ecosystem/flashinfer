@@ -28,13 +28,8 @@
 #include <flashinfer/rocm/macros.hpp>
 
 // CUB/hipCUB abstraction
-#ifdef PLATFORM_HIP_DEVICE
 #include <hipcub/hipcub.hpp>
 namespace block_ops = hipcub;
-#else
-#include <cub/cub.cuh>
-namespace block_ops = cub;
-#endif
 
 #include <flashinfer/rocm/utils.cuh>
 

@@ -63,10 +63,6 @@ __global__ void RMSNormKernel(T* __restrict__ input, T* __restrict__ weight, T* 
 
   float sum_sq = 0.f;
 
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.wait;");
-#endif
-
   for (uint32_t i = 0; i < rounds; i++) {
     vec_t<T, VEC_SIZE> input_vec;
     input_vec.fill(0.f);
@@ -119,9 +115,6 @@ __global__ void RMSNormKernel(T* __restrict__ input, T* __restrict__ weight, T* 
                        thread_id * VEC_SIZE);
     }
   }
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.launch_dependents;");
-#endif
 }
 
 template <typename T>
@@ -166,9 +159,6 @@ __global__ void FusedAddRMSNormKernel(T* __restrict__ input, T* __restrict__ res
   float* smem_x = stage_x ? smem + ceil_div(num_warps, 4) * 4 : nullptr;
 
   float sum_sq = 0.f;
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.wait;");
-#endif
 
   for (uint32_t i = 0; i < rounds; i++) {
     vec_t<T, VEC_SIZE> input_vec;
@@ -251,9 +241,6 @@ __global__ void FusedAddRMSNormKernel(T* __restrict__ input, T* __restrict__ res
                       thread_id * VEC_SIZE);
     }
   }
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.launch_dependents;");
-#endif
 }
 
 template <typename T>

@@ -14,9 +14,7 @@
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/vec_dtypes.h"
 
-#if defined(PLATFORM_HIP_DEVICE)
 #define HIP_ENABLE_WARP_SYNC_BUILTINS 1
-#endif
 
 namespace flashinfer {
 /*!

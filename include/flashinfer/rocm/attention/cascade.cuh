@@ -7,6 +7,7 @@
 #error \
     "include/flashinfer/attention/cascade.cuh and include/flashinfer/rocm/attention/cascade.cuh define the same symbols; include only one"
 #endif
+#include "flashinfer/rocm/conversion_utils.h"
 #include "flashinfer/rocm/dispatch.cuh"
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
 #include "flashinfer/rocm/math.h"
@@ -14,10 +15,6 @@
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"
 #include "state.cuh"
-
-#ifdef PLATFORM_HIP_DEVICE
-#include "flashinfer/rocm/conversion_utils.h"
-#endif
 
 namespace flashinfer {
 
@@ -146,11 +143,7 @@ __device__ __forceinline__ void warp_sync_state(state_t<vec_size>& st, DTypeIn* 
   st.o.cast_store(v_smem + ty * head_dim + tx * vec_size);
   s_smem[ty] = st.get_lse();
   st.init();
-#ifdef PLATFORM_HIP_DEVICE
   __builtin_amdgcn_wave_barrier();
-#else
-  __syncwarp();
-#endif
 
 #pragma unroll
   for (uint32_t iter = 0; iter < bdy; ++iter) {
@@ -191,11 +184,7 @@ __global__ void AttentionSumKernel(DTypeIn* __restrict__ V, DTypeO* __restrict__
 
   if (num_index_sets == 0) {
     vec_t<DTypeO, vec_size> v;
-#ifdef PLATFORM_HIP_DEVICE
     v.fill(explicit_casting<float, DTypeO>(0.f));
-#else
-    v.fill(DTypeO(0.f));
-#endif
     v.store(v_sum + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
     return;
   }
@@ -233,11 +222,7 @@ __global__ void MergeStatesKernel(DTypeIn* __restrict__ V, float* __restrict__ S
 
   if (num_index_sets == 0) {
     vec_t<DTypeO, vec_size> v;
-#ifdef PLATFORM_HIP_DEVICE
     v.fill(explicit_casting<float, DTypeO>(0.f));
-#else
-    v.fill(DTypeO(0.f));
-#endif
     v.store(v_merged + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
     if (s_merged != nullptr) {
       s_merged[pos * num_heads + head_idx] = -math::inf;
@@ -411,11 +396,7 @@ __global__ void PersistentVariableLengthMergeStatesKernel(
 
     if (num_index_sets == 0) {
       vec_t<DTypeO, vec_size> v;
-#ifdef PLATFORM_HIP_DEVICE
       v.fill(explicit_casting<float, DTypeO>(0.f));
-#else
-      v.fill(DTypeO(0.f));
-#endif
       v.store(v_merged + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
       if (s_merged != nullptr) {
         s_merged[pos * num_heads + head_idx] = -math::inf;
@@ -512,11 +493,7 @@ __global__ void PersistentVariableLengthAttentionSumKernel(DTypeIn* __restrict__
 
     if (num_index_sets == 0) {
       vec_t<DTypeO, vec_size> v;
-#ifdef PLATFORM_HIP_DEVICE
       v.fill(explicit_casting<float, DTypeO>(0.f));
-#else
-      v.fill(DTypeO(0.f));
-#endif
       v.store(v_sum + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
       continue;
     }
@@ -657,15 +634,10 @@ gpuError_t MergeStates(DTypeIn* v, float* s, DTypeO* v_merged, float* s_merged,
     constexpr uint32_t vec_size = std::max(16U / sizeof(DTypeIn), HEAD_DIM / 32U);
     constexpr uint32_t bdx = HEAD_DIM / vec_size;
     if (num_index_sets >= seq_len) {
-#ifdef PLATFORM_HIP_DEVICE
       // CDNA3 wave-64: fit one wavefront per threadblock for head_dim≤128; stages=1
       // since pred_load is synchronous (no async pipeline).
       constexpr uint32_t num_threads = (bdx <= 16) ? 64U : 256U;
       constexpr uint32_t num_smem_stages = 1;
-#else
-      constexpr uint32_t num_threads = 128;
-      constexpr uint32_t num_smem_stages = 4;
-#endif
       constexpr uint32_t bdy = num_threads / bdx;
       dim3 nblks(seq_len, num_heads);
       dim3 nthrs(bdx, bdy);
@@ -719,13 +691,8 @@ gpuError_t VariableLengthMergeStates(DTypeIn* v, float* s, IdType* indptr, DType
   DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
     constexpr uint32_t vec_size = std::max(16U / sizeof(DTypeIn), HEAD_DIM / 32U);
     constexpr uint32_t bdx = HEAD_DIM / vec_size;
-#ifdef PLATFORM_HIP_DEVICE
     constexpr uint32_t num_threads = (bdx <= 16) ? 64U : 256U;
     constexpr uint32_t num_smem_stages = 1;
-#else
-    constexpr uint32_t num_threads = 128;
-    constexpr uint32_t num_smem_stages = 4;
-#endif
     constexpr uint32_t bdy = num_threads / bdx;
     uint32_t smem_size =
         num_smem_stages * bdy * head_dim * sizeof(DTypeIn) + num_threads * sizeof(float);
@@ -758,13 +725,8 @@ gpuError_t VariableLengthAttentionSum(DTypeIn* v, IdType* indptr, DTypeO* v_sum,
   DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
     constexpr uint32_t vec_size = std::max(16U / sizeof(DTypeIn), HEAD_DIM / 32U);
     constexpr uint32_t bdx = HEAD_DIM / vec_size;
-#ifdef PLATFORM_HIP_DEVICE
     constexpr uint32_t num_threads = (bdx <= 16) ? 64U : 256U;
     constexpr uint32_t num_smem_stages = 1;
-#else
-    constexpr uint32_t num_threads = 128;
-    constexpr uint32_t num_smem_stages = 4;
-#endif
     constexpr uint32_t bdy = num_threads / bdx;
     uint32_t smem_size = num_smem_stages * bdy * head_dim * sizeof(DTypeIn);
     auto kernel = PersistentVariableLengthAttentionSumKernel<vec_size, bdx, bdy, num_smem_stages,

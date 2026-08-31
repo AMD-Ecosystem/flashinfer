@@ -3,9 +3,7 @@
 
 #pragma once
 
-// Platform detection
 #if defined(__HIPCC__) || defined(__HIP_PLATFORM_HCC__) || defined(__HIP__)
-#define PLATFORM_HIP_DEVICE
 // FIXME: Temporarily setting __forceinline__ to inline as amdclang++ 6.4 throws
 // an error when __forceinline__ is used.
 #ifndef __forceinline__

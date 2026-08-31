@@ -29,7 +29,6 @@ class CompilationContext:
     """Manages ROCm compilation targets with comprehensive validation."""
 
     COMMON_HIPCC_FLAGS = [
-        "-DFLASHINFER_ENABLE_HIP",
         "-DFLASHINFER_ENABLE_FP8",
         "-DFLASHINFER_ENABLE_FP8_E4M3",
         "-DFLASHINFER_ENABLE_FP8_E5M2",

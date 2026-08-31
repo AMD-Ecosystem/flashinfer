@@ -51,28 +51,17 @@ namespace cub = hipcub;
 #include <numeric>
 #include <tuple>
 
-#ifdef PLATFORM_HIP_DEVICE
 // HIP does not provide cuda::std; inject a shim so existing cuda::std:: usage compiles unchanged.
 namespace cuda {
 namespace std {
 using namespace ::std;
 }
 }  // namespace cuda
-#endif  // PLATFORM_HIP_DEVICE
 
 // Define reduction operators based on CUDA/HIP version
-#ifdef PLATFORM_HIP_DEVICE
 // On HIP, hipcub is aliased as cub above; use hipcub::Max/Min
 using MaxReduceOp = cub::Max;
 using MinReduceOp = cub::Min;
-#elif CUDA_VERSION >= 12090
-// CUDA 13 (12.9+) deprecated cub::Max/Min in favor of cuda::maximum/minimum
-using MaxReduceOp = cuda::maximum<>;
-using MinReduceOp = cuda::minimum<>;
-#else
-using MaxReduceOp = cub::Max;
-using MinReduceOp = cub::Min;
-#endif
 
 namespace flashinfer {
 
@@ -81,18 +70,10 @@ namespace sampling {
 using namespace cub;
 
 // Warp/wavefront size: 32 for NVIDIA, 64 for AMD
-#ifdef PLATFORM_HIP_DEVICE
 constexpr uint32_t SAMPLING_WARP_SIZE = 64;  // AMD wavefront size
-#else
-constexpr uint32_t SAMPLING_WARP_SIZE = 32;  // NVIDIA warp size
-#endif
 
 // Full-mask for warp/wavefront shuffle operations
-#ifdef PLATFORM_HIP_DEVICE
 constexpr uint64_t SAMPLING_WARP_FULL_MASK = 0xffffffffffffffffULL;
-#else
-constexpr uint64_t SAMPLING_WARP_FULL_MASK = 0xffffffff;
-#endif
 
 #define DISPATCH_DETERMINISTIC(deterministic, DETERMINISTIC, ...) \
   if (deterministic) {                                            \
@@ -124,13 +105,7 @@ constexpr uint64_t SAMPLING_WARP_FULL_MASK = 0xffffffff;
 constexpr BlockScanAlgorithm SCAN_ALGO = BLOCK_SCAN_WARP_SCANS;
 constexpr BlockReduceAlgorithm REDUCE_ALGO = BLOCK_REDUCE_WARP_REDUCTIONS;
 
-#ifdef PLATFORM_HIP_DEVICE
 #define FLASHINFER_CUB_SUBTRACTLEFT_DEFINED
-#else
-#if (__CUDACC_VER_MAJOR__ * 10000 + __CUDACC_VER_MINOR__ * 100 >= 120100)
-#define FLASHINFER_CUB_SUBTRACTLEFT_DEFINED
-#endif
-#endif
 
 template <typename T>
 struct ValueCount {
@@ -399,10 +374,6 @@ __global__ void OnlineSoftmaxFusedKernel(DType* logits, DType* output, DType* te
   float running_denominator = 0.0f;
   float threadlocal_running_denominator = 0.0f;
 
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.wait;");
-#endif
-
   // Pass 1: Compute running max and denominator
 #pragma unroll 2
   for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
@@ -487,9 +458,6 @@ __global__ void OnlineSoftmaxFusedKernel(DType* logits, DType* output, DType* te
       prob_vec.cast_store(output + bx * d + (i * BLOCK_THREADS + tx) * VEC_SIZE);
     }
   }
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.launch_dependents;");
-#endif
 }
 
 template <uint32_t BLOCK_THREADS, uint32_t VEC_SIZE, typename DType>
@@ -517,10 +485,6 @@ __global__ void OnlineSoftmaxMapKernel(DType* logits, PartialSoftmaxResult* part
   float running_max = -cuda::std::numeric_limits<float>::infinity();
   float running_denominator = 0.0f;
   float threadlocal_running_denominator = 0.0f;
-
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.wait;");
-#endif
 
 #pragma unroll 2
   for (uint32_t i = 0; i < ceil_div(slice_size, BLOCK_THREADS * VEC_SIZE); ++i) {
@@ -572,9 +536,6 @@ __global__ void OnlineSoftmaxMapKernel(DType* logits, PartialSoftmaxResult* part
   if (tx == 0) {
     partial_results[bx * num_slices + by] = {running_max, running_denominator};
   }
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.launch_dependents;");
-#endif
 }
 
 template <uint32_t BLOCK_THREADS, uint32_t VEC_SIZE, typename DType>
@@ -595,10 +556,6 @@ __global__ void OnlineSoftmaxReduceKernel(DType* logits, DType* output,
   const Float2SoftmaxReduceOp reduce_op;
 
   float2 thread_aggregate = make_float2(-cuda::std::numeric_limits<float>::infinity(), 0.0f);
-
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.wait;");
-#endif
 
   for (uint32_t i = tx; i < num_slices; i += BLOCK_THREADS) {
     PartialSoftmaxResult partial = partial_results[bx * num_slices + i];
@@ -643,9 +600,6 @@ __global__ void OnlineSoftmaxReduceKernel(DType* logits, DType* output,
       prob_vec.cast_store(output + bx * d + (i * BLOCK_THREADS + tx) * VEC_SIZE);
     }
   }
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.launch_dependents;");
-#endif
 }
 
 template <uint32_t VEC_SIZE, uint32_t BLOCK_THREADS, BlockScanAlgorithm SCAN_ALGORITHM,
@@ -758,7 +712,6 @@ __device__ __forceinline__ vec_t<DType, VEC_SIZE> GenerateGumbelNoise(uint64_t p
   constexpr float kEPSILON = 1e-20f;
   constexpr float kLOG2 = 0.6931471806f;
   auto uniform2gumbel = [](float x) { return -kLOG2 * log2f(-log2f(x + kEPSILON) + kEPSILON); };
-#ifdef PLATFORM_HIP_DEVICE
   // hiprand does not expose hiprand_uniform4; generate element-wise with hiprand_uniform.
 #pragma unroll
   for (uint32_t i = 0; i < VEC_SIZE; ++i) {
@@ -766,33 +719,6 @@ __device__ __forceinline__ vec_t<DType, VEC_SIZE> GenerateGumbelNoise(uint64_t p
     hiprand_init(philox_seed, subsequence + i, philox_offset, &state);
     noise[i] = uniform2gumbel(hiprand_uniform(&state));
   }
-#else
-  curandStatePhilox4_32_10_t state;
-// TODO: compare the speed of log2 and log
-#pragma unroll
-  for (uint32_t i = 0; i + 4 <= VEC_SIZE; i += 4) {
-    curand_init(philox_seed, subsequence + i, philox_offset, &state);
-    float4 noise_vec = curand_uniform4(&state);
-    noise[i] = uniform2gumbel(noise_vec.x);
-    noise[i + 1] = uniform2gumbel(noise_vec.y);
-    noise[i + 2] = uniform2gumbel(noise_vec.z);
-    noise[i + 3] = uniform2gumbel(noise_vec.w);
-  }
-  if constexpr (VEC_SIZE % 4 != 0) {
-    curand_init(philox_seed, subsequence + VEC_SIZE / 4 * 4, philox_offset, &state);
-    float4 noise_vec = curand_uniform4(&state);
-    if constexpr (VEC_SIZE % 4 == 1) {
-      noise[VEC_SIZE - 1] = uniform2gumbel(noise_vec.x);
-    } else if constexpr (VEC_SIZE % 4 == 2) {
-      noise[VEC_SIZE - 2] = uniform2gumbel(noise_vec.x);
-      noise[VEC_SIZE - 1] = uniform2gumbel(noise_vec.y);
-    } else if constexpr (VEC_SIZE % 4 == 3) {
-      noise[VEC_SIZE - 3] = uniform2gumbel(noise_vec.x);
-      noise[VEC_SIZE - 2] = uniform2gumbel(noise_vec.y);
-      noise[VEC_SIZE - 1] = uniform2gumbel(noise_vec.z);
-    }
-  }
-#endif  // PLATFORM_HIP_DEVICE
 
   if constexpr (std::is_same_v<DType, float>) {
     return noise;
@@ -853,13 +779,8 @@ template <uint32_t BLOCK_THREADS, BlockScanAlgorithm SCAN_ALGORITHM,
 __global__ void SamplingFromProbKernel(DType* probs, IdType* output, IdType* indices, uint32_t d,
                                        uint64_t philox_seed, uint64_t philox_offset) {
   const uint32_t bx = blockIdx.x, tx = threadIdx.x;
-#ifdef PLATFORM_HIP_DEVICE
   hiprandStatePhilox4_32_10_t state;
   hiprand_init(philox_seed, bx, philox_offset, &state);
-#else
-  curandStatePhilox4_32_10_t state;
-  curand_init(philox_seed, bx, philox_offset, &state);
-#endif
   const uint32_t row_idx = indices == nullptr ? bx : indices[bx];
 
   extern __shared__ __align__(
@@ -873,11 +794,7 @@ __global__ void SamplingFromProbKernel(DType* probs, IdType* output, IdType* ind
 
   vec_t<float, VEC_SIZE> probs_vec;
   float aggregate(0);
-#ifdef PLATFORM_HIP_DEVICE
   float u = hiprand_uniform(&state);
-#else
-  float u = curand_uniform(&state);
-#endif
 
 #pragma unroll 2
   for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
@@ -911,13 +828,8 @@ __global__ void TopKSamplingFromProbKernel(DType* probs, IdType* output, IdType*
                                            uint64_t philox_seed, uint64_t philox_offset) {
   const uint32_t batch_size = gridDim.x;
   const uint32_t bx = blockIdx.x, tx = threadIdx.x;
-#ifdef PLATFORM_HIP_DEVICE
   hiprandStatePhilox4_32_10_t state;
   hiprand_init(philox_seed, bx, philox_offset, &state);
-#else
-  curandStatePhilox4_32_10_t state;
-  curand_init(philox_seed, bx, philox_offset, &state);
-#endif
   const uint32_t k = top_k_arr == nullptr ? top_k_val : top_k_arr[bx];
   const uint32_t row_idx = indices == nullptr ? bx : indices[bx];
 
@@ -938,11 +850,7 @@ __global__ void TopKSamplingFromProbKernel(DType* probs, IdType* output, IdType*
     round += 1;
     temp_storage.sampled_id = d;
     __syncthreads();
-#ifdef PLATFORM_HIP_DEVICE
     float u = hiprand_uniform(&state) * q;
-#else
-    float u = curand_uniform(&state) * q;
-#endif
     aggregate = 0;
 #pragma unroll 2
     for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
@@ -1037,13 +945,8 @@ __global__ void TopPSamplingFromProbKernel(DType* probs, IdType* output, IdType*
                                            uint64_t philox_seed, uint64_t philox_offset) {
   const uint32_t batch_size = gridDim.x;
   const uint32_t bx = blockIdx.x, tx = threadIdx.x;
-#ifdef PLATFORM_HIP_DEVICE
   hiprandStatePhilox4_32_10_t state;
   hiprand_init(philox_seed, bx, philox_offset, &state);
-#else
-  curandStatePhilox4_32_10_t state;
-  curand_init(philox_seed, bx, philox_offset, &state);
-#endif
   const uint32_t row_idx = indices == nullptr ? bx : indices[bx];
   float top_p = (top_p_arr == nullptr) ? top_p_val : top_p_arr[row_idx];
 
@@ -1062,11 +965,7 @@ __global__ void TopPSamplingFromProbKernel(DType* probs, IdType* output, IdType*
   do {
     temp_storage.sampled_id = d;
     __syncthreads();
-#ifdef PLATFORM_HIP_DEVICE
     float u = hiprand_uniform(&state) * q;
-#else
-    float u = curand_uniform(&state) * q;
-#endif
     aggregate = 0;
 #pragma unroll 2
     for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
@@ -1157,13 +1056,8 @@ __global__ void MinPSamplingFromProbKernel(DType* probs, float* min_p_arr, IdTyp
                                            uint64_t philox_seed, uint64_t philox_offset) {
   const uint32_t bx = blockIdx.x, tx = threadIdx.x;
   float p = (min_p_arr == nullptr) ? min_p_val : min_p_arr[bx];
-#ifdef PLATFORM_HIP_DEVICE
   hiprandStatePhilox4_32_10_t state;
   hiprand_init(philox_seed, bx, philox_offset, &state);
-#else
-  curandStatePhilox4_32_10_t state;
-  curand_init(philox_seed, bx, philox_offset, &state);
-#endif
   const uint32_t row_idx = indices == nullptr ? bx : indices[bx];
 
   extern __shared__ __align__(
@@ -1209,11 +1103,7 @@ __global__ void MinPSamplingFromProbKernel(DType* probs, float* min_p_arr, IdTyp
   int sampled_id;
   temp_storage.sampled_id = d;
   __syncthreads();
-#ifdef PLATFORM_HIP_DEVICE
   float u = hiprand_uniform(&state) * q;
-#else
-  float u = curand_uniform(&state) * q;
-#endif
 #pragma unroll 2
   for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
     probs_vec.fill(0);
@@ -1247,13 +1137,8 @@ __global__ void TopKTopPSamplingFromProbKernel(DType* probs, IdType* top_k_arr, 
                                                uint64_t philox_offset) {
   const uint32_t batch_size = gridDim.x;
   const uint32_t bx = blockIdx.x, tx = threadIdx.x;
-#ifdef PLATFORM_HIP_DEVICE
   hiprandStatePhilox4_32_10_t state;
   hiprand_init(philox_seed, bx, philox_offset, &state);
-#else
-  curandStatePhilox4_32_10_t state;
-  curand_init(philox_seed, bx, philox_offset, &state);
-#endif
   const uint32_t row_idx = indices == nullptr ? bx : indices[bx];
   const uint32_t k = top_k_arr == nullptr ? top_k_val : top_k_arr[row_idx];
   const float p = top_p_arr == nullptr ? top_p_val : top_p_arr[row_idx];
@@ -1273,11 +1158,7 @@ __global__ void TopKTopPSamplingFromProbKernel(DType* probs, IdType* top_k_arr, 
   do {
     temp_storage.sampled_id = d;
     __syncthreads();
-#ifdef PLATFORM_HIP_DEVICE
     float u = hiprand_uniform(&state) * q;
-#else
-    float u = curand_uniform(&state) * q;
-#endif
     aggregate = 0;
 #pragma unroll 2
     for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
@@ -1404,31 +1285,8 @@ gpuError_t OnlineSoftmax(DType* logits, DType* output, uint32_t batch_size, uint
           FI_GPU_CALL(gpuFuncSetAttribute(phase1_kernel, gpuFuncAttributeMaxDynamicSharedMemorySize,
                                           smem_size));
 
-#ifndef PLATFORM_HIP_DEVICE
-          if (enable_pdl) {
-            cudaLaunchAttribute attribute[1];
-            attribute[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
-            attribute[0].val.programmaticStreamSerializationAllowed = 1;
-
-            cudaLaunchConfig_t config;
-            config.gridDim = phase1_nblks;
-            config.blockDim = phase1_nthrs;
-            config.dynamicSmemBytes = smem_size;
-            config.stream = stream;
-            config.attrs = attribute;
-            config.numAttrs = 1;
-
-            FLASHINFER_CUDA_CALL(cudaLaunchKernelEx(&config, phase1_kernel, logits, partial_results,
-                                                    temperature_arr, temperature_val, d,
-                                                    num_slices));
-          } else {
-            FI_GPU_CALL(gpuLaunchKernel((void*)phase1_kernel, phase1_nblks, phase1_nthrs,
-                                        phase1_args, smem_size, stream));
-          }
-#else
-          FI_GPU_CALL(gpuLaunchKernel((void*)phase1_kernel, phase1_nblks, phase1_nthrs,
-                                      phase1_args, smem_size, stream));
-#endif
+          FI_GPU_CALL(gpuLaunchKernel((void*)phase1_kernel, phase1_nblks, phase1_nthrs, phase1_args,
+                                      smem_size, stream));
 
           // Phase 2: Final reduction and apply normalization
           dim3 phase2_nblks(batch_size);
@@ -1441,31 +1299,8 @@ gpuError_t OnlineSoftmax(DType* logits, DType* output, uint32_t batch_size, uint
           FI_GPU_CALL(gpuFuncSetAttribute(phase2_kernel, gpuFuncAttributeMaxDynamicSharedMemorySize,
                                           smem_size));
 
-#ifndef PLATFORM_HIP_DEVICE
-          if (enable_pdl) {
-            cudaLaunchAttribute attribute[1];
-            attribute[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
-            attribute[0].val.programmaticStreamSerializationAllowed = 1;
-
-            cudaLaunchConfig_t config;
-            config.gridDim = phase2_nblks;
-            config.blockDim = phase2_nthrs;
-            config.dynamicSmemBytes = smem_size;
-            config.stream = stream;
-            config.attrs = attribute;
-            config.numAttrs = 1;
-
-            FLASHINFER_CUDA_CALL(cudaLaunchKernelEx(&config, phase2_kernel, logits, output,
-                                                    partial_results, temperature_arr,
-                                                    temperature_val, d, num_slices));
-          } else {
-            FI_GPU_CALL(gpuLaunchKernel((void*)phase2_kernel, phase2_nblks, phase2_nthrs,
-                                        phase2_args, smem_size, stream));
-          }
-#else
-          FI_GPU_CALL(gpuLaunchKernel((void*)phase2_kernel, phase2_nblks, phase2_nthrs,
-                                      phase2_args, smem_size, stream));
-#endif
+          FI_GPU_CALL(gpuLaunchKernel((void*)phase2_kernel, phase2_nblks, phase2_nthrs, phase2_args,
+                                      smem_size, stream));
         } else {
           // Path B: Single-Block Strategy
           // Switch input cache
@@ -1493,28 +1328,7 @@ gpuError_t OnlineSoftmax(DType* logits, DType* output, uint32_t batch_size, uint
             FI_GPU_CALL(
                 gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
-#ifndef PLATFORM_HIP_DEVICE
-            if (enable_pdl) {
-              cudaLaunchAttribute attribute[1];
-              attribute[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
-              attribute[0].val.programmaticStreamSerializationAllowed = 1;
-
-              cudaLaunchConfig_t config;
-              config.gridDim = nblks;
-              config.blockDim = nthrs;
-              config.dynamicSmemBytes = smem_size;
-              config.stream = stream;
-              config.attrs = attribute;
-              config.numAttrs = 1;
-
-              FLASHINFER_CUDA_CALL(cudaLaunchKernelEx(&config, kernel, logits, output,
-                                                      temperature_arr, temperature_val, d));
-            } else {
-              FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
-            }
-#else
             FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
-#endif
           });
         }
       })});
@@ -2202,13 +2016,8 @@ __global__ void ChainSpeculativeSampling(DType* draft_probs, IdType* draft_token
                                          uint64_t philox_seed, uint64_t philox_offset) {
   const uint32_t bx = blockIdx.x, tx = threadIdx.x;
   const uint32_t row_idx = bx;
-#ifdef PLATFORM_HIP_DEVICE
   hiprandStatePhilox4_32_10_t curand_state;
   hiprand_init(philox_seed, bx, philox_offset, &curand_state);
-#else
-  curandStatePhilox4_32_10_t curand_state;
-  curand_init(philox_seed, bx, philox_offset, &curand_state);
-#endif
 
   extern __shared__ __align__(
       alignof(SamplingTempStorage<BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM>))
@@ -2222,11 +2031,7 @@ __global__ void ChainSpeculativeSampling(DType* draft_probs, IdType* draft_token
     IdType draft_id = draft_token_ids[row_idx * num_speculative_tokens + i];
     float q = target_probs[(row_idx * (num_speculative_tokens + 1) + i) * d + draft_id],
           p = draft_probs[(row_idx * num_speculative_tokens + i) * d + draft_id];
-#ifdef PLATFORM_HIP_DEVICE
     float u = hiprand_uniform(&curand_state);
-#else
-    float u = curand_uniform(&curand_state);
-#endif
     if (u * p < q) {
       // accept the draft models output
       output_token_ids[row_idx * (num_speculative_tokens + 1) + i] = draft_id;
@@ -2242,11 +2047,7 @@ __global__ void ChainSpeculativeSampling(DType* draft_probs, IdType* draft_token
     int draft_id = draft_token_ids[row_idx * num_speculative_tokens + i];
     float q = target_probs[(row_idx * (num_speculative_tokens + 1) + i) * d + draft_id],
           p = draft_probs[(row_idx * num_speculative_tokens + i) * d + draft_id];
-#ifdef PLATFORM_HIP_DEVICE
     float u = hiprand_uniform(&curand_state);
-#else
-    float u = curand_uniform(&curand_state);
-#endif
     if (u * p < q) {
       ++accepted_token_num;
     }
@@ -2290,11 +2091,7 @@ __global__ void ChainSpeculativeSampling(DType* draft_probs, IdType* draft_token
   temp_storage.sampled_id = d;
   __syncthreads();
   sum_relu_q_minus_p = temp_storage.block_aggregate.value;
-#ifdef PLATFORM_HIP_DEVICE
   float u = hiprand_uniform(&curand_state) * sum_relu_q_minus_p;
-#else
-  float u = curand_uniform(&curand_state) * sum_relu_q_minus_p;
-#endif
 
   float aggregate_relu_q_minus_p(0);
 #pragma unroll 2

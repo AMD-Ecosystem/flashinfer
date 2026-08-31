@@ -50,47 +50,6 @@ FLASHINFER_INLINE __hip_bfloat162 make_bfloat162(const __hip_bfloat16 x, const _
 
 #define FLASHINFER_HARDWARE_FP8_CONVERSION_ENABLED
 
-#if (__CUDACC_VER_MAJOR__ * 10000 + __CUDACC_VER_MINOR__ * 100 < 120400) && \
-    (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ < 800))
-// CUDA version < 12.4 and GPU architecture < 80
-
-FLASHINFER_INLINE __hip_bfloat16 __hmul(const __hip_bfloat16 a, const __hip_bfloat16 b) {
-  __hip_bfloat16 val;
-  const float fa = __bfloat162float(a);
-  const float fb = __bfloat162float(b);
-  // avoid ftz in device code
-  val = __float2bfloat16(__fmaf_ieee_rn(fa, fb, -0.0f));
-  return val;
-}
-
-FLASHINFER_INLINE __hip_bfloat162 __hmul2(const __hip_bfloat162 a, const __hip_bfloat162 b) {
-  __hip_bfloat162 val;
-  val.x = __hmul(a.x, b.x);
-  val.y = __hmul(a.y, b.y);
-  return val;
-}
-
-FLASHINFER_INLINE __hip_bfloat162 __floats2bfloat162_rn(const float a, const float b) {
-  __hip_bfloat162 val;
-  val = __hip_bfloat162(__float2bfloat16(a), __float2bfloat16(b));
-  return val;
-}
-
-FLASHINFER_INLINE __hip_bfloat162 __float22bfloat162_rn(const float2 a) {
-  __hip_bfloat162 val = __float22bfloat162_rn(a.x, a.y);
-  return val;
-}
-FLASHINFER_INLINE float2 __bfloat1622float2(const __hip_bfloat162 a) {
-  float hi_float;
-  float lo_float;
-  // lo_float = __internal_bfloat162float(((__gpu_bfloat162_raw)a).x);
-  // hi_float = __internal_bfloat162float(((__gpu_bfloat162_raw)a).y);
-  lo_float = __bfloat1622float2(a.x);
-  hi_float = __bfloat1622float2(a.y);
-  return make_float2(lo_float, hi_float);
-}
-#endif
-
 /******************* vec_t type cast *******************/
 
 template <typename dst_t, typename src_t>
