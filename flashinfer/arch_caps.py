@@ -295,8 +295,9 @@ _AITER_SOFTCAP_DEFECT_MIN_KV_LEN = {"gfx942": 512, "gfx950": 0}
 def aiter_softcap_defect_min_kv_len(arch: str) -> Optional[int]:
     """Smallest kv_len at which AITER miscomputes a causal soft cap on ``arch``.
 
-    None when the architecture is unknown, which disarms the guard rather than
-    refusing to route on a machine that is probably fine.
+    ``0`` means no length is safe, so compare with ``is not None`` rather than
+    truthiness. ``None`` means the architecture is unknown, which disarms the
+    guard rather than refusing to route on a machine that is probably fine.
     """
     return _AITER_SOFTCAP_DEFECT_MIN_KV_LEN.get(normalize_arch(arch))
 

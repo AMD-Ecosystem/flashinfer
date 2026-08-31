@@ -62,8 +62,11 @@ def rmsnorm(
         everywhere, including ROCm — see ``docs/rocm/backends.md``.
         ``"native"`` is the same kernel, requested explicitly.
         ``"aiter"`` uses AMD AITER's ``aiter::rmsnorm`` C++ kernel — ROCm (gfx942/gfx950)
-        only, 2D fp16/bf16 inputs only. Precision is slightly lower than ``"native"`` at
-        ``hidden_size >= 1024`` (fp16 atol ~4e-3, bf16 ~7e-2).
+        only, 2D fp16/bf16 inputs only, ``weight.dtype == input.dtype``, and an even
+        ``hidden_size`` of at most 8192 (the kernel is silently wrong on odd sizes and
+        refuses larger ones). Shapes outside that raise rather than fall back.
+        Precision is slightly lower than ``"native"`` at ``hidden_size >= 1024``
+        (fp16 atol ~4e-3, bf16 ~7e-2).
 
     Returns
     -------
@@ -139,8 +142,10 @@ def fused_add_rmsnorm(
         everywhere, including ROCm — see ``docs/rocm/backends.md``.
         ``"native"`` is the same kernel, requested explicitly.
         ``"aiter"`` uses AMD AITER's ``aiter::add_rmsnorm`` C++ kernel — ROCm
-        (gfx942/gfx950) only, 2D inputs only. Measurably slower than ``"native"``
-        on both arches, and slightly lower precision at ``hidden_size >= 1024``.
+        (gfx942/gfx950) only, 2D inputs only, ``weight.dtype == input.dtype``, and an
+        even ``hidden_size`` of at most 8192; shapes outside that raise rather than
+        fall back. Measurably slower than ``"native"`` on both arches, and slightly
+        lower precision at ``hidden_size >= 1024``.
     """
     # Both the native and AITER kernels are 2D-only (the native kernel enforces
     # CHECK_DIM(2) on input/residual), so reject other ranks up front with a clear

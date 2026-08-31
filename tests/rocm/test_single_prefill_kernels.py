@@ -440,7 +440,7 @@ def test_aiter_is_correct_just_below_the_softcap_floor():
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
     floor = aiter_softcap_defect_min_kv_len(_device_arch(device))
-    if not floor:
+    if floor is None or floor == 0:
         pytest.skip("no kv_len is declared safe on this architecture")
 
     kv_len, qo_len, num_heads, head_dim, cap = floor - 1, 17, 4, 128, 8.0
