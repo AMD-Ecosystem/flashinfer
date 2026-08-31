@@ -16,7 +16,7 @@ building from source and everything else specific to contributing code.
 Build the development image with the repository's Dockerfile:
 
 ```bash
-docker build -t flashinfer-dev:rocm7.14 -f docker/Dockerfile.rocm.dev .
+docker build -t flashinfer-dev:rocm7.14 -f docker/Dockerfile.rocm .
 ```
 
 `ROCM_VERSION`, `UBUNTU_VERSION`, `PY_VERSION`, and `TORCH_VERSION` default to
