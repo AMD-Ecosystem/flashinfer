@@ -2,9 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
-#include "macros.hpp"
-
-// Include appropriate runtime
 #include <hip/hip_bf16.h>
 #include <hip/hip_cooperative_groups.h>
 #include <hip/hip_fp16.h>
@@ -12,48 +9,23 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_runtime_api.h>
 
-// Basic type mappings
-#define gpuError_t hipError_t
-#define gpuStream_t hipStream_t
+#include <sstream>
+#include <stdexcept>
 
-// Kernel launch and attributes (these actually differ in name)
-#define gpuGetDevice hipGetDevice
-#define gpuLaunchKernel hipLaunchKernel
-#define gpuFuncSetAttribute(func, attr, val) \
-  hipFuncSetAttribute(reinterpret_cast<const void*>(func), attr, val)
-#define gpuDeviceGetAttribute hipDeviceGetAttribute
-
-#define gpuMemcpy hipMemcpy
-#define gpuMalloc hipMalloc
-#define gpuMemset hipMemset
-#define gpuMemcpyAsync hipMemcpyAsync
-#define gpuMemcpyHostToDevice hipMemcpyHostToDevice
-#define gpuMemcpyDeviceToHost hipMemcpyDeviceToHost
-
-// Function attribute enums (these have different names)
-#define gpuFuncAttributeMaxDynamicSharedMemorySize hipFuncAttributeMaxDynamicSharedMemorySize
-
-// Device attribute enums (different names)
-#define gpuDevAttrMultiProcessorCount hipDeviceAttributeMultiprocessorCount
-#define gpuOccupancyMaxActiveBlocksPerMultiprocessor hipOccupancyMaxActiveBlocksPerMultiprocessor
-
-// Error handling (for FI_GPU_CALL)
-#define gpuGetErrorString hipGetErrorString
-#define gpuSuccess hipSuccess
-#define gpuErrorInvalidValue hipErrorInvalidValue
+#include "macros.hpp"
 
 // HIP error checking macro (replaces FLASHINFER_CUDA_CALL upstream)
-#define FI_GPU_CALL(call)                                                                          \
+#define FI_HIP_CALL(call)                                                                          \
   do {                                                                                             \
-    gpuError_t err = (call);                                                                       \
-    if (err != gpuSuccess) {                                                                       \
+    hipError_t err = (call);                                                                       \
+    if (err != hipSuccess) {                                                                       \
       std::ostringstream err_msg;                                                                  \
-      err_msg << "GPU error: " << gpuGetErrorString(err) << " at " << __FILE__ << ":" << __LINE__; \
+      err_msg << "GPU error: " << hipGetErrorString(err) << " at " << __FILE__ << ":" << __LINE__; \
       throw std::runtime_error(err_msg.str());                                                     \
     }                                                                                              \
   } while (0)
 
-/// Returns the number of multiprocessors (CUs on CDNA / SMs on CUDA).
+/// Returns the number of compute units.
 ///
 /// Cached per device id to avoid repeating the attribute query on every kernel
 /// launch. The cache is thread_local so concurrent callers (e.g. multi-threaded
@@ -62,12 +34,12 @@
 /// poisoning the cache.
 ///
 /// @param dev_id Device ID
-/// @return Multiprocessor (CU/SM) count
+/// @return Compute-unit count
 inline int getMultiProcessorCount(int dev_id) {
   static thread_local int cache[64] = {0};
   if (dev_id >= 0 && dev_id < 64 && cache[dev_id] > 0) return cache[dev_id];
   int count = 0;
-  FI_GPU_CALL(gpuDeviceGetAttribute(&count, gpuDevAttrMultiProcessorCount, dev_id));
+  FI_HIP_CALL(hipDeviceGetAttribute(&count, hipDeviceAttributeMultiprocessorCount, dev_id));
   if (dev_id >= 0 && dev_id < 64 && count > 0) cache[dev_id] = count;
   return count;
 }
@@ -75,7 +47,7 @@ inline int getMultiProcessorCount(int dev_id) {
 inline int getMaxSharedMemPerMultiprocessor(int dev_id) {
   int max_smem_per_sm = 0;
   hipDeviceProp_t deviceProp;
-  FI_GPU_CALL(hipGetDeviceProperties(&deviceProp, dev_id));
+  FI_HIP_CALL(hipGetDeviceProperties(&deviceProp, dev_id));
   max_smem_per_sm = deviceProp.sharedMemPerMultiprocessor;
 
   return max_smem_per_sm;
@@ -97,7 +69,7 @@ inline int getMaxSharedMemPerBlock(int dev_id) {
   // CDNA3/MI300X: sharedMemPerBlock = 65,536 bytes (64 KB) - the actual per-block limit
   //               sharedMemPerMultiprocessor = 19,922,944 bytes (~19 MB) - total LDS per CU
   hipDeviceProp_t deviceProp;
-  FI_GPU_CALL(hipGetDeviceProperties(&deviceProp, dev_id));
+  FI_HIP_CALL(hipGetDeviceProperties(&deviceProp, dev_id));
   const int max_smem_per_block = static_cast<int>(deviceProp.sharedMemPerBlock);
   if (dev_id >= 0 && dev_id < 64 && max_smem_per_block > 0) cache[dev_id] = max_smem_per_block;
   return max_smem_per_block;

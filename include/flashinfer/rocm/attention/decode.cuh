@@ -421,7 +421,7 @@ __device__ __inline__ void BatchDecodeWithPagedKVCacheDevice(const Params& param
   const uint32_t kv_tile_idx = params.kv_tile_indices[bx];
   const uint32_t kv_head_idx = by;
   const uint32_t qo_head_idx = kv_head_idx * bdy + ty;
-  // NOTE(Zihao): when gpuGraph is enabled, we will launch more blocks than
+  // NOTE(Zihao): when HIP graphs are enabled, we will launch more blocks than
   // the actual batch size, so we need to check if the current batch is valid
   if (block_valid_mask && !block_valid_mask[bx]) return;
   const uint32_t kv_chunk_size = *(params.kv_chunk_size_ptr);
@@ -647,8 +647,8 @@ constexpr uint32_t get_heuristic_num_threads(uint32_t group_size, uint32_t sizeo
  */
 template <uint32_t HEAD_DIM, PosEncodingMode POS_ENCODING_MODE, typename AttentionVariant,
           typename Params>
-gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTypeO* tmp,
-                                             gpuStream_t stream) {
+hipError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTypeO* tmp,
+                                             hipStream_t stream) {
   using DTypeQ = typename Params::DTypeQ;
   using DTypeKV = typename Params::DTypeKV;
   using DTypeO = typename Params::DTypeO;
@@ -688,14 +688,15 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
         2U * bdy * bdz * sizeof(float);
 
     int dev_id = 0;
-    FI_GPU_CALL(gpuGetDevice(&dev_id));
+    FI_HIP_CALL(hipGetDevice(&dev_id));
     CheckSmemBudget(smem_size, dev_id);
 
     auto kernel =
         SingleDecodeWithKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
                                       vec_size, bdx, bdy, bdz, AttentionVariant, Params>;
 
-    FI_GPU_CALL(gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel, hipFuncAttributeMaxDynamicSharedMemorySize,
+                                    smem_size));
 
     if (seq_len <= 256 || tmp == nullptr) {
       // No need to use partition-kv kernel
@@ -703,13 +704,13 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
       dim3 nthrs = dim3(bdx, bdy, bdz);
       params.kv_chunk_size = seq_len;
       void* args[] = {(void*)&params};
-      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+      FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
     } else {
       // Use partition-kv kernel with AMD-specific tuning
       int num_blocks_per_sm = 0;
       int num_sm = 0;
-      FI_GPU_CALL(gpuDeviceGetAttribute(&num_sm, gpuDevAttrMultiProcessorCount, dev_id));
-      FI_GPU_CALL(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel,
+      FI_HIP_CALL(hipDeviceGetAttribute(&num_sm, hipDeviceAttributeMultiprocessorCount, dev_id));
+      FI_HIP_CALL(hipOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel,
                                                                num_threads, smem_size));
       if (num_blocks_per_sm == 0) {
         std::ostringstream err_msg;
@@ -742,25 +743,25 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
       params.lse = tmp_lse;
       params.kv_chunk_size = kv_chunk_size;
       void* args[] = {(void*)&params};
-      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+      FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
 
-      FI_GPU_CALL(hipStreamSynchronize(stream));
+      FI_HIP_CALL(hipStreamSynchronize(stream));
 
       if constexpr (AttentionVariant::use_softmax) {
-        FI_GPU_CALL(
+        FI_HIP_CALL(
             MergeStates(tmp, tmp_lse, o, nullptr, num_chunks, 1, num_qo_heads, HEAD_DIM, stream));
       } else {
-        FI_GPU_CALL(AttentionSum(tmp, o, num_chunks, 1, num_qo_heads, HEAD_DIM, stream));
+        FI_HIP_CALL(AttentionSum(tmp, o, num_chunks, 1, num_qo_heads, HEAD_DIM, stream));
       }
     }
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <uint32_t HEAD_DIM, PosEncodingMode POS_ENCODING_MODE, typename AttentionVariant,
           typename Params>
-gpuError_t BatchDecodeWithPagedKVCacheDispatched(Params params, typename Params::DTypeO* tmp_v,
-                                                 float* tmp_s, gpuStream_t stream) {
+hipError_t BatchDecodeWithPagedKVCacheDispatched(Params params, typename Params::DTypeO* tmp_v,
+                                                 float* tmp_s, hipStream_t stream) {
   using DTypeQ = typename Params::DTypeQ;
   using DTypeKV = typename Params::DTypeKV;
   using DTypeO = typename Params::DTypeO;
@@ -784,14 +785,14 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatched(Params params, typename Params:
           std::max(tile_size_per_bdx * num_threads * sizeof(DTypeKV*),
                    2 * bdy * bdz * sizeof(float));
       int dev_id = 0;
-      FI_GPU_CALL(gpuGetDevice(&dev_id));
+      FI_HIP_CALL(hipGetDevice(&dev_id));
       CheckSmemBudget(smem_size, dev_id);
 
       auto kernel =
           BatchDecodeWithPagedKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
                                             vec_size, bdx, bdy, bdz, AttentionVariant, Params>;
-      FI_GPU_CALL(gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize,
-                                      smem_size));
+      FI_HIP_CALL(hipFuncSetAttribute((const void*)(void*)kernel,
+                                      hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
       if (tmp_v == nullptr) {
         // do not use partition-kv kernel
@@ -799,7 +800,7 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatched(Params params, typename Params:
         dim3 nthrs(bdx, bdy, bdz);
         params.partition_kv = false;
         void* args[] = {(void*)&params};
-        FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+        FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
       } else {
         // use partition-kv kernel
         params.partition_kv = true;
@@ -810,20 +811,20 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatched(Params params, typename Params:
         void* args[] = {(void*)&params};
         dim3 nblks(padded_batch_size, num_kv_heads);
         dim3 nthrs(bdx, bdy, bdz);
-        FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+        FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
         if constexpr (AttentionVariant::use_softmax) {
-          FI_GPU_CALL(VariableLengthMergeStates(tmp_v, tmp_s, params.o_indptr, o, lse,
+          FI_HIP_CALL(VariableLengthMergeStates(tmp_v, tmp_s, params.o_indptr, o, lse,
                                                 params.paged_kv.batch_size, nullptr, num_qo_heads,
                                                 HEAD_DIM, stream));
         } else {
-          FI_GPU_CALL(VariableLengthAttentionSum(tmp_v, params.o_indptr, o,
+          FI_HIP_CALL(VariableLengthAttentionSum(tmp_v, params.o_indptr, o,
                                                  params.paged_kv.batch_size, nullptr, num_qo_heads,
                                                  HEAD_DIM, stream));
         }
       }
     });
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <uint32_t vec_size_ckv, uint32_t vec_size_kpe, uint32_t bdx, uint32_t tile_size,
@@ -915,7 +916,7 @@ __global__ void BatchDecodeWithPagedKVCacheKernelMLA(Params params) {
   const uint32_t tx = threadIdx.x, ty = threadIdx.y, tz = threadIdx.z;
   const uint32_t t_offset = dim3_offset(bdy, bdx, tz, ty, tx);
 
-  // NOTE(Zihao): when gpuGraph is enabled, we will launch more blocks than
+  // NOTE(Zihao): when HIP graphs are enabled, we will launch more blocks than
   // the actual batch size, so we need to check if the current batch is valid
   if (block_valid_mask && !block_valid_mask[batch_idx]) return;
   const uint32_t mapped_batch_idx = params.request_indices[batch_idx];
@@ -1085,8 +1086,8 @@ __global__ void BatchDecodeWithPagedKVCacheKernelMLA(Params params) {
 }
 
 template <uint32_t HEAD_DIM_CKV, uint32_t HEAD_DIM_KPE, typename AttentionVariant, typename Params>
-gpuError_t BatchDecodeWithPagedKVCacheDispatchedMLA(Params params, typename Params::DTypeO* tmp_v,
-                                                    float* tmp_s, gpuStream_t stream) {
+hipError_t BatchDecodeWithPagedKVCacheDispatchedMLA(Params params, typename Params::DTypeO* tmp_v,
+                                                    float* tmp_s, hipStream_t stream) {
   using DTypeQ = typename Params::DTypeQ;
   using DTypeKV = typename Params::DTypeKV;
   using DTypeO = typename Params::DTypeO;
@@ -1114,8 +1115,8 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatchedMLA(Params params, typename Para
     auto kernel =
         BatchDecodeWithPagedKVCacheKernelMLA<NUM_STAGES_SMEM, vec_size_ckv, vec_size_kpe, bdx, bdy,
                                              bdz, tile_size_qo_heads, AttentionVariant, Params>;
-    FI_GPU_CALL(
-        gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FI_HIP_CALL(hipFuncSetAttribute((const void*)(void*)kernel,
+                                    hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
     if (tmp_v == nullptr) {
       // do not use partition-kv kernel
@@ -1123,7 +1124,7 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatchedMLA(Params params, typename Para
       dim3 nthrs(bdx, bdy, bdz);
       params.partition_kv = false;
       void* args[] = {(void*)&params};
-      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+      FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
     } else {
       // use partition-kv kernel
       params.partition_kv = true;
@@ -1134,13 +1135,13 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatchedMLA(Params params, typename Para
       void* args[] = {(void*)&params};
       dim3 nblks(padded_batch_size, gdy);
       dim3 nthrs(bdx, bdy, bdz);
-      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
-      FI_GPU_CALL(VariableLengthMergeStates(tmp_v, tmp_s, params.o_indptr, o, lse,
+      FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+      FI_HIP_CALL(VariableLengthMergeStates(tmp_v, tmp_s, params.o_indptr, o, lse,
                                             params.paged_kv.batch_size, nullptr, num_qo_heads,
                                             HEAD_DIM_CKV, stream));
     }
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 }  // namespace flashinfer

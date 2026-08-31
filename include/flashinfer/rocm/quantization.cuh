@@ -99,30 +99,30 @@ __global__ void SegmentPackBitsKernel(bool* input, uint8_t* output, IdType* inpu
   }
 }
 
-gpuError_t PackBits(bool* input, uint8_t* output, int64_t num_elements, BitOrder bitorder,
-                    gpuStream_t stream) {
+hipError_t PackBits(bool* input, uint8_t* output, int64_t num_elements, BitOrder bitorder,
+                    hipStream_t stream) {
   DISPATCH_BITORDER(bitorder, BITORDER, {
     auto kernel = PackBitsKernel<BITORDER>;
     const dim3 nthrs(256);
     const dim3 nblks(ceil_div(num_elements, nthrs.x * 8));
     void* args[] = {&input, &output, &num_elements};
-    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+    FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <typename IdType>
-gpuError_t SegmentPackBits(bool* input, uint8_t* output, IdType* input_indptr,
+hipError_t SegmentPackBits(bool* input, uint8_t* output, IdType* input_indptr,
                            IdType* output_indptr, uint32_t batch_size, BitOrder bitorder,
-                           gpuStream_t stream) {
+                           hipStream_t stream) {
   DISPATCH_BITORDER(bitorder, BITORDER, {
     auto kernel = SegmentPackBitsKernel<BITORDER, IdType>;
     const dim3 nthrs(256);
     const dim3 nblks(batch_size);
     void* args[] = {&input, &output, &input_indptr, &output_indptr};
-    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+    FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 }  // namespace quantization

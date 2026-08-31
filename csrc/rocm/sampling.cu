@@ -40,13 +40,13 @@ void softmax(at::Tensor workspace_buffer, at::Tensor logits, at::Tensor output,
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
-  gpuError_t status = sampling::OnlineSoftmax<float>(
+  hipError_t status = sampling::OnlineSoftmax<float>(
       static_cast<float*>(logits.data_ptr()), static_cast<float*>(output.data_ptr()), batch_size,
       vocab_size,
       has_temperature_arr ? static_cast<float*>(maybe_temperature_arr->data_ptr()) : nullptr,
       static_cast<float>(temperature_val), workspace_buffer.data_ptr(),
       workspace_buffer.element_size() * workspace_buffer.size(0), enable_pdl, stream);
-  TORCH_CHECK(status == gpuSuccess,
+  TORCH_CHECK(status == hipSuccess,
               "OnlineSoftmax failed with error code " + std::string(hipGetErrorString(status)));
 }
 
@@ -61,12 +61,12 @@ void sampling_from_logits(at::Tensor logits, at::Tensor output,
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
-  gpuError_t status = sampling::SamplingFromLogits(
+  hipError_t status = sampling::SamplingFromLogits(
       static_cast<float*>(logits.data_ptr()), static_cast<int*>(output.data_ptr()),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       batch_size, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
       static_cast<uint64_t>(philox_offset), stream);
-  TORCH_CHECK(status == gpuSuccess, "SamplingFromLogits failed with error code " +
+  TORCH_CHECK(status == hipSuccess, "SamplingFromLogits failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
 
@@ -81,12 +81,12 @@ void sampling_from_probs(at::Tensor probs, at::Tensor output,
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
-  gpuError_t status = sampling::SamplingFromProb(
+  hipError_t status = sampling::SamplingFromProb(
       static_cast<float*>(probs.data_ptr()), static_cast<int*>(output.data_ptr()),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       batch_size, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
       static_cast<uint64_t>(philox_offset), stream);
-  TORCH_CHECK(status == gpuSuccess,
+  TORCH_CHECK(status == hipSuccess,
               "SamplingFromProbs failed with error code " + std::string(hipGetErrorString(status)));
 }
 
@@ -103,13 +103,13 @@ void top_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
-  gpuError_t status = sampling::TopPSamplingFromProb<float, int>(
+  hipError_t status = sampling::TopPSamplingFromProb<float, int>(
       static_cast<float*>(probs.data_ptr()), static_cast<int*>(output.data_ptr()),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       has_top_p_arr ? static_cast<float*>(maybe_top_p_arr->data_ptr()) : nullptr, batch_size,
       top_p_val, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
       static_cast<uint64_t>(philox_offset), stream);
-  TORCH_CHECK(status == gpuSuccess, "TopPSamplingFromProbs failed with error code " +
+  TORCH_CHECK(status == hipSuccess, "TopPSamplingFromProbs failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
 
@@ -129,13 +129,13 @@ void top_k_sampling_from_probs(at::Tensor probs, at::Tensor output,
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
-  gpuError_t status = sampling::TopKSamplingFromProb<float, int>(
+  hipError_t status = sampling::TopKSamplingFromProb<float, int>(
       static_cast<float*>(probs.data_ptr()), static_cast<int*>(output.data_ptr()),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       has_top_k_arr ? static_cast<float*>(maybe_top_k_arr->data_ptr()) : nullptr, batch_size,
       top_k_val, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
       static_cast<uint64_t>(philox_offset), stream);
-  TORCH_CHECK(status == gpuSuccess, "TopKSamplingFromProbs failed with error code " +
+  TORCH_CHECK(status == hipSuccess, "TopKSamplingFromProbs failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
 
@@ -155,14 +155,14 @@ void min_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
-  gpuError_t status = sampling::MinPSamplingFromProb<float, int>(
+  hipError_t status = sampling::MinPSamplingFromProb<float, int>(
       static_cast<float*>(probs.data_ptr()),
       has_min_p_arr ? static_cast<float*>(maybe_min_p_arr->data_ptr()) : nullptr,
       static_cast<int*>(output.data_ptr()),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       batch_size, min_p_val, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
       static_cast<uint64_t>(philox_offset), stream);
-  TORCH_CHECK(status == gpuSuccess, "MinPSamplingFromProb failed with error code " +
+  TORCH_CHECK(status == hipSuccess, "MinPSamplingFromProb failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
 
@@ -185,7 +185,7 @@ void top_k_top_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
-  gpuError_t status = sampling::TopKTopPSamplingFromProb<float, int>(
+  hipError_t status = sampling::TopKTopPSamplingFromProb<float, int>(
       static_cast<float*>(probs.data_ptr()),
       has_top_k_arr ? static_cast<int*>(maybe_top_k_arr->data_ptr()) : nullptr,
       has_top_p_arr ? static_cast<float*>(maybe_top_p_arr->data_ptr()) : nullptr,
@@ -193,7 +193,7 @@ void top_k_top_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       batch_size, top_k_val, top_p_val, vocab_size, deterministic,
       static_cast<uint64_t>(philox_seed), static_cast<uint64_t>(philox_offset), stream);
-  TORCH_CHECK(status == gpuSuccess, "TopKTopPSamplingFromProbs failed with error code " +
+  TORCH_CHECK(status == hipSuccess, "TopKTopPSamplingFromProbs failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
 
@@ -223,7 +223,7 @@ void chain_speculative_sampling(at::Tensor draft_probs, at::Tensor draft_token_i
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
-  gpuError_t status = sampling::ChainSpeculativeSampling<float, int>(
+  hipError_t status = sampling::ChainSpeculativeSampling<float, int>(
       static_cast<float*>(draft_probs.data_ptr()), static_cast<int*>(draft_token_ids.data_ptr()),
       static_cast<float*>(target_probs.data_ptr()), static_cast<int*>(output_token_ids.data_ptr()),
       static_cast<int*>(output_accepted_token_num.data_ptr()),
@@ -231,6 +231,6 @@ void chain_speculative_sampling(at::Tensor draft_probs, at::Tensor draft_token_i
       num_speculate_tokens, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
       static_cast<uint64_t>(philox_offset), stream);
 
-  TORCH_CHECK(status == gpuSuccess, "ChainSpeculativeSampling failed with error code " +
+  TORCH_CHECK(status == hipSuccess, "ChainSpeculativeSampling failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
