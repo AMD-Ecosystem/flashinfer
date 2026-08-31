@@ -68,6 +68,22 @@ def _trees():
     )
 
 
+# Headers the wheel ships, as paths under include/. Everything else in that tree
+# is upstream CUDA that nothing on ROCm compiles: 214 headers in, 47 out.
+# fp16.h is the one upstream header a ROCm source still reaches for
+# (rocm/attention/prefill.cuh). Editable installs are not filtered -- they
+# symlink the whole tree, so a developer keeps the upstream headers to read.
+_WHEEL_HEADER_DIRS = ("flashinfer/rocm",)
+_WHEEL_HEADER_FILES = ("flashinfer/fp16.h",)
+
+
+def _wanted_in_wheel(relative: Path) -> bool:
+    posix = relative.as_posix()
+    return posix in _WHEEL_HEADER_FILES or any(
+        posix.startswith(d + "/") for d in _WHEEL_HEADER_DIRS
+    )
+
+
 def _clear(path: Path) -> None:
     """Remove ``path`` whether it is a symlink, a directory, or a file.
 
@@ -118,6 +134,26 @@ def _prepare_for_editable() -> None:
 def _prepare_for_wheel() -> None:
     for src, dst, suffixes in _trees():
         _materialize(src, dst, suffixes, use_symlink=False)
+    _prune_unshipped_headers(_root / "flashinfer" / "include")
+
+
+def _prune_unshipped_headers(include_dir: Path) -> None:
+    """Drop the upstream CUDA headers from the copied include tree.
+
+    Runs after the copy rather than as a copytree filter so the kept set is
+    stated once, positively, in _wanted_in_wheel.
+    """
+    kept = 0
+    for path in sorted(include_dir.rglob("*"), reverse=True):
+        if path.is_dir():
+            if not any(path.iterdir()):
+                path.rmdir()
+        elif _wanted_in_wheel(path.relative_to(include_dir)):
+            kept += 1
+        else:
+            path.unlink()
+    if kept == 0:
+        raise RuntimeError(f"pruned every header under {include_dir}")
 
 
 def _prepare_for_sdist() -> None:
