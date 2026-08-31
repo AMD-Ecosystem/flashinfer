@@ -347,20 +347,12 @@ inline void DebugPrintCUDAArray(T* device_ptr, size_t size, std::string prefix =
 }
 
 inline uint32_t FA2DetermineCtaTileQ(int64_t avg_packed_qo_len, uint32_t head_dim) {
-  // For large head dimensions (>=256), always use CTA_TILE_Q=64 to avoid excessive shared memory
-  // This is especially important for AMD GPUs with 64KB limit and warp size of 64
-  if (head_dim >= 256) {
-    // With CTA_TILE_Q=16 and head_dim=256, shared memory exceeds 64KB on AMD GPUs
-    // CTA_TILE_Q=64 gives 48KB which fits comfortably
-    return 64;
-  }
-
   if (avg_packed_qo_len > 64 && head_dim < 256) {
     return 128;
   } else {
     auto compute_capacity = GetCudaComputeCapability();
     if (compute_capacity.first >= 8) {
-      // Ampere or newer (or AMD CDNA/RDNA)
+      // Ampere or newer
       if (avg_packed_qo_len > 16) {
         // avg_packed_qo_len <= 64
         return 64;
