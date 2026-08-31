@@ -160,13 +160,6 @@ def require_aiter(device: torch.device, op: str) -> None:
         )
 
 
-@functools.cache
-def get_aiter_mha_module():
-    from aiter.ops import mha as aiter_mha_module
-
-    return aiter_mha_module
-
-
 # Failures that are never AITER's to own, so ``auto`` must not demote on them:
 # a wrong-numerics arch gate, our own missing AOT cache, a caller contract
 # violation, and a transient OOM that would otherwise cache as "unsupported".
