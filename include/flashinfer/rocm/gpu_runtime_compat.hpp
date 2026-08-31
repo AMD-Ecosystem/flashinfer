@@ -13,7 +13,6 @@
 #include <hip/hip_runtime_api.h>
 
 // Basic type mappings
-#define gpuEvent_t hipEvent_t
 #define gpuError_t hipError_t
 #define gpuStream_t hipStream_t
 
@@ -23,43 +22,25 @@
 #define gpuFuncSetAttribute(func, attr, val) \
   hipFuncSetAttribute(reinterpret_cast<const void*>(func), attr, val)
 #define gpuDeviceGetAttribute hipDeviceGetAttribute
-#define gpuDeviceSynchronize hipDeviceSynchronize
 
 #define gpuMemcpy hipMemcpy
 #define gpuMalloc hipMalloc
 #define gpuMemset hipMemset
-#define gpuFree hipFree
 #define gpuMemcpyAsync hipMemcpyAsync
 #define gpuMemcpyHostToDevice hipMemcpyHostToDevice
 #define gpuMemcpyDeviceToHost hipMemcpyDeviceToHost
 
 // Function attribute enums (these have different names)
 #define gpuFuncAttributeMaxDynamicSharedMemorySize hipFuncAttributeMaxDynamicSharedMemorySize
-#define gpuFuncAttributePreferredSharedMemoryCarveout hipFuncAttributePreferredSharedMemoryCarveout
 
 // Device attribute enums (different names)
 #define gpuDevAttrMultiProcessorCount hipDeviceAttributeMultiprocessorCount
-#define gpuDevAttrMaxSharedMemoryPerMultiProcessor hipDeviceAttributeMaxSharedMemPerMultiprocessor
 #define gpuOccupancyMaxActiveBlocksPerMultiprocessor hipOccupancyMaxActiveBlocksPerMultiprocessor
-
-// Event iface
-#define gpuEventCreate hipEventCreate
-#define gpuEventDestroy hipEventDestroy
-#define gpuEventRecord hipEventRecord
-#define gpuEventSynchronize hipEventSynchronize
-#define gpuEventElapsedTime hipEventElapsedTime
-
-// Stream iface
-#define gpuStreamCreate hipStreamCreate
-#define gpuStreamDestroy hipStreamDestroy
 
 // Error handling (for FI_GPU_CALL)
 #define gpuGetErrorString hipGetErrorString
 #define gpuSuccess hipSuccess
 #define gpuErrorInvalidValue hipErrorInvalidValue
-
-#define gpuLaunchConfig_t hipLaunchConfig_t
-#define gpuLaunchAttribute hipLaunchAttribute
 
 // HIP error checking macro (replaces FLASHINFER_CUDA_CALL upstream)
 #define FI_GPU_CALL(call)                                                                          \

@@ -53,12 +53,12 @@ enum class BitOrder { kBig = 0U, kLittle = 1U };
   }
 
 template <BitOrder BITORDER>
-FI_GLOBAL_QUAL void PackBitsKernel(bool* input, uint8_t* output, int64_t num_elements) {
+__global__ void PackBitsKernel(bool* input, uint8_t* output, int64_t num_elements) {
   int64_t start_offset = static_cast<int64_t>(blockIdx.x) * blockDim.x * 8, tx = threadIdx.x;
   uint8_t ret = 0;
   bool input_vec[8];
   typedef block_ops::BlockLoad<bool, 256, 8, block_ops::BLOCK_LOAD_VECTORIZE> BlockLoad;
-  FI_SHARED_QUAL typename BlockLoad::TempStorage temp_storage;
+  __shared__ typename BlockLoad::TempStorage temp_storage;
 
   // This fix the INT32_T overflow issue, which is possible in DiT video models
   // where the kv_len could be 128K.
@@ -79,12 +79,12 @@ FI_GLOBAL_QUAL void PackBitsKernel(bool* input, uint8_t* output, int64_t num_ele
 }
 
 template <BitOrder BITORDER, typename IdType>
-FI_GLOBAL_QUAL void SegmentPackBitsKernel(bool* input, uint8_t* output, IdType* input_indptr,
-                                          IdType* output_indptr) {
+__global__ void SegmentPackBitsKernel(bool* input, uint8_t* output, IdType* input_indptr,
+                                      IdType* output_indptr) {
   int64_t bx = blockIdx.x, tx = threadIdx.x;
   bool input_vec[8];
   typedef block_ops::BlockLoad<bool, 256, 8, block_ops::BLOCK_LOAD_VECTORIZE> BlockLoad;
-  FI_SHARED_QUAL typename BlockLoad::TempStorage temp_storage;
+  __shared__ typename BlockLoad::TempStorage temp_storage;
   int64_t num_elements = input_indptr[bx + 1] - input_indptr[bx];
   for (uint32_t start_offset = 0; start_offset < num_elements; start_offset += 8 * blockDim.x) {
     uint8_t ret = 0;

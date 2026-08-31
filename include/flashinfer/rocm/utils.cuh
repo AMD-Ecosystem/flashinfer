@@ -18,9 +18,6 @@
 
 #include "gpu_runtime_compat.hpp"
 
-#define STR_HELPER(x) #x
-#define STR(x) STR_HELPER(x)
-
 // macro to turn off fp16 qk reduction to reduce binary
 #ifndef FLASHINFER_ALWAYS_DISUSE_FP16_QK_REDUCTION
 #define FLASHINFER_ALWAYS_DISUSE_FP16_QK_REDUCTION 0
