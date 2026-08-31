@@ -803,6 +803,29 @@ def test_batch_decode_auto_graph_over_capacity_degrades_to_fa2():
     assert w._backend == "fa2"
     assert "exceeding the declared max_seq_len" in (w._backend_fallback_reason or "")
 
+    # The demoted plan must actually be usable, not just labelled fa2.
+    kv = torch.randn(over_pages, 2, page, num_kv, hd, dtype=dtype, device=device)
+    q = torch.randn(batch, num_qo, hd, dtype=dtype, device=device)
+    w.run(q, kv)
+
+    # Over-capacity is a property of that batch, not the wrapper: a later in-capacity
+    # plan must resolve back to AITER rather than staying stuck on fa2 forever.
+    in_pages = (cap_seq + page - 1) // page
+    w.plan(
+        torch.tensor([0, in_pages], dtype=torch.int32, device=device),
+        torch.arange(in_pages, dtype=torch.int32, device=device),
+        torch.tensor([page], dtype=torch.int32, device=device),
+        num_qo,
+        num_kv,
+        hd,
+        page,
+        pos_encoding_mode="NONE",
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+    assert w._backend == "aiter", "over-capacity demotion must not be sticky"
+    assert w._backend_fallback_reason is None
+
 
 @requires_aiter
 def test_batch_decode_aiter_graph_capacity_checked_against_indptr_not_seq_lens():
@@ -848,7 +871,8 @@ def test_batch_decode_aiter_graph_capacity_checked_against_indptr_not_seq_lens()
 @requires_aiter
 def test_batch_decode_aiter_graph_return_lse_raises():
     """PA v1 emits no LSE and its FA2 shadow plan is built lazily inside run(), which
-    is not capture-safe — refuse rather than JIT-load inside a graph."""
+    is not capture-safe — refuse inside a graph, but keep serving eager calls on the
+    same graph-enabled wrapper."""
     device = torch.device("cuda:0")
     batch, page, num_qo, num_kv, hd = 1, 16, 8, 8, 128
     cap_seq, dtype = 256, torch.float16
@@ -883,8 +907,15 @@ def test_batch_decode_aiter_graph_return_lse_raises():
         q_data_type=dtype,
         kv_data_type=dtype,
     )
+    # Eager on a graph-enabled wrapper still works — the shadow plan is only unsafe
+    # to *build inside* a capture.
+    out_eager, lse_eager = w.run(q, kv, return_lse=True)
+    assert out_eager.shape == q.shape and lse_eager.shape == (batch, num_qo)
+
     with pytest.raises(ValueError, match="return_lse=True is not supported"):
-        w.run(q, kv, return_lse=True)
+        g = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(g):
+            w.run(q, kv, return_lse=True)
 
 
 @requires_aiter
@@ -892,12 +923,17 @@ def test_batch_decode_aiter_graph_replay_past_capacity_is_clamped_not_oob():
     """The usual graph pattern writes the persistent buffers and replays with no plan()
     in between, so nothing host-side sees the new lengths. The build kernel clamps
     context_lens to the block-table width: truncated attention, not another
-    sequence's pages."""
+    sequence's pages.
+
+    batch=2 is deliberate — with one sequence an unclamped read runs off into allocator
+    slack, so the A/B would rest on whatever that memory happened to hold. Two rows make
+    the pre-clamp failure a deterministic read of the next sequence's pages."""
     device = torch.device("cuda:0")
-    batch, page, num_qo, num_kv, hd = 1, 16, 8, 8, 128
+    batch, page, num_qo, num_kv, hd = 2, 16, 8, 8, 128
     cap_seq, over_seq, dtype = 256, 1024, torch.float16
     cap_pages = (cap_seq + page - 1) // page
-    over_pages = (over_seq + page - 1) // page
+    over_pages_per_seq = (over_seq + page - 1) // page
+    over_pages = batch * over_pages_per_seq
 
     kv = torch.randn(over_pages, 2, page, num_kv, hd, dtype=dtype, device=device)
     q = torch.randn(batch, num_qo, hd, dtype=dtype, device=device)
@@ -916,16 +952,18 @@ def test_batch_decode_aiter_graph_replay_past_capacity_is_clamped_not_oob():
         max_seq_len=cap_seq,
     )
     plan_kw = dict(pos_encoding_mode="NONE", q_data_type=dtype, kv_data_type=dtype)
-    w.plan(
-        torch.tensor([0, cap_pages], dtype=torch.int32, device=device),
-        torch.arange(cap_pages, dtype=torch.int32, device=device),
-        torch.tensor([page], dtype=torch.int32, device=device),
-        num_qo,
-        num_kv,
-        hd,
-        page,
-        **plan_kw,
+    # In-capacity layout: each seq owns cap_pages at the head of its over-sized block.
+    in_indptr = torch.arange(batch + 1, dtype=torch.int32, device=device) * cap_pages
+    in_indices = (
+        (
+            (torch.arange(batch, device=device) * over_pages_per_seq).view(-1, 1)
+            + torch.arange(cap_pages, device=device).view(1, -1)
+        )
+        .reshape(-1)
+        .to(torch.int32)
     )
+    last_page = torch.full((batch,), page, dtype=torch.int32, device=device)
+    w.plan(in_indptr, in_indices, last_page, num_qo, num_kv, hd, page, **plan_kw)
     for _ in range(3):
         w.run(q, kv)
     torch.cuda.synchronize()
@@ -933,10 +971,13 @@ def test_batch_decode_aiter_graph_replay_past_capacity_is_clamped_not_oob():
     with torch.cuda.graph(g):
         out = w.run(q, kv)
 
-    # Bypass plan(): write an over-capacity layout straight into the static buffers.
-    indptr_buf.copy_(torch.tensor([0, over_pages], dtype=torch.int32, device=device))
+    # Bypass plan(): write an over-capacity layout straight into the static buffers, so
+    # seq 0's row would spill into seq 1's pages if context_lens were not clamped.
+    indptr_buf.copy_(
+        torch.arange(batch + 1, dtype=torch.int32, device=device) * over_pages_per_seq
+    )
     indices_buf.copy_(torch.arange(over_pages, dtype=torch.int32, device=device))
-    last_page_buf.copy_(torch.tensor([page], dtype=torch.int32, device=device))
+    last_page_buf.copy_(last_page)
     g.replay()
     torch.cuda.synchronize()
 
@@ -946,14 +987,5 @@ def test_batch_decode_aiter_graph_replay_past_capacity_is_clamped_not_oob():
         "NHD",
         backend="aiter",
     )
-    ref_w.plan(
-        torch.tensor([0, cap_pages], dtype=torch.int32, device=device),
-        torch.arange(cap_pages, dtype=torch.int32, device=device),
-        torch.tensor([page], dtype=torch.int32, device=device),
-        num_qo,
-        num_kv,
-        hd,
-        page,
-        **plan_kw,
-    )
+    ref_w.plan(in_indptr, in_indices, last_page, num_qo, num_kv, hd, page, **plan_kw)
     torch.testing.assert_close(out, ref_w.run(q, kv), rtol=1e-2, atol=1e-2)

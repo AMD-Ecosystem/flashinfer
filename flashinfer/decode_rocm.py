@@ -406,8 +406,8 @@ def _aiter_graph_capacity_overrun(
     last_page_len_host: torch.Tensor,
     page_size: int,
     capacity: int,
-) -> Optional[int]:
-    """Return the offending kv_len if this batch exceeds a declared graph capacity.
+) -> Optional[str]:
+    """Describe how this batch exceeds a declared graph capacity, or None if it fits.
 
     Derives lengths from indptr/last_page_len the way the PA v1 block-table kernel
     does — a caller-supplied ``seq_lens`` can understate them, and the block table
@@ -417,8 +417,18 @@ def _aiter_graph_capacity_overrun(
     max_kv_len = int(kv_lens.max().item()) if kv_lens.numel() else 0
     npages = indptr_host[1:].to(torch.int64) - indptr_host[:-1].to(torch.int64)
     max_blocks = int(npages.max().item()) if npages.numel() else 0
-    if max_kv_len > capacity or max_blocks > ceil_div(capacity, page_size):
-        return max_kv_len
+    width = ceil_div(capacity, page_size)
+    if max_kv_len > capacity:
+        return (
+            f"batch has kv_len={max_kv_len} exceeding the declared "
+            f"max_seq_len={capacity}"
+        )
+    if max_blocks > width:
+        # Reachable with last_page_len=0, where npages is one more than kv_len implies.
+        return (
+            f"batch has {max_blocks} pages/seq exceeding the {width} the declared "
+            f"max_seq_len={capacity} allows at page_size={page_size}"
+        )
     return None
 
 
@@ -1023,6 +1033,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
         # still has to know the caller asked for auto.
         self._backend_requested = backend
         self._backend_fallback_reason: Optional[str] = None
+        # Set when the last plan() demoted off AITER purely because that batch exceeded
+        # the declared graph capacity — a per-batch reason, so it is re-evaluated.
+        self._backend_capacity_demoted = False
         # AITER-under-CUDA-graph capacity: when set, size AITER's grid/.so/workspace
         # from this max per-seq KV length (capture-order-independent) instead of the
         # capture-time plan. Only meaningful with use_cuda_graph=True on the AITER path.
@@ -1186,28 +1199,34 @@ class BatchDecodeWithPagedKVCacheWrapper:
         indptr_host = indptr.to("cpu")
         last_page_len_host = last_page_len.to("cpu")
 
+        # An over-capacity demotion is a property of one batch, not of the device, so
+        # unlike the capability-driven resolution it must not stick: re-resolve.
+        if self._backend_capacity_demoted:
+            self._backend = self._backend_requested
+            self._backend_capacity_demoted = False
+            self._backend_fallback_reason = None
+
         # Validate a declared graph capacity before touching any persistent buffer:
         # the caller may keep replaying its captured graph, so a rejected batch has to
         # leave the wrapper exactly as it was.
         over_capacity_reason = None
-        if self._aiter_graph_max_seq_len is not None and self._backend in (
-            "auto",
-            "aiter",
+        if (
+            self._aiter_graph_max_seq_len is not None
+            and not self.use_tensor_cores
+            and self._backend in ("auto", "aiter")
         ):
-            capacity = int(self._aiter_graph_max_seq_len)
             over = _aiter_graph_capacity_overrun(
-                indptr_host, last_page_len_host, page_size, capacity
+                indptr_host,
+                last_page_len_host,
+                page_size,
+                int(self._aiter_graph_max_seq_len),
             )
             if over is not None:
-                msg = (
-                    f"batch has kv_len={over} exceeding the declared "
-                    f"max_seq_len={capacity}"
-                )
                 if self._backend_requested == "auto":
-                    over_capacity_reason = msg
+                    over_capacity_reason = over
                 else:
                     raise ValueError(
-                        f"AITER graph decode: {msg}; increase max_seq_len."
+                        f"AITER graph decode: {over}; increase max_seq_len."
                     )
 
         if self.is_cuda_graph_enabled:
@@ -1278,9 +1297,11 @@ class BatchDecodeWithPagedKVCacheWrapper:
         resolved_from_auto = self._backend_requested == "auto"
         if over_capacity_reason is not None:
             # auto never fails a plan for a backend-capability reason; fa2's graph
-            # path is length-agnostic, so serve the over-long batch there.
+            # path is length-agnostic, so serve the over-long batch there. Flagged so
+            # the next in-capacity plan() resolves back to AITER.
             self._backend = "fa2"
             self._backend_fallback_reason = over_capacity_reason
+            self._backend_capacity_demoted = True
         elif self._backend == "auto":
             graph_without_capacity = (
                 self.is_cuda_graph_enabled and self._aiter_graph_max_seq_len is None
@@ -1318,9 +1339,12 @@ class BatchDecodeWithPagedKVCacheWrapper:
             if self._aiter_graph_max_seq_len is not None:
                 # Size the grid / .so variant / partition workspace from the declared
                 # capacity rather than this batch, so capture and replay decouple.
-                # Validated before the buffer writes above.
-                max_kv_len = int(self._aiter_graph_max_seq_len)
-                aiter_max_blocks_per_seq = ceil_div(max_kv_len, page_size)
+                # Validated before the buffer writes above. Round up to a whole page so
+                # this matches the bound the build kernel clamps context_lens to.
+                aiter_max_blocks_per_seq = ceil_div(
+                    int(self._aiter_graph_max_seq_len), page_size
+                )
+                max_kv_len = aiter_max_blocks_per_seq * page_size
             else:
                 if (
                     self.is_cuda_graph_enabled
@@ -1763,10 +1787,11 @@ class BatchDecodeWithPagedKVCacheWrapper:
 
         if self._backend == "aiter":
             if return_lse:
-                if self.is_cuda_graph_enabled:
+                if torch.cuda.is_current_stream_capturing():
                     # The shadow plan is built lazily and re-nulled by every plan(), so
-                    # under capture it would JIT-load inside the graph and later replay a
-                    # freed plan_info. AITER PA v1 has no LSE of its own.
+                    # capturing it would JIT-load inside the graph and later replay a
+                    # freed plan_info. Eager calls are fine, hence the capture check
+                    # rather than is_cuda_graph_enabled.
                     raise ValueError(
                         "return_lse=True is not supported for AITER decode under "
                         "CUDA-graph capture (PA v1 emits no LSE and its FA2 shadow "
