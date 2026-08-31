@@ -77,13 +77,7 @@ __global__ __launch_bounds__(std::max(
     const int prefill_slots = (prefill_blocks + blk_factor_p - 1) / blk_factor_p;
     const int decode_slots = (decode_blocks + blk_factor_d - 1) / blk_factor_d;
 
-    if (prefill_slots == 0) {
-      op = DECODE;
-      linear_bid = atomicAdd(&tbAssign[num_SMs + op], 1);
-    } else if (decode_slots == 0) {
-      op = PREFILL;
-      linear_bid = atomicAdd(&tbAssign[num_SMs + op], 1);
-    } else if (prefill_slots <= decode_slots) {
+    if (prefill_slots <= decode_slots) {
       // Total tags = (decode + prefill) / min(decode, prefill)
       // = 1 + decode / prefill; when prefill < decode
       const int total_tags = decode_slots / prefill_slots + 1;
@@ -91,16 +85,6 @@ __global__ __launch_bounds__(std::max(
       op = (atomicAdd(&tbAssign[linear_bid], 1) % total_tags);
       if (op > 0) {
         op = 1;
-      }
-      // Get the next blockId for that operation
-      linear_bid = atomicAdd(&tbAssign[num_SMs + op], 1);
-      // If the blockId obtained exceeds the max blockIds for that op, switch to the other op
-      if (op == 0 && linear_bid >= prefill_slots) {
-        linear_bid = atomicAdd(&tbAssign[num_SMs + 1], 1);
-        op = !op;
-      } else if (op == 1 && linear_bid >= decode_slots) {
-        op = !op;
-        linear_bid = atomicAdd(&tbAssign[num_SMs + 0], 1);
       }
     } else {
       // Total tags = (decode + prefill) / min(decode, prefill)
@@ -114,16 +98,17 @@ __global__ __launch_bounds__(std::max(
       } else {
         op = 1;
       }
-      // Get the next blockId for that operation
-      linear_bid = atomicAdd(&tbAssign[num_SMs + op], 1);
-      // If the blockId obtained exceeds the max blockIds for that op, switch to the other op
-      if (op == 0 && linear_bid >= prefill_slots) {
-        linear_bid = atomicAdd(&tbAssign[num_SMs + 1], 1);
-        op = !op;
-      } else if (op == 1 && linear_bid >= decode_slots) {
-        op = !op;
-        linear_bid = atomicAdd(&tbAssign[num_SMs + 0], 1);
-      }
+    }
+
+    // Get the next blockId for that operation
+    linear_bid = atomicAdd(&tbAssign[num_SMs + op], 1);
+    // If the blockId obtained exceeds the max blockIds for that op, switch to the other op
+    if (op == 0 && linear_bid >= prefill_slots) {
+      linear_bid = atomicAdd(&tbAssign[num_SMs + 1], 1);
+      op = !op;
+    } else if (op == 1 && linear_bid >= decode_slots) {
+      op = !op;
+      linear_bid = atomicAdd(&tbAssign[num_SMs + 0], 1);
     }
     // Write the blockId and operation to shared memory
     ((int*)smem)[0] = linear_bid;
