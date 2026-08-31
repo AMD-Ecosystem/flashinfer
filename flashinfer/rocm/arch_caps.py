@@ -5,8 +5,8 @@
 """Per-architecture capability knowledge for the ROCm backends.
 
 This module owns *which architectures are validated for which operations*.
-That is deliberately distinct from :mod:`flashinfer.hip_utils`, which owns
-*which architectures we compile for*, and from :mod:`flashinfer.aiter_utils`,
+That is deliberately distinct from :mod:`flashinfer.rocm.hip_utils`, which owns
+*which architectures we compile for*, and from :mod:`flashinfer.rocm.aiter_utils`,
 which owns *whether the AITER package is importable*.
 
 .. important::
@@ -48,7 +48,7 @@ def normalize_arch(gcn_arch_name: str) -> str:
 
     ROCm reports architectures with trailing feature flags, e.g. torch's
     ``gcnArchName`` yields ``"gfx942:sramecc+:xnack-"``. Comparisons against
-    :data:`~flashinfer.hip_utils.FLASHINFER_SUPPORTED_ROCM_ARCHS` need the bare
+    :data:`~flashinfer.rocm.hip_utils.FLASHINFER_SUPPORTED_ROCM_ARCHS` need the bare
     ``"gfx942"``.
 
     This is the single place that transformation happens. It replaces several

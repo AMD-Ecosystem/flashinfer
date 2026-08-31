@@ -144,7 +144,7 @@ def test_the_build_arch_env_var_does_not_decide_which_wheel_is_usable(
     import types
 
     from flashinfer._version import __version__
-    from flashinfer.arch_caps import normalize_arch
+    from flashinfer.rocm.arch_caps import normalize_arch
     from flashinfer.jit.rocm.env import AOT_MANIFEST_NAME, get_aot_dir
 
     arch = normalize_arch(

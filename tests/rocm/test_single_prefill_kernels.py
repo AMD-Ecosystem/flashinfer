@@ -80,7 +80,7 @@ def test_single_prefill_with_kv_cache(
     # mha_batch_prefill is exact on the same inputs. The kv_len where it starts
     # is architecture-dependent, so take it from the capability table rather
     # than repeating a literal that is only right on gfx942.
-    from flashinfer.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
+    from flashinfer.rocm.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
 
     softcap_floor = aiter_softcap_defect_min_kv_len(
         _device_arch(torch.device("cuda:0"))
@@ -434,7 +434,7 @@ def test_aiter_is_correct_just_below_the_softcap_floor():
     on their own they stay green if the floor is edited to the wrong value. This
     asserts the boundary against an fp32 reference instead.
     """
-    from flashinfer.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
+    from flashinfer.rocm.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
 
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
