@@ -16,14 +16,16 @@ building from source and everything else specific to contributing code.
 Build the development image with the repository's Dockerfile:
 
 ```bash
-docker build -t flashinfer-dev:rocm7.14 -f docker/Dockerfile.rocm .
+docker build -t flashinfer-dev:rocm10.0 -f docker/Dockerfile.rocm .
 ```
 
 `ROCM_VERSION`, `UBUNTU_VERSION`, `PY_VERSION`, and `TORCH_VERSION` default to
-7.14, 26.04, 3.14, and 2.12.0. They select the `rocm/pytorch` base image tag,
+10.0, 24.04, 3.12, and 2.12.0. They select the `rocm/pytorch` base image tag,
 so they are not independent knobs — any override has to name a tag that exists
-on Docker Hub. `AITER_VERSION` and `AITER_INDEX` pin the AITER wheel; the
-default is the vllm-cdna nightly, which is the only cp314 build published.
+on Docker Hub. `AITER_VERSION` and `AITER_INDEX` pin the AITER wheel; every
+0.1.20 build is cp312 only, so the interpreter and the AITER pin move together.
+Do not raise `TORCH_VERSION` to 2.13 — it drops a `c10` symbol AITER's prebuilt
+prefill kernels link against, and they fail to load.
 Pass `--build-arg USERNAME=$USER --build-arg USER_UID=$(id -u) --build-arg
 USER_GID=$(id -g)` to match container file ownership to your host user —
 without them, build artifacts come out root-owned.
@@ -36,7 +38,7 @@ docker run -it \
   --group-add video --group-add "$(getent group render | cut -d: -f3)" \
   -v $PWD:/workspace \
   --name flashinfer-dev-container \
-  flashinfer-dev:rocm7.14
+  flashinfer-dev:rocm10.0
 ```
 
 `render` must be the **host's numeric GID**. Passing the name resolves against

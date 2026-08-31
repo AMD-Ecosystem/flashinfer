@@ -8,38 +8,41 @@
 #  1. No conda/micromamba layer. Torch lives in the base image's interpreter, and
 #     a separate conda environment would shadow it with a torch-less Python.
 #     There is also no pip-installable torch for this ROCm release --
-#     repo.radeon.com/rocm/manylinux/rocm-rel-7.14/ returns 404 -- so the bundled
-#     torch is the only one available.
+#     repo.radeon.com/rocm/manylinux/ publishes no rocm-rel-10.0/ -- so the
+#     bundled torch is the only one available.
 #  2. Nothing may `import aiter` at build time. It runs rocminfo for arch
 #     detection *and* imports triton, which fails with
 #     "0 active drivers ([]). There should only be one." when no GPU is attached,
 #     and that has no env-var escape. Install it here; verify it at run time.
-ARG ROCM_VERSION=7.14
-ARG UBUNTU_VERSION=26.04
-ARG PY_VERSION=3.14
+ARG ROCM_VERSION=10.0
+ARG UBUNTU_VERSION=24.04
+ARG PY_VERSION=3.12
+# NOT 2.13: it drops c10::impl::cow::materialize_cow_storage, which every
+# published amd-aiter build's prebuilt prefill kernels link against.
 ARG TORCH_VERSION=2.12.0
 
 # Header donor. The rocm/pytorch base is runtime-only: it carries the pip ROCm
 # SDK (_rocm_sdk_core) rather than /opt/rocm, and that SDK ships no math or
-# utility headers -- no thrust, rocPRIM, rocBLAS or hipBLASLt. torch 2.12's
-# complex.h needs thrust/complex.h, so the JIT cannot compile without them.
+# utility headers -- no thrust, rocPRIM, rocBLAS or hipBLASLt. torch's complex.h
+# needs thrust/complex.h, so the JIT cannot compile without them.
 FROM rocm/dev-ubuntu-${UBUNTU_VERSION}:${ROCM_VERSION}.0-full AS rocmdev
 
 FROM rocm/pytorch:rocm${ROCM_VERSION}_ubuntu${UBUNTU_VERSION}_py${PY_VERSION}_pytorch_release_${TORCH_VERSION}
 ARG ROCM_VERSION
 ARG PY_VERSION
 
-# AITER is pinned to an exact build including the local version segment: this is
-# currently the only cp314 wheel published anywhere, and pip will not select a
-# local version from a loose specifier.
-ARG AITER_VERSION=0.1.16.post3.dev0+g620287969.d20260725
-ARG AITER_INDEX=https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/vllm-cdna/
+# AITER is pinned to an exact build including the local version segment, because
+# pip will not select a local version from a loose specifier. No +rocm10.0 build
+# of amd-aiter exists; every 0.1.20 wheel shares source build id 3135022, so the
+# +rocm10.1.0a one is the nearest retarget of the same revision.
+ARG AITER_VERSION=0.1.20+rocm10.1.0a20260819.3135022
+ARG AITER_INDEX=https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/
 
 # Fail fast if the base image ever stops shipping a HIP-enabled torch.
 RUN python3 -c "import torch, sys; hip = torch.version.hip; print(f'torch {torch.__version__} (hip={hip})'); sys.exit('ERROR: installed torch has no ROCm/HIP build (hip is None)' if hip is None else 0)"
 
-# System dependencies. libstdc++-14-dev and clangd-19 are both still available on
-# Ubuntu 26.04, so these names carry over from the 24.04 image unchanged.
+# System dependencies. libstdc++-14-dev and clangd-19 are both in noble, so these
+# names -- and the /usr/lib/llvm-19/bin entry on PATH below -- carry over.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     clang-format \
     clangd-19 \
@@ -58,7 +61,7 @@ ARG USERNAME=devuser
 ARG USER_UID=1003
 ARG USER_GID=$USER_UID
 
-# Ubuntu 26.04 ships a default `ubuntu` user at UID/GID 1000, which is the most
+# Ubuntu ships a default `ubuntu` user at UID/GID 1000, which is the most
 # common host UID and what the README's $(id -u) yields -- so it has to go
 # *before* devuser is created, or groupadd fails with "GID '1000' already
 # exists" and the build dies here.
@@ -82,7 +85,7 @@ RUN (getent group render >/dev/null || groupadd -r render) && \
 
 RUN echo "set-option -g default-command \"/bin/bash -i\"" >> /home/$USERNAME/.tmux.conf
 
-# System python3.14 is PEP 668 externally-managed, so everything goes into the
+# The system python is PEP 668 externally-managed, so everything goes into the
 # base image's existing venv -- that is where torch already lives, and creating a
 # second one would hide it.
 ENV VIRTUAL_ENV=/opt/venv
@@ -127,7 +130,9 @@ USER $USERNAME
 # setuptools and setuptools-scm are the in-tree backend's build requirements.
 # They must be in the image because the documented install passes
 # --no-build-isolation, which is itself required: isolation resolves torch from
-# PyPI and pulls a non-ROCm wheel.
+# PyPI and pulls a non-ROCm wheel. The torch check repeats after AITER for the
+# same reason -- --extra-index-url leaves PyPI visible, so a dependency of the
+# AITER wheel can swap in a CPU-only torch and the build still exits 0.
 RUN pip install --no-cache-dir \
         ninja \
         "setuptools>=80" \
@@ -140,7 +145,8 @@ RUN pip install --no-cache-dir \
         ruff \
         filelock && \
     pip install --no-cache-dir "amd-aiter==${AITER_VERSION}" --extra-index-url "${AITER_INDEX}" && \
-    python3 -c "import importlib.metadata as m; print('amd-aiter', m.version('amd-aiter'))"
+    python3 -c "import importlib.metadata as m; print('amd-aiter', m.version('amd-aiter'))" && \
+    python3 -c "import torch, sys; hip = torch.version.hip; print(f'torch {torch.__version__} (hip={hip})'); sys.exit('ERROR: the amd-aiter install replaced torch with a non-ROCm build' if hip is None else 0)"
 
 WORKDIR /home/$USERNAME
 

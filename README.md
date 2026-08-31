@@ -98,18 +98,20 @@ python examples/single_prefill_example.py
 | | Supported |
 | :--- | :--- |
 | GPUs | gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI350X, MI355X) |
-| ROCm | 7.0.2, 7.1.1, 7.2, 7.14 |
+| ROCm | 7.0.2, 7.1.1, 7.2, 7.14, 10.0 |
 | PyTorch+ROCm | 2.8.0, 2.9.1, 2.12.0 |
-| Python | 3.10+ (the published images use 3.12; the devcontainer uses 3.14) |
+| Python | 3.10+ (both the published images and the devcontainer use 3.12) |
 
 Other versions may work but are untested. Replace `7.2` in the torch
 install command with the ROCm version you need; see
 <https://repo.radeon.com/rocm/manylinux/> for what is available.
 
-ROCm 7.14 is the exception: `repo.radeon.com` publishes no `rocm-rel-7.14/`
-directory, so there is no pip recipe for it. Take torch from the
-`rocm/pytorch:rocm7.14_ubuntu26.04_py3.14_pytorch_release_2.12.0` image
-instead, as the devcontainer does.
+ROCm 7.14 and 10.0 are the exceptions: `repo.radeon.com` publishes no
+`rocm-rel-` directory for either, so there is no pip recipe. Take torch from
+the `rocm/pytorch:rocm10.0_ubuntu24.04_py3.12_pytorch_release_2.12.0` image
+instead, as the devcontainer does. Stay on torch 2.12: 2.13 removes a `c10`
+symbol that every published `amd-aiter` build's prebuilt prefill kernels need,
+so AITER prefill fails to load there.
 
 ## Support matrix
 
@@ -147,14 +149,14 @@ decisions the library makes. Do not edit it by hand; run
 
 | Op | Backend | gfx942 (CDNA3) | gfx950 (CDNA4) | Notes |
 | :--- | :--- | :---: | :---: | :--- |
-| `batch_decode` | `aiter` | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Graph capture is opt-in via `backend="aiter"`. |
+| `batch_decode` | `aiter` | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Under graph capture `auto` needs a declared `max_seq_len`, else it stays on fa2. |
 | `single_prefill` | `aiter` | ✅ | ✅ | MHA / GQA / MQA; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. |
 | `batch_prefill` | `aiter` | ✅ | ⚠️[^kb1] | Paged and ragged. Page sizes 128/256/1024 are native on amd-aiter >= 0.1.10; others take a flat gather. |
 | `mla` | `aiter` | ✅ | ✅ | DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here. |
 | `rope` | `aiter` | ✅ | ✅ | `apply_rope_with_cos_sin_cache` and its inplace variant, linked at the C++ level. Opt-in. |
 | `append_paged_kv_cache` | `aiter` | ✅ | ✅ | fp16/bf16 + NHD. Bit-exact with the in-tree kernel but slower, so `auto` picks `native`. |
-| `rmsnorm` | `aiter` | ✅ | ✅ | CK `rmsnorm2d`; 2-D fp16/bf16, weight dtype must match. Opt-in: level with native on speed and less accurate. |
-| `fused_add_rmsnorm` | `aiter` | ✅ | ✅ | CK `rmsnorm2d_with_add`; 2-D, weight dtype must match. Opt-in: 1.6-1.8x slower, since correctness needs two staging buffers. |
+| `rmsnorm` | `aiter` | ✅ | ✅ | `aiter::rmsnorm`; 2-D fp16/bf16, hidden size even and <= 8192, weight dtype must match. Opt-in: level with native on speed and less accurate. |
+| `fused_add_rmsnorm` | `aiter` | ✅ | ✅ | `aiter::add_rmsnorm`; 2-D, hidden size even and <= 8192, weight dtype must match. Opt-in: 1.6-1.8x slower, since correctness needs two staging buffers. |
 | `silu_and_mul` | `aiter` | ✅ | ✅ | `aiter::silu_and_mul`, linked at the C++ level. Opt-in; matches native in fp16, lower in bf16. |
 | `fused_moe` | `aiter` | ✅ | ✅ | `aiter_fused_moe`; bf16/fp16. Weights must be pre-shuffled with `shuffle_moe_weight` or results are silently wrong. |
 | `fused_moe_fp8` | `aiter` | ✅ | ✅ | `aiter_fused_moe` with fp8 weights in `moe_fp8_dtype()` plus both scales; activations are quantized per token in the shim. |
@@ -189,13 +191,18 @@ from the batch-decode, sliding-window, and logits-cap files, and
 
 **Soft-capped causal prefill avoids one AITER kernel.** AITER's
 `mha_varlen_fwd` miscomputes `logits_soft_cap` for causal prefill with
-`head_dim=128` and `kv_len >= 512` (through amd-aiter 0.1.21). Single and
-ragged prefill always dispatch through it, so `backend="auto"` serves those
-calls with `fa2` and `backend="aiter"` raises rather than returning wrong
-numbers. Paged prefill keeps using AITER when the page size is native, since
-that route takes `mha_batch_prefill`, which is exact — it falls back only if
-the run-time probe demotes the call to a flat gather. Every other soft-cap
-shape — non-causal, other head dims, shorter contexts — is unaffected.
+`head_dim=128` (through amd-aiter 0.1.21). The affected lengths differ by
+architecture — from `kv_len >= 512` on gfx942, but at *every* length on gfx950 —
+so the threshold lives in `flashinfer/arch_caps.py` rather than in the call
+sites. Single and ragged prefill always dispatch through that kernel, so
+`backend="auto"` serves those calls with `fa2` and `backend="aiter"` raises
+rather than returning wrong numbers.
+
+Paged prefill keeps using AITER when the page size is native, because that route
+takes `mha_batch_prefill` instead — measured exact on amd-aiter 0.1.20 against an
+fp32 reference on both architectures. It falls back only when the run-time probe
+demotes the call to a flat gather. Every other soft-cap shape — non-causal, other
+head dims — is unaffected.
 
 ## `torch.compile`
 

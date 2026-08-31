@@ -15,9 +15,10 @@ limitations under the License.
 
 Acceptance test + timing for graph-capturable AITER decode (plan §3 #1).
 
-Verifies that AITER PA v1 decode, captured once at a maximum sequence length,
-replays *correctly* for shorter sequences (the kernel early-exits per-seq on
-context_lens), and times aiter-under-graph vs fa2-under-graph.
+Covers both AITER graph contracts: capture-at-max (replay only shorter) and a
+declared max_seq_len (capture at any shape, replay anything up to the capacity).
+Correctness rides on the PA v1 kernel's per-seq early-exit on context_lens.
+Times fa2, aiter@capture-at-max and aiter+max_seq_len under graph replay.
 
 Run:
     python benchmarks/rocm/bench_decode_graph.py
@@ -84,11 +85,12 @@ def _reference(q, kv, seq_len, backend):
     return w.run(q, kv)
 
 
-def _make_graph_wrapper(backend):
+def _make_graph_wrapper(backend, max_seq_len=None):
     ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=DEVICE)
     indptr_buf = torch.empty(BATCH + 1, dtype=torch.int32, device=DEVICE)
     indices_buf = torch.empty(TOTAL_PAGES, dtype=torch.int32, device=DEVICE)
     last_page_buf = torch.empty(BATCH, dtype=torch.int32, device=DEVICE)
+    extra = {} if max_seq_len is None else {"max_seq_len": max_seq_len}
     w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
         ws,
         "NHD",
@@ -97,13 +99,14 @@ def _make_graph_wrapper(backend):
         paged_kv_indptr_buffer=indptr_buf,
         paged_kv_indices_buffer=indices_buf,
         paged_kv_last_page_len_buffer=last_page_buf,
+        **extra,
     )
     return w
 
 
-def _capture(w, q_static, kv):
-    """plan() at capacity, then capture run() into a static output."""
-    indptr, indices, last_page = _layout_for(CAP_SEQ)
+def _capture(w, q_static, kv, capture_seq=CAP_SEQ):
+    """plan() at capture_seq, then capture run() into a static output."""
+    indptr, indices, last_page = _layout_for(capture_seq)
     w.plan(
         indptr,
         indices,
@@ -172,13 +175,48 @@ def main():
             f"{'PASS' if good else 'FAIL'}"
         )
 
+    # ── capacity contract: capture SHORT, replay LONG (capture-at-max cannot) ──
+    print("\nDeclared max_seq_len — capture at 256, replay longer:")
+    wc = _make_graph_wrapper("aiter", max_seq_len=CAP_SEQ)
+    gc, out_c = _capture(wc, q_static, kv, capture_seq=256)
+    for seq_len in [512, 1024, 2048, 4096]:
+        q_new = torch.randn(BATCH, NUM_QO, HD, dtype=DTYPE, device=DEVICE)
+        q_static.copy_(q_new)
+        indptr, indices, last_page = _layout_for(seq_len)
+        wc.plan(
+            indptr,
+            indices,
+            last_page,
+            NUM_QO,
+            NUM_KV,
+            HD,
+            PAGE,
+            pos_encoding_mode="NONE",
+            q_data_type=DTYPE,
+            kv_data_type=DTYPE,
+        )
+        gc.replay()
+        torch.cuda.synchronize()
+        ref = _reference(q_new, kv, seq_len, "aiter")
+        max_diff = (out_c.float() - ref.float()).abs().max().item()
+        good = torch.allclose(out_c, ref, atol=2e-2, rtol=2e-2)
+        ok = ok and good
+        print(
+            f"  seq_len={seq_len:>5d}  max|graph-eager|={max_diff:.4f}  "
+            f"{'PASS' if good else 'FAIL'}"
+        )
+
     print(f"\nOverall correctness: {'PASS' if ok else 'FAIL'}")
 
-    # ── timing: aiter-under-graph vs fa2-under-graph (replay only) ──────────
+    # ── timing: fa2 vs aiter@capture-at-max vs aiter+max_seq_len (replay only) ──
     print(f"\nUnder-graph replay latency (seq_len=4096, batch={BATCH}):")
-    for backend in ["fa2", "aiter"]:
-        wl = _make_graph_wrapper(backend)
-        gl, _ = _capture(wl, q_static, kv)
+    for label, backend, msl, cap_at in [
+        ("fa2", "fa2", None, CAP_SEQ),
+        ("aiter@max", "aiter", None, CAP_SEQ),
+        ("aiter+msl", "aiter", CAP_SEQ, 256),
+    ]:
+        wl = _make_graph_wrapper(backend, max_seq_len=msl)
+        gl, _ = _capture(wl, q_static, kv, capture_seq=cap_at)
         # set a mid-size real layout
         indptr, indices, last_page = _layout_for(4096)
         wl.plan(
@@ -202,7 +240,7 @@ def main():
             gl.replay()
         torch.cuda.synchronize()
         ms = (time.perf_counter() - t0) / n * 1e3
-        print(f"  {backend:<5s}  {ms:.4f} ms / replay")
+        print(f"  {label:<10s}  {ms:.4f} ms / replay")
 
     return 0 if ok else 1
 

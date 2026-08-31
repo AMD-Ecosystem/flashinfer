@@ -24,6 +24,31 @@ def get_norm_aiter_module():
 # supported and opt-in, as it is for silu_and_mul and rope.
 
 
+# AITER's kernel dispatches on hidden size and gives up past this, where the CK
+# kernel it replaced had no ceiling.
+_AITER_MAX_HIDDEN = 8192
+
+
+def _check_aiter_hidden_size(input: torch.Tensor, op: str) -> None:
+    """Reject the two hidden sizes AITER's RMSNorm cannot serve correctly.
+
+    Odd sizes mis-handle the tail (the kernel walks weights in pairs) and come
+    back silently wrong; above _AITER_MAX_HIDDEN it raises from inside AITER.
+    Only reachable via an explicit backend="aiter" -- auto is native regardless.
+    """
+    hidden = input.shape[-1]
+    if hidden % 2 != 0:
+        raise ValueError(
+            f"AITER {op} returns wrong results for odd hidden sizes; got "
+            f"{hidden}. Use backend='native'."
+        )
+    if hidden > _AITER_MAX_HIDDEN:
+        raise ValueError(
+            f"AITER {op} supports hidden sizes up to {_AITER_MAX_HIDDEN}; got "
+            f"{hidden}. Use backend='native'."
+        )
+
+
 def _auto_select_norm_backend(input: torch.Tensor, weight: torch.Tensor) -> str:
     # A wash on speed (median 1.00 gfx942 / 0.98 gfx950) and native is the more
     # accurate kernel, so there is nothing to trade.
@@ -63,7 +88,7 @@ def maybe_rmsnorm(
                 f"AITER rmsnorm only supports float16/bfloat16 inputs; got {input.dtype}."
             )
         if weight.dtype != input.dtype:
-            # CK rmsnorm2d derives a single dtype from input and reads weight
+            # The kernel derives a single dtype from input and reads weight
             # bytes with it; a mismatched weight dtype silently yields NaN/garbage.
             raise ValueError(
                 f"AITER rmsnorm requires weight.dtype == input.dtype; got "
@@ -88,6 +113,7 @@ def maybe_rmsnorm(
                 "AITER rmsnorm requires input and weight on the same device; "
                 f"got {input.device} and {weight.device}."
             )
+        _check_aiter_hidden_size(input, "rmsnorm")
         if out is None:
             out = torch.empty_like(input)
         get_norm_aiter_module().rmsnorm_aiter(out, input, weight, eps)
@@ -165,6 +191,7 @@ def maybe_fused_add_rmsnorm(
 
         require_aiter(input.device, "fused_add_rmsnorm")
         _check_aiter_fused_add_args(input, residual, weight)
+        _check_aiter_hidden_size(input, "fused_add_rmsnorm")
         get_norm_aiter_module().fused_add_rmsnorm_aiter(input, residual, weight, eps)
         return True
     if resolved != "native":

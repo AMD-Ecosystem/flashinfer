@@ -34,27 +34,35 @@ index, and the ROCm-versioned channels carry no wheel at or above the
 supported floor, so install from the nightlies index:
 
 ```bash
-pip install amd-aiter==0.1.16.post3.dev0+g620287969.d20260725 \
-  --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/vllm-cdna/
+pip install amd-aiter==0.1.20+rocm10.1.0a20260819.3135022 \
+  --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/
 ```
 
 Use `--extra-index-url`, not `--index-url`, so AITER's own dependencies
 still resolve from PyPI, and spell the version out in full including the
-local `+g...` segment — pip will not select a local version from a loose
-specifier.
+local `+rocm...` segment — pip will not select a local version from a loose
+specifier. Check afterwards that the install did not pull a CPU-only torch
+over your ROCm one: `python -c "import torch; assert torch.version.hip"`.
 
-**`aiter_utils.AITER_MIN_VERSION` (0.1.16) is a hard floor**, enforced
+**`aiter_utils.AITER_MIN_VERSION` (0.1.20) is a hard floor**, enforced
 before routing. FlashInfer links AITER's C++ symbols by mangled name
 (`csrc/rocm/aiter_loader.cc`) and vendors its argument structs
-(`include/flashinfer/rocm/attention/aiter/`) at the 0.1.16 layout, so an older
-release shifts field offsets instead of failing to load. Below the floor
+(`include/flashinfer/rocm/attention/aiter/`) at the 0.1.20 layout, so an older
+release shifts field offsets instead of failing to load -- and 0.1.20 renamed
+the RMSNorm entry points, so an older one cannot resolve them. Below the floor
 `auto` will not select AITER and an explicit `backend="aiter"` raises.
 
 That rules out `pypi.amd.com/rocm-7.1.1/simple`, which carries only
 `0.1.10` and only cp310/cp312 wheels. The CI image
 (`docker/Dockerfile.rocm_ci`) still installs `0.1.10` and so runs without
 the AITER backends; the devcontainer bundles the wheel above, on CPython
-3.14, and needs no separate install.
+3.12, and needs no separate install.
+
+Every 0.1.20 wheel is cp312 only, and none is built against ROCm 10.0 —
+they share one source revision (build id `3135022`) retargeted to
+`+rocm10.1.0a`, `+rocm7.14.0` and `+rocm7.2.3`. Only the first of those and
+`+rocm7.2.3` are reachable by version specifier; pip normalises the project
+name, so the sibling `amd_aiter/` directory needs a direct wheel URL.
 
 A source build tracks master, which is many releases ahead of the pin
 **with a different C ABI** — symbols the shim expects are renamed, hidden
@@ -72,13 +80,13 @@ Nothing stops you running one, but treat it as untested here.
 The `rmsnorm`, `fused_add_rmsnorm`, `silu_and_mul`, and `rope`
 (cos/sin-cache) AITER backends are integrated at the **C++ level**: the
 JIT compiles a small HIP shim that calls AITER's C++ kernels
-(`rmsnorm2d`, `rmsnorm2d_with_add`, `aiter::silu_and_mul`,
+(`aiter::rmsnorm`, `aiter::add_rmsnorm`, `aiter::silu_and_mul`,
 `rope_cached_positions_2c_fwd_impl`) and links a symbol-visible AITER
 `.so`. There is no runtime `import aiter` on these paths.
 
 The first JIT build of each op builds the corresponding AITER module once
 with `AITER_SYMBOL_VISIBLE=1` and caches it under
-`~/.cache/flashinfer/aiter_libs/`. The CK `module_rmsnorm` build is large
+`~/.cache/flashinfer/aiter_libs/`. The `module_rmsnorm_quant` build is large
 and can take many minutes the first time.
 
 ### `mha_fwd` ships no prebuilt kernels at all
@@ -123,8 +131,8 @@ the call:
 
 When `auto` declines AITER for the attention ops it falls back to the
 in-tree kernel and usually warns once with the reason. A few `batch_decode`
-short-circuits (CUDA-graph capture, `use_tensor_cores=True`) fall back
-silently. The always-native ops make no per-call decision, so they neither
+short-circuits (CUDA-graph capture without a declared `max_seq_len`,
+`use_tensor_cores=True`) fall back silently. The always-native ops make no per-call decision, so they neither
 warn nor report a reason.
 
 The "always native" ops are that way because measurement said so,
@@ -169,8 +177,8 @@ kwargs below are parameters of it.
 * `q_dtype != kv_dtype` — mixed-precision Q/KV is unsupported
 * `head_dim_qk != head_dim_vo` (e.g. DeepSeek-style MLA with 192/128)
 * `pos_encoding_mode != "NONE"` — AITER attention supports only `"NONE"`
-* batch decode: `use_tensor_cores=True`, or `use_cuda_graph=True` under
-  `auto`
+* batch decode: `use_tensor_cores=True`, or `use_cuda_graph=True` without a
+  declared `max_seq_len`
 * the `aiter` Python package is not importable
 
 ### Accepted but not honoured
@@ -235,14 +243,27 @@ Ragged (non-paged) batch prefill is supported through
 
 ### Batch decode: CUDA-graph capture
 
-Graph capture on the AITER decode path is available via an explicit
-`backend="aiter"`, not `auto`. **Capture at your maximum sequence
-length**: the launch grid and `.so` variant are fixed at capture-time
-shapes and the kernel early-exits per sequence on `context_lens`, so
-replays *shorter* than captured are correct but *longer* ones are not.
+AITER's launch grid and `.so` variant are fixed at capture time, so the
+contract depends on whether you declare a capacity.
 
-`fa2`'s graph path is capacity-based and carries no such constraint, which
-is why `auto` uses it under capture.
+Without `max_seq_len`, graph capture is opt-in via an explicit
+`backend="aiter"` and you must **capture at your maximum sequence length**:
+the kernel early-exits per sequence on `context_lens`, so replays *shorter*
+than captured are correct but *longer* ones are not. `auto` stays on `fa2`.
+
+Passing `max_seq_len` to the wrapper sizes the grid, `.so` variant and
+partition workspace from that capacity instead, so a graph captured at any
+shape replays for any `seq_len <= max_seq_len` — the same capacity-based
+contract `fa2` has, which is what lets `auto` select AITER under capture.
+
+Two caveats. The partition workspace scales with the declared capacity, so
+an over-generous value costs memory on every `run()`. And the capacity is
+enforced in `plan()`: a replay that writes the persistent buffers directly
+is not checked, and an over-length sequence there is silently truncated to
+the capacity rather than attending to its full context.
+
+`run(..., return_lse=True)` raises on this backend under capture — PA v1
+emits no LSE and the FA2 shadow plan it borrows is not capture-safe.
 
 ### MLA
 

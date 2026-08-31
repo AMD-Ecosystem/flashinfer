@@ -633,3 +633,20 @@ class TestLegend:
         archs = dict(self._row().archs)
         archs["gfx942"] = arch_caps.ArchSupport(arch_caps.Support.UNSUPPORTED)
         assert "**not available**" in self._render_only(archs=archs)
+
+
+class TestAiterSoftcapFloor:
+    """The kv_len where AITER's causal soft-cap defect starts is per-arch.
+
+    gfx950 is wrong at every length on amd-aiter 0.1.20 while gfx942 is only
+    wrong from 512 up, so a single literal cannot express both.
+    """
+
+    def test_gfx942_keeps_the_512_floor(self):
+        assert arch_caps.aiter_softcap_defect_min_kv_len("gfx942") == 512
+
+    def test_gfx950_has_no_safe_kv_len(self):
+        assert arch_caps.aiter_softcap_defect_min_kv_len("gfx950") == 0
+
+    def test_unknown_arch_disarms_rather_than_blocks(self):
+        assert arch_caps.aiter_softcap_defect_min_kv_len("unknown") is None

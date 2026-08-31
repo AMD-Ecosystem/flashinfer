@@ -44,7 +44,10 @@ packages = ["amd_flashinfer_jit_cache"]
 include-package-data = false
 
 [tool.setuptools.package-data]
-amd_flashinfer_jit_cache = ["jit_cache/**/*.so"]
+# The manifest must ship too: without it the consumer-side architecture check
+# in jit/rocm/env.py sees no manifest, assumes a pre-check wheel, and trusts
+# whatever it was given -- so a .so-only glob makes the guard a silent no-op.
+amd_flashinfer_jit_cache = ["jit_cache/**/*.so", "jit_cache/aot_manifest.json"]
 
 [tool.setuptools_scm]
 root = ".."

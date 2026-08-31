@@ -50,11 +50,11 @@ def _ensure_aiter_gpu_archs() -> None:
         os.environ["GPU_ARCHS"] = arch
 
 
-# The vendored structs in include/flashinfer/rocm/attention/aiter/ follow the 0.1.16
-# layout. They travel by value through dlsym'd pointers, so an older AITER
-# mismatches offsets silently instead of failing to load -- hence a hard floor
-# rather than a warning.
-AITER_MIN_VERSION = "0.1.16"
+# 0.1.20 renamed the RMSNorm entry points and added a gemma_norm parameter, so
+# an older AITER cannot resolve the shim's symbols at all. The vendored prefill
+# structs travel by value through dlsym'd pointers, where a mismatch corrupts
+# silently -- hence a hard floor rather than a warning.
+AITER_MIN_VERSION = "0.1.20"
 
 
 def _aiter_installed_version() -> Optional[str]:
