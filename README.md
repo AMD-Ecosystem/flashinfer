@@ -192,14 +192,17 @@ from the batch-decode, sliding-window, and logits-cap files, and
 **Soft-capped causal prefill avoids one AITER kernel.** AITER's
 `mha_varlen_fwd` miscomputes `logits_soft_cap` for causal prefill with
 `head_dim=128` (through amd-aiter 0.1.21). The affected lengths differ by
-architecture: from `kv_len >= 512` on gfx942, but at every length on gfx950.
-Single and
-ragged prefill always dispatch through it, so `backend="auto"` serves those
-calls with `fa2` and `backend="aiter"` raises rather than returning wrong
-numbers. Paged prefill keeps using AITER when the page size is native, since
-that route takes `mha_batch_prefill`, which is exact — it falls back only if
-the run-time probe demotes the call to a flat gather. Every other soft-cap
-shape — non-causal, other head dims — is unaffected.
+architecture — from `kv_len >= 512` on gfx942, but at *every* length on gfx950 —
+so the threshold lives in `flashinfer/arch_caps.py` rather than in the call
+sites. Single and ragged prefill always dispatch through that kernel, so
+`backend="auto"` serves those calls with `fa2` and `backend="aiter"` raises
+rather than returning wrong numbers.
+
+Paged prefill keeps using AITER when the page size is native, because that route
+takes `mha_batch_prefill` instead — measured exact on amd-aiter 0.1.20 against an
+fp32 reference on both architectures. It falls back only when the run-time probe
+demotes the call to a flat gather. Every other soft-cap shape — non-causal, other
+head dims — is unaffected.
 
 ## `torch.compile`
 

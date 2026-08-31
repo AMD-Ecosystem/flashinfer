@@ -127,7 +127,10 @@ std::unordered_map<VariantKey, void*, VariantKeyHash> s_vl_cache;
 // ----- batch-prefill cache -----
 
 std::string batch_prefill_variant_so_name(BatchPrefillVariantKey const& key) {
-  return build_so_name(key, "mha_batch_prefill_", "_ndropout_nqscale.so",
+  // 0.1.20 appended a sink axis to this family only -- mha_fwd and
+  // mha_varlen_fwd keep their names. Without it every lookup misses and the
+  // paged path degrades to flat-gather instead of using native paging.
+  return build_so_name(key, "mha_batch_prefill_", "_ndropout_nqscale_nsink.so",
                        /*include_logits=*/true);
 }
 
