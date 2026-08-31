@@ -131,8 +131,8 @@ the call:
 
 When `auto` declines AITER for the attention ops it falls back to the
 in-tree kernel and usually warns once with the reason. A few `batch_decode`
-short-circuits (CUDA-graph capture, `use_tensor_cores=True`) fall back
-silently. The always-native ops make no per-call decision, so they neither
+short-circuits (CUDA-graph capture without a declared `max_seq_len`,
+`use_tensor_cores=True`) fall back silently. The always-native ops make no per-call decision, so they neither
 warn nor report a reason.
 
 The "always native" ops are that way because measurement said so,
@@ -177,8 +177,8 @@ kwargs below are parameters of it.
 * `q_dtype != kv_dtype` — mixed-precision Q/KV is unsupported
 * `head_dim_qk != head_dim_vo` (e.g. DeepSeek-style MLA with 192/128)
 * `pos_encoding_mode != "NONE"` — AITER attention supports only `"NONE"`
-* batch decode: `use_tensor_cores=True`, or `use_cuda_graph=True` under
-  `auto`
+* batch decode: `use_tensor_cores=True`, or `use_cuda_graph=True` without a
+  declared `max_seq_len`
 * the `aiter` Python package is not importable
 
 ### Accepted but not honoured
@@ -243,14 +243,27 @@ Ragged (non-paged) batch prefill is supported through
 
 ### Batch decode: CUDA-graph capture
 
-Graph capture on the AITER decode path is available via an explicit
-`backend="aiter"`, not `auto`. **Capture at your maximum sequence
-length**: the launch grid and `.so` variant are fixed at capture-time
-shapes and the kernel early-exits per sequence on `context_lens`, so
-replays *shorter* than captured are correct but *longer* ones are not.
+AITER's launch grid and `.so` variant are fixed at capture time, so the
+contract depends on whether you declare a capacity.
 
-`fa2`'s graph path is capacity-based and carries no such constraint, which
-is why `auto` uses it under capture.
+Without `max_seq_len`, graph capture is opt-in via an explicit
+`backend="aiter"` and you must **capture at your maximum sequence length**:
+the kernel early-exits per sequence on `context_lens`, so replays *shorter*
+than captured are correct but *longer* ones are not. `auto` stays on `fa2`.
+
+Passing `max_seq_len` to the wrapper sizes the grid, `.so` variant and
+partition workspace from that capacity instead, so a graph captured at any
+shape replays for any `seq_len <= max_seq_len` — the same capacity-based
+contract `fa2` has, which is what lets `auto` select AITER under capture.
+
+Two caveats. The partition workspace scales with the declared capacity, so
+an over-generous value costs memory on every `run()`. And the capacity is
+enforced in `plan()`: a replay that writes the persistent buffers directly
+is not checked, and an over-length sequence there is silently truncated to
+the capacity rather than attending to its full context.
+
+`run(..., return_lse=True)` raises on this backend under capture — PA v1
+emits no LSE and the FA2 shadow plan it borrows is not capture-safe.
 
 ### MLA
 
