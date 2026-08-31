@@ -4,8 +4,6 @@
 // Vendored fmha_batch_prefill_args, following the amd-aiter 0.1.20 layout.
 // Extracted from
 // aiter_meta/3rdparty/composable_kernel/example/ck_tile/01_fmha/fmha_fwd.hpp.
-// Still correct on 0.1.16: the struct is MEMORY-class, so an older callee simply
-// never reads the trailing fields 0.1.20 added.
 //
 // ABI note: aiter::mha_batch_prefill() is called via dlsym. The struct layout here must
 // match the .so exactly. ck_tile::index_t = int32_t.

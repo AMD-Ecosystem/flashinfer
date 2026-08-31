@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The amd-aiter ABI floor.
 
-The vendored structs under include/flashinfer/rocm/attention/aiter/ follow the 0.1.16
+The vendored structs under include/flashinfer/rocm/attention/aiter/ follow the 0.1.20
 layout and travel by value through dlsym'd pointers, so an older AITER shifts
 field offsets instead of failing to load. Nothing downstream can detect that,
 which is why the floor is enforced before routing rather than at the call.

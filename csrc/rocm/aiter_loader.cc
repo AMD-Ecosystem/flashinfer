@@ -47,7 +47,7 @@ std::string get_jit_dir() {
 // mha_fwd:           prefix="mha_fwd_",          include_logits=false,
 //                    suffix="_ndropout_nqscale.so"
 // mha_batch_prefill: prefix="mha_batch_prefill_", include_logits=true,
-//                    suffix="_ndropout_nqscale.so"
+//                    suffix="_ndropout_nqscale_nsink.so"
 std::string build_so_name(VariantKey const& key, std::string_view prefix, std::string_view suffix,
                           bool include_logits) {
   std::string name(prefix);
