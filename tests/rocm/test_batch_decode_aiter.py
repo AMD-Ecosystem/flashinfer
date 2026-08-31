@@ -698,8 +698,11 @@ def test_batch_decode_aiter_graph_over_capacity_leaves_wrapper_usable():
     captured graph, and plan() writes the persistent buffers before it validates."""
     device = torch.device("cuda:0")
     batch, page, num_qo, num_kv, hd = 1, 16, 8, 8, 128
-    cap_seq, dtype = 256, torch.float16
-    cap_pages, total_pages = _graph_pool(batch, page, cap_seq)
+    cap_seq, over_seq, dtype = 256, 1024, torch.float16
+    cap_pages, _ = _graph_pool(batch, page, cap_seq)
+    # Size the index buffer for the OVER-capacity batch: otherwise plan() bails on the
+    # buffer-size check before it can mutate, and this passes without the fix.
+    total_pages = batch * ((over_seq + page - 1) // page)
 
     kv = torch.randn(total_pages, 2, page, num_kv, hd, dtype=dtype, device=device)
     q = torch.randn(batch, num_qo, hd, dtype=dtype, device=device)
@@ -741,7 +744,7 @@ def test_batch_decode_aiter_graph_over_capacity_leaves_wrapper_usable():
     )
 
     # Over-capacity plan must raise without touching committed state.
-    over_pages = (1024 + page - 1) // page
+    over_pages = (over_seq + page - 1) // page
     with pytest.raises(ValueError, match="exceeding the declared max_seq_len"):
         w.plan(
             torch.tensor([0, over_pages], dtype=torch.int32, device=device),
@@ -882,3 +885,75 @@ def test_batch_decode_aiter_graph_return_lse_raises():
     )
     with pytest.raises(ValueError, match="return_lse=True is not supported"):
         w.run(q, kv, return_lse=True)
+
+
+@requires_aiter
+def test_batch_decode_aiter_graph_replay_past_capacity_is_clamped_not_oob():
+    """The usual graph pattern writes the persistent buffers and replays with no plan()
+    in between, so nothing host-side sees the new lengths. The build kernel clamps
+    context_lens to the block-table width: truncated attention, not another
+    sequence's pages."""
+    device = torch.device("cuda:0")
+    batch, page, num_qo, num_kv, hd = 1, 16, 8, 8, 128
+    cap_seq, over_seq, dtype = 256, 1024, torch.float16
+    cap_pages = (cap_seq + page - 1) // page
+    over_pages = (over_seq + page - 1) // page
+
+    kv = torch.randn(over_pages, 2, page, num_kv, hd, dtype=dtype, device=device)
+    q = torch.randn(batch, num_qo, hd, dtype=dtype, device=device)
+
+    indptr_buf = torch.empty(batch + 1, dtype=torch.int32, device=device)
+    indices_buf = torch.empty(over_pages, dtype=torch.int32, device=device)
+    last_page_buf = torch.empty(batch, dtype=torch.int32, device=device)
+    w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+        torch.zeros(64 * 1024 * 1024, dtype=torch.uint8, device=device),
+        "NHD",
+        use_cuda_graph=True,
+        backend="aiter",
+        paged_kv_indptr_buffer=indptr_buf,
+        paged_kv_indices_buffer=indices_buf,
+        paged_kv_last_page_len_buffer=last_page_buf,
+        max_seq_len=cap_seq,
+    )
+    plan_kw = dict(pos_encoding_mode="NONE", q_data_type=dtype, kv_data_type=dtype)
+    w.plan(
+        torch.tensor([0, cap_pages], dtype=torch.int32, device=device),
+        torch.arange(cap_pages, dtype=torch.int32, device=device),
+        torch.tensor([page], dtype=torch.int32, device=device),
+        num_qo,
+        num_kv,
+        hd,
+        page,
+        **plan_kw,
+    )
+    for _ in range(3):
+        w.run(q, kv)
+    torch.cuda.synchronize()
+    g = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(g):
+        out = w.run(q, kv)
+
+    # Bypass plan(): write an over-capacity layout straight into the static buffers.
+    indptr_buf.copy_(torch.tensor([0, over_pages], dtype=torch.int32, device=device))
+    indices_buf.copy_(torch.arange(over_pages, dtype=torch.int32, device=device))
+    last_page_buf.copy_(torch.tensor([page], dtype=torch.int32, device=device))
+    g.replay()
+    torch.cuda.synchronize()
+
+    # Clamped to the capacity: same answer as an in-capacity batch over those pages.
+    ref_w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+        torch.zeros(64 * 1024 * 1024, dtype=torch.uint8, device=device),
+        "NHD",
+        backend="aiter",
+    )
+    ref_w.plan(
+        torch.tensor([0, cap_pages], dtype=torch.int32, device=device),
+        torch.arange(cap_pages, dtype=torch.int32, device=device),
+        torch.tensor([page], dtype=torch.int32, device=device),
+        num_qo,
+        num_kv,
+        hd,
+        page,
+        **plan_kw,
+    )
+    torch.testing.assert_close(out, ref_w.run(q, kv), rtol=1e-2, atol=1e-2)
