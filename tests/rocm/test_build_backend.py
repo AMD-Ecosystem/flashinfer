@@ -368,7 +368,11 @@ def test_the_kept_header_set_covers_every_include_that_escapes_rocm():
     jit/rocm/modules.py writes `#include` lines into generated sources.
     """
     bb = _load_backend()
-    pattern = re.compile(r'#\s*include\s*[<"](flashinfer/[^">]+)[>"]')
+    # Both spellings: <flashinfer/...> and a relative "../../x.h". The relative
+    # form is not a hypothetical -- rocm/attention/prefill.cuh reaches upstream's
+    # fp16.h that way, which is the only real escape in the tree today.
+    pattern = re.compile(r'#\s*include\s*[<"]([^">]+)[>"]')
+    include_root = _REPO_ROOT / "include"
 
     roots = [
         _REPO_ROOT / "include" / "flashinfer" / "rocm",
@@ -391,8 +395,19 @@ def test_the_kept_header_set_covers_every_include_that_escapes_rocm():
             for inc in pattern.findall(
                 path.read_text(encoding="utf-8", errors="ignore")
             ):
-                if not inc.startswith("flashinfer/rocm/"):
-                    escaping.setdefault(inc, []).append(
+                if inc.startswith("flashinfer/"):
+                    target = inc
+                elif inc.startswith(".."):
+                    # Resolve against the including file, then re-anchor on
+                    # include/ -- anything landing outside it is a system header.
+                    resolved = (path.parent / inc).resolve()
+                    if not resolved.is_relative_to(include_root):
+                        continue
+                    target = resolved.relative_to(include_root).as_posix()
+                else:
+                    continue  # sibling or system header
+                if not target.startswith("flashinfer/rocm/"):
+                    escaping.setdefault(target, []).append(
                         path.relative_to(_REPO_ROOT).as_posix()
                     )
 
