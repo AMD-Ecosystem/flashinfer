@@ -89,7 +89,13 @@ static __global__ void AiterPaV1BuildBlockTablesKernel(
     // Fold the context-length pass into the slot-0 threads rather than paying a
     // second launch for num_seqs elements.
     if (slot == 0) {
-      context_lens[seq] = npages > 0 ? (npages - 1) * page_size + last_page_len[seq] : 0;
+      const int32_t ctx = npages > 0 ? (npages - 1) * page_size + last_page_len[seq] : 0;
+      // PA v1 walks ceil(ctx / page_size) slots of a row only max_blocks_per_seq
+      // wide, so an over-long ctx would read the next sequence's pages. A truncated
+      // context beats a cross-request read; plan() rejects this batch host-side, but
+      // a graph replayed without a plan() reaches here unchecked.
+      const int32_t max_ctx = static_cast<int32_t>(max_blocks_per_seq) * page_size;
+      context_lens[seq] = ctx < max_ctx ? ctx : max_ctx;
     }
   }
 }
