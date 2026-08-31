@@ -27,7 +27,7 @@ import os
 import posixpath
 import subprocess
 import sys
-from typing import Dict, List, NamedTuple, Optional, Set, Tuple
+from typing import Dict, FrozenSet, List, NamedTuple, Optional, Set, Tuple
 
 EXIT_OK, EXIT_RATCHET, EXIT_ERROR = 0, 1, 2
 
@@ -40,9 +40,10 @@ _EXPECTED_PREFIXES = ("benchmarks/samples/",)
 
 _FORKED_DIR = "include/flashinfer/rocm"
 
-# Shares a basename with an upstream header but forks nothing: a HIP rewrite
-# that happens to reuse the names. Pairing it would report drift forever.
-_FORKED_EXCLUDE = frozenset({f"{_FORKED_DIR}/utils.cuh"})
+# Every header under _FORKED_DIR that shares an upstream basename is paired.
+# Nothing is excluded: rocm/utils.cuh forks FA2DetermineCtaTileQ and the
+# ceil_div/dim*_offset helpers, so upstream churn on it is worth reviewing.
+_FORKED_EXCLUDE: FrozenSet[str] = frozenset()
 
 # rocm/ mirrors upstream's layout but flattens one level: rocm/attention/ holds
 # headers upstream keeps both in attention/ and directly under flashinfer/.

@@ -240,9 +240,9 @@ in-place edit under `csrc/` or `include/` never appears there at all.
 **Forked headers are exempt from conflicts and therefore from warnings.**
 Much of `include/flashinfer/rocm/` is a fork of an upstream header — the
 `rocm/attention/` set, plus `sampling.cuh`, `quantization.cuh`, `layout.cuh`,
-`fastdiv.cuh` and `exception.h`. The HIP intrinsic headers and their types headers have
-no upstream counterpart, and `utils.cuh` shares a basename without forking
-anything, so `upstream_canary.py` excludes it by exact path. Their upstream
+`fastdiv.cuh`, `utils.cuh` and `exception.h`. The HIP intrinsic headers and their
+types headers have no upstream counterpart, so `upstream_canary.py` reports them
+as orphans rather than pairing them. Their upstream
 originals are byte-identical to the merge base and will merge cleanly forever,
 so a fix landing upstream reaches the original and *not* the fork, with nothing
 conflicting to tell you. The canary's drift report is the only signal, and a fix
