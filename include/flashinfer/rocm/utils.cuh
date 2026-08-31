@@ -48,7 +48,7 @@ template <typename T>
 inline void DebugPrintCUDAArray(T* device_ptr, size_t size, std::string prefix = "") {
   std::vector<T> host_array(size);
   std::cout << prefix;
-  hipMemcpy(host_array.data(), device_ptr, size * sizeof(T), hipMemcpyDeviceToHost);
+  FI_HIP_CALL(hipMemcpy(host_array.data(), device_ptr, size * sizeof(T), hipMemcpyDeviceToHost));
   for (size_t i = 0; i < size; ++i) {
     std::cout << host_array[i] << " ";
   }

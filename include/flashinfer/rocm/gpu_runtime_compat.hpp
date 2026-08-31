@@ -24,7 +24,7 @@
     hipError_t err = (call);                                                                       \
     if (err != hipSuccess) {                                                                       \
       std::ostringstream err_msg;                                                                  \
-      err_msg << "GPU error: " << hipGetErrorString(err) << " at " << __FILE__ << ":" << __LINE__; \
+      err_msg << "HIP error: " << hipGetErrorString(err) << " at " << __FILE__ << ":" << __LINE__; \
       throw std::runtime_error(err_msg.str());                                                     \
     }                                                                                              \
   } while (0)
