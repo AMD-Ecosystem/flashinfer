@@ -11,7 +11,7 @@ For a complete worked example to copy, read these together:
 [`jit/norm.py`](../../../flashinfer/jit/norm.py) +
 [`norm.py`](../../../flashinfer/norm.py). For plan-run / multi-backend / FP8 see
 [`batch_prefill.cu`](../../../csrc/rocm/batch_prefill.cu) +
-[`prefill_rocm.py`](../../../flashinfer/prefill_rocm.py).
+[`rocm/prefill.py`](../../../flashinfer/rocm/prefill.py).
 
 ## File touchpoints (every new op needs each row, in order)
 
@@ -26,7 +26,7 @@ For a complete worked example to copy, read these together:
 | 7 | `tests/rocm/test_<op>.py` | Correctness tests; FP32 reference math, loose BF16 tolerances. |
 | 8 | `flashinfer/jit/__init__.py` (`IS_HIP` branch) | `from .<op> import gen_<op>_module as gen_<op>_module`. |
 | 9 | `flashinfer/__init__.py` (`IS_HIP` branch) | `from .<op> import <op> as <op>`. |
-| 10 (opt) | `flashinfer/aot_hip.py` | Register `gen_<op>_module` for pre-compiled wheels. |
+| 10 (opt) | `flashinfer/rocm/aot.py` | Register `gen_<op>_module` for pre-compiled wheels. |
 
 **Forgetting steps 8 and 9 is the most common bug** — the module compiles but is invisible from `import flashinfer`.
 
@@ -45,7 +45,7 @@ When porting an upstream kernel, mechanically rewrite:
 | `get_stream(tensor.device())` | `at::hip::getCurrentHIPStream()` |
 | `c10::cuda::OptionalCUDAGuard` | `c10::hip::OptionalHIPGuardMasqueradingAsCUDA` |
 | `nvcc` flags via `extra_cuda_cflags=[...]` | **Same kwarg name** (`extra_cuda_cflags`) — internally routed to `hipcc`. |
-| `flashinfer/aot.py` registration | `flashinfer/aot_hip.py` |
+| `flashinfer/aot.py` registration | `flashinfer/rocm/aot.py` |
 | `tests/test_op.py` | `tests/rocm/test_op.py` |
 | `supported_major_versions=[9, 10]` | No analogue. Guard at Python layer via `FLASHINFER_SUPPORTED_ROCM_ARCHS`. |
 | `csrc/` (hardcoded) | `jit_env.FLASHINFER_CSRC_DIR`. Sources live at `csrc/rocm/`; the build materializes them into the package, so the resolved path is `flashinfer/csrc/rocm/`. **Never hardcode either.** |

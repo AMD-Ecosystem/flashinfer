@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+// clang-format off
+// macros.hpp first: it raises the "requires a HIP compiler" #error, which is a
+// better diagnostic than a missing hip/ header further down.
+#include "macros.hpp"
+// clang-format on
+
 #include <hip/hip_bf16.h>
 #include <hip/hip_cooperative_groups.h>
 #include <hip/hip_fp16.h>
@@ -11,8 +17,6 @@
 
 #include <sstream>
 #include <stdexcept>
-
-#include "macros.hpp"
 
 // HIP error checking macro (replaces FLASHINFER_CUDA_CALL upstream)
 #define FI_HIP_CALL(call)                                                                          \

@@ -646,7 +646,7 @@ hipError_t MergeStates(DTypeIn* v, float* s, DTypeO* v_merged, float* s_merged,
       void* args[] = {&v, &s, &v_merged, &s_merged, &num_index_sets, &num_heads};
       uint32_t smem_size =
           num_smem_stages * bdy * head_dim * sizeof(DTypeIn) + num_threads * sizeof(float);
-      FI_HIP_CALL(hipFuncSetAttribute((const void*)(void*)kernel,
+      FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel,
                                       hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
       FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
     } else {
@@ -705,8 +705,8 @@ hipError_t VariableLengthMergeStates(DTypeIn* v, float* s, IdType* indptr, DType
     dim3 nblks(num_sms * num_blocks_per_sm);
     dim3 nthrs(bdx, bdy);
     void* args[] = {&v, &s, &indptr, &v_merged, &s_merged, &max_seq_len, &seq_len, &num_heads};
-    FI_HIP_CALL(hipFuncSetAttribute((const void*)(void*)kernel,
-                                    hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel, hipFuncAttributeMaxDynamicSharedMemorySize,
+                                    smem_size));
     FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
   return hipSuccess;
@@ -738,8 +738,8 @@ hipError_t VariableLengthAttentionSum(DTypeIn* v, IdType* indptr, DTypeO* v_sum,
     dim3 nblks(num_sms * num_blocks_per_sm);
     dim3 nthrs(bdx, bdy);
     void* args[] = {&v, &indptr, &v_sum, &max_seq_len, &seq_len, &num_heads};
-    FI_HIP_CALL(hipFuncSetAttribute((const void*)(void*)kernel,
-                                    hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel, hipFuncAttributeMaxDynamicSharedMemorySize,
+                                    smem_size));
     FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
   return hipSuccess;

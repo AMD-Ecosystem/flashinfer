@@ -164,7 +164,7 @@ nm -D --defined-only -C <site-packages>/aiter/jit/module_<x>.so | grep '<fn>('
 sed -n '/<fn>/,/;/p' <site-packages>/aiter_meta/csrc/include/<hdr>.h
 ```
 
-Check availability in code: `from flashinfer.aiter_utils import is_aiter_supported`
+Check availability in code: `from flashinfer.rocm.aiter_utils import is_aiter_supported`
 
 ## Arch ↔ codename
 

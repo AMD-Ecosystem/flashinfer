@@ -791,7 +791,7 @@ hipError_t BatchDecodeWithPagedKVCacheDispatched(Params params, typename Params:
       auto kernel =
           BatchDecodeWithPagedKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
                                             vec_size, bdx, bdy, bdz, AttentionVariant, Params>;
-      FI_HIP_CALL(hipFuncSetAttribute((const void*)(void*)kernel,
+      FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel,
                                       hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
       if (tmp_v == nullptr) {
@@ -1115,8 +1115,8 @@ hipError_t BatchDecodeWithPagedKVCacheDispatchedMLA(Params params, typename Para
     auto kernel =
         BatchDecodeWithPagedKVCacheKernelMLA<NUM_STAGES_SMEM, vec_size_ckv, vec_size_kpe, bdx, bdy,
                                              bdz, tile_size_qo_heads, AttentionVariant, Params>;
-    FI_HIP_CALL(hipFuncSetAttribute((const void*)(void*)kernel,
-                                    hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel, hipFuncAttributeMaxDynamicSharedMemorySize,
+                                    smem_size));
 
     if (tmp_v == nullptr) {
       // do not use partition-kv kernel

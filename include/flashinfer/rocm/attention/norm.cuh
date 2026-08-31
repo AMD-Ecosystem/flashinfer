@@ -133,8 +133,8 @@ hipError_t RMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uint32_t
 
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = RMSNormKernel<VEC_SIZE, T>;
-    FI_HIP_CALL(hipFuncSetAttribute((const void*)(void*)kernel,
-                                    hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel, hipFuncAttributeMaxDynamicSharedMemorySize,
+                                    smem_size));
 
     FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
@@ -261,8 +261,8 @@ hipError_t FusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch_size
 
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = FusedAddRMSNormKernel<VEC_SIZE, T>;
-    FI_HIP_CALL(hipFuncSetAttribute((const void*)(void*)kernel,
-                                    hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel, hipFuncAttributeMaxDynamicSharedMemorySize,
+                                    smem_size));
     FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
 
@@ -285,8 +285,8 @@ hipError_t GemmaRMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uin
 
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = RMSNormKernel<VEC_SIZE, T>;
-    FI_HIP_CALL(hipFuncSetAttribute((const void*)(void*)kernel,
-                                    hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel, hipFuncAttributeMaxDynamicSharedMemorySize,
+                                    smem_size));
     FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
   return hipSuccess;
@@ -310,8 +310,8 @@ hipError_t GemmaFusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch
 
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = FusedAddRMSNormKernel<VEC_SIZE, T>;
-    FI_HIP_CALL(hipFuncSetAttribute((const void*)(void*)kernel,
-                                    hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel, hipFuncAttributeMaxDynamicSharedMemorySize,
+                                    smem_size));
 
     FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });

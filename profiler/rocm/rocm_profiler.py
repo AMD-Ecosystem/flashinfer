@@ -1047,7 +1047,7 @@ def _detect_hw_ceilings() -> HardwareCeilings | None:
     try:
         import torch
 
-        from flashinfer.arch_caps import normalize_arch
+        from flashinfer.rocm.arch_caps import normalize_arch
 
         arch = normalize_arch(torch.cuda.get_device_properties(0).gcnArchName)
     except Exception:

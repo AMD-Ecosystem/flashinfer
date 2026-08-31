@@ -65,9 +65,13 @@ def backend(tmp_path):
     """Backend module rebound to a scratch tree, so the real checkout is untouched."""
     bb = _load_backend()
     src = tmp_path / "include"
-    (src / "flashinfer").mkdir(parents=True)
-    for name in ("attention.cuh", "utils.h", "traits.hpp", "notes.txt", "gen.jinja"):
-        (src / "flashinfer" / name).write_text("// x\n")
+    (src / "flashinfer" / "rocm").mkdir(parents=True)
+    # Under flashinfer/rocm/ plus fp16.h is what the wheel keeps; the rest is
+    # upstream CUDA that _prune_unshipped_headers drops.
+    for name in ("kernel.cuh", "shim.h", "traits.hpp", "notes.txt", "gen.jinja"):
+        (src / "flashinfer" / "rocm" / name).write_text("// x\n")
+    (src / "flashinfer" / "fp16.h").write_text("// x\n")
+    (src / "flashinfer" / "upstream_only.cuh").write_text("// x\n")
     # The csrc tree must exist too: _prepare_for_wheel materializes both, and a
     # missing source raises before the include assertions are ever reached.
     csrc = tmp_path / "csrc" / "rocm"
@@ -125,8 +129,14 @@ def test_wheel_copy_is_real_and_header_filtered(backend):
         backend._prepare_for_wheel()
         pkg = _inc(backend)[1]
         assert not pkg.is_symlink() and pkg.is_dir()
-        names = {p.name for p in pkg.rglob("*") if p.is_file()}
-        assert names == {"attention.cuh", "utils.h", "traits.hpp"}, names
+        shipped = {p.relative_to(pkg).as_posix() for p in pkg.rglob("*") if p.is_file()}
+        # Header suffixes filtered, and the upstream CUDA tree pruned.
+        assert shipped == {
+            "flashinfer/rocm/kernel.cuh",
+            "flashinfer/rocm/shim.h",
+            "flashinfer/rocm/traits.hpp",
+            "flashinfer/fp16.h",
+        }, shipped
 
 
 @pytest.mark.parametrize(
@@ -219,10 +229,23 @@ def test_wheel_carries_the_paths_the_jit_resolves(tmp_path, monkeypatch):
     shipped = {f for f in names if f.startswith("flashinfer/include/")}
     for suffix in (".cuh", ".h", ".hpp"):
         assert any(f.endswith(suffix) for f in shipped), suffix
-    assert len(shipped) == sum(
-        1
-        for f in (_REPO_ROOT / "include").rglob("*")
-        if f.suffix in {".cuh", ".h", ".hpp"}
+    # Every shipped header is one the ROCm build can reach: under
+    # flashinfer/rocm/, or the single upstream header rocm/ still includes.
+    stray = {
+        f
+        for f in shipped
+        if not f.startswith("flashinfer/include/flashinfer/rocm/")
+        and f != "flashinfer/include/flashinfer/fp16.h"
+    }
+    assert not stray, stray
+    assert (
+        len(shipped)
+        == sum(
+            1
+            for f in (_REPO_ROOT / "include" / "flashinfer" / "rocm").rglob("*")
+            if f.suffix in {".cuh", ".h", ".hpp"}
+        )
+        + 1
     )
     csrc = {f for f in names if f.startswith("flashinfer/csrc/rocm/")}
     assert csrc, "csrc/rocm did not reach the wheel at all"

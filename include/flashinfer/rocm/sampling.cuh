@@ -58,7 +58,7 @@ using namespace ::std;
 }
 }  // namespace cuda
 
-// Define reduction operators based on CUDA/HIP version
+// hipcub is aliased as cub above, so these are hipcub::Max / hipcub::Min.
 // On HIP, hipcub is aliased as cub above; use hipcub::Max/Min
 using MaxReduceOp = cub::Max;
 using MinReduceOp = cub::Min;

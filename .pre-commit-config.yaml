@@ -81,7 +81,7 @@ repos:
         pass_filenames: true
 
   # The README's per-architecture support matrix is generated from
-  # flashinfer/arch_caps.py. Catch a table edit that did not regenerate it here,
+  # flashinfer/rocm/arch_caps.py. Catch a table edit that did not regenerate it here,
   # rather than after someone trusts the stale row. Imports no third-party
   # package, so it runs anywhere pre-commit does.
   - repo: local
@@ -90,5 +90,5 @@ repos:
         name: README arch support matrix is current
         entry: python3 scripts/gen_arch_support_matrix.py --check
         language: system
-        files: ^(flashinfer/arch_caps\.py|README\.md|scripts/gen_arch_support_matrix\.py)$
+        files: ^(flashinfer/rocm/arch_caps\.py|README\.md|scripts/gen_arch_support_matrix\.py)$
         pass_filenames: false

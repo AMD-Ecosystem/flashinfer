@@ -70,7 +70,7 @@ wheel build. It compiles the kernel set up front so the first call does
 not pay for JIT:
 
 ```bash
-python -m flashinfer.aot_hip --help
+python -m flashinfer.rocm.aot --help
 ```
 
 Pair an AOT-built install with `FLASHINFER_DISABLE_JIT=1` to fail loudly

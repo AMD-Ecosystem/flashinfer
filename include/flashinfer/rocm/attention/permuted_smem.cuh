@@ -249,20 +249,6 @@ struct smem_t {
   }
 
   template <gpu_mem::SharedMemFillMode fill_mode, typename T>
-  __device__ __forceinline__ void load_128b_async(uint32_t offset, const T* gptr, bool predicate) {
-    b128_t* smem_ptr = base + offset;
-    gpu_mem::pred_load_128b<gpu_mem::PrefetchMode::kPrefetch, fill_mode>(
-        smem_ptr, reinterpret_cast<const b128_t*>(gptr), predicate);
-  }
-
-  template <typename T>
-  __device__ __forceinline__ void load_128b_async(uint32_t offset, const T* gptr) {
-    b128_t* smem_ptr = base + offset;
-    gpu_mem::load_128b<gpu_mem::PrefetchMode::kPrefetch>(smem_ptr,
-                                                         reinterpret_cast<const b128_t*>(gptr));
-  }
-
-  template <gpu_mem::SharedMemFillMode fill_mode, typename T>
   __device__ __forceinline__ void load_64b_async(uint32_t offset, const T* gptr, bool predicate) {
     b64_t* smem_ptr = base + offset;
     gpu_mem::pred_load_64b<gpu_mem::PrefetchMode::kPrefetch, fill_mode>(
@@ -285,11 +271,6 @@ struct smem_t {
   template <typename T>
   __device__ __forceinline__ void load_vector_async(uint32_t offset, const T* gptr) {
     load_64b_async(offset, gptr);
-  }
-
-  template <typename T>
-  __device__ __forceinline__ void store_128b(uint32_t offset, T* gptr) {
-    *reinterpret_cast<b128_t*>(gptr) = *(base + offset);
   }
 
   template <typename T>
