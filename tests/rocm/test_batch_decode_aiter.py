@@ -597,8 +597,9 @@ def test_batch_decode_aiter_graph_capture_short_replay_long(dtype):
 
 @requires_aiter
 def test_batch_decode_aiter_graph_max_seq_len_exceeded_raises():
-    """A batch longer than the declared capacity cannot be served by the captured
-    grid, so plan() must fail loudly rather than silently truncate attention."""
+    """Under an explicit backend="aiter" a batch longer than the declared capacity
+    fails loudly rather than silently truncating attention. (Under `auto` it demotes
+    to fa2 instead — see test_batch_decode_auto_graph_over_capacity_degrades_to_fa2.)"""
     device = torch.device("cuda:0")
     batch, page, num_qo, num_kv, hd = 1, 16, 8, 8, 128
     cap_seq, over_seq = 256, 1024
@@ -638,3 +639,246 @@ def test_batch_decode_aiter_graph_max_seq_len_exceeded_raises():
             q_data_type=torch.float16,
             kv_data_type=torch.float16,
         )
+
+
+def _graph_pool(batch, page, cap_seq):
+    """Fixed per-seq page pool: (cap_pages_per_seq, total_pages)."""
+    cap_pages = (cap_seq + page - 1) // page
+    return cap_pages, batch * cap_pages
+
+
+def _layout(batch, page, cap_pages, seq_len, device):
+    npages = (seq_len + page - 1) // page
+    last = seq_len - (npages - 1) * page
+    indptr = torch.arange(batch + 1, dtype=torch.int32, device=device) * npages
+    base = (torch.arange(batch, device=device) * cap_pages).view(-1, 1)
+    offs = torch.arange(npages, device=device).view(1, -1)
+    indices = (base + offs).reshape(-1).to(torch.int32)
+    last_page = torch.full((batch,), last, dtype=torch.int32, device=device)
+    return indptr, indices, last_page
+
+
+@requires_aiter
+def test_batch_decode_max_seq_len_rejects_invalid_values():
+    """max_seq_len is a capacity, so a non-positive or non-graph value is a caller
+    error — silently ignoring it hands back data-sized grids under a capacity API."""
+    device = torch.device("cuda:0")
+
+    def make(**kw):
+        return flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+            torch.zeros(8 * 1024 * 1024, dtype=torch.uint8, device=device),
+            "NHD",
+            use_cuda_graph=True,
+            paged_kv_indptr_buffer=torch.empty(2, dtype=torch.int32, device=device),
+            paged_kv_indices_buffer=torch.empty(8, dtype=torch.int32, device=device),
+            paged_kv_last_page_len_buffer=torch.empty(
+                1, dtype=torch.int32, device=device
+            ),
+            **kw,
+        )
+
+    for bad in (0, -1):
+        with pytest.raises(ValueError, match="must be positive"):
+            make(max_seq_len=bad)
+    with pytest.raises(TypeError, match="must be an int"):
+        make(max_seq_len=2048.0)
+
+    # A capacity without graph capture would be silently dropped; refuse it instead.
+    with pytest.raises(ValueError, match="requires use_cuda_graph=True"):
+        flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+            torch.zeros(8 * 1024 * 1024, dtype=torch.uint8, device=device),
+            "NHD",
+            max_seq_len=2048,
+        )
+
+
+@requires_aiter
+def test_batch_decode_aiter_graph_over_capacity_leaves_wrapper_usable():
+    """A rejected batch must not mutate the wrapper: the caller still holds a valid
+    captured graph, and plan() writes the persistent buffers before it validates."""
+    device = torch.device("cuda:0")
+    batch, page, num_qo, num_kv, hd = 1, 16, 8, 8, 128
+    cap_seq, dtype = 256, torch.float16
+    cap_pages, total_pages = _graph_pool(batch, page, cap_seq)
+
+    kv = torch.randn(total_pages, 2, page, num_kv, hd, dtype=dtype, device=device)
+    q = torch.randn(batch, num_qo, hd, dtype=dtype, device=device)
+    w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+        torch.zeros(64 * 1024 * 1024, dtype=torch.uint8, device=device),
+        "NHD",
+        use_cuda_graph=True,
+        backend="aiter",
+        paged_kv_indptr_buffer=torch.empty(batch + 1, dtype=torch.int32, device=device),
+        paged_kv_indices_buffer=torch.empty(
+            total_pages, dtype=torch.int32, device=device
+        ),
+        paged_kv_last_page_len_buffer=torch.empty(
+            batch, dtype=torch.int32, device=device
+        ),
+        max_seq_len=cap_seq,
+    )
+
+    def plan(seq_len):
+        ip, ix, lp = _layout(batch, page, cap_pages, seq_len, device)
+        w.plan(
+            ip,
+            ix,
+            lp,
+            num_qo,
+            num_kv,
+            hd,
+            page,
+            pos_encoding_mode="NONE",
+            q_data_type=dtype,
+            kv_data_type=dtype,
+        )
+
+    plan(128)
+    good = w.run(q, kv).clone()
+    buffers_before = (
+        w._paged_kv_indptr_buf.clone(),
+        w._paged_kv_last_page_len_buf.clone(),
+    )
+
+    # Over-capacity plan must raise without touching committed state.
+    over_pages = (1024 + page - 1) // page
+    with pytest.raises(ValueError, match="exceeding the declared max_seq_len"):
+        w.plan(
+            torch.tensor([0, over_pages], dtype=torch.int32, device=device),
+            torch.arange(over_pages, dtype=torch.int32, device=device),
+            torch.tensor([16], dtype=torch.int32, device=device),
+            num_qo,
+            num_kv,
+            hd,
+            page,
+            pos_encoding_mode="NONE",
+            q_data_type=dtype,
+            kv_data_type=dtype,
+        )
+
+    assert w._max_kv_len == cap_seq, "capacity sizing was clobbered by a failed plan"
+    torch.testing.assert_close(w._paged_kv_indptr_buf, buffers_before[0])
+    torch.testing.assert_close(w._paged_kv_last_page_len_buf, buffers_before[1])
+    torch.testing.assert_close(w.run(q, kv), good, rtol=1e-2, atol=1e-2)
+
+
+@requires_aiter
+def test_batch_decode_auto_graph_over_capacity_degrades_to_fa2():
+    """`auto` promises a working plan, so an over-capacity batch demotes to fa2 (whose
+    graph path is length-agnostic) rather than raising for a backend nobody asked for."""
+    device = torch.device("cuda:0")
+    batch, page, num_qo, num_kv, hd = 1, 16, 8, 8, 128
+    cap_seq, over_seq, dtype = 256, 1024, torch.float16
+    over_pages = (over_seq + page - 1) // page
+
+    w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+        torch.zeros(64 * 1024 * 1024, dtype=torch.uint8, device=device),
+        "NHD",
+        use_cuda_graph=True,
+        backend="auto",
+        paged_kv_indptr_buffer=torch.empty(batch + 1, dtype=torch.int32, device=device),
+        paged_kv_indices_buffer=torch.empty(
+            over_pages, dtype=torch.int32, device=device
+        ),
+        paged_kv_last_page_len_buffer=torch.empty(
+            batch, dtype=torch.int32, device=device
+        ),
+        max_seq_len=cap_seq,
+    )
+    w.plan(
+        torch.tensor([0, over_pages], dtype=torch.int32, device=device),
+        torch.arange(over_pages, dtype=torch.int32, device=device),
+        torch.tensor([16], dtype=torch.int32, device=device),
+        num_qo,
+        num_kv,
+        hd,
+        page,
+        pos_encoding_mode="NONE",
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+    assert w._backend == "fa2"
+    assert "exceeding the declared max_seq_len" in (w._backend_fallback_reason or "")
+
+
+@requires_aiter
+def test_batch_decode_aiter_graph_capacity_checked_against_indptr_not_seq_lens():
+    """The block table is sized from the capacity but the kernel derives context_lens
+    from indptr, so validating a caller-supplied seq_lens would let it read past a row."""
+    device = torch.device("cuda:0")
+    batch, page, num_qo, num_kv, hd = 1, 16, 8, 8, 128
+    cap_seq, dtype = 512, torch.float16
+    real_pages = (2048 + page - 1) // page  # indptr says 2048 tokens...
+
+    w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+        torch.zeros(64 * 1024 * 1024, dtype=torch.uint8, device=device),
+        "NHD",
+        use_cuda_graph=True,
+        backend="aiter",
+        paged_kv_indptr_buffer=torch.empty(batch + 1, dtype=torch.int32, device=device),
+        paged_kv_indices_buffer=torch.empty(
+            real_pages, dtype=torch.int32, device=device
+        ),
+        paged_kv_last_page_len_buffer=torch.empty(
+            batch, dtype=torch.int32, device=device
+        ),
+        max_seq_len=cap_seq,
+    )
+
+    # ...while seq_lens understates it as 512, which fits the capacity.
+    with pytest.raises(ValueError, match="exceeding the declared max_seq_len"):
+        w.plan(
+            torch.tensor([0, real_pages], dtype=torch.int32, device=device),
+            torch.arange(real_pages, dtype=torch.int32, device=device),
+            torch.tensor([16], dtype=torch.int32, device=device),
+            num_qo,
+            num_kv,
+            hd,
+            page,
+            pos_encoding_mode="NONE",
+            q_data_type=dtype,
+            kv_data_type=dtype,
+            seq_lens=torch.full((batch,), 512, dtype=torch.int32, device=device),
+        )
+
+
+@requires_aiter
+def test_batch_decode_aiter_graph_return_lse_raises():
+    """PA v1 emits no LSE and its FA2 shadow plan is built lazily inside run(), which
+    is not capture-safe — refuse rather than JIT-load inside a graph."""
+    device = torch.device("cuda:0")
+    batch, page, num_qo, num_kv, hd = 1, 16, 8, 8, 128
+    cap_seq, dtype = 256, torch.float16
+    cap_pages, total_pages = _graph_pool(batch, page, cap_seq)
+
+    kv = torch.randn(total_pages, 2, page, num_kv, hd, dtype=dtype, device=device)
+    q = torch.randn(batch, num_qo, hd, dtype=dtype, device=device)
+    w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+        torch.zeros(64 * 1024 * 1024, dtype=torch.uint8, device=device),
+        "NHD",
+        use_cuda_graph=True,
+        backend="aiter",
+        paged_kv_indptr_buffer=torch.empty(batch + 1, dtype=torch.int32, device=device),
+        paged_kv_indices_buffer=torch.empty(
+            total_pages, dtype=torch.int32, device=device
+        ),
+        paged_kv_last_page_len_buffer=torch.empty(
+            batch, dtype=torch.int32, device=device
+        ),
+        max_seq_len=cap_seq,
+    )
+    ip, ix, lp = _layout(batch, page, cap_pages, 128, device)
+    w.plan(
+        ip,
+        ix,
+        lp,
+        num_qo,
+        num_kv,
+        hd,
+        page,
+        pos_encoding_mode="NONE",
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+    with pytest.raises(ValueError, match="return_lse=True is not supported"):
+        w.run(q, kv, return_lse=True)
