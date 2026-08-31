@@ -10,9 +10,9 @@ from typing import Optional
 
 import torch
 
-from . import env as jit_env
+from .. import env as jit_env
 from .aiter_source import AiterModule, aiter_jitspec_flags, refresh_aiter_jitspec
-from .core import JitSpec, gen_jit_spec
+from ..core import JitSpec, gen_jit_spec
 
 # AITER's `dtype2str_dict` (aiter/ops/moe_op.py) spellings, for the codegen flags.
 # The keys double as the supported-dtype set; flashinfer/fused_moe_rocm.py
@@ -25,7 +25,7 @@ SUPPORTED_DTYPES = tuple(_DTYPE_TAG)
 
 # Both fp8 flavours generate the same CK instances -- which one is legal is a
 # property of the device, not of the codegen. The set itself lives with the
-# per-arch table in flashinfer.fused_moe_rocm, so there is only one to maintain.
+# per-arch table in flashinfer.rocm.fused_moe, so there is only one to maintain.
 _FP8_TAG = "f8"
 
 _SUPPORTED_ACTIVATIONS = frozenset({"silu", "gelu"})
@@ -36,9 +36,9 @@ _MUL_WEIGHT_STAGE = 2
 
 
 def _is_fp8(dtype: torch.dtype) -> bool:
-    # Imported here, not at module scope: flashinfer.fused_moe_rocm imports this
+    # Imported here, not at module scope: flashinfer.rocm.fused_moe imports this
     # module, so the reverse edge has to stay lazy.
-    from ..fused_moe_rocm import FP8_DTYPES
+    from ...rocm.fused_moe import FP8_DTYPES
 
     return dtype in FP8_DTYPES
 
@@ -112,7 +112,7 @@ def gen_fused_moe_aiter_module(
     if weight_dtype is None:
         weight_dtype = dtype
     if not _is_fp8(weight_dtype) and weight_dtype != dtype:
-        from ..fused_moe_rocm import FP8_DTYPES
+        from ...rocm.fused_moe import FP8_DTYPES
 
         raise ValueError(
             f"fused MoE (aiter) supports expert weights in {dtype} or "

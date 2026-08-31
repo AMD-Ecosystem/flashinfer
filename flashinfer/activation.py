@@ -20,7 +20,7 @@ from typing import Optional
 
 import torch
 
-from .device_utils import IS_CUDA, IS_HIP
+from .rocm.device_utils import IS_CUDA, IS_HIP
 
 if IS_HIP:
     from .rocm.activation import maybe_silu_and_mul
@@ -114,7 +114,7 @@ def silu_and_mul(
         # Validate the explicit opt-in up front so a misconfiguration (unsupported
         # device or missing aiter package) surfaces as a clear ValueError here
         # instead of a raw import/build error deeper in the JIT loader.
-        from .aiter_utils import require_aiter
+        from .rocm.aiter_utils import require_aiter
 
         require_aiter(input.device, "silu_and_mul")
     if input.shape[-1] * input.dtype.itemsize % 16 != 0:

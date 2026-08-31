@@ -181,7 +181,7 @@ def _build_paged_kv(
 def test_mla_decode_vs_ref(
     dtype, page_size, num_heads, head_dim_ckv, head_dim_kpe, kv_lens
 ):
-    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+    from flashinfer.rocm.mla import BatchMLAPagedAttentionWrapper
 
     device = torch.device("cuda:0")
     batch_size = len(kv_lens)
@@ -250,7 +250,7 @@ def _run_prefill(
     qo_lens, kv_lens, num_heads, head_dim_ckv, head_dim_kpe, dtype, device
 ):
     """Drive the wrapper's prefill branch and return (got, ref_inputs)."""
-    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+    from flashinfer.rocm.mla import BatchMLAPagedAttentionWrapper
 
     batch_size = len(kv_lens)
     total_q = sum(qo_lens)
@@ -358,7 +358,7 @@ def test_mla_plan_rejects_non_causal_multi_token():
     gates on ``_qo_indptr is None``, so a half-planned wrapper would answer
     with exactly the masking the raise exists to prevent.
     """
-    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+    from flashinfer.rocm.mla import BatchMLAPagedAttentionWrapper
 
     device = torch.device("cuda:0")
     _, _, kv_indptr, kv_indices, _ = _build_paged_kv(
@@ -400,7 +400,7 @@ def test_mla_plan_rejects_non_causal_multi_token():
 @requires_aiter
 def test_mla_decode_out_tensor():
     """run() respects a pre-allocated out= tensor."""
-    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+    from flashinfer.rocm.mla import BatchMLAPagedAttentionWrapper
     import math
 
     device = torch.device("cuda:0")
@@ -449,7 +449,7 @@ def test_mla_decode_out_tensor():
 @requires_aiter
 def test_mla_plan_validation():
     """plan() raises on invalid arguments."""
-    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+    from flashinfer.rocm.mla import BatchMLAPagedAttentionWrapper
 
     device = torch.device("cuda:0")
     ws = torch.empty(1, dtype=torch.float32, device=device)
@@ -487,7 +487,7 @@ def test_mla_plan_validation():
 @requires_aiter
 def test_mla_plan_kv_len_inconsistent_with_paging():
     """Passing last-page counts as kv_len_arr must fail (was accepted pre-conversion)."""
-    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+    from flashinfer.rocm.mla import BatchMLAPagedAttentionWrapper
 
     device = torch.device("cuda:0")
     ws = torch.empty(1, dtype=torch.float32, device=device)
@@ -514,7 +514,7 @@ def test_mla_plan_kv_len_inconsistent_with_paging():
 @requires_aiter
 def test_mla_run_before_plan_raises():
     """run() before plan() raises RuntimeError."""
-    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+    from flashinfer.rocm.mla import BatchMLAPagedAttentionWrapper
 
     device = torch.device("cuda:0")
     ws = torch.empty(1, dtype=torch.float32, device=device)
@@ -535,7 +535,7 @@ def test_mla_backend_accepts_auto_and_aiter(backend):
 
     'auto' resolves to 'aiter' since there is no HIP MLA kernel.
     """
-    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+    from flashinfer.rocm.mla import BatchMLAPagedAttentionWrapper
 
     device = torch.device("cuda:0")
     ws = torch.empty(1, dtype=torch.float32, device=device)
@@ -548,7 +548,7 @@ def test_mla_backend_rejects_unsupported():
     The check fires before the AITER-availability probe, so this test
     runs on any host (no GPU / no AITER required).
     """
-    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+    from flashinfer.rocm.mla import BatchMLAPagedAttentionWrapper
 
     device = (
         torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
@@ -564,7 +564,7 @@ def test_combined_kv_view_detects_split_buffer():
     Pure pointer/stride logic, so CPU tensors exercise it exactly as GPU ones do
     and no AITER install is needed.
     """
-    from flashinfer.mla_rocm import _combined_kv_view
+    from flashinfer.rocm.mla import _combined_kv_view
 
     ckv_dim, kpe_dim = 512, 64
     width = ckv_dim + kpe_dim
@@ -607,7 +607,7 @@ def test_mla_combined_kv_buffer_matches_separate(kv_lens):
     Same bytes reach the kernel either way, so this is exact equality, not a
     tolerance check.
     """
-    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+    from flashinfer.rocm.mla import BatchMLAPagedAttentionWrapper
 
     device = torch.device("cuda:0")
     dtype = torch.bfloat16
@@ -663,7 +663,7 @@ def test_mla_warns_only_for_separate_kv_allocations():
     The warning is the only signal a caller gets that every decode step is
     copying the whole page pool, so it must not fire on the good path.
     """
-    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+    from flashinfer.rocm.mla import BatchMLAPagedAttentionWrapper
 
     device = torch.device("cuda:0")
     dtype = torch.bfloat16
@@ -723,7 +723,7 @@ def test_mla_plan_accepts_host_and_mixed_device_indices(index_device):
     The batched path uses torch.cat, which rejects tensors on different devices,
     so the mixed case exercises the per-tensor fallback.
     """
-    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+    from flashinfer.rocm.mla import BatchMLAPagedAttentionWrapper
 
     device = torch.device("cuda:0")
     dtype = torch.bfloat16
@@ -788,7 +788,7 @@ def test_mla_run_rejects_4d_caches_with_actionable_error():
     worked (the fallback unsqueezed it to 5-D, which AITER rejects), so the error
     has to name the 3-D form rather than blame the caller's allocation.
     """
-    from flashinfer.mla_rocm import BatchMLAPagedAttentionWrapper
+    from flashinfer.rocm.mla import BatchMLAPagedAttentionWrapper
 
     device = torch.device("cuda:0")
     dtype = torch.bfloat16
@@ -835,7 +835,7 @@ def test_gather_plan_inputs_passes_through_host_tensors():
     Batching exists to collapse device->host round-trips; on CPU inputs a cat is
     pure added allocation, which the previous docstring wrongly called a no-op.
     """
-    from flashinfer.mla_rocm import _gather_plan_inputs_on_host
+    from flashinfer.rocm.mla import _gather_plan_inputs_on_host
 
     qo = torch.arange(5, dtype=torch.int32)
     kvp = torch.arange(5, dtype=torch.int32) * 4

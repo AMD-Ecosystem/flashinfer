@@ -14,7 +14,7 @@ import re
 
 import pytest
 
-from flashinfer import aiter_utils
+from flashinfer.rocm import aiter_utils
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 _DOC_REF = re.compile(r"docs/[\w./-]+\.md")

@@ -77,7 +77,7 @@ def test_workspace_dir_still_names_the_device_arch():
     Read through current_device(), which is what env.py resolved the name from;
     device 0 is a different card once a worker has been pinned.
     """
-    from flashinfer.arch_caps import normalize_arch
+    from flashinfer.rocm.arch_caps import normalize_arch
     from flashinfer.jit import env as jit_env
 
     props = torch.cuda.get_device_properties(torch.cuda.current_device())

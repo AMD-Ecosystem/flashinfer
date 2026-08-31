@@ -28,7 +28,7 @@ def gen_fa2(
     use_logits_soft_cap: bool,
 ) -> Iterator:
     # Import here to access gen_* functions
-    from .jit.attention import (
+    from ..jit.attention import (
         gen_batch_decode_module,
         gen_batch_prefill_module,
         gen_single_decode_module,
@@ -129,7 +129,7 @@ def gen_all_modules(
     add_act: bool = True,
     add_misc: bool = True,
 ) -> List:
-    from .jit import JitSpec
+    from ..jit import JitSpec
 
     jit_specs: List[JitSpec] = []
 
@@ -230,7 +230,7 @@ def _redirected_jit_env(build_dir: Path) -> Iterator[None]:
     runs next in the same process. FLASHINFER_CACHE_DIR is deliberately left
     alone -- it is frozen at import and nothing here can move it.
     """
-    from .jit import env as jit_env
+    from ..jit import env as jit_env
 
     saved_base = os.environ.get("FLASHINFER_WORKSPACE_BASE")
     saved = (
@@ -293,7 +293,7 @@ def _compile_and_package_modules(
     verbose: bool,
     skip_prebuilt: bool,
 ) -> None:
-    from .jit import build_jit_specs
+    from ..jit import build_jit_specs
 
     # Start with default config and override with user config
     final_config = get_default_config()
@@ -314,7 +314,7 @@ def _compile_and_package_modules(
     # replacing with an explicit parameter threaded through the AOT -> JIT
     # boundary. That is a wider change than this one; leaving the lifetime
     # unchanged here keeps this commit to the resolution bug it is fixing.
-    from .compilation_context_hip import CompilationContext
+    from .compilation_context import CompilationContext
 
     # Publish the *validated* list, not the resolved one. Validation filters as
     # well as raises: `validate_flashinfer_rocm_arch` drops architectures this

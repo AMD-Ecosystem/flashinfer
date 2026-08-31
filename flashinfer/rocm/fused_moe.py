@@ -22,8 +22,8 @@ from typing import Optional, Tuple, Union
 import torch
 
 from .aiter_utils import require_aiter
-from .jit.aiter_source import resolve_aiter_build_arch
-from .jit.fused_moe_rocm import SUPPORTED_DTYPES, gen_fused_moe_aiter_module
+from ..jit.rocm.aiter_source import resolve_aiter_build_arch
+from ..jit.rocm.fused_moe import SUPPORTED_DTYPES, gen_fused_moe_aiter_module
 
 __all__ = [
     "aiter_fused_moe",

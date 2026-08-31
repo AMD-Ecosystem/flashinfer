@@ -150,7 +150,7 @@ def test_torch_compile_with_aiter_backend():
     snippet = _PREAMBLE + textwrap.dedent(
         """\
         import sys
-        from flashinfer.aiter_utils import is_aiter_available
+        from flashinfer.rocm.aiter_utils import is_aiter_available
         if not is_aiter_available(k_cache.device, "append_paged_kv_cache"):
             sys.exit(99)  # sentinel: no AITER here, report a skip rather than a pass
         compiled = torch.compile(append_aiter, dynamic=True)

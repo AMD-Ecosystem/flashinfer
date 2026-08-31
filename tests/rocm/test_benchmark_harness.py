@@ -11,7 +11,7 @@ import io
 import pytest
 import torch
 
-from flashinfer.device_utils import IS_HIP
+from flashinfer.rocm.device_utils import IS_HIP
 
 pytestmark = pytest.mark.skipif(not IS_HIP, reason="ROCm-only benchmark harness path")
 

@@ -33,7 +33,7 @@ def _apply_rope_cos_sin_cache_aiter(
     is_neox: bool,
 ) -> None:
     r"""Dispatch the cos/sin-cache rope to AITER's C++ rope_cached_positions_2c kernel."""
-    from ..aiter_utils import require_aiter
+    from .aiter_utils import require_aiter
 
     require_aiter(query.device, "rope")
     if key.dtype != query.dtype:

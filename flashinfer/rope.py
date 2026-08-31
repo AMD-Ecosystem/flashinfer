@@ -19,7 +19,7 @@ from typing import Optional, Tuple
 
 import torch
 
-from .device_utils import IS_HIP
+from .rocm.device_utils import IS_HIP
 
 if IS_HIP:
     from .rocm.rope import maybe_apply_rope_cos_sin_cache
@@ -1199,7 +1199,7 @@ def apply_rope_with_cos_sin_cache(
         # Validate the explicit opt-in up front so a misconfiguration (unsupported
         # device or missing aiter package) surfaces as a clear ValueError here
         # instead of silently falling through to native on non-HIP platforms.
-        from .aiter_utils import require_aiter
+        from .rocm.aiter_utils import require_aiter
 
         require_aiter(query.device, "rope")
 
@@ -1291,7 +1291,7 @@ def apply_rope_with_cos_sin_cache_inplace(
         # Validate the explicit opt-in up front so a misconfiguration (unsupported
         # device or missing aiter package) surfaces as a clear ValueError here
         # instead of silently falling through to native on non-HIP platforms.
-        from .aiter_utils import require_aiter
+        from .rocm.aiter_utils import require_aiter
 
         require_aiter(query.device, "rope")
 

@@ -13,8 +13,8 @@ through a build.
 import pytest
 import torch
 
-from flashinfer import fused_moe_rocm
-from flashinfer.jit import fused_moe_rocm as jit_moe
+from flashinfer.rocm import fused_moe as fused_moe_rocm
+from flashinfer.jit.rocm import fused_moe as jit_moe
 
 
 class TestFp8ShapeProblem:

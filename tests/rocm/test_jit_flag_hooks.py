@@ -39,7 +39,7 @@ def _load_module():
             _get_num_workers=lambda verbose: 1,
             _get_pybind11_abi_build_flags=lambda: [],
         ),
-        "flashinfer.hip_utils": types.SimpleNamespace(
+        "flashinfer.rocm.hip_utils": types.SimpleNamespace(
             get_rocm_home=lambda: "/stub/rocm"
         ),
         # The module does `from . import env`, so it needs a real package chain.
@@ -54,8 +54,8 @@ def _load_module():
     sys.modules.update(stubs)
     try:
         spec = importlib.util.spec_from_file_location(
-            "flashinfer.jit.cpp_ext_hip",
-            _REPO_ROOT / "flashinfer" / "jit" / "cpp_ext_hip.py",
+            "flashinfer.jit.rocm.cpp_ext",
+            _REPO_ROOT / "flashinfer" / "jit" / "rocm" / "cpp_ext.py",
         )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

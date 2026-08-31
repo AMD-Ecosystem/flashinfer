@@ -21,7 +21,7 @@ FlashInfer: Fast Attention Algorithms for LLM Inference
 
 import importlib.util
 
-from .device_utils import IS_CUDA, IS_HIP
+from .rocm.device_utils import IS_CUDA, IS_HIP
 
 # ========================================
 # Version and Backend Setup
@@ -183,25 +183,25 @@ elif IS_HIP:
     # These seven rebind names the IS_CUDA arm above already bound with a different
     # type, and mypy analyses both arms. A star import gives it nowhere to attach a
     # targeted ignore, so they are re-imported explicitly; the rest arrive via *.
-    from .decode_rocm import (  # type: ignore[assignment]
+    from .rocm.decode import (  # type: ignore[assignment]
         BatchDecodeWithPagedKVCacheWrapper as BatchDecodeWithPagedKVCacheWrapper,
     )
-    from .decode_rocm import (  # type: ignore[assignment]
+    from .rocm.decode import (  # type: ignore[assignment]
         CUDAGraphBatchDecodeWithPagedKVCacheWrapper as CUDAGraphBatchDecodeWithPagedKVCacheWrapper,
     )
-    from .decode_rocm import (  # type: ignore[no-redef]
+    from .rocm.decode import (  # type: ignore[no-redef]
         single_decode_with_kv_cache as single_decode_with_kv_cache,
     )
-    from .mla_rocm import (  # type: ignore[assignment]
+    from .rocm.mla import (  # type: ignore[assignment]
         BatchMLAPagedAttentionWrapper as BatchMLAPagedAttentionWrapper,
     )
-    from .prefill_rocm import (  # type: ignore[assignment]
+    from .rocm.prefill import (  # type: ignore[assignment]
         BatchPrefillWithPagedKVCacheWrapper as BatchPrefillWithPagedKVCacheWrapper,
     )
-    from .prefill_rocm import (  # type: ignore[assignment]
+    from .rocm.prefill import (  # type: ignore[assignment]
         BatchPrefillWithRaggedKVCacheWrapper as BatchPrefillWithRaggedKVCacheWrapper,
     )
-    from .prefill_rocm import (  # type: ignore[no-redef]
+    from .rocm.prefill import (  # type: ignore[no-redef]
         single_prefill_with_kv_cache as single_prefill_with_kv_cache,
     )
     from .rocm.api import *  # noqa: F401,F403

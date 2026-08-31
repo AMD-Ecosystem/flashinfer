@@ -1,6 +1,6 @@
 import torch
 
-from flashinfer.device_utils import IS_HIP
+from flashinfer.rocm.device_utils import IS_HIP
 from flashinfer.testing.utils import set_seed
 from flashinfer.utils import get_compute_capability
 

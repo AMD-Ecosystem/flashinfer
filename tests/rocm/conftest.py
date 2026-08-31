@@ -15,8 +15,8 @@
 import os
 import re
 
-from flashinfer.arch_caps import normalize_arch
-from flashinfer.hip_utils import (
+from flashinfer.rocm.arch_caps import normalize_arch
+from flashinfer.rocm.hip_utils import (
     get_physical_card_device_indices,
     get_system_rocm_version,
     rocminfo_gpu_agents,

@@ -12,8 +12,8 @@ from jit_utils import gen_prefill_attention_modules
 import flashinfer
 
 from flashinfer.jit.core import logger
-from flashinfer.aiter_utils import is_aiter_supported
-from flashinfer.prefill_rocm import _aiter_ops_importable
+from flashinfer.rocm.aiter_utils import is_aiter_supported
+from flashinfer.rocm.prefill import _aiter_ops_importable
 import logging
 
 logger.setLevel(logging.ERROR)
@@ -370,7 +370,7 @@ def test_auto_backend_avoids_aiter_softcap_defect(
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
 
     if expect_aiter is None:
-        from flashinfer.arch_caps import (
+        from flashinfer.rocm.arch_caps import (
             _device_arch,
             aiter_softcap_defect_min_kv_len,
         )
@@ -378,7 +378,7 @@ def test_auto_backend_avoids_aiter_softcap_defect(
         floor = aiter_softcap_defect_min_kv_len(_device_arch(device))
         expect_aiter = floor is None or kv_len < floor
 
-    from flashinfer.prefill_rocm import _auto_select_prefill_backend
+    from flashinfer.rocm.prefill import _auto_select_prefill_backend
 
     chosen, reason = _auto_select_prefill_backend(
         device,

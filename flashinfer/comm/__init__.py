@@ -1,4 +1,4 @@
-from ..device_utils import IS_CUDA
+from ..rocm.device_utils import IS_CUDA
 
 # Backend-agnostic exports (pure Python, work on both CUDA and ROCm).
 from .dlpack_utils import pack_strided_memory

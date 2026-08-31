@@ -20,9 +20,9 @@ from torch.utils.cpp_extension import (
     _get_pybind11_abi_build_flags,
 )
 
-from flashinfer.hip_utils import get_rocm_home
+from flashinfer.rocm.hip_utils import get_rocm_home
 
-from . import env as jit_env
+from .. import env as jit_env
 
 ROCM_HOME = get_rocm_home()
 

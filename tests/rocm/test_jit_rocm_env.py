@@ -13,7 +13,7 @@ import pathlib
 import pytest
 import torch
 
-from flashinfer.device_utils import IS_HIP
+from flashinfer.rocm.device_utils import IS_HIP
 
 pytestmark = pytest.mark.skipif(
     not IS_HIP, reason="flashinfer.jit.rocm is only importable on HIP builds"
@@ -294,7 +294,7 @@ def test_workspace_dir_is_keyed_by_version_and_arch():
     from flashinfer._version import __version__
     from flashinfer.jit.rocm.env import get_workspace_dir
 
-    from flashinfer.arch_caps import normalize_arch
+    from flashinfer.rocm.arch_caps import normalize_arch
 
     got = get_workspace_dir(pathlib.Path("/cache"))
     assert got.parent.parent == pathlib.Path("/cache")

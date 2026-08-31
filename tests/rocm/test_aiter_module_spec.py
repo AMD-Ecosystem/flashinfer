@@ -21,9 +21,9 @@ import itertools
 import pytest
 import torch
 
-from flashinfer.aiter_utils import _aiter_importable
-from flashinfer.jit.aiter_source import AiterModule, aiter_jitspec_flags
-from flashinfer.jit.fused_moe_rocm import _ck2stages_module
+from flashinfer.rocm.aiter_utils import _aiter_importable
+from flashinfer.jit.rocm.aiter_source import AiterModule, aiter_jitspec_flags
+from flashinfer.jit.rocm.fused_moe import _ck2stages_module
 
 _ACTIVATION_DTYPES = (torch.bfloat16, torch.float16)
 _ACTIVATIONS = ("silu", "gelu")
@@ -128,7 +128,7 @@ def test_both_fp8_encodings_share_one_build():
 
 
 def test_flags_link_every_module_once(monkeypatch):
-    import flashinfer.jit.aiter_source as src
+    import flashinfer.jit.rocm.aiter_source as src
 
     built = []
     monkeypatch.setattr(src, "ensure_aiter_lib", lambda m: built.append(m.lib_name))

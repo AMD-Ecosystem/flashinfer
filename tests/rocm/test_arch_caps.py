@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for flashinfer.arch_caps.
+"""Tests for flashinfer.rocm.arch_caps.
 
 Deliberately GPU-free: every assertion here holds on any machine, so this file
 protects the architectures we cannot physically test against as well as the one
@@ -42,7 +42,7 @@ import pytest
 # --------------------------------------------------------------------------
 
 _PKG_NAME = "_arch_caps_conformance"
-_PKG_DIR = pathlib.Path(__file__).resolve().parents[2] / "flashinfer"
+_PKG_DIR = pathlib.Path(__file__).resolve().parents[2] / "flashinfer" / "rocm"
 
 
 def _load_without_package_init(*module_names):

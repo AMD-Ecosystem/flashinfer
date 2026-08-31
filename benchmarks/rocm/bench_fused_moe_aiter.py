@@ -51,7 +51,7 @@ from pathlib import Path
 import torch
 
 import flashinfer
-from flashinfer.fused_moe_rocm import (
+from flashinfer.rocm.fused_moe import (
     _SUPPORTED_BLOCK_M,
     moe_fp8_dtype,
     quantize_moe_weight,

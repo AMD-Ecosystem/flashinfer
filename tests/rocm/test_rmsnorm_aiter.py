@@ -50,7 +50,7 @@ def test_rmsnorm_auto_backend_is_native(monkeypatch):
     wheel, where "native" would otherwise be right for the wrong reason. Both
     the wrapper and the probe it is built from are stubbed.
     """
-    import flashinfer.aiter_utils as aiter_utils
+    import flashinfer.rocm.aiter_utils as aiter_utils
     from flashinfer.rocm.norm import _auto_select_norm_backend
 
     monkeypatch.setattr(aiter_utils, "is_aiter_available", lambda device, op: True)

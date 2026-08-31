@@ -5,7 +5,7 @@
 
 """Render the per-architecture support matrix in README.md from the capability table.
 
-``flashinfer/arch_caps.py`` is the single source of truth for which
+``flashinfer/rocm/arch_caps.py`` is the single source of truth for which
 ``(op, backend)`` pairs are usable on which GPU architecture, and -- through
 ``evidence`` -- for which of those claims anyone has actually measured. The
 README used to restate that by hand as the string "gfx942/gfx950", which cannot
@@ -40,7 +40,7 @@ import sys
 import types
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-PKG_DIR = REPO_ROOT / "flashinfer"
+PKG_DIR = REPO_ROOT / "flashinfer" / "rocm"
 README = REPO_ROOT / "README.md"
 
 BEGIN = "<!-- BEGIN GENERATED: arch support matrix -- scripts/gen_arch_support_matrix.py -->"
@@ -95,7 +95,7 @@ _NOTE_RULES = (
 
 
 def _load_arch_caps():
-    """Load flashinfer.arch_caps without executing the package __init__."""
+    """Load flashinfer.rocm.arch_caps without executing the package __init__."""
     pkg_name = "_arch_matrix_pkg"
     package = types.ModuleType(pkg_name)
     package.__path__ = [str(PKG_DIR)]

@@ -21,7 +21,7 @@ from typing import Any, List, Literal, Optional, Tuple, Union, overload
 
 import torch
 
-from .jit import (
+from ..jit import (
     gen_batch_decode_aiter_module,
     gen_batch_decode_module,
     gen_customize_batch_decode_module,
@@ -32,16 +32,16 @@ from .jit import (
     get_single_decode_uri,
 )
 from .aiter_utils import handle_aiter_probe_failure
-from .jit.core import logger
-from .page import get_seq_lens
-from .prefill_rocm import (
+from ..jit.core import logger
+from ..page import get_seq_lens
+from .prefill import (
     _aiter_bootstrap_lock,
     _auto_select_prefill_backend,
     get_batch_prefill_jit_module,
     get_batch_prefill_module,
     get_single_prefill_module,
 )
-from .utils import (
+from ..utils import (
     MaskMode,
     PosEncodingMode,
     TensorLayout,

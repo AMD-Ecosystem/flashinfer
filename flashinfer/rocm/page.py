@@ -126,7 +126,7 @@ def maybe_append_paged_kv_cache(
         if backend == "aiter":
             # The explicit opt-in skips the selector, so re-check its
             # constraints: a wrong layout scatters silently.
-            from ..aiter_utils import require_aiter
+            from .aiter_utils import require_aiter
 
             require_aiter(paged_k_cache.device, "append_paged_kv_cache")
             if not _aiter_kv_append_supported(

@@ -16,7 +16,7 @@ from .arch_caps import (
     require_capability,
 )
 from .hip_utils import FLASHINFER_SUPPORTED_ROCM_ARCHS
-from .jit.core import MissingJITCacheError, logger
+from ..jit.core import MissingJITCacheError, logger
 
 
 @functools.lru_cache(maxsize=8)
@@ -43,7 +43,7 @@ def _ensure_aiter_gpu_archs() -> None:
         return
     # Imported lazily: flashinfer.jit pulls in the compilation context, and
     # importing it at module scope here would be circular.
-    from .jit.aiter_source import resolve_aiter_build_arch
+    from ..jit.rocm.aiter_source import resolve_aiter_build_arch
 
     arch = resolve_aiter_build_arch()
     if arch:

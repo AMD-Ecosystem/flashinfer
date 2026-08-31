@@ -31,7 +31,7 @@ os.environ["FLASHINFER_DISABLE_VERSION_CHECK"] = "1"
 
 
 def _compile_jit_cache(output_dir: Path, verbose: bool = True):
-    """Compile AOT modules using flashinfer.aot_hip functions directly."""
+    """Compile AOT modules using flashinfer.rocm.aot functions directly."""
     from flashinfer import aot_hip
 
     # Get the project root directory

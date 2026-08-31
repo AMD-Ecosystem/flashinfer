@@ -15,7 +15,7 @@ import importlib
 import pytest
 
 from flashinfer.rocm import CUDA_ONLY_MODULES
-from flashinfer.device_utils import IS_HIP
+from flashinfer.rocm.device_utils import IS_HIP
 
 pytestmark = pytest.mark.skipif(
     not IS_HIP, reason="comm import gate is only installed on ROCm"

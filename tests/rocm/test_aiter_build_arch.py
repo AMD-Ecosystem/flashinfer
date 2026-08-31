@@ -11,7 +11,7 @@ the architecture the host does not have.
 
 import pytest
 
-from flashinfer.jit import aiter_source
+from flashinfer.jit.rocm import aiter_source
 
 
 @pytest.fixture(autouse=True)

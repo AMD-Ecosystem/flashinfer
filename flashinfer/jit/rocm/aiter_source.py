@@ -35,9 +35,9 @@ from typing import List, Optional, Sequence, Tuple, Union
 
 from filelock import FileLock
 
-from ..arch_caps import normalize_arch
-from . import env as jit_env
-from .core import JitSpec, logger
+from ...rocm.arch_caps import normalize_arch
+from .. import env as jit_env
+from ..core import JitSpec, logger
 
 
 _DEFAULT_BUILD_ARCH = "gfx942"
@@ -358,7 +358,7 @@ def _build_aiter_lib(
         # Inside the try so a failure here still restores the environment: a
         # leaked AITER_JIT_DIR sends the *next* module's .so hunt to the wrong
         # directory.
-        from ..hip_utils import get_rocm_home
+        from ...rocm.hip_utils import get_rocm_home
 
         os.environ["AITER_SYMBOL_VISIBLE"] = "1"
         os.environ["AITER_JIT_DIR"] = str(aiter_build_dir)

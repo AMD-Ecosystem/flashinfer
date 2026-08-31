@@ -3,7 +3,7 @@
 
 """Signature parity for the ROCm custom-variant prefill JIT path.
 
-prefill_rocm.py forwards arguments positionally into these generators and run
+rocm/prefill.py forwards arguments positionally into these generators and run
 wrappers, so a parameter missing on the HIP side is a TypeError at call time.
 Upstream is read with ast because modules.py cannot be imported on ROCm.
 """
@@ -16,7 +16,7 @@ import pathlib
 import pytest
 
 import flashinfer
-from flashinfer.device_utils import IS_HIP
+from flashinfer.rocm.device_utils import IS_HIP
 
 pytestmark = pytest.mark.skipif(
     not IS_HIP, reason="modules_hip is only importable on ROCm"
@@ -57,28 +57,28 @@ def _find(tree: ast.AST, name: str) -> ast.FunctionDef:
     raise AssertionError(f"{name} not found")
 
 
-def _generator(module_filename: str, func_name: str) -> ast.FunctionDef:
-    return _find(_parse(_PKG_DIR / "jit" / "attention" / module_filename), func_name)
+def _generator(module_path: pathlib.Path, func_name: str) -> ast.FunctionDef:
+    return _find(_parse(module_path), func_name)
 
 
 def _wrapper(outer: str, inner: str) -> ast.FunctionDef:
-    return _find(_find(_parse(_PKG_DIR / "prefill_rocm.py"), outer), inner)
+    return _find(_find(_parse(_PKG_DIR / "rocm" / "prefill.py"), outer), inner)
 
 
 @pytest.mark.parametrize("func_name", CUSTOMIZE_PREFILL_GENERATORS)
 def test_hip_generator_matches_upstream_signature(func_name):
-    hip = _generator("modules_hip.py", func_name)
-    upstream = _generator("modules.py", func_name)
+    hip = _generator(_PKG_DIR / "jit" / "rocm" / "modules.py", func_name)
+    upstream = _generator(_PKG_DIR / "jit" / "attention" / "modules.py", func_name)
 
     assert _params(hip) == _params(upstream)
     # Names alone would still pass if HIP moved a parameter behind a `*`;
-    # prefill_rocm.py forwards all of them positionally.
+    # rocm/prefill.py forwards all of them positionally.
     assert _positional(hip) == _positional(upstream)
 
 
 def test_rocm_wrapper_forwards_exactly_what_the_generator_accepts():
     from flashinfer.jit.attention import gen_customize_batch_prefill_module
-    from flashinfer.prefill_rocm import get_customize_batch_prefill_module
+    from flashinfer.rocm.prefill import get_customize_batch_prefill_module
 
     # get_customize_batch_prefill_module is wrapped by make_hashable_cache,
     # which uses functools.wraps, so signature() sees the underlying function.

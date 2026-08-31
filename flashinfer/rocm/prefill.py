@@ -27,17 +27,17 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 import torch
 from .aiter_utils import handle_aiter_probe_failure
 from .arch_caps import capability_reason, require_capability
-from .jit.core import logger
-from .jit import (
+from ..jit.core import logger
+from ..jit import (
     gen_batch_prefill_module,
     gen_customize_batch_prefill_module,
     gen_single_prefill_module,
     get_batch_prefill_uri,
     get_single_prefill_uri,
 )
-from .page import get_seq_lens
-from .quantization import packbits, segment_packbits
-from .utils import (
+from ..page import get_seq_lens
+from ..quantization import packbits, segment_packbits
+from ..utils import (
     MaskMode,
     PosEncodingMode,
     TensorLayout,
@@ -2857,7 +2857,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._cached_module.paged_run(*run_args)
         if self._backend == "aiter" and partial_state is not None:
             # AITER kernel doesn't accept partial_state; merge post-hoc.
-            from .cascade import merge_state_in_place
+            from ..cascade import merge_state_in_place
 
             merge_state_in_place(partial_state[0], partial_state[1], out, lse)
             out, lse = partial_state

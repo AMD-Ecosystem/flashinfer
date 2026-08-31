@@ -21,7 +21,7 @@ from typing import Any, List, Optional, Tuple, Union
 
 import torch
 
-from .device_utils import IS_HIP
+from .rocm.device_utils import IS_HIP
 from .jit import gen_pod_module, gen_batch_pod_module
 from .page import get_seq_lens
 from .prefill import get_batch_prefill_module

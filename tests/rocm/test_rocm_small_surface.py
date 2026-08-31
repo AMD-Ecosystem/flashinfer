@@ -15,7 +15,7 @@ No GPU is required except where a test says otherwise.
 import pytest
 import torch
 
-from flashinfer import aiter_utils, arch_caps
+from flashinfer.rocm import aiter_utils, arch_caps
 
 
 class TestVersionTuple:
@@ -54,7 +54,7 @@ class TestLiveVersions:
             "version",
             lambda name: (_ for _ in ()).throw(RuntimeError("no metadata")),
         )
-        import flashinfer.hip_utils as hip_utils
+        import flashinfer.rocm.hip_utils as hip_utils
 
         monkeypatch.setattr(
             hip_utils,

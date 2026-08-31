@@ -8,8 +8,8 @@ from jit_utils import gen_prefill_attention_modules
 
 import flashinfer
 from flashinfer.jit.core import logger
-from flashinfer.aiter_utils import is_aiter_supported
-from flashinfer.prefill_rocm import (
+from flashinfer.rocm.aiter_utils import is_aiter_supported
+from flashinfer.rocm.prefill import (
     _aiter_native_page_sizes,
     _aiter_native_paging_available,
     _aiter_ops_importable,
@@ -31,7 +31,7 @@ def _skip_if_prefill_gated(device):
     Use this for tests that assert *numbers*. Tests that only assert plumbing can
     set ``FLASHINFER_ARCH_ALLOW_KNOWN_BAD=1`` instead and keep their coverage.
     """
-    from flashinfer.arch_caps import capability_available, capability_reason
+    from flashinfer.rocm.arch_caps import capability_available, capability_reason
 
     if not capability_available(device, "batch_prefill", "aiter"):
         pytest.skip(capability_reason(device, "batch_prefill", "aiter"))
@@ -720,7 +720,7 @@ def test_batch_prefill_auto_selects_aiter(page_size, causal, return_lse):
     # gated toolchain -- ROCm 7.2.x on gfx950 miscompiles this kernel -- the
     # correct behaviour is to steer away from AITER, so assert that instead and
     # skip the numeric comparison, which would otherwise be fa2 against fa2.
-    from flashinfer.arch_caps import capability_available, capability_reason
+    from flashinfer.rocm.arch_caps import capability_available, capability_reason
 
     if not capability_available(device, "batch_prefill", "aiter"):
         assert wrapper_auto._backend != "aiter", (
@@ -883,7 +883,7 @@ def test_batch_prefill_aiter_falls_back_when_native_paging_missing(
     # The probe is cached, so clear it to keep this test independent of ordering.
     _aiter_native_paging_available.cache_clear()
     monkeypatch.setattr(
-        flashinfer.prefill_rocm, "_aiter_bootstrap_batch_prefill", _reject
+        flashinfer.rocm.prefill, "_aiter_bootstrap_batch_prefill", _reject
     )
 
     batch_size, qo_len, kv_len = 2, 16, 256
@@ -1018,7 +1018,7 @@ def test_softcap_guard_survives_a_native_page_size_degrading(backend, monkeypatc
 
     _aiter_native_paging_available.cache_clear()
     monkeypatch.setattr(
-        flashinfer.prefill_rocm, "_aiter_bootstrap_batch_prefill", _reject
+        flashinfer.rocm.prefill, "_aiter_bootstrap_batch_prefill", _reject
     )
     workspace = torch.empty(256 * 1024 * 1024, dtype=torch.int8, device=device)
     try:
@@ -1058,7 +1058,7 @@ def test_batch_prefill_aiter_strict_mode_raises(monkeypatch):
 
     _aiter_native_paging_available.cache_clear()
     monkeypatch.setattr(
-        flashinfer.prefill_rocm, "_aiter_bootstrap_batch_prefill", _reject
+        flashinfer.rocm.prefill, "_aiter_bootstrap_batch_prefill", _reject
     )
     monkeypatch.setenv("FLASHINFER_AITER_STRICT", "1")
 
