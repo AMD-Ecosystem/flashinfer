@@ -17,7 +17,7 @@ from .flashinfer_benchmark_utils import (
     is_close_stats,
     filter_backends_by_compute_capability,
 )
-from flashinfer.device_utils import IS_HIP
+from flashinfer.rocm.device_utils import IS_HIP
 from .rocm import (
     HIP_DECODE_GQA_GROUP_SIZES,
     as_nhd_paged_kv_cache,

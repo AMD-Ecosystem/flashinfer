@@ -13,7 +13,7 @@ backend upstream still offers and this port does not implement, and the
 import pytest
 import torch
 
-from flashinfer.jit.attention import modules_hip
+from flashinfer.jit.rocm import modules as modules_hip
 
 _DT = dict(dtype_q=torch.float16, dtype_kv=torch.float16, dtype_o=torch.float16)
 _DIMS = dict(

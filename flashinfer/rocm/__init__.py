@@ -21,9 +21,9 @@ from typing import Dict, FrozenSet, Iterable, cast
 
 # Upstream module name -> the ROCm module that replaces it.
 SHADOW_MODULES: Dict[str, str] = {
-    "flashinfer.decode": "flashinfer.decode_rocm",
-    "flashinfer.mla": "flashinfer.mla_rocm",
-    "flashinfer.prefill": "flashinfer.prefill_rocm",
+    "flashinfer.decode": "flashinfer.rocm.decode",
+    "flashinfer.mla": "flashinfer.rocm.mla",
+    "flashinfer.prefill": "flashinfer.rocm.prefill",
 }
 
 # Submodules with no ROCm implementation. cuda_ipc and trtllm_ar bind to

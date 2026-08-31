@@ -568,16 +568,16 @@ __global__ void BatchQKApplyRotaryKernel(
   }
 
 template <typename DType, typename IdType>
-gpuError_t BatchQKApplyRotaryPosIdsCosSinCache(
+hipError_t BatchQKApplyRotaryPosIdsCosSinCache(
     DType* q, DType* k, DType* q_rope, DType* k_rope, float* cos_sin_cache, IdType* pos_ids,
     uint32_t nnz, uint32_t num_qo_heads, uint32_t num_kv_heads, uint32_t rotary_dim,
     uint32_t head_dim, size_t q_stride_n, size_t q_stride_h, size_t k_stride_n, size_t k_stride_h,
     size_t q_rope_stride_n, size_t q_rope_stride_h, size_t k_rope_stride_n, size_t k_rope_stride_h,
-    bool interleave, gpuStream_t stream = nullptr) {
+    bool interleave, hipStream_t stream = nullptr) {
   int dev_id = 0;
   int num_sms = 0;
-  FI_GPU_CALL(gpuGetDevice(&dev_id));
-  FI_GPU_CALL(gpuDeviceGetAttribute(&num_sms, gpuDevAttrMultiProcessorCount, dev_id));
+  FI_HIP_CALL(hipGetDevice(&dev_id));
+  FI_HIP_CALL(hipDeviceGetAttribute(&num_sms, hipDeviceAttributeMultiprocessorCount, dev_id));
 
   DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
     DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
@@ -619,36 +619,36 @@ gpuError_t BatchQKApplyRotaryPosIdsCosSinCache(
       if (nblks_x >= 2u * static_cast<uint32_t>(num_sms)) {
         dim3 nblks(nblks_x);
         dim3 nthrs(bdx, bdy);
-        FI_GPU_CALL(gpuLaunchKernel((void*)kernel_0, nblks, nthrs, args, 0, stream));
+        FI_HIP_CALL(hipLaunchKernel((void*)kernel_0, nblks, nthrs, args, 0, stream));
       } else {
         dim3 nblks(nblks_x, num_qo_heads + num_kv_heads);
         dim3 nthrs(bdx, bdy);
         auto kernel_1 =
             BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel<INTERLEAVE, HEAD_DIM, vec_size,
                                                                      bdx, DType, IdType>;
-        FI_GPU_CALL(gpuLaunchKernel((void*)kernel_1, nblks, nthrs, args, 0, stream));
+        FI_HIP_CALL(hipLaunchKernel((void*)kernel_1, nblks, nthrs, args, 0, stream));
       }
     });
   });
 
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <typename DType, typename IdType>
-gpuError_t BatchQKApplyRotaryPosIds(
+hipError_t BatchQKApplyRotaryPosIds(
     DType* q, DType* k, DType* q_rope, DType* k_rope, IdType* __restrict__ pos_ids, uint32_t nnz,
     uint32_t num_qo_heads, uint32_t num_kv_heads, uint32_t rotary_dim, uint32_t head_dim,
     size_t q_stride_n, size_t q_stride_h, size_t k_stride_n, size_t k_stride_h,
     size_t q_rope_stride_n, size_t q_rope_stride_h, size_t k_rope_stride_n, size_t k_rope_stride_h,
-    bool interleave, float rope_scale, float rope_theta, gpuStream_t stream = nullptr) {
+    bool interleave, float rope_scale, float rope_theta, hipStream_t stream = nullptr) {
   float rope_rcp_scale = 1.0f / rope_scale;
   float rope_rcp_theta = 1.0f / rope_theta;
   float smooth_a = 0.f;
   float smooth_b = 0.f;
   int dev_id = 0;
   int num_sms = 0;
-  FI_GPU_CALL(gpuGetDevice(&dev_id));
-  FI_GPU_CALL(gpuDeviceGetAttribute(&num_sms, gpuDevAttrMultiProcessorCount, dev_id));
+  FI_HIP_CALL(hipGetDevice(&dev_id));
+  FI_HIP_CALL(hipDeviceGetAttribute(&num_sms, hipDeviceAttributeMultiprocessorCount, dev_id));
 
   DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
     DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
@@ -689,30 +689,30 @@ gpuError_t BatchQKApplyRotaryPosIds(
         dim3 nblks(nblks_x);
         dim3 nthrs(bdx, bdy);
 
-        FI_GPU_CALL(gpuLaunchKernel((void*)kernel_0, nblks, nthrs, args, 0, stream));
+        FI_HIP_CALL(hipLaunchKernel((void*)kernel_0, nblks, nthrs, args, 0, stream));
       } else {
         dim3 nblks(nblks_x, num_qo_heads + num_kv_heads);
         dim3 nthrs(bdx, bdy);
         auto kernel_1 = BatchQKApplyRotaryPosIdsHeadParallelismKernel<INTERLEAVE, HEAD_DIM,
                                                                       vec_size, bdx, DType, IdType>;
 
-        FI_GPU_CALL(gpuLaunchKernel((void*)kernel_1, nblks, nthrs, args, 0, stream));
+        FI_HIP_CALL(hipLaunchKernel((void*)kernel_1, nblks, nthrs, args, 0, stream));
       }
     });
   });
 
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <typename DType, typename IdType>
-gpuError_t BatchQKApplyRotary(DType* q, DType* k, DType* q_rope, DType* k_rope,
+hipError_t BatchQKApplyRotary(DType* q, DType* k, DType* q_rope, DType* k_rope,
                               IdType* __restrict__ indptr, IdType* __restrict__ offsets,
                               uint32_t batch_size, uint32_t num_qo_heads, uint32_t num_kv_heads,
                               uint32_t rotary_dim, uint32_t head_dim, size_t q_stride_n,
                               size_t q_stride_h, size_t k_stride_n, size_t k_stride_h,
                               size_t q_rope_stride_n, size_t q_rope_stride_h,
                               size_t k_rope_stride_n, size_t k_rope_stride_h, bool interleave,
-                              float rope_scale, float rope_theta, gpuStream_t stream = nullptr) {
+                              float rope_scale, float rope_theta, hipStream_t stream = nullptr) {
   float rope_rcp_scale = 1.0f / rope_scale;
   float rope_rcp_theta = 1.0f / rope_theta;
   float smooth_a = 0.f;
@@ -749,21 +749,21 @@ gpuError_t BatchQKApplyRotary(DType* q, DType* k, DType* q_rope, DType* k_rope,
                       (void*)&smooth_b,
                       (void*)&rope_rcp_scale,
                       (void*)&rope_rcp_theta};
-      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+      FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
     });
   });
 
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <typename DType, typename IdType>
-gpuError_t BatchQKApplyRotaryInPlace(DType* __restrict__ q, DType* __restrict__ k,
+hipError_t BatchQKApplyRotaryInPlace(DType* __restrict__ q, DType* __restrict__ k,
                                      IdType* __restrict__ indptr, IdType* __restrict__ offsets,
                                      uint32_t batch_size, uint32_t num_qo_heads,
                                      uint32_t num_kv_heads, uint32_t rotary_dim, uint32_t head_dim,
                                      size_t q_stride_n, size_t q_stride_h, size_t k_stride_n,
                                      size_t k_stride_h, bool interleave, float rope_scale,
-                                     float rope_theta, gpuStream_t stream = nullptr) {
+                                     float rope_theta, hipStream_t stream = nullptr) {
   return BatchQKApplyRotary<DType, IdType>(
       q, k, q, k, indptr, offsets, batch_size, num_qo_heads, num_kv_heads, rotary_dim, head_dim,
       q_stride_n, q_stride_h, k_stride_n, k_stride_h, q_stride_n, q_stride_h, k_stride_n,
@@ -771,14 +771,14 @@ gpuError_t BatchQKApplyRotaryInPlace(DType* __restrict__ q, DType* __restrict__ 
 }
 
 template <typename DType, typename IdType>
-gpuError_t BatchQKApplyLlama31Rotary(
+hipError_t BatchQKApplyLlama31Rotary(
     DType* q, DType* k, DType* q_rope, DType* k_rope, IdType* __restrict__ indptr,
     IdType* __restrict__ offsets, uint32_t batch_size, uint32_t num_qo_heads, uint32_t num_kv_heads,
     uint32_t rotary_dim, uint32_t head_dim, size_t q_stride_n, size_t q_stride_h, size_t k_stride_n,
     size_t k_stride_h, size_t q_rope_stride_n, size_t q_rope_stride_h, size_t k_rope_stride_n,
     size_t k_rope_stride_h, bool interleave, float rope_scale, float rope_theta,
     float low_freq_factor, float high_freq_factor, float old_context_length,
-    gpuStream_t stream = nullptr) {
+    hipStream_t stream = nullptr) {
   float rope_rcp_scale = 1.0f / rope_scale;
   float rope_rcp_theta = 1.0f / rope_theta;
   float smooth_a = old_context_length / (2 * M_PI * high_freq_factor - 2 * M_PI * low_freq_factor);
@@ -815,21 +815,21 @@ gpuError_t BatchQKApplyLlama31Rotary(
                       (void*)&smooth_b,
                       (void*)&rope_rcp_scale,
                       (void*)&rope_rcp_theta};
-      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+      FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
     });
   });
 
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <typename DType, typename IdType>
-gpuError_t BatchQKApplyLlama31RotaryPosIds(
+hipError_t BatchQKApplyLlama31RotaryPosIds(
     DType* q, DType* k, DType* q_rope, DType* k_rope, IdType* pos_ids, uint32_t nnz,
     uint32_t num_qo_heads, uint32_t num_kv_heads, uint32_t rotary_dim, uint32_t head_dim,
     size_t q_stride_n, size_t q_stride_h, size_t k_stride_n, size_t k_stride_h,
     size_t q_rope_stride_n, size_t q_rope_stride_h, size_t k_rope_stride_n, size_t k_rope_stride_h,
     bool interleave, float rope_scale, float rope_theta, float low_freq_factor,
-    float high_freq_factor, float old_context_length, gpuStream_t stream = nullptr) {
+    float high_freq_factor, float old_context_length, hipStream_t stream = nullptr) {
   float rope_rcp_scale = 1.0f / rope_scale;
   float rope_rcp_theta = 1.0f / rope_theta;
   float smooth_a = old_context_length / (2 * M_PI * high_freq_factor - 2 * M_PI * low_freq_factor);
@@ -866,11 +866,11 @@ gpuError_t BatchQKApplyLlama31RotaryPosIds(
                       (void*)&smooth_b,
                       (void*)&rope_rcp_scale,
                       (void*)&rope_rcp_theta};
-      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+      FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
     });
   });
 
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 /*!
@@ -1255,7 +1255,7 @@ __global__ void RopeQuantizeAppendPagedKVCacheKernel(
  * \brief Host launcher: fused RoPE + FP8 quantization (no paged KV append).
  */
 template <typename DType, typename IdType, typename QuantType>
-gpuError_t RopeQuantize(
+hipError_t RopeQuantize(
     DType* q_rope_in, DType* k_rope_in, DType* q_nope_in, DType* k_nope_in, QuantType* q_rope_out,
     QuantType* k_rope_out, QuantType* q_nope_out, QuantType* k_nope_out, float* cos_sin_cache,
     IdType* pos_ids, uint32_t nnz, uint32_t num_qo_heads, uint32_t num_kv_heads, uint32_t rope_dim,
@@ -1265,7 +1265,7 @@ gpuError_t RopeQuantize(
     size_t k_rope_in_stride, size_t k_rope_in_stride_h, size_t k_nope_in_stride,
     size_t k_nope_in_stride_h, size_t k_rope_out_stride, size_t k_rope_out_stride_h,
     size_t k_nope_out_stride, size_t k_nope_out_stride_h, float quant_scale_q, float quant_scale_kv,
-    bool interleave, bool /*enable_pdl*/ = false, gpuStream_t stream = nullptr) {
+    bool interleave, bool /*enable_pdl*/ = false, hipStream_t stream = nullptr) {
   DISPATCH_ROPE_DIM(rope_dim, ROPE_DIM, {
     DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
       // 16-byte vector loads — single global_load_dwordx4 on CDNA3
@@ -1315,17 +1315,17 @@ gpuError_t RopeQuantize(
       auto kernel = RopeQuantizeKernel<INTERLEAVE, vec_size, bdx, DType, IdType, QuantType>;
       dim3 nblks(nblks_x, total_blocks_y);
       dim3 nthrs(bdx, bdy);
-      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+      FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
     });
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 /*!
  * \brief Host launcher: fused RoPE + FP8 quantization + paged KV cache append (GQA/MHA).
  */
 template <typename DType, typename IdType, typename QuantType>
-gpuError_t RopeQuantizeAppendPagedKVCache(
+hipError_t RopeQuantizeAppendPagedKVCache(
     DType* q_rope_in, DType* k_rope_in, DType* q_nope_in, DType* k_nope_in, DType* v_in,
     QuantType* q_rope_out, QuantType* q_nope_out, paged_kv_t<QuantType, IdType> paged_kv,
     IdType* batch_indices, IdType* positions, float* cos_sin_cache, IdType* pos_ids, uint32_t nnz,
@@ -1335,7 +1335,7 @@ gpuError_t RopeQuantizeAppendPagedKVCache(
     size_t q_nope_out_stride_n, size_t q_nope_out_stride_h, size_t k_rope_in_stride,
     size_t k_rope_in_stride_h, size_t k_nope_in_stride, size_t k_nope_in_stride_h,
     size_t v_in_stride, size_t v_in_stride_h, float quant_scale_q, float quant_scale_kv,
-    bool interleave, bool /*enable_pdl*/ = false, gpuStream_t stream = nullptr) {
+    bool interleave, bool /*enable_pdl*/ = false, hipStream_t stream = nullptr) {
   DISPATCH_ROPE_DIM(rope_dim, ROPE_DIM, {
     DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
       // 16-byte vector loads — single global_load_dwordx4 on CDNA3
@@ -1383,10 +1383,10 @@ gpuError_t RopeQuantizeAppendPagedKVCache(
                       (void*)&q_nope_out, (void*)&paged_kv,      (void*)&batch_indices,
                       (void*)&positions,  (void*)&cos_sin_cache, (void*)&pos_ids,
                       (void*)&params};
-      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+      FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
     });
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 /*!
@@ -1400,7 +1400,7 @@ gpuError_t RopeQuantizeAppendPagedKVCache(
  * already handles all three via the IS_MLA constexpr path.
  */
 template <typename DType, typename IdType, typename QuantType>
-gpuError_t RopeQuantizeAppendPagedMLACache(
+hipError_t RopeQuantizeAppendPagedMLACache(
     DType* q_rope_in, DType* k_rope_in, DType* q_nope_in, DType* k_nope_in, QuantType* q_rope_out,
     QuantType* q_nope_out, paged_kv_mla_t<QuantType, IdType> paged_kv_mla, IdType* batch_indices,
     IdType* positions, float* cos_sin_cache, IdType* pos_ids, uint32_t nnz, uint32_t num_qo_heads,
@@ -1408,7 +1408,7 @@ gpuError_t RopeQuantizeAppendPagedMLACache(
     size_t q_nope_in_stride_n, size_t q_nope_in_stride_h, size_t q_rope_out_stride_n,
     size_t q_rope_out_stride_h, size_t q_nope_out_stride_n, size_t q_nope_out_stride_h,
     size_t k_rope_in_stride, size_t k_nope_in_stride, float quant_scale_q, float quant_scale_kv,
-    bool interleave, bool /*enable_pdl*/ = false, gpuStream_t stream = nullptr) {
+    bool interleave, bool /*enable_pdl*/ = false, hipStream_t stream = nullptr) {
   DISPATCH_ROPE_DIM(rope_dim, ROPE_DIM, {
     DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
       constexpr uint32_t vec_size = 16 / sizeof(DType);
@@ -1458,10 +1458,10 @@ gpuError_t RopeQuantizeAppendPagedMLACache(
       auto kernel =
           RopeQuantizeAppendPagedKVCacheKernel<INTERLEAVE, vec_size, bdx, DType, IdType, QuantType,
                                                paged_kv_mla_t<QuantType, IdType>>;
-      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+      FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
     });
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 }  // namespace flashinfer

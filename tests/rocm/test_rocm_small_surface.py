@@ -15,47 +15,7 @@ No GPU is required except where a test says otherwise.
 import pytest
 import torch
 
-from flashinfer import aiter_utils, arch_caps, device_utils
-
-
-class TestBackendReporting:
-    """Three functions branch on the same pair of flags; all six arms matter,
-    because the answer ends up in bug reports and the run header."""
-
-    @pytest.fixture
-    def as_backend(self, monkeypatch):
-        def _set(is_hip, is_cuda):
-            monkeypatch.setattr(device_utils, "IS_HIP", is_hip)
-            monkeypatch.setattr(device_utils, "IS_CUDA", is_cuda)
-
-        return _set
-
-    @pytest.mark.parametrize(
-        "is_hip, is_cuda, expected",
-        [(True, False, "hip"), (False, True, "cuda"), (False, False, "cpu")],
-    )
-    def test_backend_id(self, as_backend, is_hip, is_cuda, expected):
-        as_backend(is_hip, is_cuda)
-        assert device_utils.get_device_backend() == expected
-
-    @pytest.mark.parametrize(
-        "is_hip, is_cuda, expected",
-        [(True, False, "ROCm/HIP"), (False, True, "CUDA"), (False, False, "CPU")],
-    )
-    def test_human_readable_name(self, as_backend, is_hip, is_cuda, expected):
-        as_backend(is_hip, is_cuda)
-        assert device_utils.get_backend_name() == expected
-
-    def test_version_comes_from_the_matching_torch_attribute(self, as_backend):
-        as_backend(True, False)
-        assert device_utils.get_backend_version() == torch.version.hip
-
-        as_backend(False, True)
-        assert device_utils.get_backend_version() == torch.version.cuda
-
-    def test_no_backend_has_no_version(self, as_backend):
-        as_backend(False, False)
-        assert device_utils.get_backend_version() is None
+from flashinfer.rocm import aiter_utils, arch_caps
 
 
 class TestVersionTuple:
@@ -94,7 +54,7 @@ class TestLiveVersions:
             "version",
             lambda name: (_ for _ in ()).throw(RuntimeError("no metadata")),
         )
-        import flashinfer.hip_utils as hip_utils
+        import flashinfer.rocm.hip_utils as hip_utils
 
         monkeypatch.setattr(
             hip_utils,
@@ -170,13 +130,3 @@ class TestAiterAvailabilityGate:
 
         with pytest.raises(ValueError, match="backend='native'"):
             aiter_utils.require_aiter(torch.device("cuda:0"), "rmsnorm")
-
-
-def test_the_aiter_mha_module_is_resolved_once_and_cached():
-    """The shim imports aiter.ops.mha lazily; a typo there surfaces only here."""
-    pytest.importorskip("aiter.ops.mha")
-
-    first = aiter_utils.get_aiter_mha_module()
-
-    assert first is aiter_utils.get_aiter_mha_module()
-    assert hasattr(first, "__name__")

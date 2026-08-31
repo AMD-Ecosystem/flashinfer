@@ -17,7 +17,7 @@ import pytest
 import torch
 
 import flashinfer
-from flashinfer.fused_moe_rocm import (
+from flashinfer.rocm.fused_moe import (
     _BLOCK_M_THRESHOLDS,
     _FP8_BY_ARCH,
     _fp8_stage2_k_tile,
@@ -27,7 +27,7 @@ from flashinfer.fused_moe_rocm import (
     quantize_moe_weight,
     shuffle_moe_weight,
 )
-from flashinfer.jit.aiter_source import resolve_aiter_build_arch
+from flashinfer.jit.rocm.aiter_source import resolve_aiter_build_arch
 from tests.test_helpers.test_helpers import requires_aiter
 
 _ACT = {"silu": torch.nn.functional.silu, "gelu": torch.nn.functional.gelu}
@@ -195,7 +195,7 @@ def test_public_api_is_reachable_from_the_package():
     The re-export is a separate line in __init__.py, so adding a helper and
     forgetting it leaves the documented fp8 workflow half-reachable.
     """
-    from flashinfer import fused_moe_rocm
+    from flashinfer.rocm import fused_moe as fused_moe_rocm
 
     missing = [n for n in fused_moe_rocm.__all__ if not hasattr(flashinfer, n)]
     assert not missing, missing

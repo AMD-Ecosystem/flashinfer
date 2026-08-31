@@ -199,15 +199,10 @@ struct smem_t {
 
   template <typename T = uint32_t>
   __device__ __forceinline__ void load_fragment(uint32_t offset, T* frag) {
-#if defined(PLATFORM_HIP_DEVICE)
     static_assert(sizeof(T) == 4, "Only 32-bit fragment loading supported");
     reinterpret_cast<uint2*>(frag)[0] = *reinterpret_cast<const uint2*>(base + offset);
-#else
-    ldmatrix_m8n8x4(offset, frag);
-#endif
   }
 
-#if defined(PLATFORM_HIP_DEVICE)
   /*!
    * \brief Loads a fragment from shared memory and performs an in-register transpose across a quad.
    * \details This function is designed to prepare the B-matrix operand for a CDNA3 MFMA
@@ -246,30 +241,11 @@ struct smem_t {
     load_fragment(offset, frag);
     mma::transpose_mma_tile(frag);
   }
-#endif
 
   template <typename T = uint32_t>
   __device__ __forceinline__ void store_fragment(uint32_t offset, const T* frag) {
-#if defined(PLATFORM_HIP_DEVICE)
     static_assert(sizeof(T) == 4, "Only 32-bit fragment storing supported");
     *reinterpret_cast<uint2*>(base + offset) = reinterpret_cast<const uint2*>(frag)[0];
-#else
-    stmatrix_m8n8x4(offset, frag);
-#endif
-  }
-
-  template <gpu_mem::SharedMemFillMode fill_mode, typename T>
-  __device__ __forceinline__ void load_128b_async(uint32_t offset, const T* gptr, bool predicate) {
-    b128_t* smem_ptr = base + offset;
-    gpu_mem::pred_load_128b<gpu_mem::PrefetchMode::kPrefetch, fill_mode>(
-        smem_ptr, reinterpret_cast<const b128_t*>(gptr), predicate);
-  }
-
-  template <typename T>
-  __device__ __forceinline__ void load_128b_async(uint32_t offset, const T* gptr) {
-    b128_t* smem_ptr = base + offset;
-    gpu_mem::load_128b<gpu_mem::PrefetchMode::kPrefetch>(smem_ptr,
-                                                         reinterpret_cast<const b128_t*>(gptr));
   }
 
   template <gpu_mem::SharedMemFillMode fill_mode, typename T>
@@ -289,25 +265,12 @@ struct smem_t {
   template <gpu_mem::SharedMemFillMode fill_mode, typename T>
   __device__ __forceinline__ void load_vector_async(uint32_t offset, const T* gptr,
                                                     bool predicate) {
-#if defined(PLATFORM_HIP_DEVICE)
     load_64b_async<fill_mode>(offset, gptr, predicate);
-#else
-    load_128b_async<fill_mode>(offset, gptr, predicate);
-#endif
   }
 
   template <typename T>
   __device__ __forceinline__ void load_vector_async(uint32_t offset, const T* gptr) {
-#if defined(PLATFORM_HIP_DEVICE)
     load_64b_async(offset, gptr);
-#else
-    load_128b_async(offset, gptr);
-#endif
-  }
-
-  template <typename T>
-  __device__ __forceinline__ void store_128b(uint32_t offset, T* gptr) {
-    *reinterpret_cast<b128_t*>(gptr) = *(base + offset);
   }
 
   template <typename T>
@@ -317,11 +280,7 @@ struct smem_t {
 
   template <typename T>
   __device__ __forceinline__ void store_vector(uint32_t offset, T* gptr) {
-#if defined(PLATFORM_HIP_DEVICE)
     store_64b(offset, gptr);
-#else
-    store_128b(offset, gptr);
-#endif
   }
 };
 

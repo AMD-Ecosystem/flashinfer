@@ -75,7 +75,7 @@ def maybe_rmsnorm(
         backend if backend != "auto" else _auto_select_norm_backend(input, weight)
     )
     if resolved == "aiter":
-        from ..aiter_utils import require_aiter
+        from .aiter_utils import require_aiter
 
         require_aiter(input.device, "rmsnorm")
         if input.ndim != 2:
@@ -187,7 +187,7 @@ def maybe_fused_add_rmsnorm(
         backend if backend != "auto" else _auto_select_fused_add_rmsnorm_backend(input)
     )
     if resolved == "aiter":
-        from ..aiter_utils import require_aiter
+        from .aiter_utils import require_aiter
 
         require_aiter(input.device, "fused_add_rmsnorm")
         _check_aiter_fused_add_args(input, residual, weight)

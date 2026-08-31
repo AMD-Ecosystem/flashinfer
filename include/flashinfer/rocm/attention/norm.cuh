@@ -44,7 +44,7 @@ inline uint32_t FusedRMSNormSmemSize(uint32_t num_warps, uint32_t d, bool* stage
   const uint32_t reduce_bytes = ceil_div(num_warps, 4) * 4 * sizeof(float);
   const uint32_t staged_bytes = reduce_bytes + d * sizeof(float);
   int dev_id = 0;
-  FI_GPU_CALL(gpuGetDevice(&dev_id));
+  FI_HIP_CALL(hipGetDevice(&dev_id));
   *stage_x = staged_bytes <= static_cast<uint32_t>(getMaxSharedMemPerBlock(dev_id));
   return *stage_x ? staged_bytes : reduce_bytes;
 }
@@ -62,10 +62,6 @@ __global__ void RMSNormKernel(T* __restrict__ input, T* __restrict__ weight, T* 
   extern __shared__ float smem[];
 
   float sum_sq = 0.f;
-
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.wait;");
-#endif
 
   for (uint32_t i = 0; i < rounds; i++) {
     vec_t<T, VEC_SIZE> input_vec;
@@ -119,15 +115,12 @@ __global__ void RMSNormKernel(T* __restrict__ input, T* __restrict__ weight, T* 
                        thread_id * VEC_SIZE);
     }
   }
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.launch_dependents;");
-#endif
 }
 
 template <typename T>
-gpuError_t RMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uint32_t d,
+hipError_t RMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uint32_t d,
                    uint32_t stride_input, uint32_t stride_output, float eps = 1e-5,
-                   bool enable_pdl = false, gpuStream_t stream = 0) {
+                   bool enable_pdl = false, hipStream_t stream = 0) {
   const uint32_t vec_size = std::gcd(16 / sizeof(T), d);
 
   const uint32_t block_size = std::min<uint32_t>(kMaxBlockSize, d / vec_size);
@@ -140,12 +133,12 @@ gpuError_t RMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uint32_t
 
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = RMSNormKernel<VEC_SIZE, T>;
-    FI_GPU_CALL(
-        gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel, hipFuncAttributeMaxDynamicSharedMemorySize,
+                                    smem_size));
 
-    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+    FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 // \param stage_x Keep the fp32 row in shared memory between the two passes. The
@@ -166,9 +159,6 @@ __global__ void FusedAddRMSNormKernel(T* __restrict__ input, T* __restrict__ res
   float* smem_x = stage_x ? smem + ceil_div(num_warps, 4) * 4 : nullptr;
 
   float sum_sq = 0.f;
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.wait;");
-#endif
 
   for (uint32_t i = 0; i < rounds; i++) {
     vec_t<T, VEC_SIZE> input_vec;
@@ -251,15 +241,12 @@ __global__ void FusedAddRMSNormKernel(T* __restrict__ input, T* __restrict__ res
                       thread_id * VEC_SIZE);
     }
   }
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.launch_dependents;");
-#endif
 }
 
 template <typename T>
-gpuError_t FusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch_size, uint32_t d,
+hipError_t FusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch_size, uint32_t d,
                            uint32_t stride_input, uint32_t stride_residual, float eps = 1e-5,
-                           bool enable_pdl = false, gpuStream_t stream = 0) {
+                           bool enable_pdl = false, hipStream_t stream = 0) {
   const uint32_t vec_size = std::gcd(16 / sizeof(T), d);
 
   const uint32_t block_size = std::min<uint32_t>(kMaxBlockSize, d / vec_size);
@@ -274,18 +261,18 @@ gpuError_t FusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch_size
 
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = FusedAddRMSNormKernel<VEC_SIZE, T>;
-    FI_GPU_CALL(
-        gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
-    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+    FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel, hipFuncAttributeMaxDynamicSharedMemorySize,
+                                    smem_size));
+    FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
 
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <typename T>
-gpuError_t GemmaRMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uint32_t d,
+hipError_t GemmaRMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uint32_t d,
                         uint32_t stride_input, uint32_t stride_output, float eps = 1e-5,
-                        bool enable_pdl = false, gpuStream_t stream = 0) {
+                        bool enable_pdl = false, hipStream_t stream = 0) {
   const uint32_t vec_size = std::gcd(16 / sizeof(T), d);
 
   const uint32_t block_size = std::min<uint32_t>(kMaxBlockSize, d / vec_size);
@@ -298,17 +285,17 @@ gpuError_t GemmaRMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uin
 
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = RMSNormKernel<VEC_SIZE, T>;
-    FI_GPU_CALL(
-        gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
-    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+    FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel, hipFuncAttributeMaxDynamicSharedMemorySize,
+                                    smem_size));
+    FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <typename T>
-gpuError_t GemmaFusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch_size, uint32_t d,
+hipError_t GemmaFusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch_size, uint32_t d,
                                 uint32_t stride_input, uint32_t stride_residual, float eps = 1e-5,
-                                bool enable_pdl = false, gpuStream_t stream = 0) {
+                                bool enable_pdl = false, hipStream_t stream = 0) {
   const uint32_t vec_size = std::gcd(16 / sizeof(T), d);
 
   const uint32_t block_size = std::min<uint32_t>(kMaxBlockSize, d / vec_size);
@@ -323,13 +310,13 @@ gpuError_t GemmaFusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch
 
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = FusedAddRMSNormKernel<VEC_SIZE, T>;
-    FI_GPU_CALL(
-        gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel, hipFuncAttributeMaxDynamicSharedMemorySize,
+                                    smem_size));
 
-    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+    FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
 
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 }  // namespace norm

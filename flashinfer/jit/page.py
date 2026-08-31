@@ -29,7 +29,7 @@ def gen_page_module() -> JitSpec:
 
 
 def gen_page_aiter_module() -> JitSpec:
-    from .aiter_source import aiter_jitspec_flags, refresh_aiter_jitspec
+    from .rocm.aiter_source import aiter_jitspec_flags, refresh_aiter_jitspec
 
     extra_include_paths, extra_ldflags = aiter_jitspec_flags("module_cache")
     # Required: build.ninja is written only when missing, so without this a

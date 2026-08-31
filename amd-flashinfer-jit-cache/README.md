@@ -50,7 +50,7 @@ python -m build --wheel
 
 The build process will:
 
-1. Generate kernel specifications using `flashinfer.aot_hip`
+1. Generate kernel specifications using `flashinfer.rocm.aot`
 2. Compile kernels for the gfx942 architecture
 3. Package compiled `.so` files into the wheel
 

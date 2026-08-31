@@ -12,8 +12,8 @@ from jit_utils import gen_prefill_attention_modules
 import flashinfer
 
 from flashinfer.jit.core import logger
-from flashinfer.aiter_utils import is_aiter_supported
-from flashinfer.prefill_rocm import _aiter_ops_importable
+from flashinfer.rocm.aiter_utils import is_aiter_supported
+from flashinfer.rocm.prefill import _aiter_ops_importable
 import logging
 
 logger.setLevel(logging.ERROR)
@@ -80,7 +80,7 @@ def test_single_prefill_with_kv_cache(
     # mha_batch_prefill is exact on the same inputs. The kv_len where it starts
     # is architecture-dependent, so take it from the capability table rather
     # than repeating a literal that is only right on gfx942.
-    from flashinfer.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
+    from flashinfer.rocm.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
 
     softcap_floor = aiter_softcap_defect_min_kv_len(
         _device_arch(torch.device("cuda:0"))
@@ -370,7 +370,7 @@ def test_auto_backend_avoids_aiter_softcap_defect(
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
 
     if expect_aiter is None:
-        from flashinfer.arch_caps import (
+        from flashinfer.rocm.arch_caps import (
             _device_arch,
             aiter_softcap_defect_min_kv_len,
         )
@@ -378,7 +378,7 @@ def test_auto_backend_avoids_aiter_softcap_defect(
         floor = aiter_softcap_defect_min_kv_len(_device_arch(device))
         expect_aiter = floor is None or kv_len < floor
 
-    from flashinfer.prefill_rocm import _auto_select_prefill_backend
+    from flashinfer.rocm.prefill import _auto_select_prefill_backend
 
     chosen, reason = _auto_select_prefill_backend(
         device,
@@ -434,7 +434,7 @@ def test_aiter_is_correct_just_below_the_softcap_floor():
     on their own they stay green if the floor is edited to the wrong value. This
     asserts the boundary against an fp32 reference instead.
     """
-    from flashinfer.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
+    from flashinfer.rocm.arch_caps import _device_arch, aiter_softcap_defect_min_kv_len
 
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():

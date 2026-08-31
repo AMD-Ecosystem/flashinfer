@@ -12,11 +12,9 @@ CompileFlags:
     - "-x"
     - "hip"
 
-    - "-DPLATFORM_HIP_DEVICE"
     - "-D__HIP__"
     - "-D__HIPCC__"
     - "-D__HIP_PLATFORM_AMD__"
-    - "-DFLASHINFER_ENABLE_HIP"
     - "-I/opt/rocm/include"
 
   # Use compile_commands.json from the project root (clangd searches upward from source files)
@@ -24,12 +22,7 @@ CompileFlags:
 
   # Remove problematic flags that might come from compile_commands.json
   Remove:
-    - "-forward-unknown-to-host-compiler"
-    - "--generate-code*"
     - "-Werror*"
-    - "-DPLATFORM_CUDA_DEVICE"
-    - "-D__CUDACC__"
-    - "-D__CUDA_ARCH__"
 
 # Diagnostics configuration
 Diagnostics:

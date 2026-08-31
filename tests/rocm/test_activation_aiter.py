@@ -12,7 +12,7 @@ import pytest
 import torch
 
 import flashinfer
-from flashinfer.aiter_utils import is_aiter_supported
+from flashinfer.rocm.aiter_utils import is_aiter_supported
 from tests.test_helpers.test_helpers import requires_aiter
 
 

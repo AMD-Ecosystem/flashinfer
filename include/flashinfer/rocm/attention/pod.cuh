@@ -146,11 +146,11 @@ template <uint32_t HEAD_DIM_QK, uint32_t HEAD_DIM_VO, PosEncodingMode POS_ENCODI
           bool USE_FP16_QK_REDUCTION, MaskMode MASK_MODE_P, uint32_t CTA_TILE_Q_D,
           MaskMode MASK_MODE_D, typename PrefillAttentionVariant, typename DecodeAttentionVariant,
           typename PrefillParams, typename DecodeParams>
-gpuError_t PODWithKVCacheTensorDispatched(PrefillParams prefill_params,
+hipError_t PODWithKVCacheTensorDispatched(PrefillParams prefill_params,
                                           typename PrefillParams::DTypeO* tmp_p,
                                           DecodeParams decode_params,
                                           typename DecodeParams::DTypeO* tmp_v, float* tmp_s,
-                                          bool /*enable_pdl*/, gpuStream_t stream) {
+                                          bool /*enable_pdl*/, hipStream_t stream) {
   static_assert(std::is_same<typename PrefillParams::DTypeQ, typename DecodeParams::DTypeQ>::value);
   static_assert(
       std::is_same<typename PrefillParams::DTypeKV, typename DecodeParams::DTypeKV>::value);
@@ -189,7 +189,7 @@ gpuError_t PODWithKVCacheTensorDispatched(PrefillParams prefill_params,
   constexpr uint32_t NUM_WARPS_KV_D = get_num_warps_kv(CTA_TILE_Q_D);
 
   if (padded_batch_size_d == 0) {
-    return gpuSuccess;
+    return hipSuccess;
   }
 
   using DTypeQKAccum_D =
@@ -197,7 +197,7 @@ gpuError_t PODWithKVCacheTensorDispatched(PrefillParams prefill_params,
                                 float>::type;
 
   int dev_id = 0;
-  FI_GPU_CALL(gpuGetDevice(&dev_id));
+  FI_HIP_CALL(hipGetDevice(&dev_id));
   int max_smem_per_sm = getMaxSharedMemPerMultiprocessor(dev_id);
   const int num_ctas_per_sm = max_smem_per_sm > (16 * HEAD_DIM_QK * sizeof(DTypeQ_D) * 16) ? 2 : 1;
   const int max_smem_per_threadblock = max_smem_per_sm / num_ctas_per_sm;
@@ -267,7 +267,8 @@ gpuError_t PODWithKVCacheTensorDispatched(PrefillParams prefill_params,
 
             int num_blocks_per_sm = 0;
             int num_sm = 0;
-            FI_GPU_CALL(gpuDeviceGetAttribute(&num_sm, gpuDevAttrMultiProcessorCount, dev_id));
+            FI_HIP_CALL(
+                hipDeviceGetAttribute(&num_sm, hipDeviceAttributeMultiprocessorCount, dev_id));
             num_blocks_per_sm = std::max(
                 1, std::min((int)(max_smem_per_sm / smem_size_p), (int)(256 / num_threads_p)));
             uint32_t max_num_kv_chunks =
@@ -318,33 +319,33 @@ gpuError_t PODWithKVCacheTensorDispatched(PrefillParams prefill_params,
             int nthrs = max(nthrs_p, nthrs_d);
 
             static int* tbAssign = nullptr;
-            if (tbAssign == nullptr) FI_GPU_CALL(gpuMalloc(&tbAssign, sizeof(int) * (num_sm + 2)));
-            FI_GPU_CALL(gpuMemset(tbAssign, 0, sizeof(int) * (num_sm + 2)));
+            if (tbAssign == nullptr) FI_HIP_CALL(hipMalloc(&tbAssign, sizeof(int) * (num_sm + 2)));
+            FI_HIP_CALL(hipMemset(tbAssign, 0, sizeof(int) * (num_sm + 2)));
 
-            FI_GPU_CALL(
-                gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+            FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel,
+                                            hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
             void* args[] = {(void*)&xsize, (void*)&prefill_params, (void*)&decode_params,
                             (void*)&tbAssign, (void*)&num_sm};
-            FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+            FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
 
             if (!(num_chunks <= 1 || tmp_p == nullptr)) {
               if constexpr (PrefillAttentionVariant::use_softmax) {
-                FI_GPU_CALL(MergeStates(tmp_p, tmp_lse, o_p, lse_p, num_chunks, qo_len,
+                FI_HIP_CALL(MergeStates(tmp_p, tmp_lse, o_p, lse_p, num_chunks, qo_len,
                                         num_qo_heads, HEAD_DIM_VO, stream));
               } else {
-                FI_GPU_CALL(AttentionSum(tmp_p, o_p, num_chunks, qo_len, num_qo_heads, HEAD_DIM_VO,
+                FI_HIP_CALL(AttentionSum(tmp_p, o_p, num_chunks, qo_len, num_qo_heads, HEAD_DIM_VO,
                                          stream));
               }
             }
             if (tmp_v != nullptr) {
               if constexpr (DecodeAttentionVariant::use_softmax) {
-                FI_GPU_CALL(VariableLengthMergeStates(tmp_v, tmp_s, decode_params.merge_indptr, o_d,
+                FI_HIP_CALL(VariableLengthMergeStates(tmp_v, tmp_s, decode_params.merge_indptr, o_d,
                                                       lse_d, decode_params.max_total_num_rows,
                                                       decode_params.total_num_rows, num_qo_heads,
                                                       HEAD_DIM_VO, stream));
               } else {
-                FI_GPU_CALL(VariableLengthAttentionSum(
+                FI_HIP_CALL(VariableLengthAttentionSum(
                     tmp_v, decode_params.merge_indptr, o_d, decode_params.max_total_num_rows,
                     decode_params.total_num_rows, num_qo_heads, HEAD_DIM_VO, stream));
               }
@@ -354,7 +355,7 @@ gpuError_t PODWithKVCacheTensorDispatched(PrefillParams prefill_params,
       }
     });
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 }  // namespace flashinfer

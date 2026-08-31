@@ -29,7 +29,7 @@ def gen_rope_module() -> JitSpec:
 
 
 def gen_rope_aiter_module() -> JitSpec:
-    from .aiter_source import aiter_jitspec_flags, refresh_aiter_jitspec
+    from .rocm.aiter_source import aiter_jitspec_flags, refresh_aiter_jitspec
 
     # AITER split the monolithic rope module by variant. Through 0.1.10 the whole
     # forward path lived in "module_rope_pos_fwd"; from 0.1.16 that name is not

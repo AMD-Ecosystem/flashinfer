@@ -11,7 +11,7 @@ For a complete worked example to copy, read these together:
 [`jit/norm.py`](../../../flashinfer/jit/norm.py) +
 [`norm.py`](../../../flashinfer/norm.py). For plan-run / multi-backend / FP8 see
 [`batch_prefill.cu`](../../../csrc/rocm/batch_prefill.cu) +
-[`prefill_rocm.py`](../../../flashinfer/prefill_rocm.py).
+[`rocm/prefill.py`](../../../flashinfer/rocm/prefill.py).
 
 ## File touchpoints (every new op needs each row, in order)
 
@@ -26,7 +26,7 @@ For a complete worked example to copy, read these together:
 | 7 | `tests/rocm/test_<op>.py` | Correctness tests; FP32 reference math, loose BF16 tolerances. |
 | 8 | `flashinfer/jit/__init__.py` (`IS_HIP` branch) | `from .<op> import gen_<op>_module as gen_<op>_module`. |
 | 9 | `flashinfer/__init__.py` (`IS_HIP` branch) | `from .<op> import <op> as <op>`. |
-| 10 (opt) | `flashinfer/aot_hip.py` | Register `gen_<op>_module` for pre-compiled wheels. |
+| 10 (opt) | `flashinfer/rocm/aot.py` | Register `gen_<op>_module` for pre-compiled wheels. |
 
 **Forgetting steps 8 and 9 is the most common bug** — the module compiles but is invisible from `import flashinfer`.
 
@@ -45,7 +45,7 @@ When porting an upstream kernel, mechanically rewrite:
 | `get_stream(tensor.device())` | `at::hip::getCurrentHIPStream()` |
 | `c10::cuda::OptionalCUDAGuard` | `c10::hip::OptionalHIPGuardMasqueradingAsCUDA` |
 | `nvcc` flags via `extra_cuda_cflags=[...]` | **Same kwarg name** (`extra_cuda_cflags`) — internally routed to `hipcc`. |
-| `flashinfer/aot.py` registration | `flashinfer/aot_hip.py` |
+| `flashinfer/aot.py` registration | `flashinfer/rocm/aot.py` |
 | `tests/test_op.py` | `tests/rocm/test_op.py` |
 | `supported_major_versions=[9, 10]` | No analogue. Guard at Python layer via `FLASHINFER_SUPPORTED_ROCM_ARCHS`. |
 | `csrc/` (hardcoded) | `jit_env.FLASHINFER_CSRC_DIR`. Sources live at `csrc/rocm/`; the build materializes them into the package, so the resolved path is `flashinfer/csrc/rocm/`. **Never hardcode either.** |
@@ -56,7 +56,7 @@ When porting an upstream kernel, mechanically rewrite:
 - **PyTorch's ROCm masquerade.** `input.device.type == "cuda"` even on AMD. Never check for `"hip"`. PyTorch's HIP namespaces are reachable via `at::hip::...` and `c10::hip::OptionalHIPGuardMasqueradingAsCUDA` (literally the type name).
 - **Shared intrinsics over duplication.** If a primitive (MMA intrinsic, cross-lane shuffle, dtype container, warp reduction) needs a HIP-specific implementation, add it to the matching intrinsic header in [`include/flashinfer/rocm/`](../../../include/flashinfer/rocm) rather than forking the kernel into `csrc/rocm/`. Existing ones: `mma.h`, `memory_ops.h`, `math.h`, `vec_dtypes.h`. Symbols go in `flashinfer::`, grouped by area (`flashinfer::math`, `flashinfer::memory`, `flashinfer::mma`), keeping the upstream namesake's names; each such header carries an `#error` tripwire on upstream's include guard.
 - **`-ffast-math` adds `-ffinite-math-only` on clang/hipcc.** [`jit/core.py`](../../../flashinfer/jit/core.py) explicitly re-adds `-fno-finite-math-only` so kernels that use `-inf` as a sentinel (online-softmax Map+Reduce) keep working. CUDA's `-use_fast_math` does *not* enable finite-math-only — divergence to be aware of when porting.
-- **`gen_jit_spec` auto-injects `--offload-arch=gfxNNN`** for every target arch plus `COMMON_HIPCC_FLAGS` (`-DFLASHINFER_ENABLE_HIP`, FP8 enables, etc.). Don't add `--offload-arch` by hand.
+- **`gen_jit_spec` auto-injects `--offload-arch=gfxNNN`** for every target arch plus `COMMON_HIPCC_FLAGS` (FP8 enables, warp-sync builtins, etc.). Don't add `--offload-arch` by hand.
 - **Validation macros** live in [`pytorch_extension_utils.h`](../../../csrc/rocm/pytorch_extension_utils.h): `CHECK_INPUT` (GPU + contiguous), `CHECK_LAST_DIM_CONTIGUOUS_INPUT`, `CHECK_EQ`, `CHECK_DIM`, `CHECK_GE`, `CHECK_SHAPE`. Dispatch macros: `DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16` (FP16+BF16), `DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP8` (E4M3+E5M2, both `_fnuz` on CDNA3/4), and the unsuffixed `DISPATCH_PYTORCH_DTYPE_TO_CTYPE` (FP16+BF16+FP8 combined). There is **no** `_FP16_FP32` variant — if you need FP32, dispatch manually.
 - **The `_jit_pybind.cu` naming pattern** (e.g. `batch_decode_jit_pybind.cu`) is used by newer AITER-integrated bindings; the older `flashinfer_<op>_binding.cu` pattern is used by everything else. Both work — match the neighbors.
 

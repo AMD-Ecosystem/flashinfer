@@ -22,7 +22,7 @@ limitations under the License.
 import os
 import pathlib
 
-from ..device_utils import IS_CUDA, IS_HIP
+from ..rocm.device_utils import IS_CUDA, IS_HIP
 
 
 def has_flashinfer_jit_cache() -> bool:

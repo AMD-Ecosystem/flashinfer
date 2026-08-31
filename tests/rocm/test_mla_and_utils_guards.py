@@ -15,7 +15,8 @@ import os
 import pytest
 import torch
 
-from flashinfer import aiter_utils, mla_rocm, utils
+from flashinfer import utils
+from flashinfer.rocm import aiter_utils, mla as mla_rocm
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="needs a ROCm device"

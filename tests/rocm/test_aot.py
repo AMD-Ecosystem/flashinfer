@@ -5,7 +5,7 @@
 """
 Unit tests for AOT HIP kernel compilation.
 
-Tests the flashinfer.aot_hip module to ensure:
+Tests the flashinfer.rocm.aot module to ensure:
 1. JIT specs are generated correctly
 2. Kernels compile successfully
 3. .so files are created and can be loaded
@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from flashinfer import aot_hip
-from flashinfer.aot_hip import (
+from flashinfer.rocm import aot as aot_hip
+from flashinfer.rocm.aot import (
     compile_and_package_modules,
     gen_all_modules,
     get_default_config,
@@ -158,11 +158,11 @@ def test_failed_validation_leaves_the_environment_alone(monkeypatch):
     the resolver would return makes the write a no-op and the test vacuous --
     it then passes with the bug present.
     """
-    import flashinfer.aot_hip as aot_hip
+    import flashinfer.rocm.aot as aot_hip
 
     monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
     monkeypatch.setattr(
-        "flashinfer.hip_utils.rocminfo_gpu_agents",
+        "flashinfer.rocm.hip_utils.rocminfo_gpu_agents",
         lambda: (("gfx950", ""),),
     )
 
@@ -170,7 +170,7 @@ def test_failed_validation_leaves_the_environment_alone(monkeypatch):
         def __init__(self):
             raise RuntimeError("ROCm version 0.0 is not recognized")
 
-    monkeypatch.setattr("flashinfer.compilation_context_hip.CompilationContext", _Boom)
+    monkeypatch.setattr("flashinfer.rocm.compilation_context.CompilationContext", _Boom)
 
     with pytest.raises(RuntimeError, match="not recognized"):
         aot_hip.compile_and_package_modules(
@@ -205,7 +205,7 @@ def test_publishes_the_validated_list_not_the_requested_one(monkeypatch):
     gfx942, standing in for a ROCm or PyTorch that cannot build gfx950. The
     published value must follow the context.
     """
-    import flashinfer.aot_hip as aot_hip
+    import flashinfer.rocm.aot as aot_hip
 
     monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "gfx950,gfx942")
 
@@ -219,7 +219,7 @@ def test_publishes_the_validated_list_not_the_requested_one(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "flashinfer.compilation_context_hip.CompilationContext", _FilteringContext
+        "flashinfer.rocm.compilation_context.CompilationContext", _FilteringContext
     )
 
     aot_hip.compile_and_package_modules(
@@ -250,7 +250,7 @@ def test_publishing_preserves_the_requested_order(monkeypatch):
     for "gfx950,gfx942" into a shim built for gfx942. ``arch_flags`` iterates
     ``requested_archs`` in order and is the only ordered survivor.
     """
-    import flashinfer.aot_hip as aot_hip
+    import flashinfer.rocm.aot as aot_hip
 
     monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "gfx950,gfx942")
 
@@ -263,7 +263,7 @@ def test_publishing_preserves_the_requested_order(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "flashinfer.compilation_context_hip.CompilationContext", _OrderedContext
+        "flashinfer.rocm.compilation_context.CompilationContext", _OrderedContext
     )
     # Spec generation is stubbed because it validates the *published* list
     # against what PyTorch was compiled for, so on a gfx942-only build this
@@ -389,7 +389,7 @@ def _jit_env_paths():
 
 def test_build_restores_the_jit_workspace_paths(monkeypatch, tmp_path):
     """An AOT build must not repoint the JIT workspace for the rest of the process."""
-    import flashinfer.aot_hip as aot_hip
+    import flashinfer.rocm.aot as aot_hip
 
     before = _jit_env_paths()
     _register_arch_list_undo(monkeypatch)
@@ -415,7 +415,7 @@ def test_build_restores_the_jit_workspace_paths(monkeypatch, tmp_path):
 
 def test_unusable_build_dir_restores_the_jit_workspace_paths(tmp_path):
     """The paths are repointed before the mkdirs, so a failing mkdir must unwind too."""
-    from flashinfer.aot_hip import _redirected_jit_env
+    from flashinfer.rocm.aot import _redirected_jit_env
 
     before = _jit_env_paths()
     not_a_dir = tmp_path / "file"
@@ -429,7 +429,7 @@ def test_unusable_build_dir_restores_the_jit_workspace_paths(tmp_path):
 
 def test_failed_build_restores_the_jit_workspace_paths(monkeypatch, tmp_path):
     """The restore has to survive the error path too, not just a clean return."""
-    import flashinfer.aot_hip as aot_hip
+    import flashinfer.rocm.aot as aot_hip
 
     before = _jit_env_paths()
 
@@ -438,7 +438,7 @@ def test_failed_build_restores_the_jit_workspace_paths(monkeypatch, tmp_path):
             raise RuntimeError("ROCm version 0.0 is not recognized")
 
     _register_arch_list_undo(monkeypatch)
-    monkeypatch.setattr("flashinfer.compilation_context_hip.CompilationContext", _Boom)
+    monkeypatch.setattr("flashinfer.rocm.compilation_context.CompilationContext", _Boom)
 
     with pytest.raises(RuntimeError, match="not recognized"):
         aot_hip.compile_and_package_modules(

@@ -10,7 +10,7 @@ conflict on every sync.
 """
 
 from .._version import __version__ as __version__
-from ..hip_utils import check_torch_rocm_compatibility
+from .hip_utils import check_torch_rocm_compatibility
 
 # Checks compatibility with installed torch
 check_torch_rocm_compatibility()
@@ -22,10 +22,10 @@ from .. import jit as jit
 from ..activation import gelu_and_mul as gelu_and_mul
 from ..activation import gelu_tanh_and_mul as gelu_tanh_and_mul
 from ..activation import silu_and_mul as silu_and_mul
-from ..fused_moe_rocm import aiter_fused_moe as aiter_fused_moe
-from ..fused_moe_rocm import moe_fp8_dtype as moe_fp8_dtype
-from ..fused_moe_rocm import quantize_moe_weight as quantize_moe_weight
-from ..fused_moe_rocm import shuffle_moe_weight as shuffle_moe_weight
+from .fused_moe import aiter_fused_moe as aiter_fused_moe
+from .fused_moe import moe_fp8_dtype as moe_fp8_dtype
+from .fused_moe import quantize_moe_weight as quantize_moe_weight
+from .fused_moe import shuffle_moe_weight as shuffle_moe_weight
 from ..get_include_paths import get_csrc_dir as get_csrc_dir
 from ..get_include_paths import get_include as get_include
 from ..norm import fused_add_rmsnorm as fused_add_rmsnorm
@@ -37,7 +37,7 @@ from ..page import append_paged_kv_cache as append_paged_kv_cache
 from ..page import append_paged_mla_kv_cache as append_paged_mla_kv_cache
 from ..page import get_batch_indices_positions as get_batch_indices_positions
 from ..page import get_seq_lens as get_seq_lens
-from ..prefill_rocm import (
+from .prefill import (
     single_prefill_with_kv_cache_return_lse as single_prefill_with_kv_cache_return_lse,
 )
 from ..quantization import packbits as packbits

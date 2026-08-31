@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Sequence, Union, Hashable
 
 from filelock import FileLock
 
-from ..device_utils import IS_CUDA, IS_HIP
+from ..rocm.device_utils import IS_CUDA, IS_HIP
 from . import env as jit_env
 from .utils import write_if_different
 
@@ -18,8 +18,8 @@ if IS_CUDA:
     from ..compilation_context import CompilationContext
     from .cpp_ext import generate_ninja_build_for_op, run_ninja
 elif IS_HIP:
-    from ..compilation_context_hip import CompilationContext  # type: ignore[assignment]
-    from .cpp_ext_hip import generate_ninja_build_for_op, run_ninja  # type: ignore[no-redef]
+    from ..rocm.compilation_context import CompilationContext  # type: ignore[assignment]
+    from .rocm.cpp_ext import generate_ninja_build_for_op, run_ninja  # type: ignore[no-redef]
     from .rocm.core import check_rocm_arch as check_rocm_arch
 
 os.makedirs(jit_env.FLASHINFER_WORKSPACE_DIR, exist_ok=True)

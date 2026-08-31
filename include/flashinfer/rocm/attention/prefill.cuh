@@ -1625,8 +1625,8 @@ __global__ __launch_bounds__(KTraits::NUM_THREADS) void SinglePrefillWithKVCache
 template <uint32_t HEAD_DIM_QK, uint32_t HEAD_DIM_VO, PosEncodingMode POS_ENCODING_MODE,
           bool USE_FP16_QK_REDUCTION, MaskMode MASK_MODE, typename AttentionVariant,
           typename Params>
-gpuError_t SinglePrefillWithKVCacheDispatched(Params params, typename Params::DTypeO* tmp,
-                                              gpuStream_t stream) {
+hipError_t SinglePrefillWithKVCacheDispatched(Params params, typename Params::DTypeO* tmp,
+                                              hipStream_t stream) {
   using DTypeQ = typename Params::DTypeQ;
   using DTypeKV = typename Params::DTypeKV;
   using DTypeO = typename Params::DTypeO;
@@ -1659,7 +1659,7 @@ gpuError_t SinglePrefillWithKVCacheDispatched(Params params, typename Params::DT
                                   float>::type;
 
     int dev_id = 0;
-    FI_GPU_CALL(gpuGetDevice(&dev_id));
+    FI_HIP_CALL(hipGetDevice(&dev_id));
     const int max_smem_per_threadblock = getMaxSharedMemPerBlock(dev_id);
     const uint32_t max_num_mma_kv_reg =
         (HEAD_DIM_VO >= 128 && NUM_MMA_Q == 2 && POS_ENCODING_MODE == PosEncodingMode::kRoPELlama &&
@@ -1671,19 +1671,12 @@ gpuError_t SinglePrefillWithKVCacheDispatched(Params params, typename Params::DT
     // consumed by a larger NUM_MMA_KV, keeping smem at 48 KB (1 block/CU).
     // With the cap, CTA_TILE_Q=64+head_dim=128 → 32 KB smem → 2 blocks/CU.
     // Always use at least min_valid_mma_kv (IsInvalid: NUM_MMA_D_VO==4 → must be even).
-#if defined(PLATFORM_HIP_DEVICE)
     const uint32_t q_smem_bytes_ = CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ);
     const uint32_t kv_budget_ =
         (static_cast<uint32_t>(max_smem_per_threadblock) / 2u > q_smem_bytes_)
             ? static_cast<uint32_t>(max_smem_per_threadblock) / 2u - q_smem_bytes_
             : 0u;
     constexpr uint32_t min_valid_mma_kv_ = (HEAD_DIM_VO / 16u == 4u) ? 2u : 1u;
-#else
-    const uint32_t kv_budget_ =
-        static_cast<uint32_t>(max_smem_per_threadblock) -
-        CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ);
-    constexpr uint32_t min_valid_mma_kv_ = 1u;
-#endif
     const uint32_t max_num_mma_kv_smem = std::max(
         min_valid_mma_kv_, static_cast<uint32_t>(kv_budget_ / ((HEAD_DIM_QK + HEAD_DIM_VO) * 16 *
                                                                NUM_WARPS_KV * sizeof(DTypeKV))));
@@ -1720,12 +1713,12 @@ gpuError_t SinglePrefillWithKVCacheDispatched(Params params, typename Params::DT
                   << " bytes). Consider using smaller head_dim or CTA_TILE_Q.";
           FLASHINFER_ERROR(err_msg.str());
         }
-        FI_GPU_CALL(
-            gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+        FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel,
+                                        hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
         int num_blocks_per_sm = 0;
         int num_sm = 0;
-        FI_GPU_CALL(gpuDeviceGetAttribute(&num_sm, gpuDevAttrMultiProcessorCount, dev_id));
-        FI_GPU_CALL(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel,
+        FI_HIP_CALL(hipDeviceGetAttribute(&num_sm, hipDeviceAttributeMultiprocessorCount, dev_id));
+        FI_HIP_CALL(hipOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel,
                                                                  num_threads, smem_size));
         uint32_t max_num_kv_chunks = (num_blocks_per_sm * num_sm) /
                                      (num_kv_heads * ceil_div(qo_len * group_size, CTA_TILE_Q));
@@ -1743,7 +1736,7 @@ gpuError_t SinglePrefillWithKVCacheDispatched(Params params, typename Params::DT
           void* args[] = {(void*)&params};
           dim3 nblks(ceil_div(qo_len * group_size, CTA_TILE_Q), 1, num_kv_heads);
           dim3 nthrs(WARP_SIZE, NUM_WARPS_Q, NUM_WARPS_KV);
-          FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+          FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
         } else {
           // Use cooperative groups to increase occupancy
           params.partition_kv = true;
@@ -1755,19 +1748,19 @@ gpuError_t SinglePrefillWithKVCacheDispatched(Params params, typename Params::DT
           void* args[] = {(void*)&params};
           dim3 nblks(ceil_div(qo_len * group_size, CTA_TILE_Q), num_chunks, num_kv_heads);
           dim3 nthrs(WARP_SIZE, NUM_WARPS_Q, NUM_WARPS_KV);
-          FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+          FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
           if constexpr (AttentionVariant::use_softmax) {
-            FI_GPU_CALL(MergeStates(tmp, tmp_lse, o, lse, num_chunks, qo_len, num_qo_heads,
+            FI_HIP_CALL(MergeStates(tmp, tmp_lse, o, lse, num_chunks, qo_len, num_qo_heads,
                                     HEAD_DIM_VO, stream));
           } else {
-            FI_GPU_CALL(
+            FI_HIP_CALL(
                 AttentionSum(tmp, o, num_chunks, qo_len, num_qo_heads, HEAD_DIM_VO, stream));
           }
         }
       }
     })
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <typename KTraits, typename Params>
@@ -2320,7 +2313,6 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
   // normalize d
   normalize_d<KTraits>(o_frag, m, d);
 
-#ifdef PLATFORM_HIP_DEVICE
   // Cascade epilogue: merge with a prior cascade level's output in-register.
   // Skipped for split-KV chunks (partition_kv=true); those are merged in
   // BatchPrefillWithPagedKVCacheDispatched after VariableLengthMergeStates.
@@ -2365,7 +2357,6 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
       }
     }
   }
-#endif  // PLATFORM_HIP_DEVICE
 
   const uint32_t num_kv_chunks = (kv_len_safe + kv_chunk_size - 1) / kv_chunk_size;
 
@@ -2418,8 +2409,8 @@ __global__ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithPagedKVC
 template <uint32_t CTA_TILE_Q, uint32_t HEAD_DIM_QK, uint32_t HEAD_DIM_VO,
           PosEncodingMode POS_ENCODING_MODE, bool USE_FP16_QK_REDUCTION, MaskMode MASK_MODE,
           typename AttentionVariant, typename Params>
-gpuError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Params::DTypeO* tmp_v,
-                                                   float* tmp_s, gpuStream_t stream) {
+hipError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Params::DTypeO* tmp_v,
+                                                   float* tmp_s, hipStream_t stream) {
   using DTypeQ = typename Params::DTypeQ;
   using DTypeKV = typename Params::DTypeKV;
   using DTypeO = typename Params::DTypeO;
@@ -2435,7 +2426,7 @@ gpuError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Param
     // No request, skip
     // this won't happen in CUDAGraph mode because we fixed the
     // padded_batch_size
-    return gpuSuccess;
+    return hipSuccess;
   }
 
   dim3 nblks(padded_batch_size, 1, num_kv_heads);
@@ -2450,7 +2441,7 @@ gpuError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Param
                                 float>::type;
 
   int dev_id = 0;
-  FI_GPU_CALL(gpuGetDevice(&dev_id));
+  FI_HIP_CALL(hipGetDevice(&dev_id));
   const int max_smem_per_threadblock = getMaxSharedMemPerBlock(dev_id);
 
   const uint32_t max_num_mma_kv_reg =
@@ -2464,18 +2455,12 @@ gpuError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Param
   // consumed by a larger NUM_MMA_KV, keeping smem at 48 KB (1 block/CU).
   // With the cap, CTA_TILE_Q=64+head_dim=128 → 32 KB smem → 2 blocks/CU.
   // Always use at least min_valid_mma_kv (IsInvalid: NUM_MMA_D_VO==4 → must be even).
-#if defined(PLATFORM_HIP_DEVICE)
   const uint32_t q_smem_bytes_ = CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ);
   const uint32_t kv_budget_ =
       (static_cast<uint32_t>(max_smem_per_threadblock) / 2u > q_smem_bytes_)
           ? static_cast<uint32_t>(max_smem_per_threadblock) / 2u - q_smem_bytes_
           : 0u;
   constexpr uint32_t min_valid_mma_kv_ = (HEAD_DIM_VO / 16u == 4u) ? 2u : 1u;
-#else
-  const uint32_t kv_budget_ =
-      static_cast<uint32_t>(max_smem_per_threadblock) - CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ);
-  constexpr uint32_t min_valid_mma_kv_ = 1u;
-#endif
   const uint32_t max_num_mma_kv_smem = std::max(
       min_valid_mma_kv_, static_cast<uint32_t>(kv_budget_ / ((HEAD_DIM_QK + HEAD_DIM_VO) * 16 *
                                                              NUM_WARPS_KV * sizeof(DTypeKV))));
@@ -2500,13 +2485,13 @@ gpuError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Param
     } else {
       size_t smem_size = sizeof(typename KTraits::SharedStorage);
       auto kernel = BatchPrefillWithRaggedKVCacheKernel<KTraits, Params>;
-      FI_GPU_CALL(
-          gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+      FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel,
+                                      hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
       if (tmp_v == nullptr) {
         // do not partition kv
         params.partition_kv = false;
         void* args[] = {(void*)&params};
-        FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+        FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
       } else {
         // partition kv
         params.partition_kv = true;
@@ -2515,27 +2500,27 @@ gpuError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Param
         params.o = tmp_v;
         params.lse = tmp_s;
         void* args[] = {(void*)&params};
-        FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+        FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
         if constexpr (AttentionVariant::use_softmax) {
-          FI_GPU_CALL(VariableLengthMergeStates(tmp_v, tmp_s, params.merge_indptr, o, lse,
+          FI_HIP_CALL(VariableLengthMergeStates(tmp_v, tmp_s, params.merge_indptr, o, lse,
                                                 params.max_total_num_rows, params.total_num_rows,
                                                 num_qo_heads, HEAD_DIM_VO, stream));
         } else {
-          FI_GPU_CALL(VariableLengthAttentionSum(tmp_v, params.merge_indptr, o,
+          FI_HIP_CALL(VariableLengthAttentionSum(tmp_v, params.merge_indptr, o,
                                                  params.max_total_num_rows, params.total_num_rows,
                                                  num_qo_heads, HEAD_DIM_VO, stream));
         }
       }
     }
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <uint32_t CTA_TILE_Q, uint32_t HEAD_DIM_QK, uint32_t HEAD_DIM_VO,
           PosEncodingMode POS_ENCODING_MODE, bool USE_FP16_QK_REDUCTION, MaskMode MASK_MODE,
           typename AttentionVariant, typename Params>
-gpuError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params::DTypeO* tmp_v,
-                                                  float* tmp_s, gpuStream_t stream) {
+hipError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params::DTypeO* tmp_v,
+                                                  float* tmp_s, hipStream_t stream) {
   using DTypeQ = typename Params::DTypeQ;
   using DTypeKV = typename Params::DTypeKV;
   using DTypeO = typename Params::DTypeO;
@@ -2550,7 +2535,7 @@ gpuError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params
     // No request, skip
     // this won't happen in CUDAGraph mode because we fixed the
     // padded_batch_size
-    return gpuSuccess;
+    return hipSuccess;
   }
 
   dim3 nblks(padded_batch_size, 1, num_kv_heads);
@@ -2565,7 +2550,7 @@ gpuError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params
                                 float>::type;
 
   int dev_id = 0;
-  FI_GPU_CALL(gpuGetDevice(&dev_id));
+  FI_HIP_CALL(hipGetDevice(&dev_id));
   const int max_smem_per_threadblock = getMaxSharedMemPerBlock(dev_id);
 
   const uint32_t max_num_mma_kv_reg =
@@ -2579,18 +2564,12 @@ gpuError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params
   // consumed by a larger NUM_MMA_KV, keeping smem at 48 KB (1 block/CU).
   // With the cap, CTA_TILE_Q=64+head_dim=128 → 32 KB smem → 2 blocks/CU.
   // Always use at least min_valid_mma_kv (IsInvalid: NUM_MMA_D_VO==4 → must be even).
-#if defined(PLATFORM_HIP_DEVICE)
   const uint32_t q_smem_bytes_ = CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ);
   const uint32_t kv_budget_ =
       (static_cast<uint32_t>(max_smem_per_threadblock) / 2u > q_smem_bytes_)
           ? static_cast<uint32_t>(max_smem_per_threadblock) / 2u - q_smem_bytes_
           : 0u;
   constexpr uint32_t min_valid_mma_kv_ = (HEAD_DIM_VO / 16u == 4u) ? 2u : 1u;
-#else
-  const uint32_t kv_budget_ =
-      static_cast<uint32_t>(max_smem_per_threadblock) - CTA_TILE_Q * HEAD_DIM_QK * sizeof(DTypeQ);
-  constexpr uint32_t min_valid_mma_kv_ = 1u;
-#endif
   const uint32_t max_num_mma_kv_smem = std::max(
       min_valid_mma_kv_, static_cast<uint32_t>(kv_budget_ / ((HEAD_DIM_QK + HEAD_DIM_VO) * 16 *
                                                              NUM_WARPS_KV * sizeof(DTypeKV))));
@@ -2615,13 +2594,13 @@ gpuError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params
     } else {
       size_t smem_size = sizeof(typename KTraits::SharedStorage);
       auto kernel = BatchPrefillWithPagedKVCacheKernel<KTraits, Params>;
-      FI_GPU_CALL(
-          gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+      FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel,
+                                      hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
       if (tmp_v == nullptr) {
         // do not partition kv
         params.partition_kv = false;
         void* args[] = {(void*)&params};
-        FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+        FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
       } else {
         params.partition_kv = true;
         auto o = params.o;
@@ -2629,27 +2608,25 @@ gpuError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params
         params.o = tmp_v;
         params.lse = tmp_s;
         void* args[] = {(void*)&params};
-        FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+        FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
         if constexpr (AttentionVariant::use_softmax) {
-          FI_GPU_CALL(VariableLengthMergeStates(tmp_v, tmp_s, params.merge_indptr, o, lse,
+          FI_HIP_CALL(VariableLengthMergeStates(tmp_v, tmp_s, params.merge_indptr, o, lse,
                                                 params.max_total_num_rows, params.total_num_rows,
                                                 num_qo_heads, HEAD_DIM_VO, stream));
-#ifdef PLATFORM_HIP_DEVICE
           if (params.partial_o != nullptr) {
-            FI_GPU_CALL(MergeStateInPlace(o, lse, params.partial_o, params.partial_lse,
+            FI_HIP_CALL(MergeStateInPlace(o, lse, params.partial_o, params.partial_lse,
                                           params.max_total_num_rows, num_qo_heads, HEAD_DIM_VO,
                                           nullptr, stream));
           }
-#endif
         } else {
-          FI_GPU_CALL(VariableLengthAttentionSum(tmp_v, params.merge_indptr, o,
+          FI_HIP_CALL(VariableLengthAttentionSum(tmp_v, params.merge_indptr, o,
                                                  params.max_total_num_rows, params.total_num_rows,
                                                  num_qo_heads, HEAD_DIM_VO, stream));
         }
       }
     }
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 }  // namespace flashinfer

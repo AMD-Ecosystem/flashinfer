@@ -301,15 +301,15 @@ __global__ void BlockSparseIndicesToVectorSparseOffsetsKernel(
 }
 
 template <typename IdType>
-gpuError_t BlockSparseIndicesToVectorSparseOffset(
+hipError_t BlockSparseIndicesToVectorSparseOffset(
     IdType* block_sparse_indices, IdType* block_sparse_indptr, IdType* vector_sparse_offsets,
     IdType* vector_sparse_indptr, IdType* kv_lens, const int64_t stride_block,
     const int64_t stride_n, const int64_t batch_size, const uint32_t block_size,
-    gpuStream_t stream = nullptr) {
+    hipStream_t stream = nullptr) {
   int dev_id = 0;
   int num_sms = 0;
-  FI_GPU_CALL(gpuGetDevice(&dev_id));
-  FI_GPU_CALL(gpuDeviceGetAttribute(&num_sms, gpuDevAttrMultiProcessorCount, dev_id));
+  FI_HIP_CALL(hipGetDevice(&dev_id));
+  FI_HIP_CALL(hipDeviceGetAttribute(&num_sms, hipDeviceAttributeMultiprocessorCount, dev_id));
 
   uint32_t num_threads = 512;
 
@@ -326,9 +326,9 @@ gpuError_t BlockSparseIndicesToVectorSparseOffset(
                   (void*)&batch_size,
                   (void*)&block_size_fastdiv};
 
-  FI_GPU_CALL(gpuLaunchKernel((void*)kernel, num_sms, num_threads, args, 0, stream));
+  FI_HIP_CALL(hipLaunchKernel((void*)kernel, num_sms, num_threads, args, 0, stream));
 
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 /*!
@@ -343,8 +343,8 @@ gpuError_t BlockSparseIndicesToVectorSparseOffset(
  * \return status Indicates whether CUDA/HIP calls are successful
  */
 template <typename DType, typename IdType>
-gpuError_t AppendPagedKVCacheDecode(paged_kv_t<DType, IdType> paged_kv, DType* key, DType* value,
-                                    gpuStream_t stream = nullptr) {
+hipError_t AppendPagedKVCacheDecode(paged_kv_t<DType, IdType> paged_kv, DType* key, DType* value,
+                                    hipStream_t stream = nullptr) {
   uint32_t head_dim = paged_kv.head_dim;
   uint32_t batch_size = paged_kv.batch_size;
   uint32_t num_heads = paged_kv.num_heads;
@@ -357,9 +357,9 @@ gpuError_t AppendPagedKVCacheDecode(paged_kv_t<DType, IdType> paged_kv, DType* k
     dim3 nthrs(bdx, bdy);
     auto kernel = AppendPagedKVCacheDecodeKernel<HEAD_DIM, vec_size, DType, IdType>;
     void* args[] = {(void*)&paged_kv, (void*)&key, (void*)&value};
-    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+    FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 /*!
@@ -375,18 +375,18 @@ gpuError_t AppendPagedKVCacheDecode(paged_kv_t<DType, IdType> paged_kv, DType* k
  * \return status Indicates whether CUDA/HIP calls are successful
  */
 template <typename DType, typename IdType>
-gpuError_t AppendPagedKVCache(paged_kv_t<DType, IdType> paged_kv, DType* append_key,
+hipError_t AppendPagedKVCache(paged_kv_t<DType, IdType> paged_kv, DType* append_key,
                               DType* append_value, IdType* batch_indices, IdType* positions,
                               uint32_t nnz, size_t append_k_stride_n, size_t append_k_stride_h,
                               size_t append_v_stride_n, size_t append_v_stride_h,
-                              gpuStream_t stream = nullptr) {
+                              hipStream_t stream = nullptr) {
   uint32_t head_dim = paged_kv.head_dim;
   uint32_t num_heads = paged_kv.num_heads;
   int dev_id = 0;
   int num_sms = 0;
   int num_blocks_per_sm = 0;
-  FI_GPU_CALL(gpuGetDevice(&dev_id));
-  FI_GPU_CALL(gpuDeviceGetAttribute(&num_sms, gpuDevAttrMultiProcessorCount, dev_id));
+  FI_HIP_CALL(hipGetDevice(&dev_id));
+  FI_HIP_CALL(hipDeviceGetAttribute(&num_sms, hipDeviceAttributeMultiprocessorCount, dev_id));
 
   DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
     constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / 32);
@@ -395,7 +395,7 @@ gpuError_t AppendPagedKVCache(paged_kv_t<DType, IdType> paged_kv, DType* append_
     uint32_t num_threads = bdx * bdy;
     uint32_t smem_size = 0;
     auto kernel = AppendPagedKVCacheKernel<HEAD_DIM, vec_size, DType, IdType>;
-    FI_GPU_CALL(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel,
+    FI_HIP_CALL(hipOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel,
                                                              num_threads, smem_size));
     num_blocks_per_sm = min(num_blocks_per_sm, ceil_div(int(nnz), num_sms));
     dim3 nblks(num_blocks_per_sm * num_sms);
@@ -405,9 +405,9 @@ gpuError_t AppendPagedKVCache(paged_kv_t<DType, IdType> paged_kv, DType* append_
                     (void*)&batch_indices,     (void*)&positions,         (void*)&nnz,
                     (void*)&append_k_stride_n, (void*)&append_k_stride_h, (void*)&append_v_stride_n,
                     (void*)&append_v_stride_h};
-    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+    FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <typename DType, typename IdType>
@@ -610,15 +610,15 @@ __global__ void AppendPagedKVMlaCacheKernel(paged_kv_mla_t<DType, IdType> paged_
 }
 
 template <typename DType, typename IdType>
-gpuError_t AppendPagedKVMlaCache(paged_kv_mla_t<DType, IdType> paged_kv, DType* append_ckv,
+hipError_t AppendPagedKVMlaCache(paged_kv_mla_t<DType, IdType> paged_kv, DType* append_ckv,
                                  DType* append_kpe, IdType* batch_indices, IdType* positions,
                                  uint32_t nnz, size_t append_ckv_stride_n,
-                                 size_t append_kpe_stride_n, gpuStream_t stream = nullptr) {
+                                 size_t append_kpe_stride_n, hipStream_t stream = nullptr) {
   int dev_id = 0;
   int num_sms = 0;
   int num_blocks_per_sm = 0;
-  FI_GPU_CALL(gpuGetDevice(&dev_id));
-  FI_GPU_CALL(gpuDeviceGetAttribute(&num_sms, gpuDevAttrMultiProcessorCount, dev_id));
+  FI_HIP_CALL(hipGetDevice(&dev_id));
+  FI_HIP_CALL(hipDeviceGetAttribute(&num_sms, hipDeviceAttributeMultiprocessorCount, dev_id));
 
   uint32_t head_dim_ckv = paged_kv.head_dim_ckv;
   uint32_t head_dim_kpe = paged_kv.head_dim_kpe;
@@ -634,7 +634,7 @@ gpuError_t AppendPagedKVMlaCache(paged_kv_mla_t<DType, IdType> paged_kv, DType* 
   uint32_t num_threads = bdx;
   uint32_t smem_size = 0;
   auto kernel = AppendPagedKVMlaCacheKernel<HEAD_CKV_DIM, HEAD_KPE_DIM, vec_size, DType, IdType>;
-  FI_GPU_CALL(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel, num_threads,
+  FI_HIP_CALL(hipOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel, num_threads,
                                                            smem_size));
   num_blocks_per_sm = min(num_blocks_per_sm, ceil_div(int(nnz), num_sms));
   dim3 nblks(num_blocks_per_sm * num_sms);
@@ -647,8 +647,8 @@ gpuError_t AppendPagedKVMlaCache(paged_kv_mla_t<DType, IdType> paged_kv, DType* 
                   (void*)&nnz,
                   (void*)&append_ckv_stride_n,
                   (void*)&append_kpe_stride_n};
-  FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
-  return gpuSuccess;
+  FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+  return hipSuccess;
 }
 
 }  // namespace flashinfer

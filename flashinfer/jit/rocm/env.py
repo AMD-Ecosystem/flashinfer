@@ -12,7 +12,7 @@ import warnings
 from typing import Callable, Optional
 
 from ..._version import __version__ as flashinfer_version
-from ...arch_caps import normalize_arch
+from ...rocm.arch_caps import normalize_arch
 
 #: Records which architectures an AOT kernel tree was compiled for. Lives here
 #: rather than in aot_hip so the reader owns the name and the writer imports it.
@@ -142,7 +142,7 @@ def get_workspace_dir(cache_dir: pathlib.Path) -> pathlib.Path:
             # Importing flashinfer must not require a live GPU. Keep the arch in
             # the path anyway: build.ninja is only written when absent, so one
             # shared directory would serve two ISAs the same objects.
-            from ...hip_utils import resolve_target_archs
+            from ...rocm.hip_utils import resolve_target_archs
 
             archs = sorted(set(resolve_target_archs().split(",")))
             return cache_dir / flashinfer_version / "_".join(archs)
@@ -163,7 +163,7 @@ def get_workspace_dir(cache_dir: pathlib.Path) -> pathlib.Path:
 
         # Setting the current device is the caller's job; catch a misconfigured
         # one here rather than at kernel launch.
-        from ...hip_utils import FLASHINFER_SUPPORTED_ROCM_ARCHS
+        from ...rocm.hip_utils import FLASHINFER_SUPPORTED_ROCM_ARCHS
 
         if arch != "noarch" and arch not in FLASHINFER_SUPPORTED_ROCM_ARCHS:
             raise RuntimeError(

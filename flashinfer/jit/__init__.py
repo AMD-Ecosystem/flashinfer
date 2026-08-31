@@ -18,7 +18,7 @@ import ctypes
 import functools
 import os
 
-from ..device_utils import IS_CUDA, IS_HIP
+from ..rocm.device_utils import IS_CUDA, IS_HIP
 
 if IS_CUDA:
     # Re-export

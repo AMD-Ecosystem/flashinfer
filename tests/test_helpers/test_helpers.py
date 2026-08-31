@@ -2,7 +2,7 @@ import torch
 import functools
 import os
 from flashinfer.utils import GPUArchitectureError
-from flashinfer.aiter_utils import _aiter_importable, is_aiter_supported
+from flashinfer.rocm.aiter_utils import _aiter_importable, is_aiter_supported
 import pytest
 import gc
 

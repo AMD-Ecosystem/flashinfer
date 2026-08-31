@@ -51,7 +51,7 @@ from pathlib import Path
 import torch
 
 import flashinfer
-from flashinfer.aiter_utils import is_aiter_available
+from flashinfer.rocm.aiter_utils import is_aiter_available
 from flashinfer.jit.core import logger as _jit_logger
 
 # Suppress routine JIT INFO/DEBUG output; WARNING still surfaces compile errors.

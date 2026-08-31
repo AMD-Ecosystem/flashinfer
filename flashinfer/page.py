@@ -19,7 +19,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 
-from .device_utils import IS_HIP
+from .rocm.device_utils import IS_HIP
 from .jit.page import gen_page_module
 from .utils import (
     TensorLayout,
@@ -274,7 +274,7 @@ def append_paged_mla_kv_cache(
     Note: current only support ckv=512 and kpe=64
 
     On ROCm, this accepts fp8 caches, but
-    :class:`~flashinfer.mla_rocm.BatchMLAPagedAttentionWrapper` takes only
+    :class:`~flashinfer.rocm.mla.BatchMLAPagedAttentionWrapper` takes only
     fp16/bf16 -- an fp8 MLA cache is currently write-only.
 
     Parameters

@@ -10,7 +10,7 @@ import jinja2
 from . import env as jit_env
 from .core import JitSpec, gen_jit_spec
 from .utils import write_if_different
-from ..device_utils import IS_HIP
+from ..rocm.device_utils import IS_HIP
 
 if IS_HIP:
     from .rocm.activation import activation_templ
@@ -111,7 +111,7 @@ def gen_act_and_mul_module(act_func_name: str) -> JitSpec:
 
 
 def gen_silu_and_mul_aiter_module() -> JitSpec:
-    from .aiter_source import aiter_jitspec_flags, refresh_aiter_jitspec
+    from .rocm.aiter_source import aiter_jitspec_flags, refresh_aiter_jitspec
 
     extra_include_paths, extra_ldflags = aiter_jitspec_flags("module_activation")
     return refresh_aiter_jitspec(

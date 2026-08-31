@@ -10,7 +10,7 @@ ROCm path; they live here so the upstream benchmark files carry only the call.
 
 import importlib
 
-from flashinfer.device_utils import IS_HIP
+from flashinfer.rocm.device_utils import IS_HIP
 
 # Result columns the ROCm path fills in. Appended to output_column_dict["perf"].
 PERF_COLUMNS = ("backend_resolved", "backend_fallback_reason")

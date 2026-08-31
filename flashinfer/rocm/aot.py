@@ -28,7 +28,7 @@ def gen_fa2(
     use_logits_soft_cap: bool,
 ) -> Iterator:
     # Import here to access gen_* functions
-    from .jit.attention import (
+    from ..jit.attention import (
         gen_batch_decode_module,
         gen_batch_prefill_module,
         gen_single_decode_module,
@@ -129,7 +129,7 @@ def gen_all_modules(
     add_act: bool = True,
     add_misc: bool = True,
 ) -> List:
-    from .jit import JitSpec
+    from ..jit import JitSpec
 
     jit_specs: List[JitSpec] = []
 
@@ -143,8 +143,8 @@ def gen_all_modules(
     )
 
     if add_act:
-        from .jit import gen_act_and_mul_module
-        from .jit.activation import act_func_def_str
+        from ..jit import gen_act_and_mul_module
+        from ..jit.activation import act_func_def_str
 
         for act_name in act_func_def_str:
             jit_specs.append(gen_act_and_mul_module(act_name))
@@ -153,7 +153,7 @@ def gen_all_modules(
     # selectors return "native" unconditionally and sampling/quantization/
     # cascade have no AITER path, so each compiles on first use unless prebuilt.
     if add_misc:
-        from .jit import (
+        from ..jit import (
             gen_norm_module,
             gen_page_module,
             gen_quantization_module,
@@ -163,7 +163,7 @@ def gen_all_modules(
 
         # Not re-exported on HIP (jit/rocm/api.py), so reach it by module path
         # -- flashinfer/cascade.py imports it the same way.
-        from .jit.cascade import gen_cascade_module
+        from ..jit.cascade import gen_cascade_module
 
         jit_specs += [
             gen_cascade_module(),
@@ -214,7 +214,7 @@ def copy_built_kernels(
     # kernels target no architecture at all, and the reader would reject every
     # GPU. No manifest at least degrades to the documented unchecked path.
     if rocm_arch_list:
-        from .jit.rocm.env import AOT_MANIFEST_NAME
+        from ..jit.rocm.env import AOT_MANIFEST_NAME
 
         (out_dir / AOT_MANIFEST_NAME).write_text(
             json.dumps({"rocm_arch_list": rocm_arch_list}) + "\n"
@@ -230,7 +230,7 @@ def _redirected_jit_env(build_dir: Path) -> Iterator[None]:
     runs next in the same process. FLASHINFER_CACHE_DIR is deliberately left
     alone -- it is frozen at import and nothing here can move it.
     """
-    from .jit import env as jit_env
+    from ..jit import env as jit_env
 
     saved_base = os.environ.get("FLASHINFER_WORKSPACE_BASE")
     saved = (
@@ -293,7 +293,7 @@ def _compile_and_package_modules(
     verbose: bool,
     skip_prebuilt: bool,
 ) -> None:
-    from .jit import build_jit_specs
+    from ..jit import build_jit_specs
 
     # Start with default config and override with user config
     final_config = get_default_config()
@@ -314,7 +314,7 @@ def _compile_and_package_modules(
     # replacing with an explicit parameter threaded through the AOT -> JIT
     # boundary. That is a wider change than this one; leaving the lifetime
     # unchanged here keeps this commit to the resolution bug it is fixing.
-    from .compilation_context_hip import CompilationContext
+    from .compilation_context import CompilationContext
 
     # Publish the *validated* list, not the resolved one. Validation filters as
     # well as raises: `validate_flashinfer_rocm_arch` drops architectures this

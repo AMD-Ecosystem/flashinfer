@@ -15,7 +15,7 @@ import pytest
 import torch
 
 import flashinfer
-from flashinfer.device_utils import IS_HIP
+from flashinfer.rocm.device_utils import IS_HIP
 
 CKV_DIM = 512
 KPE_DIM = 64

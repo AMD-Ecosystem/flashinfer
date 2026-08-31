@@ -201,7 +201,7 @@ def test_fused_add_rmsnorm_auto_selection(monkeypatch):
     answer for the wrong reason. Both the wrapper and the probe it is built
     from are stubbed, since a revert could consult either.
     """
-    import flashinfer.aiter_utils as aiter_utils
+    import flashinfer.rocm.aiter_utils as aiter_utils
     from flashinfer.rocm.norm import _auto_select_fused_add_rmsnorm_backend
 
     monkeypatch.setattr(aiter_utils, "is_aiter_available", lambda device, op: True)

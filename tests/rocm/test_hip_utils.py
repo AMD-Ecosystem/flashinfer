@@ -16,8 +16,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from flashinfer import hip_utils
-from flashinfer.hip_utils import (
+from flashinfer.rocm import hip_utils
+from flashinfer.rocm.hip_utils import (
     FLASHINFER_SUPPORTED_ROCM_ARCHS,
     check_torch_rocm_compatibility,
     get_available_gpu_count,
@@ -89,7 +89,9 @@ class TestIsTheRockBuild:
         manifest.touch()
         with (
             patch.dict("sys.modules", {"rocm_sdk": rocm_sdk_mock}),
-            patch("flashinfer.hip_utils.get_rocm_home", return_value=str(tmp_path)),
+            patch(
+                "flashinfer.rocm.hip_utils.get_rocm_home", return_value=str(tmp_path)
+            ),
         ):
             assert is_therock_build() is True
 
@@ -98,7 +100,9 @@ class TestIsTheRockBuild:
         rocm_sdk_mock.__version__ = ""
         with (
             patch.dict("sys.modules", {"rocm_sdk": rocm_sdk_mock}),
-            patch("flashinfer.hip_utils.get_rocm_home", return_value=str(tmp_path)),
+            patch(
+                "flashinfer.rocm.hip_utils.get_rocm_home", return_value=str(tmp_path)
+            ),
         ):
             # no manifest → False
             assert is_therock_build() is False
@@ -113,14 +117,16 @@ class TestIsTheRockBuild:
 
             sys.modules.pop("rocm_sdk", None)
             with patch(
-                "flashinfer.hip_utils.get_rocm_home", return_value=str(tmp_path)
+                "flashinfer.rocm.hip_utils.get_rocm_home", return_value=str(tmp_path)
             ):
                 assert is_therock_build() is True
 
     def test_manifest_file_missing_and_no_rocm_sdk(self, tmp_path):
         with (
             patch.dict("sys.modules", {"rocm_sdk": None}),
-            patch("flashinfer.hip_utils.get_rocm_home", return_value=str(tmp_path)),
+            patch(
+                "flashinfer.rocm.hip_utils.get_rocm_home", return_value=str(tmp_path)
+            ),
         ):
             assert is_therock_build() is False
 
@@ -172,7 +178,7 @@ class TestResolveTargetArchs:
 
     def _agents(self, *archs):
         return patch(
-            "flashinfer.hip_utils.rocminfo_gpu_agents",
+            "flashinfer.rocm.hip_utils.rocminfo_gpu_agents",
             return_value=tuple((arch, "") for arch in archs),
         )
 
@@ -273,7 +279,7 @@ class TestResolveTargetArchs:
         """The two are resolved independently on a GPU-less host; if they ever
         diverge, the shim is built for a different architecture than the kernels
         it ships beside and faults at run time."""
-        from flashinfer.jit.aiter_source import _DEFAULT_BUILD_ARCH
+        from flashinfer.jit.rocm.aiter_source import _DEFAULT_BUILD_ARCH
 
         assert hip_utils._GPULESS_FALLBACK_ARCH == _DEFAULT_BUILD_ARCH
 
@@ -282,7 +288,7 @@ class TestResolveTargetArchs:
         reached rocminfo through the cached ``get_supported_device_indices``,
         while ``rocminfo_gpu_agents`` is uncached by design."""
         with patch(
-            "flashinfer.hip_utils.rocminfo_gpu_agents",
+            "flashinfer.rocm.hip_utils.rocminfo_gpu_agents",
             return_value=(("gfx950", ""),),
         ) as probe:
             hip_utils._detected_supported_archs()
@@ -295,7 +301,7 @@ class TestResolveTargetArchs:
         monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
         import torch.utils.cpp_extension as torch_cpp_ext
 
-        from flashinfer.compilation_context_hip import CompilationContext
+        from flashinfer.rocm.compilation_context import CompilationContext
 
         # Both sides must see the same PyTorch. CompilationContext imports the
         # real torch.utils.cpp_extension and validates against it, while the
@@ -307,7 +313,10 @@ class TestResolveTargetArchs:
         # reason that has nothing to do with resolver agreement.
         with (
             self._agents("gfx950"),
-            patch("flashinfer.hip_utils.get_system_rocm_version", return_value="7.1.0"),
+            patch(
+                "flashinfer.rocm.hip_utils.get_system_rocm_version",
+                return_value="7.1.0",
+            ),
             patch.object(
                 torch_cpp_ext,
                 "_get_rocm_arch_flags",
@@ -331,7 +340,7 @@ class _FakeCppExt:
 class TestValidateRocmArch:
     def _patch_rocm_version(self, version):
         return patch(
-            "flashinfer.hip_utils.get_system_rocm_version", return_value=version
+            "flashinfer.rocm.hip_utils.get_system_rocm_version", return_value=version
         )
 
     def test_valid_arch_returns_arch_list(self):
@@ -391,7 +400,7 @@ class TestValidateRocmArch:
         with (
             self._patch_rocm_version("7.1.0"),
             patch(
-                "flashinfer.hip_utils.rocminfo_gpu_agents",
+                "flashinfer.rocm.hip_utils.rocminfo_gpu_agents",
                 return_value=(("gfx950", "AMD Instinct MI350X"),),
             ),
         ):
@@ -426,7 +435,7 @@ class TestValidateRocmArch:
 class TestValidateFlashinferRocmArch:
     def _patch_validate_rocm_arch(self, return_value):
         return patch(
-            "flashinfer.hip_utils.validate_rocm_arch", return_value=return_value
+            "flashinfer.rocm.hip_utils.validate_rocm_arch", return_value=return_value
         )
 
     def test_returns_flags_and_set_for_supported_arch(self):
@@ -707,7 +716,9 @@ class TestCheckTorchRocmCompatibility:
         torch_mock, _ = _make_torch_mock(hip="6.4.0")
         with (
             patch.dict("sys.modules", {"torch": torch_mock}),
-            patch("flashinfer.hip_utils.get_system_rocm_version", return_value=None),
+            patch(
+                "flashinfer.rocm.hip_utils.get_system_rocm_version", return_value=None
+            ),
         ):
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
@@ -718,7 +729,10 @@ class TestCheckTorchRocmCompatibility:
         torch_mock, _ = _make_torch_mock(hip="6.4.0")
         with (
             patch.dict("sys.modules", {"torch": torch_mock}),
-            patch("flashinfer.hip_utils.get_system_rocm_version", return_value="6.4.2"),
+            patch(
+                "flashinfer.rocm.hip_utils.get_system_rocm_version",
+                return_value="6.4.2",
+            ),
         ):
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
@@ -729,7 +743,10 @@ class TestCheckTorchRocmCompatibility:
         torch_mock, _ = _make_torch_mock(hip="6.4.0")
         with (
             patch.dict("sys.modules", {"torch": torch_mock}),
-            patch("flashinfer.hip_utils.get_system_rocm_version", return_value="7.1.0"),
+            patch(
+                "flashinfer.rocm.hip_utils.get_system_rocm_version",
+                return_value="7.1.0",
+            ),
             pytest.warns(RuntimeWarning, match="version mismatch"),
         ):
             check_torch_rocm_compatibility()
@@ -738,7 +755,10 @@ class TestCheckTorchRocmCompatibility:
         torch_mock, _ = _make_torch_mock(hip="6.4.0")
         with (
             patch.dict("sys.modules", {"torch": torch_mock}),
-            patch("flashinfer.hip_utils.get_system_rocm_version", return_value="7.1.0"),
+            patch(
+                "flashinfer.rocm.hip_utils.get_system_rocm_version",
+                return_value="7.1.0",
+            ),
         ):
             with pytest.warns(RuntimeWarning) as record:
                 check_torch_rocm_compatibility()
@@ -751,7 +771,10 @@ class TestCheckTorchRocmCompatibility:
         torch_mock, _ = _make_torch_mock(hip="6.4.0")
         with (
             patch.dict("sys.modules", {"torch": torch_mock}),
-            patch("flashinfer.hip_utils.get_system_rocm_version", return_value="6.4.2"),
+            patch(
+                "flashinfer.rocm.hip_utils.get_system_rocm_version",
+                return_value="6.4.2",
+            ),
         ):
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")

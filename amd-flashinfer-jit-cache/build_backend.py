@@ -31,8 +31,8 @@ os.environ["FLASHINFER_DISABLE_VERSION_CHECK"] = "1"
 
 
 def _compile_jit_cache(output_dir: Path, verbose: bool = True):
-    """Compile AOT modules using flashinfer.aot_hip functions directly."""
-    from flashinfer import aot_hip
+    """Compile AOT modules using flashinfer.rocm.aot functions directly."""
+    from flashinfer.rocm import aot as aot_hip
 
     # Get the project root directory
     project_root = Path(__file__).parent.parent
@@ -40,7 +40,7 @@ def _compile_jit_cache(output_dir: Path, verbose: bool = True):
     # Set up build directory
     build_dir = project_root / "build" / "aot_hip"
 
-    # Use the centralized compilation function from aot_hip.py
+    # Use the centralized compilation function from flashinfer/rocm/aot.py
     aot_hip.compile_and_package_modules(
         out_dir=output_dir,
         build_dir=build_dir,

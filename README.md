@@ -140,7 +140,7 @@ Read it before relying on an AITER path — several attention kwargs are
 silently ignored there rather than rejected.
 
 The table below is generated from
-[`flashinfer/arch_caps.py`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/flashinfer/arch_caps.py), which is what
+[`flashinfer/rocm/arch_caps.py`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/flashinfer/rocm/arch_caps.py), which is what
 `backend="auto"` consults at runtime, so it cannot drift from the routing
 decisions the library makes. Do not edit it by hand; run
 `python3 scripts/gen_arch_support_matrix.py`.
@@ -244,7 +244,7 @@ Read at runtime or import time:
 | `FLASHINFER_DISABLE_JIT` | unset | Set to **any non-empty value** — including `0` — to skip JIT compilation. Useful with an AOT-built install, to fail loudly on a missing kernel rather than trigger a build. |
 | `FLASHINFER_DISABLE_VERSION_CHECK` | unset | Any non-empty value skips the JIT-cache package version check. |
 | `FLASHINFER_LOGGING_LEVEL` | `INFO` | Logger verbosity (`DEBUG`, `INFO`, `WARNING`, …). Affects AITER fallback warnings and JIT build messages. |
-| `ROCM_PATH` / `ROCM_HOME` | `/opt/rocm` | Where `flashinfer.hip_utils` looks for ROCm. Override only for non-standard layouts. |
+| `ROCM_PATH` / `ROCM_HOME` | `/opt/rocm` | Where `flashinfer.rocm.hip_utils` looks for ROCm. Override only for non-standard layouts. |
 
 Build-time variables — `FLASHINFER_ROCM_ARCH_LIST`, `FLASHINFER_JIT_VERBOSE`,
 `FLASHINFER_EXTRA_LDFLAGS`, `MAX_JOBS` — are documented in
@@ -256,8 +256,8 @@ ROCm/HIP**; CLAUDE.md explains how to get a debug build instead.
 ```python
 import torch
 
-from flashinfer.aiter_utils import is_aiter_supported
-from flashinfer.hip_utils import check_torch_rocm_compatibility
+from flashinfer.rocm.aiter_utils import is_aiter_supported
+from flashinfer.rocm.hip_utils import check_torch_rocm_compatibility
 
 # True on gfx942/gfx950 with a ROCm torch build. Does *not* verify the
 # `aiter` package is importable — wrap the call in try/except ImportError

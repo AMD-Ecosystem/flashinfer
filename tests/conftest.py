@@ -29,7 +29,7 @@ _xdist_worker = os.environ.get("PYTEST_XDIST_WORKER", "")
 if _xdist_worker.startswith("gw"):
     import torch
 
-    from flashinfer.hip_utils import get_physical_card_device_indices
+    from flashinfer.rocm.hip_utils import get_physical_card_device_indices
 
     # rocminfo is how supported cards are identified; when it reports none --
     # missing binary, or no supported GPU -- fall back to what torch can see

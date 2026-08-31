@@ -20,7 +20,7 @@ import time
 import pytest
 from filelock import FileLock
 
-from flashinfer.jit.aiter_source import refresh_aiter_jitspec
+from flashinfer.jit.rocm.aiter_source import refresh_aiter_jitspec
 
 
 class StubSpec:

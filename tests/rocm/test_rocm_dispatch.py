@@ -18,7 +18,7 @@ from flashinfer.rocm import (
     SHADOW_MODULES,
     gate_cuda_only_modules,
 )
-from flashinfer.device_utils import IS_HIP
+from flashinfer.rocm.device_utils import IS_HIP
 
 pytestmark = pytest.mark.skipif(
     not IS_HIP, reason="ROCm dispatch registry is only installed on HIP builds"

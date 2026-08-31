@@ -69,10 +69,6 @@ __global__ void act_and_mul_kernel(T* __restrict__ out, const T* __restrict__ in
   const uint32_t num_vec = d / vec_size;
   const uint32_t vec_start = col_block * blockDim.x + thread_idx;
 
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.wait;");
-#endif
-
 #pragma unroll 1
   for (uint32_t idx = vec_start; idx < num_vec; idx += col_stride) {
     vec_t<float, vec_size> x_vec, y_vec, out_vec;
@@ -96,10 +92,6 @@ __global__ void act_and_mul_kernel(T* __restrict__ out, const T* __restrict__ in
     const uint32_t e = scalar_base + s;
     out[out_base + e] = Activation((float)input[offset + e]) * (float)input[offset + d + e];
   }
-
-#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
-  asm volatile("griddepcontrol.launch_dependents;");
-#endif
 }
 
 }  // namespace activation

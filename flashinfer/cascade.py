@@ -21,7 +21,7 @@ from typing import List, Optional, Tuple, Union
 import torch
 
 from .decode import BatchDecodeWithPagedKVCacheWrapper
-from .device_utils import IS_HIP
+from .rocm.device_utils import IS_HIP
 from .jit.cascade import gen_cascade_module
 from .prefill import BatchPrefillWithPagedKVCacheWrapper, single_prefill_with_kv_cache
 from .utils import register_custom_op, register_fake_op

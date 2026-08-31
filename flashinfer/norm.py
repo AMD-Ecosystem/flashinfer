@@ -19,7 +19,7 @@ from typing import Optional
 
 import torch
 
-from .device_utils import IS_HIP
+from .rocm.device_utils import IS_HIP
 
 if IS_HIP:
     from .rocm.norm import maybe_fused_add_rmsnorm, maybe_rmsnorm

@@ -18,7 +18,7 @@ import re
 import pytest
 import torch
 
-from flashinfer import aiter_utils, decode_rocm, prefill_rocm
+from flashinfer.rocm import aiter_utils, decode as decode_rocm, prefill as prefill_rocm
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="needs a ROCm device"

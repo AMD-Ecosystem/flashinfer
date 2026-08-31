@@ -14,14 +14,16 @@
  * limitations under the License.
  */
 #pragma once
+// clang-format off
+// Python.h first: CPython requires it ahead of system headers, and the torch
+// and ATen headers below pull those in.
 #include <Python.h>
-#include <torch/library.h>
-
-#ifdef FLASHINFER_ENABLE_HIP
+// clang-format on
 
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <c10/hip/HIPGuard.h>
 #include <c10/hip/HIPStream.h>
+#include <torch/library.h>
 #ifdef FLASHINFER_ENABLE_BF16
 #include <hip/hip_bf16.h>
 #endif
@@ -32,24 +34,6 @@
 
 #if defined(FLASHINFER_ENABLE_FP8)
 #include <hip/hip_fp8.h>
-#endif
-
-#else
-#include <c10/cuda/CUDAGuard.h>
-#include <c10/cuda/CUDAStream.h>
-
-#ifdef FLASHINFER_ENABLE_BF16
-#include <cuda_bf16.h>
-#endif
-
-#ifdef FLASHINFER_ENABLE_F16
-#include <cuda_fp16.h>
-#endif
-
-#if defined(FLASHINFER_ENABLE_FP8)
-#include <cuda_fp8.h>
-#endif
-
 #endif
 
 #ifndef FLASHINFER_EXT_MODULE_INITED
@@ -88,7 +72,6 @@ FLASHINFER_EXT_MODULE_INIT_EXPAND(TORCH_EXTENSION_NAME)
 
 #endif
 
-#ifdef FLASHINFER_ENABLE_HIP
 #ifdef FLASHINFER_ENABLE_F16
 using dtype_half = __half;
 #endif
@@ -98,18 +81,6 @@ using dtype_bfloat16 = __hip_bfloat16;
 #if defined(FLASHINFER_ENABLE_FP8)
 using dtype_fp8_e4m3 = __hip_fp8_e4m3_fnuz;
 using dtype_fp8_e5m2 = __hip_fp8_e5m2_fnuz;
-#endif
-#else
-#ifdef FLASHINFER_ENABLE_F16
-using dtype_half = nv_half;
-#endif
-#ifdef FLASHINFER_ENABLE_BF16
-using dtype_bfloat16 = nv_bfloat16;
-#endif
-#if defined(FLASHINFER_ENABLE_FP8)
-using dtype_fp8_e4m3 = nv_fp8_e4m3;
-using dtype_fp8_e5m2 = nv_fp8_e5m2;
-#endif
 #endif
 
 #ifdef FLASHINFER_ENABLE_F16

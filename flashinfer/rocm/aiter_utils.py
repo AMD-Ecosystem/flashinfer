@@ -16,7 +16,7 @@ from .arch_caps import (
     require_capability,
 )
 from .hip_utils import FLASHINFER_SUPPORTED_ROCM_ARCHS
-from .jit.core import MissingJITCacheError, logger
+from ..jit.core import MissingJITCacheError, logger
 
 
 @functools.lru_cache(maxsize=8)
@@ -43,7 +43,7 @@ def _ensure_aiter_gpu_archs() -> None:
         return
     # Imported lazily: flashinfer.jit pulls in the compilation context, and
     # importing it at module scope here would be circular.
-    from .jit.aiter_source import resolve_aiter_build_arch
+    from ..jit.rocm.aiter_source import resolve_aiter_build_arch
 
     arch = resolve_aiter_build_arch()
     if arch:
@@ -119,7 +119,7 @@ def is_aiter_available(device: torch.device, op: str) -> bool:
             changes the answer: support is per ``(op, arch)``, so one op can be
             gated on a toolchain where another is fine -- AITER batch prefill is
             gated on gfx950 under ROCm 7.2.x while every other op stays open.
-            The name must match a row in :data:`flashinfer.arch_caps.CAPABILITIES`
+            The name must match a row in :data:`flashinfer.rocm.arch_caps.CAPABILITIES`
             or the lookup treats it as undeclared and returns False.
     """
     return capability_available(device, op, "aiter") and _aiter_importable()
@@ -158,13 +158,6 @@ def require_aiter(device: torch.device, op: str) -> None:
             f"installed or failed to import. Install it (see docs/rocm/backends.md) "
             f"or {advice}."
         )
-
-
-@functools.cache
-def get_aiter_mha_module():
-    from aiter.ops import mha as aiter_mha_module
-
-    return aiter_mha_module
 
 
 # Failures that are never AITER's to own, so ``auto`` must not demote on them:

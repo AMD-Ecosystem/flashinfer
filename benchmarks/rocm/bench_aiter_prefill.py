@@ -39,7 +39,7 @@ from pathlib import Path
 import torch
 
 import flashinfer
-from flashinfer.aiter_utils import is_aiter_available
+from flashinfer.rocm.aiter_utils import is_aiter_available
 from flashinfer.jit.core import logger as _jit_logger
 
 # Suppress routine JIT INFO/DEBUG output; WARNING still surfaces compile errors.
@@ -152,7 +152,7 @@ def _build_paged_kv(batch, kv_len, page_size, num_kv_heads, head_dim, dtype, dev
 
 @torch.inference_mode()
 def _make_configs() -> list[KernelConfig]:
-    from flashinfer.prefill_rocm import _aiter_native_page_sizes
+    from flashinfer.rocm.prefill import _aiter_native_page_sizes
 
     native_pages = _aiter_native_page_sizes()
     # Pick the largest available native page size ≤ 256 (prefer 256 for the sweep)

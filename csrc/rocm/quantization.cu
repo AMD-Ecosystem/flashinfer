@@ -28,12 +28,12 @@ void packbits(at::Tensor x, const std::string& bitorder, at::Tensor y) {
   int64_t num_elements = x.numel();
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::hip::getCurrentHIPStream();
-  gpuError_t status = quantization::PackBits(
+  hipError_t status = quantization::PackBits(
       static_cast<bool*>(x.data_ptr()), static_cast<uint8_t*>(y.data_ptr()), num_elements,
       bitorder == "big" ? quantization::BitOrder::kBig : quantization::BitOrder::kLittle, stream);
 
-  TORCH_CHECK(status == gpuSuccess,
-              "PackBits failed with error code " + std::string(gpuGetErrorString(status)));
+  TORCH_CHECK(status == hipSuccess,
+              "PackBits failed with error code " + std::string(hipGetErrorString(status)));
 }
 
 void segment_packbits(at::Tensor x, at::Tensor input_indptr, at::Tensor output_indptr,
@@ -50,11 +50,11 @@ void segment_packbits(at::Tensor x, at::Tensor input_indptr, at::Tensor output_i
 
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::hip::getCurrentHIPStream();
-  gpuError_t status = quantization::SegmentPackBits(
+  hipError_t status = quantization::SegmentPackBits(
       static_cast<bool*>(x.data_ptr()), static_cast<uint8_t*>(y.data_ptr()),
       static_cast<int32_t*>(input_indptr.data_ptr()),
       static_cast<int32_t*>(output_indptr.data_ptr()), batch_size,
       bitorder == "big" ? quantization::BitOrder::kBig : quantization::BitOrder::kLittle, stream);
-  TORCH_CHECK(status == gpuSuccess,
-              "SegmentPackBits failed with error code " + std::string(gpuGetErrorString(status)));
+  TORCH_CHECK(status == hipSuccess,
+              "SegmentPackBits failed with error code " + std::string(hipGetErrorString(status)));
 }

@@ -46,7 +46,7 @@ from pathlib import Path
 import torch
 
 import flashinfer
-from flashinfer.aiter_utils import is_aiter_available
+from flashinfer.rocm.aiter_utils import is_aiter_available
 from flashinfer.jit.core import logger as _jit_logger
 from flashinfer.testing import bench_gpu_time
 

@@ -14,7 +14,7 @@ No build is performed and no library is loaded.
 
 import pytest
 
-from flashinfer.jit import aiter_source
+from flashinfer.jit.rocm import aiter_source
 
 
 class TestDetectedDeviceArch:

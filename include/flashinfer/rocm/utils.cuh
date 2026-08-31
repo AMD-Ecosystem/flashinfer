@@ -18,9 +18,6 @@
 
 #include "gpu_runtime_compat.hpp"
 
-#define STR_HELPER(x) #x
-#define STR(x) STR_HELPER(x)
-
 // macro to turn off fp16 qk reduction to reduce binary
 #ifndef FLASHINFER_ALWAYS_DISUSE_FP16_QK_REDUCTION
 #define FLASHINFER_ALWAYS_DISUSE_FP16_QK_REDUCTION 0
@@ -40,10 +37,10 @@ __forceinline__ __device__ __host__ T1 round_up(const T1 x, const T2 y) {
 
 inline std::pair<int, int> GetCudaComputeCapability() {
   int device_id = 0;
-  FI_GPU_CALL(hipGetDevice(&device_id));
+  FI_HIP_CALL(hipGetDevice(&device_id));
   int major = 0, minor = 0;
-  FI_GPU_CALL(hipDeviceGetAttribute(&major, hipDeviceAttributeComputeCapabilityMajor, device_id));
-  FI_GPU_CALL(hipDeviceGetAttribute(&minor, hipDeviceAttributeComputeCapabilityMinor, device_id));
+  FI_HIP_CALL(hipDeviceGetAttribute(&major, hipDeviceAttributeComputeCapabilityMajor, device_id));
+  FI_HIP_CALL(hipDeviceGetAttribute(&minor, hipDeviceAttributeComputeCapabilityMinor, device_id));
   return std::make_pair(major, minor);
 }
 
@@ -51,7 +48,7 @@ template <typename T>
 inline void DebugPrintCUDAArray(T* device_ptr, size_t size, std::string prefix = "") {
   std::vector<T> host_array(size);
   std::cout << prefix;
-  gpuMemcpy(host_array.data(), device_ptr, size * sizeof(T), gpuMemcpyDeviceToHost);
+  FI_HIP_CALL(hipMemcpy(host_array.data(), device_ptr, size * sizeof(T), hipMemcpyDeviceToHost));
   for (size_t i = 0; i < size; ++i) {
     std::cout << host_array[i] << " ";
   }

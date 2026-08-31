@@ -14,7 +14,7 @@ import pytest
 import torch
 
 import flashinfer
-from flashinfer.device_utils import IS_HIP
+from flashinfer.rocm.device_utils import IS_HIP
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available() or not IS_HIP, reason="ROCm-only prefill path"

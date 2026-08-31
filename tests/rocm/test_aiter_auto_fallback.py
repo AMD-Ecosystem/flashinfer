@@ -28,13 +28,13 @@ import pytest
 import torch
 
 import flashinfer
-import flashinfer.decode_rocm
-import flashinfer.prefill_rocm
-from flashinfer.aiter_utils import is_aiter_supported
-from flashinfer.arch_caps import ArchCapabilityError, capability_available
-from flashinfer.decode_rocm import _aiter_pa_v1_available
+import flashinfer.rocm.decode
+import flashinfer.rocm.prefill
+from flashinfer.rocm.aiter_utils import is_aiter_supported
+from flashinfer.rocm.arch_caps import ArchCapabilityError, capability_available
+from flashinfer.rocm.decode import _aiter_pa_v1_available
 from flashinfer.jit.core import MissingJITCacheError, logger
-from flashinfer.prefill_rocm import (
+from flashinfer.rocm.prefill import (
     _aiter_batch_ragged_available,
     _aiter_native_paging_available,
     _aiter_ops_importable,
@@ -118,29 +118,29 @@ def test_single_prefill_auto_demotes_to_fa2(device, monkeypatch, causal):
     # Record which backend actually built: single prefill is a free function with
     # no _backend attribute, so absence of a crash is not evidence of fa2.
     built = []
-    real_get = flashinfer.prefill_rocm.get_single_prefill_module
+    real_get = flashinfer.rocm.prefill.get_single_prefill_module
 
     def _recording_get(backend, *args):
         built.append(backend)
         return real_get(backend, *args)
 
     monkeypatch.setattr(
-        flashinfer.prefill_rocm,
+        flashinfer.rocm.prefill,
         "_aiter_bootstrap_single_prefill_mha_fwd",
         _raiser(_INSTALL_FAILURE),
     )
     monkeypatch.setattr(
-        flashinfer.prefill_rocm, "get_single_prefill_module", _recording_get
+        flashinfer.rocm.prefill, "get_single_prefill_module", _recording_get
     )
 
-    out = flashinfer.prefill_rocm.single_prefill_with_kv_cache(
+    out = flashinfer.rocm.prefill.single_prefill_with_kv_cache(
         q, k, v, causal=causal, backend="auto"
     )
 
     assert built == ["fa2"], f"expected the fa2 module to be built, got {built}"
 
     monkeypatch.undo()
-    ref = flashinfer.prefill_rocm.single_prefill_with_kv_cache(
+    ref = flashinfer.rocm.prefill.single_prefill_with_kv_cache(
         q, k, v, causal=causal, backend="fa2"
     )
     torch.testing.assert_close(out, ref, rtol=1e-3, atol=1e-3)
@@ -151,12 +151,12 @@ def test_single_prefill_explicit_aiter_still_raises(device, monkeypatch):
     _skip_if_op_gated(device, "single_prefill")
     q, k, v = _single_prefill_inputs(device)
     monkeypatch.setattr(
-        flashinfer.prefill_rocm,
+        flashinfer.rocm.prefill,
         "_aiter_bootstrap_single_prefill_mha_fwd",
         _raiser(_INSTALL_FAILURE),
     )
     with pytest.raises(ModuleNotFoundError):
-        flashinfer.prefill_rocm.single_prefill_with_kv_cache(
+        flashinfer.rocm.prefill.single_prefill_with_kv_cache(
             q, k, v, causal=False, backend="aiter"
         )
 
@@ -167,12 +167,12 @@ def test_single_prefill_strict_env_raises(device, monkeypatch):
     q, k, v = _single_prefill_inputs(device)
     monkeypatch.setenv("FLASHINFER_AITER_STRICT", "1")
     monkeypatch.setattr(
-        flashinfer.prefill_rocm,
+        flashinfer.rocm.prefill,
         "_aiter_bootstrap_single_prefill_mha_fwd",
         _raiser(_INSTALL_FAILURE),
     )
     with pytest.raises(ModuleNotFoundError):
-        flashinfer.prefill_rocm.single_prefill_with_kv_cache(
+        flashinfer.rocm.prefill.single_prefill_with_kv_cache(
             q, k, v, causal=False, backend="auto"
         )
 
@@ -190,19 +190,19 @@ def test_single_prefill_warns_once(device, monkeypatch):
 
     warnings = []
     monkeypatch.setattr(
-        flashinfer.prefill_rocm,
+        flashinfer.rocm.prefill,
         "_aiter_bootstrap_single_prefill_mha_fwd",
         _count_and_raise,
     )
     # caplog cannot see this logger; patch the method instead.
     monkeypatch.setattr(
-        flashinfer.aiter_utils.logger,
+        flashinfer.rocm.aiter_utils.logger,
         "warning",
         lambda *a, **kw: warnings.append(a),
     )
 
     for _ in range(2):
-        flashinfer.prefill_rocm.single_prefill_with_kv_cache(
+        flashinfer.rocm.prefill.single_prefill_with_kv_cache(
             q, k, v, causal=False, backend="auto"
         )
 
@@ -232,12 +232,12 @@ def test_non_demotable_failures_propagate(device, monkeypatch, exc):
     _skip_if_op_gated(device, "single_prefill")
     q, k, v = _single_prefill_inputs(device)
     monkeypatch.setattr(
-        flashinfer.prefill_rocm,
+        flashinfer.rocm.prefill,
         "_aiter_bootstrap_single_prefill_mha_fwd",
         _raiser(exc),
     )
     with pytest.raises(type(exc)):
-        flashinfer.prefill_rocm.single_prefill_with_kv_cache(
+        flashinfer.rocm.prefill.single_prefill_with_kv_cache(
             q, k, v, causal=False, backend="auto"
         )
     assert _aiter_single_prefill_available.cache_info().currsize == 0, (
@@ -311,12 +311,12 @@ def test_paged_prefill_auto_demotes_to_fa2(device, monkeypatch):
     # `aiter`. There the native probe would run first and win, and this test
     # would fail on an assertion that has nothing to do with what it covers.
     monkeypatch.setattr(
-        flashinfer.prefill_rocm,
+        flashinfer.rocm.prefill,
         "_aiter_bootstrap_batch_prefill",
         _raiser(_INSTALL_FAILURE),
     )
     monkeypatch.setattr(
-        flashinfer.prefill_rocm,
+        flashinfer.rocm.prefill,
         "_aiter_bootstrap_batch_ragged_prefill",
         _raiser(_INSTALL_FAILURE),
     )
@@ -387,12 +387,12 @@ def test_ragged_prefill_auto_demotes_to_fa2(device, monkeypatch):
     # `aiter`. There the native probe would run first and win, and this test
     # would fail on an assertion that has nothing to do with what it covers.
     monkeypatch.setattr(
-        flashinfer.prefill_rocm,
+        flashinfer.rocm.prefill,
         "_aiter_bootstrap_batch_prefill",
         _raiser(_INSTALL_FAILURE),
     )
     monkeypatch.setattr(
-        flashinfer.prefill_rocm,
+        flashinfer.rocm.prefill,
         "_aiter_bootstrap_batch_ragged_prefill",
         _raiser(_INSTALL_FAILURE),
     )
@@ -454,12 +454,12 @@ def test_paged_prefill_explicit_aiter_still_raises(device, monkeypatch):
     # `aiter`. There the native probe would run first and win, and this test
     # would fail on an assertion that has nothing to do with what it covers.
     monkeypatch.setattr(
-        flashinfer.prefill_rocm,
+        flashinfer.rocm.prefill,
         "_aiter_bootstrap_batch_prefill",
         _raiser(_INSTALL_FAILURE),
     )
     monkeypatch.setattr(
-        flashinfer.prefill_rocm,
+        flashinfer.rocm.prefill,
         "_aiter_bootstrap_batch_ragged_prefill",
         _raiser(_INSTALL_FAILURE),
     )
@@ -541,7 +541,7 @@ def test_decode_auto_demotes_to_fa2(device, monkeypatch):
     q, kv_data, workspace = args[0], args[1], args[5]
 
     monkeypatch.setattr(
-        flashinfer.decode_rocm, "_aiter_pa_v1_resolve", _raiser(_INSTALL_FAILURE)
+        flashinfer.rocm.decode, "_aiter_pa_v1_resolve", _raiser(_INSTALL_FAILURE)
     )
 
     wrapper = flashinfer.decode.BatchDecodeWithPagedKVCacheWrapper(
@@ -588,7 +588,7 @@ def test_decode_replan_demotes_instead_of_raising(device, monkeypatch):
     # Only now does AITER become unable to build; re-plan must not propagate it.
     _clear_probes()
     monkeypatch.setattr(
-        flashinfer.decode_rocm, "_aiter_pa_v1_resolve", _raiser(_INSTALL_FAILURE)
+        flashinfer.rocm.decode, "_aiter_pa_v1_resolve", _raiser(_INSTALL_FAILURE)
     )
     _plan_decode(wrapper, args)
 
@@ -604,7 +604,7 @@ def test_decode_explicit_aiter_still_raises(device, monkeypatch):
     args = _decode_inputs(device)
     workspace = args[5]
     monkeypatch.setattr(
-        flashinfer.decode_rocm, "_aiter_pa_v1_resolve", _raiser(_INSTALL_FAILURE)
+        flashinfer.rocm.decode, "_aiter_pa_v1_resolve", _raiser(_INSTALL_FAILURE)
     )
     wrapper = flashinfer.decode.BatchDecodeWithPagedKVCacheWrapper(
         workspace, "NHD", backend="aiter", use_tensor_cores=False
@@ -619,7 +619,7 @@ def test_decode_strict_env_raises(device, monkeypatch):
     workspace = args[5]
     monkeypatch.setenv("FLASHINFER_AITER_STRICT", "1")
     monkeypatch.setattr(
-        flashinfer.decode_rocm, "_aiter_pa_v1_resolve", _raiser(_INSTALL_FAILURE)
+        flashinfer.rocm.decode, "_aiter_pa_v1_resolve", _raiser(_INSTALL_FAILURE)
     )
     wrapper = flashinfer.decode.BatchDecodeWithPagedKVCacheWrapper(
         workspace, "NHD", backend="auto", use_tensor_cores=False

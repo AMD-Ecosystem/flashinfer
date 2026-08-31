@@ -10,8 +10,8 @@ the branch that calls into here.
 
 import torch
 
-from flashinfer.aiter_utils import is_aiter_available
-from flashinfer.arch_caps import capability_available, normalize_arch
+from flashinfer.rocm.aiter_utils import is_aiter_available
+from flashinfer.rocm.arch_caps import capability_available, normalize_arch
 
 # Benchmark routine -> the CAPABILITIES op key in flashinfer/arch_caps.py, so
 # the ROCm backend list derives from the arch-support matrix rather than

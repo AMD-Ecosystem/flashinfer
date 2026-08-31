@@ -28,13 +28,8 @@
 #include <flashinfer/rocm/macros.hpp>
 
 // CUB/hipCUB abstraction
-#ifdef PLATFORM_HIP_DEVICE
 #include <hipcub/hipcub.hpp>
 namespace block_ops = hipcub;
-#else
-#include <cub/cub.cuh>
-namespace block_ops = cub;
-#endif
 
 #include <flashinfer/rocm/utils.cuh>
 
@@ -53,12 +48,12 @@ enum class BitOrder { kBig = 0U, kLittle = 1U };
   }
 
 template <BitOrder BITORDER>
-FI_GLOBAL_QUAL void PackBitsKernel(bool* input, uint8_t* output, int64_t num_elements) {
+__global__ void PackBitsKernel(bool* input, uint8_t* output, int64_t num_elements) {
   int64_t start_offset = static_cast<int64_t>(blockIdx.x) * blockDim.x * 8, tx = threadIdx.x;
   uint8_t ret = 0;
   bool input_vec[8];
   typedef block_ops::BlockLoad<bool, 256, 8, block_ops::BLOCK_LOAD_VECTORIZE> BlockLoad;
-  FI_SHARED_QUAL typename BlockLoad::TempStorage temp_storage;
+  __shared__ typename BlockLoad::TempStorage temp_storage;
 
   // This fix the INT32_T overflow issue, which is possible in DiT video models
   // where the kv_len could be 128K.
@@ -79,12 +74,12 @@ FI_GLOBAL_QUAL void PackBitsKernel(bool* input, uint8_t* output, int64_t num_ele
 }
 
 template <BitOrder BITORDER, typename IdType>
-FI_GLOBAL_QUAL void SegmentPackBitsKernel(bool* input, uint8_t* output, IdType* input_indptr,
-                                          IdType* output_indptr) {
+__global__ void SegmentPackBitsKernel(bool* input, uint8_t* output, IdType* input_indptr,
+                                      IdType* output_indptr) {
   int64_t bx = blockIdx.x, tx = threadIdx.x;
   bool input_vec[8];
   typedef block_ops::BlockLoad<bool, 256, 8, block_ops::BLOCK_LOAD_VECTORIZE> BlockLoad;
-  FI_SHARED_QUAL typename BlockLoad::TempStorage temp_storage;
+  __shared__ typename BlockLoad::TempStorage temp_storage;
   int64_t num_elements = input_indptr[bx + 1] - input_indptr[bx];
   for (uint32_t start_offset = 0; start_offset < num_elements; start_offset += 8 * blockDim.x) {
     uint8_t ret = 0;
@@ -104,30 +99,30 @@ FI_GLOBAL_QUAL void SegmentPackBitsKernel(bool* input, uint8_t* output, IdType* 
   }
 }
 
-gpuError_t PackBits(bool* input, uint8_t* output, int64_t num_elements, BitOrder bitorder,
-                    gpuStream_t stream) {
+hipError_t PackBits(bool* input, uint8_t* output, int64_t num_elements, BitOrder bitorder,
+                    hipStream_t stream) {
   DISPATCH_BITORDER(bitorder, BITORDER, {
     auto kernel = PackBitsKernel<BITORDER>;
     const dim3 nthrs(256);
     const dim3 nblks(ceil_div(num_elements, nthrs.x * 8));
     void* args[] = {&input, &output, &num_elements};
-    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+    FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <typename IdType>
-gpuError_t SegmentPackBits(bool* input, uint8_t* output, IdType* input_indptr,
+hipError_t SegmentPackBits(bool* input, uint8_t* output, IdType* input_indptr,
                            IdType* output_indptr, uint32_t batch_size, BitOrder bitorder,
-                           gpuStream_t stream) {
+                           hipStream_t stream) {
   DISPATCH_BITORDER(bitorder, BITORDER, {
     auto kernel = SegmentPackBitsKernel<BITORDER, IdType>;
     const dim3 nthrs(256);
     const dim3 nblks(batch_size);
     void* args[] = {&input, &output, &input_indptr, &output_indptr};
-    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+    FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 }  // namespace quantization

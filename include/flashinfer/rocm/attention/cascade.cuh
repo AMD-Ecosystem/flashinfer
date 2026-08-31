@@ -7,6 +7,7 @@
 #error \
     "include/flashinfer/attention/cascade.cuh and include/flashinfer/rocm/attention/cascade.cuh define the same symbols; include only one"
 #endif
+#include "flashinfer/rocm/conversion_utils.h"
 #include "flashinfer/rocm/dispatch.cuh"
 #include "flashinfer/rocm/gpu_runtime_compat.hpp"
 #include "flashinfer/rocm/math.h"
@@ -14,10 +15,6 @@
 #include "flashinfer/rocm/platform.hpp"
 #include "flashinfer/rocm/utils.cuh"
 #include "state.cuh"
-
-#ifdef PLATFORM_HIP_DEVICE
-#include "flashinfer/rocm/conversion_utils.h"
-#endif
 
 namespace flashinfer {
 
@@ -146,11 +143,7 @@ __device__ __forceinline__ void warp_sync_state(state_t<vec_size>& st, DTypeIn* 
   st.o.cast_store(v_smem + ty * head_dim + tx * vec_size);
   s_smem[ty] = st.get_lse();
   st.init();
-#ifdef PLATFORM_HIP_DEVICE
   __builtin_amdgcn_wave_barrier();
-#else
-  __syncwarp();
-#endif
 
 #pragma unroll
   for (uint32_t iter = 0; iter < bdy; ++iter) {
@@ -191,11 +184,7 @@ __global__ void AttentionSumKernel(DTypeIn* __restrict__ V, DTypeO* __restrict__
 
   if (num_index_sets == 0) {
     vec_t<DTypeO, vec_size> v;
-#ifdef PLATFORM_HIP_DEVICE
     v.fill(explicit_casting<float, DTypeO>(0.f));
-#else
-    v.fill(DTypeO(0.f));
-#endif
     v.store(v_sum + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
     return;
   }
@@ -233,11 +222,7 @@ __global__ void MergeStatesKernel(DTypeIn* __restrict__ V, float* __restrict__ S
 
   if (num_index_sets == 0) {
     vec_t<DTypeO, vec_size> v;
-#ifdef PLATFORM_HIP_DEVICE
     v.fill(explicit_casting<float, DTypeO>(0.f));
-#else
-    v.fill(DTypeO(0.f));
-#endif
     v.store(v_merged + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
     if (s_merged != nullptr) {
       s_merged[pos * num_heads + head_idx] = -math::inf;
@@ -411,11 +396,7 @@ __global__ void PersistentVariableLengthMergeStatesKernel(
 
     if (num_index_sets == 0) {
       vec_t<DTypeO, vec_size> v;
-#ifdef PLATFORM_HIP_DEVICE
       v.fill(explicit_casting<float, DTypeO>(0.f));
-#else
-      v.fill(DTypeO(0.f));
-#endif
       v.store(v_merged + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
       if (s_merged != nullptr) {
         s_merged[pos * num_heads + head_idx] = -math::inf;
@@ -512,11 +493,7 @@ __global__ void PersistentVariableLengthAttentionSumKernel(DTypeIn* __restrict__
 
     if (num_index_sets == 0) {
       vec_t<DTypeO, vec_size> v;
-#ifdef PLATFORM_HIP_DEVICE
       v.fill(explicit_casting<float, DTypeO>(0.f));
-#else
-      v.fill(DTypeO(0.f));
-#endif
       v.store(v_sum + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
       continue;
     }
@@ -585,9 +562,9 @@ __global__ void PersistentVariableLengthAttentionSumKernel(DTypeIn* __restrict__
  * \note Both s_a and s_b are logsumexp values with base 2.
  */
 template <typename DTypeIn, typename DTypeO>
-gpuError_t MergeState(DTypeIn* v_a, float* s_a, DTypeIn* v_b, float* s_b, DTypeO* v_merged,
+hipError_t MergeState(DTypeIn* v_a, float* s_a, DTypeIn* v_b, float* s_b, DTypeO* v_merged,
                       float* s_merged, uint32_t seq_len, uint32_t num_heads, uint32_t head_dim,
-                      gpuStream_t stream = nullptr) {
+                      hipStream_t stream = nullptr) {
   DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
     constexpr uint32_t vec_size = std::max(16U / sizeof(DTypeIn), HEAD_DIM / 32U);
     uint32_t bdx = HEAD_DIM / vec_size;
@@ -596,9 +573,9 @@ gpuError_t MergeState(DTypeIn* v_a, float* s_a, DTypeIn* v_b, float* s_b, DTypeO
     dim3 nthrs(bdx, bdy);
     auto kernel = MergeStateKernel<vec_size, DTypeIn, DTypeO>;
     void* args[] = {&v_a, &s_a, &v_b, &s_b, &v_merged, &s_merged, &num_heads, &head_dim};
-    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+    FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 /*!
@@ -617,9 +594,9 @@ gpuError_t MergeState(DTypeIn* v_a, float* s_a, DTypeIn* v_b, float* s_b, DTypeO
  * \note Both s and s_other are logsumexp values with base 2.
  */
 template <typename DType>
-gpuError_t MergeStateInPlace(DType* v, float* s, DType* v_other, float* s_other, uint32_t seq_len,
+hipError_t MergeStateInPlace(DType* v, float* s, DType* v_other, float* s_other, uint32_t seq_len,
                              uint32_t num_heads, uint32_t head_dim, uint8_t* mask = nullptr,
-                             gpuStream_t stream = nullptr) {
+                             hipStream_t stream = nullptr) {
   DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
     constexpr uint32_t vec_size = std::max(16U / sizeof(DType), HEAD_DIM / 32U);
     uint32_t bdx = HEAD_DIM / vec_size;
@@ -628,9 +605,9 @@ gpuError_t MergeStateInPlace(DType* v, float* s, DType* v_other, float* s_other,
     dim3 nthrs(bdx, bdy);
     auto kernel = MergeStateInPlaceKernel<vec_size, DType>;
     void* args[] = {&v, &s, &v_other, &s_other, &mask, &num_heads, &head_dim};
-    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+    FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 /*!
@@ -650,22 +627,17 @@ gpuError_t MergeStateInPlace(DType* v, float* s, DType* v_other, float* s_other,
  * \note s are logsumexp values with base 2.
  */
 template <typename DTypeIn, typename DTypeO>
-gpuError_t MergeStates(DTypeIn* v, float* s, DTypeO* v_merged, float* s_merged,
+hipError_t MergeStates(DTypeIn* v, float* s, DTypeO* v_merged, float* s_merged,
                        uint32_t num_index_sets, uint32_t seq_len, uint32_t num_heads,
-                       uint32_t head_dim, gpuStream_t stream = nullptr) {
+                       uint32_t head_dim, hipStream_t stream = nullptr) {
   DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
     constexpr uint32_t vec_size = std::max(16U / sizeof(DTypeIn), HEAD_DIM / 32U);
     constexpr uint32_t bdx = HEAD_DIM / vec_size;
     if (num_index_sets >= seq_len) {
-#ifdef PLATFORM_HIP_DEVICE
       // CDNA3 wave-64: fit one wavefront per threadblock for head_dim≤128; stages=1
       // since pred_load is synchronous (no async pipeline).
       constexpr uint32_t num_threads = (bdx <= 16) ? 64U : 256U;
       constexpr uint32_t num_smem_stages = 1;
-#else
-      constexpr uint32_t num_threads = 128;
-      constexpr uint32_t num_smem_stages = 4;
-#endif
       constexpr uint32_t bdy = num_threads / bdx;
       dim3 nblks(seq_len, num_heads);
       dim3 nthrs(bdx, bdy);
@@ -674,24 +646,24 @@ gpuError_t MergeStates(DTypeIn* v, float* s, DTypeO* v_merged, float* s_merged,
       void* args[] = {&v, &s, &v_merged, &s_merged, &num_index_sets, &num_heads};
       uint32_t smem_size =
           num_smem_stages * bdy * head_dim * sizeof(DTypeIn) + num_threads * sizeof(float);
-      FI_GPU_CALL(gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize,
-                                      smem_size));
-      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+      FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel,
+                                      hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+      FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
     } else {
       uint32_t bdy = num_heads;
       dim3 nblks(seq_len);
       dim3 nthrs(bdx, bdy);
       auto kernel = MergeStatesKernel<vec_size, DTypeIn, DTypeO>;
       void* args[] = {&v, &s, &v_merged, &s_merged, &num_index_sets, &num_heads, &head_dim};
-      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+      FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
     }
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <typename DTypeIn, typename DTypeO>
-gpuError_t AttentionSum(DTypeIn* v, DTypeO* v_sum, uint32_t num_index_sets, uint32_t seq_len,
-                        uint32_t num_heads, uint32_t head_dim, gpuStream_t stream = nullptr) {
+hipError_t AttentionSum(DTypeIn* v, DTypeO* v_sum, uint32_t num_index_sets, uint32_t seq_len,
+                        uint32_t num_heads, uint32_t head_dim, hipStream_t stream = nullptr) {
   DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
     constexpr uint32_t vec_size = std::max(16U / sizeof(DTypeIn), HEAD_DIM / 32U);
     constexpr uint32_t bdx = HEAD_DIM / vec_size;
@@ -700,87 +672,77 @@ gpuError_t AttentionSum(DTypeIn* v, DTypeO* v_sum, uint32_t num_index_sets, uint
     dim3 nthrs(bdx, bdy);
     auto kernel = AttentionSumKernel<vec_size, DTypeIn, DTypeO>;
     void* args[] = {&v, &v_sum, &num_index_sets, &num_heads, &head_dim};
-    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
+    FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <typename DTypeIn, typename DTypeO, typename IdType>
-gpuError_t VariableLengthMergeStates(DTypeIn* v, float* s, IdType* indptr, DTypeO* v_merged,
+hipError_t VariableLengthMergeStates(DTypeIn* v, float* s, IdType* indptr, DTypeO* v_merged,
                                      float* s_merged, uint32_t max_seq_len, uint32_t* seq_len,
                                      uint32_t num_heads, uint32_t head_dim,
-                                     gpuStream_t stream = nullptr) {
+                                     hipStream_t stream = nullptr) {
   int dev_id = 0;
   int num_sms = 0;
   int num_blocks_per_sm = 0;
-  FI_GPU_CALL(gpuGetDevice(&dev_id));
-  FI_GPU_CALL(gpuDeviceGetAttribute(&num_sms, gpuDevAttrMultiProcessorCount, dev_id));
+  FI_HIP_CALL(hipGetDevice(&dev_id));
+  FI_HIP_CALL(hipDeviceGetAttribute(&num_sms, hipDeviceAttributeMultiprocessorCount, dev_id));
 
   DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
     constexpr uint32_t vec_size = std::max(16U / sizeof(DTypeIn), HEAD_DIM / 32U);
     constexpr uint32_t bdx = HEAD_DIM / vec_size;
-#ifdef PLATFORM_HIP_DEVICE
     constexpr uint32_t num_threads = (bdx <= 16) ? 64U : 256U;
     constexpr uint32_t num_smem_stages = 1;
-#else
-    constexpr uint32_t num_threads = 128;
-    constexpr uint32_t num_smem_stages = 4;
-#endif
     constexpr uint32_t bdy = num_threads / bdx;
     uint32_t smem_size =
         num_smem_stages * bdy * head_dim * sizeof(DTypeIn) + num_threads * sizeof(float);
     auto kernel = PersistentVariableLengthMergeStatesKernel<vec_size, bdx, bdy, num_smem_stages,
                                                             DTypeIn, DTypeO, IdType>;
-    FI_GPU_CALL(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel,
+    FI_HIP_CALL(hipOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel,
                                                              num_threads, smem_size));
     num_blocks_per_sm = min(num_blocks_per_sm, ceil_div(max_seq_len * num_heads, num_sms));
 
     dim3 nblks(num_sms * num_blocks_per_sm);
     dim3 nthrs(bdx, bdy);
     void* args[] = {&v, &s, &indptr, &v_merged, &s_merged, &max_seq_len, &seq_len, &num_heads};
-    FI_GPU_CALL(
-        gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
-    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+    FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel, hipFuncAttributeMaxDynamicSharedMemorySize,
+                                    smem_size));
+    FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 template <typename DTypeIn, typename DTypeO, typename IdType>
-gpuError_t VariableLengthAttentionSum(DTypeIn* v, IdType* indptr, DTypeO* v_sum,
+hipError_t VariableLengthAttentionSum(DTypeIn* v, IdType* indptr, DTypeO* v_sum,
                                       uint32_t max_seq_len, uint32_t* seq_len, uint32_t num_heads,
-                                      uint32_t head_dim, gpuStream_t stream = nullptr) {
+                                      uint32_t head_dim, hipStream_t stream = nullptr) {
   int dev_id = 0;
   int num_sms = 0;
   int num_blocks_per_sm = 0;
-  FI_GPU_CALL(gpuGetDevice(&dev_id));
-  FI_GPU_CALL(gpuDeviceGetAttribute(&num_sms, gpuDevAttrMultiProcessorCount, dev_id));
+  FI_HIP_CALL(hipGetDevice(&dev_id));
+  FI_HIP_CALL(hipDeviceGetAttribute(&num_sms, hipDeviceAttributeMultiprocessorCount, dev_id));
 
   DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
     constexpr uint32_t vec_size = std::max(16U / sizeof(DTypeIn), HEAD_DIM / 32U);
     constexpr uint32_t bdx = HEAD_DIM / vec_size;
-#ifdef PLATFORM_HIP_DEVICE
     constexpr uint32_t num_threads = (bdx <= 16) ? 64U : 256U;
     constexpr uint32_t num_smem_stages = 1;
-#else
-    constexpr uint32_t num_threads = 128;
-    constexpr uint32_t num_smem_stages = 4;
-#endif
     constexpr uint32_t bdy = num_threads / bdx;
     uint32_t smem_size = num_smem_stages * bdy * head_dim * sizeof(DTypeIn);
     auto kernel = PersistentVariableLengthAttentionSumKernel<vec_size, bdx, bdy, num_smem_stages,
                                                              DTypeIn, DTypeO, IdType>;
-    FI_GPU_CALL(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel,
+    FI_HIP_CALL(hipOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel,
                                                              num_threads, smem_size));
     num_blocks_per_sm = min(num_blocks_per_sm, ceil_div(max_seq_len * num_heads, num_sms));
 
     dim3 nblks(num_sms * num_blocks_per_sm);
     dim3 nthrs(bdx, bdy);
     void* args[] = {&v, &indptr, &v_sum, &max_seq_len, &seq_len, &num_heads};
-    FI_GPU_CALL(
-        gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
-    FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+    FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel, hipFuncAttributeMaxDynamicSharedMemorySize,
+                                    smem_size));
+    FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 }  // namespace flashinfer

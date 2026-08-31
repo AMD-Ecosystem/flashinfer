@@ -138,12 +138,12 @@ template <uint32_t HEAD_DIM_QK, uint32_t HEAD_DIM_VO, PosEncodingMode POS_ENCODI
           bool USE_FP16_QK_REDUCTION, uint32_t CTA_TILE_Q_P, MaskMode MASK_MODE_P,
           uint32_t CTA_TILE_Q_D, MaskMode MASK_MODE_D, typename PrefillAttentionVariant,
           typename DecodeAttentionVariant, typename PrefillParams, typename DecodeParams>
-gpuError_t BatchPODWithKVCacheTensorDispatched(PrefillParams prefill_params,
+hipError_t BatchPODWithKVCacheTensorDispatched(PrefillParams prefill_params,
                                                typename PrefillParams::DTypeO* tmp_v_p,
                                                float* tmp_s_p, DecodeParams decode_params,
                                                typename DecodeParams::DTypeO* tmp_v_d,
                                                float* tmp_s_d, bool /*enable_pdl*/,
-                                               gpuStream_t stream, int* sm_aware_sched) {
+                                               hipStream_t stream, int* sm_aware_sched) {
   static_assert(std::is_same<typename PrefillParams::DTypeQ, typename DecodeParams::DTypeQ>::value);
   static_assert(
       std::is_same<typename PrefillParams::DTypeKV, typename DecodeParams::DTypeKV>::value);
@@ -154,14 +154,14 @@ gpuError_t BatchPODWithKVCacheTensorDispatched(PrefillParams prefill_params,
   const uint32_t padded_batch_size_p = prefill_params.padded_batch_size;
   const uint32_t padded_batch_size_d = decode_params.padded_batch_size;
   if (padded_batch_size_p == 0 && padded_batch_size_d == 0) {
-    return gpuSuccess;
+    return hipSuccess;
   }
 
   const uint32_t num_qo_heads = prefill_params.num_qo_heads;
   const uint32_t num_kv_heads = prefill_params.paged_kv.num_heads;
 
   int dev_id = 0;
-  FI_GPU_CALL(gpuGetDevice(&dev_id));
+  FI_HIP_CALL(hipGetDevice(&dev_id));
   int max_smem_per_sm = getMaxSharedMemPerMultiprocessor(dev_id);
 
   using DTypeQ_P = typename PrefillParams::DTypeQ;
@@ -272,36 +272,37 @@ gpuError_t BatchPODWithKVCacheTensorDispatched(PrefillParams prefill_params,
           int nthrs = max(nthrs_p, nthrs_d);
 
           int num_sm = 0;
-          FI_GPU_CALL(gpuDeviceGetAttribute(&num_sm, gpuDevAttrMultiProcessorCount, dev_id));
-          FI_GPU_CALL(gpuMemset(sm_aware_sched, 0, sizeof(int) * (num_sm + 2)));
+          FI_HIP_CALL(
+              hipDeviceGetAttribute(&num_sm, hipDeviceAttributeMultiprocessorCount, dev_id));
+          FI_HIP_CALL(hipMemset(sm_aware_sched, 0, sizeof(int) * (num_sm + 2)));
 
-          FI_GPU_CALL(
-              gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+          FI_HIP_CALL(hipFuncSetAttribute((const void*)kernel,
+                                          hipFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
           void* args[] = {(void*)&prefill_params, (void*)&decode_params, (void*)&sm_aware_sched,
                           (void*)&num_sm};
-          FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+          FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
 
           if (tmp_v_p != nullptr) {
             if constexpr (PrefillAttentionVariant::use_softmax) {
-              FI_GPU_CALL(VariableLengthMergeStates(tmp_v_p, tmp_s_p, prefill_params.merge_indptr,
+              FI_HIP_CALL(VariableLengthMergeStates(tmp_v_p, tmp_s_p, prefill_params.merge_indptr,
                                                     o_p, lse_p, prefill_params.max_total_num_rows,
                                                     prefill_params.total_num_rows, num_qo_heads,
                                                     HEAD_DIM_VO, stream));
             } else {
-              FI_GPU_CALL(VariableLengthAttentionSum(
+              FI_HIP_CALL(VariableLengthAttentionSum(
                   tmp_v_p, prefill_params.merge_indptr, o_p, prefill_params.max_total_num_rows,
                   prefill_params.total_num_rows, num_qo_heads, HEAD_DIM_VO, stream));
             }
           }
           if (tmp_v_d != nullptr) {
             if constexpr (DecodeAttentionVariant::use_softmax) {
-              FI_GPU_CALL(VariableLengthMergeStates(tmp_v_d, tmp_s_d, decode_params.merge_indptr,
+              FI_HIP_CALL(VariableLengthMergeStates(tmp_v_d, tmp_s_d, decode_params.merge_indptr,
                                                     o_d, lse_d, decode_params.max_total_num_rows,
                                                     decode_params.total_num_rows, num_qo_heads,
                                                     HEAD_DIM_VO, stream));
             } else {
-              FI_GPU_CALL(VariableLengthAttentionSum(
+              FI_HIP_CALL(VariableLengthAttentionSum(
                   tmp_v_d, decode_params.merge_indptr, o_d, decode_params.max_total_num_rows,
                   decode_params.total_num_rows, num_qo_heads, HEAD_DIM_VO, stream));
             }
@@ -310,7 +311,7 @@ gpuError_t BatchPODWithKVCacheTensorDispatched(PrefillParams prefill_params,
       });
     }
   });
-  return gpuSuccess;
+  return hipSuccess;
 }
 
 }  // namespace flashinfer

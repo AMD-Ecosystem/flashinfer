@@ -18,7 +18,7 @@ def check_rocm_arch() -> None:
     """
     import torch.utils.cpp_extension as torch_cpp_ext
 
-    from ...hip_utils import validate_flashinfer_rocm_arch
+    from ...rocm.hip_utils import validate_flashinfer_rocm_arch
 
     try:
         validate_flashinfer_rocm_arch(
