@@ -74,13 +74,7 @@ __global__ __launch_bounds__(std::max(
     const int prefill_slots = (prefill_blocks + blk_factor_p - 1) / blk_factor_p;
     const int decode_slots = (decode_blocks + blk_factor_d - 1) / blk_factor_d;
 
-    if (prefill_slots == 0) {
-      op = DECODE;
-      linear_bid = atomicAdd(&sm_aware_sched[num_SMs + op], 1);
-    } else if (decode_slots == 0) {
-      op = PREFILL;
-      linear_bid = atomicAdd(&sm_aware_sched[num_SMs + op], 1);
-    } else if (prefill_slots <= decode_slots) {
+    if (prefill_slots <= decode_slots) {
       // Total tags = (decode + prefill) / min(decode, prefill)
       // = 1 + decode / prefill; when prefill < decode
       const int total_tags = decode_slots / prefill_slots + 1;
@@ -88,16 +82,6 @@ __global__ __launch_bounds__(std::max(
       op = (atomicAdd(&sm_aware_sched[linear_bid], 1) % total_tags);
       if (op > 0) {
         op = 1;
-      }
-      // Get the next blockId for that operation
-      linear_bid = atomicAdd(&sm_aware_sched[num_SMs + op], 1);
-      // If the blockId obtained exceeds the max blockIds for that op, switch to the other op
-      if (op == 0 && linear_bid >= prefill_slots) {
-        linear_bid = atomicAdd(&sm_aware_sched[num_SMs + 1], 1);
-        op = !op;
-      } else if (op == 1 && linear_bid >= decode_slots) {
-        op = !op;
-        linear_bid = atomicAdd(&sm_aware_sched[num_SMs + 0], 1);
       }
     } else {
       // Total tags = (decode + prefill) / min(decode, prefill)
@@ -111,16 +95,17 @@ __global__ __launch_bounds__(std::max(
       } else {
         op = 1;
       }
-      // Get the next blockId for that operation
-      linear_bid = atomicAdd(&sm_aware_sched[num_SMs + op], 1);
-      // If the blockId obtained exceeds the max blockIds for that op, switch to the other op
-      if (op == 0 && linear_bid >= prefill_slots) {
-        linear_bid = atomicAdd(&sm_aware_sched[num_SMs + 1], 1);
-        op = !op;
-      } else if (op == 1 && linear_bid >= decode_slots) {
-        op = !op;
-        linear_bid = atomicAdd(&sm_aware_sched[num_SMs + 0], 1);
-      }
+    }
+
+    // Get the next blockId for that operation
+    linear_bid = atomicAdd(&sm_aware_sched[num_SMs + op], 1);
+    // If the blockId obtained exceeds the max blockIds for that op, switch to the other op
+    if (op == 0 && linear_bid >= prefill_slots) {
+      linear_bid = atomicAdd(&sm_aware_sched[num_SMs + 1], 1);
+      op = !op;
+    } else if (op == 1 && linear_bid >= decode_slots) {
+      op = !op;
+      linear_bid = atomicAdd(&sm_aware_sched[num_SMs + 0], 1);
     }
     // Write the blockId and operation to shared memory
     ((int*)smem)[0] = linear_bid;
@@ -190,13 +175,6 @@ cudaError_t BatchPODWithKVCacheTensorDispatched(PrefillParams prefill_params,
   // Ensure heads match
   assert(prefill_params.paged_kv.num_heads == decode_params.paged_kv.num_heads);
   assert(prefill_params.num_qo_heads == decode_params.num_qo_heads);
-
-  const uint32_t padded_batch_size_p = prefill_params.padded_batch_size;
-  const uint32_t padded_batch_size_d = decode_params.padded_batch_size;
-  if (padded_batch_size_p == 0 && padded_batch_size_d == 0) {
-    return cudaSuccess;
-  }
-
   // Common variables for both prefill and decode
   const uint32_t num_qo_heads = prefill_params.num_qo_heads;
   const uint32_t num_kv_heads = prefill_params.paged_kv.num_heads;
@@ -211,6 +189,7 @@ cudaError_t BatchPODWithKVCacheTensorDispatched(PrefillParams prefill_params,
   using DTypeQ_P = typename PrefillParams::DTypeQ;
   using DTypeKV_P = typename PrefillParams::DTypeKV;
   using DTypeO_P = typename PrefillParams::DTypeO;
+  const uint32_t padded_batch_size_p = prefill_params.padded_batch_size;
   constexpr uint32_t NUM_MMA_Q_P = get_num_mma_q(CTA_TILE_Q_P);
   constexpr uint32_t NUM_WARPS_Q_P = get_num_warps_q(CTA_TILE_Q_P);
   constexpr uint32_t NUM_WARPS_KV_P = get_num_warps_kv(CTA_TILE_Q_P);
@@ -228,6 +207,7 @@ cudaError_t BatchPODWithKVCacheTensorDispatched(PrefillParams prefill_params,
   using DTypeQ_D = typename DecodeParams::DTypeQ;
   using DTypeKV_D = typename DecodeParams::DTypeKV;
   using DTypeO_D = typename DecodeParams::DTypeO;
+  const uint32_t padded_batch_size_d = decode_params.padded_batch_size;
   constexpr uint32_t NUM_MMA_Q_D = get_num_mma_q(CTA_TILE_Q_D);
   constexpr uint32_t NUM_WARPS_Q_D = get_num_warps_q(CTA_TILE_Q_D);
   constexpr uint32_t NUM_WARPS_KV_D = get_num_warps_kv(CTA_TILE_Q_D);

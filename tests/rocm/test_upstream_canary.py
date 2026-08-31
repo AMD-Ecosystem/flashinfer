@@ -432,35 +432,28 @@ class TestDrift:
 
         assert "no forked headers" in capsys.readouterr().out
 
-    def test_excluded_header_is_not_paired_against_upstream(self, repo, capsys):
-        """utils.cuh shares upstream's basename but forks nothing.
+    def test_utils_cuh_is_paired_against_upstream(self, repo, capsys):
+        """rocm/utils.cuh forks FA2DetermineCtaTileQ, so its churn must surface.
 
-        Without the exclusion the pairing reports upstream churn against a HIP
-        rewrite that never tracked it.
+        Upstream's copy is byte-identical to the merge base and merges cleanly,
+        so drift is the only signal that a fix landed there and not in the fork.
         """
-        for path in uc._FORKED_EXCLUDE:
-            _write(repo, path, "// hip rewrite\n")
-            _write(
-                repo, f"include/flashinfer/{path.rsplit('/', 1)[1]}", "// upstream\n"
-            )
+        self._forked(repo, "utils.cuh")
+        _write(repo, "include/flashinfer/utils.cuh", "// upstream\n")
         _commit(repo, "headers")
 
         uc._report_drift(
             str(repo),
             "HEAD",
             "HEAD",
-            {
-                f"include/flashinfer/{p.rsplit('/', 1)[1]}": uc.Churn(5, 5)
-                for p in uc._FORKED_EXCLUDE
-            },
+            {"include/flashinfer/utils.cuh": uc.Churn(5, 5)},
         )
         out = capsys.readouterr().out
 
-        assert "no forked headers" in out
-        assert "utils.cuh" not in out
+        assert "include/flashinfer/utils.cuh  upstream +5/-5" in out
 
-    def test_a_sibling_of_an_excluded_header_is_still_paired(self, repo, capsys):
-        """The exclusion is exact paths, not a prefix or a basename match."""
+    def test_every_forked_header_is_paired(self, repo, capsys):
+        """Pairing is by basename across _UPSTREAM_HEADER_DIRS, with no exemptions."""
         self._forked(repo, "layout.cuh")
         _write(repo, "include/flashinfer/layout.cuh", "// upstream\n")
         _commit(repo, "headers")
