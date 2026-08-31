@@ -566,6 +566,34 @@ class TestCopyBuiltKernels:
 
         assert not (out_dir / AOT_MANIFEST_NAME).exists()
 
+    def test_the_manifest_is_packaged_into_the_wheel(self):
+        """A .so-only package-data glob makes the arch guard a silent no-op.
+
+        The manifest is written into the build output either way, so a local
+        build looks correct; the omission only shows up once the wheel is
+        installed and the consumer finds no manifest to check.
+        """
+        import tomllib
+
+        from flashinfer.jit.rocm.env import AOT_MANIFEST_NAME
+
+        pyproject = (
+            Path(aot_hip.__file__).parents[1]
+            / "amd-flashinfer-jit-cache"
+            / "pyproject.toml"
+        )
+        if not pyproject.exists():
+            pytest.skip("source checkout only")
+
+        patterns = tomllib.loads(pyproject.read_text())["tool"]["setuptools"][
+            "package-data"
+        ]["amd_flashinfer_jit_cache"]
+
+        assert any(p.endswith(AOT_MANIFEST_NAME) for p in patterns), (
+            f"{AOT_MANIFEST_NAME} is not in package-data {patterns}; the wheel "
+            "would ship kernels with no architecture to check them against"
+        )
+
     def test_a_previous_output_directory_is_replaced_not_merged(self, tmp_path):
         """A stale .so left from an earlier build would ship in the wheel."""
         build_dir, out_dir = tmp_path / "build", tmp_path / "out"

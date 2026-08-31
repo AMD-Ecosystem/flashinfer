@@ -35,6 +35,10 @@ On a GPU it does not cover, FlashInfer ignores the prebuilt kernels, warns, and
 compiles from source rather than loading the wrong ISA. The wheel tag carries no
 architecture, so nothing prevents installing it on an unsupported GPU.
 
+The check reads the running device, not `FLASHINFER_ROCM_ARCH_LIST` — that
+variable is build intent and says nothing about the installed GPU. Set
+`FLASHINFER_DISABLE_AOT_ARCH_CHECK=1` to use the kernels regardless.
+
 ## Development
 
 To build this package from source:

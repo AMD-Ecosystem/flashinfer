@@ -121,43 +121,6 @@ def gen_attention(
         )
 
 
-def gen_act_and_mul() -> Iterator:
-    """The gated-activation kernels, one module per activation function."""
-    from .jit import gen_act_and_mul_module
-    from .jit.activation import act_func_def_str
-
-    for act_name in act_func_def_str:
-        yield gen_act_and_mul_module(act_name)
-
-
-def gen_misc() -> Iterator:
-    """Ops `backend="auto"` always resolves to a native HIP kernel.
-
-    Five selectors return "native" unconditionally (rocm/norm.py, rocm/rope.py,
-    rocm/activation.py, rocm/page.py) and sampling/quantization/cascade have no
-    AITER path at all, so every one of these is compiled on first use unless it
-    ships prebuilt. Mirrors the CUDA `add_misc` group in aot.py.
-    """
-    from .jit import (
-        gen_norm_module,
-        gen_page_module,
-        gen_quantization_module,
-        gen_rope_module,
-        gen_sampling_module,
-    )
-
-    # Not re-exported on HIP (jit/rocm/api.py), so reach it by module path --
-    # flashinfer/cascade.py imports it the same way.
-    from .jit.cascade import gen_cascade_module
-
-    yield gen_cascade_module()
-    yield gen_norm_module()
-    yield gen_page_module()
-    yield gen_quantization_module()
-    yield gen_rope_module()
-    yield gen_sampling_module()
-
-
 def gen_all_modules(
     f16_dtype_: List[torch.dtype],
     fa2_head_dim_: List[Tuple[int, int]],
@@ -180,10 +143,36 @@ def gen_all_modules(
     )
 
     if add_act:
-        jit_specs += list(gen_act_and_mul())
+        from .jit import gen_act_and_mul_module
+        from .jit.activation import act_func_def_str
 
+        for act_name in act_func_def_str:
+            jit_specs.append(gen_act_and_mul_module(act_name))
+
+    # Ops `backend="auto"` always resolves to a native HIP kernel: five
+    # selectors return "native" unconditionally and sampling/quantization/
+    # cascade have no AITER path, so each compiles on first use unless prebuilt.
     if add_misc:
-        jit_specs += list(gen_misc())
+        from .jit import (
+            gen_norm_module,
+            gen_page_module,
+            gen_quantization_module,
+            gen_rope_module,
+            gen_sampling_module,
+        )
+
+        # Not re-exported on HIP (jit/rocm/api.py), so reach it by module path
+        # -- flashinfer/cascade.py imports it the same way.
+        from .jit.cascade import gen_cascade_module
+
+        jit_specs += [
+            gen_cascade_module(),
+            gen_norm_module(),
+            gen_page_module(),
+            gen_quantization_module(),
+            gen_rope_module(),
+            gen_sampling_module(),
+        ]
 
     # dedup
     names = set()
@@ -221,7 +210,10 @@ def copy_built_kernels(
         dst.parent.mkdir(exist_ok=False, parents=False)
         shutil.copy2(src, dst)
 
-    if rocm_arch_list is not None:
+    # Falsy covers "" as well as None: an empty list would record that the
+    # kernels target no architecture at all, and the reader would reject every
+    # GPU. No manifest at least degrades to the documented unchecked path.
+    if rocm_arch_list:
         from .jit.rocm.env import AOT_MANIFEST_NAME
 
         (out_dir / AOT_MANIFEST_NAME).write_text(

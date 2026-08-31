@@ -9,7 +9,7 @@ import os
 import pathlib
 import re
 import warnings
-from typing import Callable
+from typing import Callable, Optional
 
 from ..._version import __version__ as flashinfer_version
 from ...arch_caps import normalize_arch
@@ -45,25 +45,54 @@ def get_aot_dir(
         )
 
     cache_dir = pathlib.Path(amd_flashinfer_jit_cache.get_jit_cache_dir())
-    if _aot_arch_matches(cache_dir):
+    if _aot_arch_is_usable(cache_dir):
         return cache_dir
-    # Fall back to the in-tree dir, which is normally empty, so JitSpec.is_aot
-    # goes False and every module JITs for the architecture actually present.
-    return package_root / "data" / "aot"
+    # Somewhere that does not exist, so JitSpec.is_aot goes False and every
+    # module JITs for the architecture actually present. Not the in-tree dir:
+    # that can itself hold kernels (`aot_hip --out-dir flashinfer/data/aot`),
+    # which would swap one unchecked tree for another.
+    return package_root / "data" / "aot-arch-mismatch"
 
 
-def _aot_arch_matches(cache_dir: pathlib.Path) -> bool:
-    """Whether prebuilt kernels in ``cache_dir`` target an arch we can run.
+def _live_device_arch() -> Optional[str]:
+    """The architecture of the GPU we are about to run on, or None if unknown.
+
+    Deliberately not ``hip_utils.resolve_target_archs``: that answers "what are
+    we compiling for" and reads FLASHINFER_ROCM_ARCH_LIST before it looks at
+    hardware. Keying an ISA check on a build-time variable gets it backwards in
+    both directions -- the value CLAUDE.md tells developers to export
+    ("gfx942,gfx950") would reject a correct single-arch wheel, and a stale
+    "gfx942" on a CDNA4 box would wave the wrong kernels through. It also keeps
+    `import flashinfer` off rocminfo, which resolve_target_archs would spawn
+    with a 10s timeout.
+    """
+    try:
+        import torch
+
+        if torch.cuda.device_count() == 0:
+            return None
+        props = torch.cuda.get_device_properties(torch.cuda.current_device())
+        arch = normalize_arch(props.gcnArchName)
+        return arch if re.match(r"gfx\d", arch) else None
+    except Exception:
+        return None
+
+
+def _aot_arch_is_usable(cache_dir: pathlib.Path) -> bool:
+    """Whether prebuilt kernels in ``cache_dir`` can run on this GPU.
 
     ``JitSpec.is_aot`` is a bare ``aot_path.exists()`` and AOT beats JIT
     unconditionally, while the wheel tag carries no gfx architecture -- so
     nothing else stops a gfx942 wheel serving gfx950. That costs a wrong-ISA
     load on ops in every forward pass, not just attention.
 
-    A wheel with no manifest predates this check; assume it is right rather
-    than breaking every install that already works.
+    Anything we cannot establish resolves to True. A wheel with no manifest
+    predates this check, and an unreadable one or an invisible GPU leaves the
+    question unanswered; none of those justify discarding kernels that are
+    probably fine. Runs in ``jit/env.py``'s module body, so an exception here
+    would abort ``import flashinfer`` outright.
     """
-    if os.getenv("FLASHINFER_DISABLE_VERSION_CHECK"):
+    if os.getenv("FLASHINFER_DISABLE_AOT_ARCH_CHECK"):
         return True
 
     manifest = cache_dir / AOT_MANIFEST_NAME
@@ -72,25 +101,28 @@ def _aot_arch_matches(cache_dir: pathlib.Path) -> bool:
 
     try:
         built_for = json.loads(manifest.read_text())["rocm_arch_list"]
-    except (OSError, ValueError, KeyError):
+        from ...hip_utils import _canonical_arch_list
+
+        built = set(_canonical_arch_list(built_for).split(","))
+    except Exception:
+        # Catch-all on purpose: a hand-edited or half-written manifest can fail
+        # as TypeError or AttributeError as easily as ValueError, and none of
+        # them are worth an unimportable package.
         warnings.warn(
             f"Could not read {manifest}; using its prebuilt kernels unchecked.",
             stacklevel=2,
         )
         return True
 
-    from ...hip_utils import resolve_target_archs
-
-    built = {normalize_arch(a) for a in built_for.split(",") if a}
-    target = {normalize_arch(a) for a in resolve_target_archs().split(",") if a}
-    if target <= built:
+    arch = _live_device_arch()
+    if arch is None or arch in built:
         return True
 
     warnings.warn(
-        f"amd-flashinfer-jit-cache was built for {sorted(built)} but this "
-        f"system needs {sorted(target)}; ignoring the prebuilt kernels and "
-        f"compiling from source. Install a matching wheel to avoid this. "
-        f"Set FLASHINFER_DISABLE_VERSION_CHECK=1 to use them anyway.",
+        f"amd-flashinfer-jit-cache holds {sorted(built)} kernels but this GPU "
+        f"is {arch}; ignoring them and compiling from source. Install a wheel "
+        f"built for {arch}, or set FLASHINFER_DISABLE_AOT_ARCH_CHECK=1 to use "
+        f"them anyway.",
         stacklevel=2,
     )
     return False
