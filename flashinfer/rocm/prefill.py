@@ -356,6 +356,22 @@ def _require_aiter_runtime(device: torch.device, op: str = "batch_prefill") -> N
 _aiter_auto_warned: set[tuple[torch.device, str]] = set()
 
 
+def _aiter_needs_mask(
+    causal: bool, window_left: int, kv_len: Optional[int] = None
+) -> bool:
+    """Does this call need AITER's ``_mask`` .so variant?
+
+    AITER splits the variant on "is there any mask", not on causality, so a
+    non-causal sliding window needs it too. Must stay in lockstep with
+    ``needs_mask`` in ``single_prefill.cuh`` / ``batch_prefill.cuh``: bootstrap
+    the wrong variant and the C++ dlopen misses. Pass kv_len only where it is
+    known -- a window at least that wide masks nothing.
+    """
+    if kv_len is not None and window_left >= kv_len:
+        return causal
+    return causal or window_left >= 0
+
+
 def _aiter_softcap_defect(
     causal: bool,
     logits_soft_cap: Optional[float],
@@ -492,7 +508,7 @@ _aiter_bootstrap_lock = threading.Lock()
 @functools.lru_cache(maxsize=None)
 def _aiter_bootstrap_single_prefill_varlen(
     dtype: torch.dtype,
-    causal: bool,
+    needs_mask: bool,
     head_dim: int,
     device_idx: int,
 ) -> None:
@@ -501,8 +517,8 @@ def _aiter_bootstrap_single_prefill_varlen(
     Non-logits variants are pre-shipped with the AITER package; the logits
     variants are missing from the pre-built set and must be bootstrapped on
     first use. Used by single-prefill when logits_soft_cap > 0 (which forces the
-    varlen .so because mha_fwd has no _logits arm). The .so is split by causal
-    (mask vs nmask), so build the variant matching the actual request.
+    varlen .so because mha_fwd has no _logits arm). The .so is split on whether
+    anything is masked (mask vs nmask), so pass needs_mask, not causal.
     """
     device = torch.device("cuda", device_idx)
     q = torch.zeros(2, 2, head_dim, dtype=dtype, device=device)
@@ -519,7 +535,7 @@ def _aiter_bootstrap_single_prefill_varlen(
         softmax_scale=scale,
         logits_soft_cap=0.5,
         zero_tensors=False,
-        is_causal=causal,
+        is_causal=needs_mask,
         window_size_left=-1,
         window_size_right=-1,
         sink_size=0,
@@ -534,15 +550,15 @@ def _aiter_bootstrap_single_prefill_varlen(
 @functools.lru_cache(maxsize=None)
 def _aiter_bootstrap_single_prefill_mha_fwd(
     dtype: torch.dtype,
-    causal: bool,
+    needs_mask: bool,
     has_lse: bool,
     head_dim: int,
     device_idx: int,
 ) -> None:
-    """Force AITER's lazy JIT to compile mha_fwd_*.so for this (dtype, causal, has_lse) variant.
+    """Force AITER's lazy JIT to compile mha_fwd_*.so for this (dtype, needs_mask, has_lse) variant.
 
     Unlike mha_varlen_fwd, mha_fwd ships no prebuilt .so files in the aiter
-    package; every (dtype, causal, has_lse) combination is JIT-built on first
+    package; every (dtype, needs_mask, has_lse) combination is JIT-built on first
     use, which takes 20+ minutes per variant. Bootstrapping here surfaces the
     build at plan time rather than as a dlopen failure inside the C++ path.
     """
@@ -559,7 +575,7 @@ def _aiter_bootstrap_single_prefill_mha_fwd(
         v,
         dropout_p=0.0,
         softmax_scale=head_dim**-0.5,
-        is_causal=causal,
+        is_causal=needs_mask,
         window_size_left=-1,
         window_size_right=-1,
         sink_size=0,
@@ -572,16 +588,16 @@ def _aiter_bootstrap_single_prefill_mha_fwd(
 def _aiter_bootstrap_batch_ragged_prefill(
     dtype: torch.dtype,
     has_logits_cap: bool,
-    causal: bool,
+    needs_mask: bool,
     head_dim: int,
     device_idx: int,
 ) -> None:
     """Trigger AITER's lazy JIT for mha_varlen_fwd_*.so variants used by batch prefill.
 
-    Same .so family as single-prefill (varlen group-mode), but we parameterize causal
-    and logits-cap so we can cover non-shipped combos for any (causal, logits) the
+    Same .so family as single-prefill (varlen group-mode), but we parameterize masking
+    and logits-cap so we can cover non-shipped combos for any (needs_mask, logits) the
     user requests. AITER pre-ships only a subset of the
-    (dtype, causal, has_lse, has_logits_cap) family — which subset is not contractual
+    (dtype, needs_mask, has_lse, has_logits_cap) family — which subset is not contractual
     and varies by amd-aiter build — so any combination may need a lazy build, including
     no-logits ones. On amd-aiter 0.1.10, for example, bf16 ships only nmask_lse and
     mask_nlse, so both remaining nlogits arms are built here on first use.
@@ -606,7 +622,7 @@ def _aiter_bootstrap_batch_ragged_prefill(
         softmax_scale=scale,
         logits_soft_cap=0.5 if has_logits_cap else 0.0,
         zero_tensors=False,
-        is_causal=causal,
+        is_causal=needs_mask,
         window_size_left=-1,
         window_size_right=-1,
         sink_size=0,
@@ -622,7 +638,7 @@ def _aiter_bootstrap_batch_ragged_prefill(
 def _aiter_bootstrap_batch_prefill(
     dtype: torch.dtype,
     has_logits_cap: bool,
-    causal: bool,
+    needs_mask: bool,
     has_lse: bool,
     page_size: int,
     head_dim: int,
@@ -652,7 +668,7 @@ def _aiter_bootstrap_batch_prefill(
         max_seqlen_k=seq_k,
         softmax_scale=softmax_scale,
         logits_soft_cap=0.5 if has_logits_cap else 0.0,
-        causal=causal,
+        causal=needs_mask,
         return_lse=has_lse,
         kv_last_page_lens=kv_last_page_lens,
     )
@@ -662,7 +678,7 @@ def _aiter_bootstrap_batch_prefill(
 def _aiter_native_paging_available(
     dtype: torch.dtype,
     has_logits_cap: bool,
-    causal: bool,
+    needs_mask: bool,
     page_size: int,
     head_dim: int,
     device_idx: int,
@@ -697,7 +713,13 @@ def _aiter_native_paging_available(
     try:
         for has_lse in (True, False):
             _aiter_bootstrap_batch_prefill(
-                dtype, has_logits_cap, causal, has_lse, page_size, head_dim, device_idx
+                dtype,
+                has_logits_cap,
+                needs_mask,
+                has_lse,
+                page_size,
+                head_dim,
+                device_idx,
             )
         # HIP launches are async, so a device-side failure would otherwise land
         # somewhere unrelated and leave us wrongly committed to the native path.
@@ -711,12 +733,12 @@ def _aiter_native_paging_available(
             raise
         logger.warning(
             "AITER has no native paged-prefill kernel for page_size=%d "
-            "(dtype=%s, causal=%s, logits_cap=%s): %s. Falling back to the "
+            "(dtype=%s, needs_mask=%s, logits_cap=%s): %s. Falling back to the "
             "flat-gather path, which copies K/V per run(). Set "
             "FLASHINFER_AITER_STRICT=1 to raise instead.",
             page_size,
             dtype,
-            causal,
+            needs_mask,
             has_logits_cap,
             e,
         )
@@ -735,7 +757,7 @@ def _aiter_native_paging_available(
 @functools.lru_cache(maxsize=None)
 def _aiter_single_prefill_available(
     dtype: torch.dtype,
-    causal: bool,
+    needs_mask: bool,
     has_lse: bool,
     has_logits_cap: bool,
     head_dim: int,
@@ -750,10 +772,12 @@ def _aiter_single_prefill_available(
     torch.cuda.synchronize(device_idx)
     try:
         if has_logits_cap:
-            _aiter_bootstrap_single_prefill_varlen(dtype, causal, head_dim, device_idx)
+            _aiter_bootstrap_single_prefill_varlen(
+                dtype, needs_mask, head_dim, device_idx
+            )
         else:
             _aiter_bootstrap_single_prefill_mha_fwd(
-                dtype, causal, has_lse, head_dim, device_idx
+                dtype, needs_mask, has_lse, head_dim, device_idx
             )
         torch.cuda.synchronize(device_idx)
     except Exception as e:
@@ -765,7 +789,7 @@ def _aiter_single_prefill_available(
 def _aiter_batch_ragged_available(
     dtype: torch.dtype,
     has_logits_cap: bool,
-    causal: bool,
+    needs_mask: bool,
     head_dim: int,
     device_idx: int,
 ) -> Optional[str]:
@@ -777,7 +801,7 @@ def _aiter_batch_ragged_available(
     torch.cuda.synchronize(device_idx)
     try:
         _aiter_bootstrap_batch_ragged_prefill(
-            dtype, has_logits_cap, causal, head_dim, device_idx
+            dtype, has_logits_cap, needs_mask, head_dim, device_idx
         )
         torch.cuda.synchronize(device_idx)
     except Exception as e:
@@ -1593,6 +1617,7 @@ def single_prefill_with_kv_cache(
 
     resolved_from_auto = backend == "auto"
     kv_len = k.shape[0] if kv_layout == "NHD" else k.shape[1]
+    needs_mask = _aiter_needs_mask(causal, window_left, kv_len)
 
     if backend == "auto":
         backend, _ = _auto_select_prefill_backend(
@@ -1647,7 +1672,7 @@ def single_prefill_with_kv_cache(
                 # AITER can build this variant is only knowable here.
                 reason = _aiter_single_prefill_available(
                     q.dtype,
-                    causal,
+                    needs_mask,
                     return_lse,
                     logits_soft_cap > 0,
                     q.shape[-1],
@@ -1657,11 +1682,15 @@ def single_prefill_with_kv_cache(
                 reason = None
                 if logits_soft_cap > 0:
                     _aiter_bootstrap_single_prefill_varlen(
-                        q.dtype, causal, q.shape[-1], q.device.index or 0
+                        q.dtype, needs_mask, q.shape[-1], q.device.index or 0
                     )
                 else:
                     _aiter_bootstrap_single_prefill_mha_fwd(
-                        q.dtype, causal, return_lse, q.shape[-1], q.device.index or 0
+                        q.dtype,
+                        needs_mask,
+                        return_lse,
+                        q.shape[-1],
+                        q.device.index or 0,
                     )
         if reason is not None:
             backend = "fa2"
@@ -2413,13 +2442,16 @@ class BatchPrefillWithPagedKVCacheWrapper:
         if self._backend == "aiter":
             dev_idx = self.device.index if self.device.index is not None else 0
             has_logits = logits_soft_cap > 0
+            # No kv_len here: plan() only has a maximum, and the batch shims do
+            # not normalize a too-wide window, so neither may this.
+            needs_mask = _aiter_needs_mask(causal, window_left)
             reason = None
             with _aiter_bootstrap_lock:
                 if page_size in _aiter_native_page_sizes():
                     use_native_paging = _aiter_native_paging_available(
                         q_data_type,
                         has_logits,
-                        causal,
+                        needs_mask,
                         page_size,
                         head_dim_qk,
                         dev_idx,
@@ -2460,19 +2492,19 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         logger.warning("auto backend falling back to fa2: %s", reason)
                     elif demotable:
                         reason = _aiter_batch_ragged_available(
-                            q_data_type, has_logits, causal, head_dim_qk, dev_idx
+                            q_data_type, has_logits, needs_mask, head_dim_qk, dev_idx
                         )
                     else:
                         # The flat-gather route dispatches through
                         # get_aiter_mha_varlen_fwd_handle, whose .so variant is keyed
-                        # on (dtype, causal, has_lse, has_logits_cap).  AITER
+                        # on (dtype, needs_mask, has_lse, has_logits_cap).  AITER
                         # pre-ships only a subset, so bootstrap the rest here rather
                         # than let the C++ dlopen fail inside run(); both has_lse
                         # variants, since plan() cannot know which run() will want.
                         _aiter_bootstrap_batch_ragged_prefill(
                             q_data_type,
                             has_logits,
-                            causal,
+                            needs_mask,
                             head_dim_qk,
                             dev_idx,
                         )
@@ -3441,19 +3473,20 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             )
 
         # Bootstrap AITER's lazy JIT so the C++ dlopen finds mha_varlen_fwd_*.so
-        # for the (dtype, causal, has_logits) combo this plan() call will use.
+        # for the (dtype, needs_mask, has_logits) combo this plan() call will use.
         # Stays outside the jit-module split above -- jit_args with an explicit
         # backend="aiter" still needs the .so -- and runs before _plan_info below
         # so a demotion to fa2 cannot strand plan bookkeeping built for AITER.
         if self._backend == "aiter":
             dev_idx = self.device.index if self.device.index is not None else 0
+            needs_mask = _aiter_needs_mask(causal, window_left)
             reason = None
             with _aiter_bootstrap_lock:
                 if resolved_from_auto:
                     reason = _aiter_batch_ragged_available(
                         q_data_type,
                         logits_soft_cap > 0,
-                        causal,
+                        needs_mask,
                         head_dim_qk,
                         dev_idx,
                     )
@@ -3461,7 +3494,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                     _aiter_bootstrap_batch_ragged_prefill(
                         q_data_type,
                         logits_soft_cap > 0,
-                        causal,
+                        needs_mask,
                         head_dim_qk,
                         dev_idx,
                     )

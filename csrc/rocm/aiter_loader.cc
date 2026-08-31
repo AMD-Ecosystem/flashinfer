@@ -56,7 +56,7 @@ std::string build_so_name(VariantKey const& key, std::string_view prefix, std::s
     name += key.has_logits_cap ? "_logits" : "_nlogits";
   }
   name += key.has_alibi ? "_alibi" : "_nbias";
-  name += key.causal ? "_mask" : "_nmask";
+  name += key.needs_mask ? "_mask" : "_nmask";
   name += key.has_lse ? "_lse" : "_nlse";
   name += suffix;
   return name;
@@ -180,7 +180,7 @@ void* get_aiter_mha_fwd_handle(VariantKey const& key) {
     return "  Hint: trigger AITER's lazy JIT build by importing aiter.ops.mha and "
            "calling mha_fwd with matching (dtype=" +
            std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
-           ", causal=" + (key.causal ? "true" : "false") +
+           ", causal_or_windowed=" + (key.needs_mask ? "true" : "false") +
            ", has_lse=" + (key.has_lse ? "true" : "false") + ")." + kAbiPinNote;
   });
 }
@@ -191,7 +191,7 @@ void* get_aiter_mha_varlen_fwd_handle(VariantKey const& key) {
     return "  Hint: trigger AITER's lazy JIT build by importing aiter.ops.mha and "
            "calling mha_varlen_fwd with matching (dtype=" +
            std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
-           ", causal=" + (key.causal ? "true" : "false") +
+           ", causal_or_windowed=" + (key.needs_mask ? "true" : "false") +
            ", has_lse=" + (key.has_lse ? "true" : "false") + ")." + kAbiPinNote;
   });
 }
@@ -203,7 +203,7 @@ void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key) {
         return "  Hint: trigger AITER's lazy JIT build by calling "
                "aiter.ops.mha.mha_batch_prefill_func() once with matching (dtype=" +
                std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
-               ", causal=" + (key.causal ? "true" : "false") +
+               ", causal_or_windowed=" + (key.needs_mask ? "true" : "false") +
                ", has_lse=" + (key.has_lse ? "true" : "false") +
                ") before this C++ path.\n"
                "  If the .so exists but dlsym fails, run: nm -D " +

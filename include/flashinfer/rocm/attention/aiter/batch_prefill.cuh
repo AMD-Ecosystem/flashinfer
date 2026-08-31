@@ -46,10 +46,11 @@ hipError_t BatchPrefillFlatGatherDispatched(
   static_assert(HEAD_DIM_QK == HEAD_DIM_VO, "AITER backend requires HEAD_DIM_QK == HEAD_DIM_VO");
   const bool has_lse = (lse_scratch != nullptr);
   const bool has_logits = (logits_soft_cap > 0.0f);
+  const bool needs_mask = causal || window_left >= 0;
 
   const flashinfer::aiter::VariantKey key{
       .dtype = dtype_enum,
-      .causal = causal,
+      .needs_mask = needs_mask,
       .has_lse = has_lse,
       .has_alibi = false,
       .has_logits_cap = has_logits,
@@ -104,9 +105,10 @@ hipError_t BatchPrefillFlatGatherDispatched(
   // Batch prefill uses mask_bottom_right so q[0] can attend to all prefix KV tokens
   // (i.e. k[j <= j + kv_len - qo_len]).  mask_top_left would wrongly restrict q[0]
   // to only k[0] when kv_len > qo_len (prefill-with-history / chunked-prefill case).
-  args.mask_type = causal ? kAiterBatchMaskBottomRight : kAiterBatchMaskNone;
+  args.mask_type = needs_mask ? kAiterBatchMaskBottomRight : kAiterBatchMaskNone;
   args.window_size_left = window_left;
-  // mask_bottom_right for causal requires window_size_right=0 to block future tokens.
+  // right=0 blocks future tokens for causal; -1 saturates to the full extent,
+  // leaving the left-bound-only band a non-causal window needs.
   args.window_size_right = causal ? 0 : -1;
 
   ::ck_tile::stream_config sconfig{};
@@ -141,10 +143,11 @@ hipError_t BatchPrefillNativePagedDispatched(
 
   const bool has_lse = (lse_scratch != nullptr);
   const bool has_logits = (logits_soft_cap > 0.0f);
+  const bool needs_mask = causal || window_left >= 0;
 
   const flashinfer::aiter::BatchPrefillVariantKey key{
       .dtype = dtype_enum,
-      .causal = causal,
+      .needs_mask = needs_mask,
       .has_lse = has_lse,
       .has_alibi = false,
       .has_logits_cap = has_logits,
@@ -240,12 +243,11 @@ hipError_t BatchPrefillNativePagedDispatched(
   args.stride_randval = args.nhead_stride_randval = args.batch_stride_randval = 0;
 
   args.window_size_left = window_left;
-  // AITER's mha_batch_prefill kernel uses window_size_right=0 when is_causal=True
-  // (mha_batch_prefill_kernels.cu:554). With mask_bottom_right, right=0 restricts
-  // future tokens; right=-1 means no right constraint, breaking causal masking.
+  // AITER's own wrapper sets right=0 for causal and leaves it at the caller's value
+  // otherwise; -1 saturates to the full extent, which is the left-bound-only band.
   args.window_size_right = causal ? 0 : -1;
   args.sink_size = 0;
-  args.mask_type = causal ? kAiterBatchMaskBottomRight : kAiterBatchMaskNone;
+  args.mask_type = needs_mask ? kAiterBatchMaskBottomRight : kAiterBatchMaskNone;
 
   args.p_drop = 0.0f;
   args.s_randval = false;

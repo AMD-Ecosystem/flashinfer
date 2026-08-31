@@ -12,13 +12,15 @@ namespace flashinfer::aiter {
 struct VariantKey {
   enum class Dtype : uint8_t { kFp16, kBf16 };
   Dtype dtype;
-  bool causal;
+  // AITER splits the .so on "is there any mask", not on causality: a non-causal
+  // sliding window needs the _mask variant too. Set it to causal || windowed.
+  bool needs_mask;
   bool has_lse;
   bool has_alibi;
   bool has_logits_cap;
 
   bool operator==(VariantKey const& o) const noexcept {
-    return dtype == o.dtype && causal == o.causal && has_lse == o.has_lse &&
+    return dtype == o.dtype && needs_mask == o.needs_mask && has_lse == o.has_lse &&
            has_alibi == o.has_alibi && has_logits_cap == o.has_logits_cap;
   }
 };
@@ -26,7 +28,7 @@ struct VariantKey {
 struct VariantKeyHash {
   std::size_t operator()(VariantKey const& k) const noexcept {
     std::size_t h = static_cast<std::size_t>(k.dtype);
-    h = h * 31 + k.causal;
+    h = h * 31 + k.needs_mask;
     h = h * 31 + k.has_lse;
     h = h * 31 + k.has_alibi;
     h = h * 31 + k.has_logits_cap;
