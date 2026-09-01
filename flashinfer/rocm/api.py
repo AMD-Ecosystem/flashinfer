@@ -10,10 +10,17 @@ conflict on every sync.
 """
 
 from .._version import __version__ as __version__
+from . import gate_cuda_only_modules
 from .hip_utils import check_torch_rocm_compatibility
 
 # Checks compatibility with installed torch
 check_torch_rocm_compatibility()
+
+# Before any of the imports below, so a gated name cannot be resolved on the way
+# in. flashinfer.comm also calls this, but `import flashinfer` never reaches it
+# on HIP, which left the gate uninstalled for every caller that did not import
+# comm first.
+gate_cuda_only_modules()
 
 # ========================================
 # HIP/ROCm Imports (AMD-ported modules)

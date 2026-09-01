@@ -613,15 +613,19 @@ def test_chain_speculative_sampling(
     "op",
     [flashinfer.sampling.top_k_renorm_probs, flashinfer.sampling.top_k_mask_logits],
 )
-def test_half_input_is_rejected_not_read_at_a_float_stride(op, dtype):
-    """v0.6.18 accepts fp16/bf16 here; ROCm's kernels are float32-only.
+def test_half_input_is_upcast_not_read_at_a_float_stride(op, dtype):
+    """v0.6.18 admits fp16/bf16 here and stopped casting; ROCm's kernels are fp32.
 
-    Without the guard the kernel walks 4 bytes per element of a 2-byte buffer
-    and writes the overrun back -- silent corruption, not a crash.
+    Unhandled, the kernel walks 4 bytes per element of a 2-byte buffer and writes
+    the overrun back -- silent corruption, not a crash. The dtype round-trip is
+    what proves the cast-back ran rather than the caller's buffer being reused.
     """
     x = torch.rand(4, 512, device="cuda").to(dtype)
-    with pytest.raises(RuntimeError, match="float32-only on ROCm"):
-        op(x, 10)
+
+    got = op(x, 10)
+    assert got.dtype == dtype
+    # half -> fp32 is lossless, so this is exact, not approximate.
+    assert torch.equal(got, op(x.float(), 10).to(dtype))
 
 
 def test_a_tensor_seed_is_rejected_rather_than_collapsed():

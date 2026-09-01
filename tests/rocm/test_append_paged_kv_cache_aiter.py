@@ -292,6 +292,46 @@ def test_append_aiter_rejects_noncontiguous_inputs():
     torch.testing.assert_close(v_aiter, v_native, rtol=0, atol=0)
 
 
+def test_append_native_accepts_the_5d_combined_cache():
+    """Same shape as the aiter case below, but reachable without amd-aiter installed.
+
+    Every other 5-D case is @requires_aiter, so on a box without the package this
+    is the only thing that launches the native kernel on the combined layout.
+    """
+    device = torch.device("cuda:0")
+    dtype = torch.bfloat16
+    nnz, num_kv_heads, head_dim, page_size, num_pages = 8, 4, 64, 16, 4
+
+    torch.manual_seed(0x5D)
+    k = torch.randn(nnz, num_kv_heads, head_dim, dtype=dtype, device=device)
+    v = torch.randn_like(k)
+    indptr = torch.tensor([0, nnz], dtype=torch.int32, device=device)
+    seq_lens = torch.tensor([nnz], dtype=torch.int32, device=device)
+    batch_indices, positions = flashinfer.get_batch_indices_positions(
+        indptr, seq_lens, nnz
+    )
+    combined = torch.zeros(
+        num_pages, 2, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
+    )
+    flashinfer.append_paged_kv_cache(
+        k,
+        v,
+        batch_indices,
+        positions,
+        combined,
+        torch.arange(num_pages, dtype=torch.int32, device=device),
+        torch.tensor([0, num_pages], dtype=torch.int32, device=device),
+        torch.tensor([nnz], dtype=torch.int32, device=device),
+        backend="native",
+    )
+    torch.testing.assert_close(
+        combined[0, 0, :nnz], k.view(nnz, num_kv_heads, head_dim)
+    )
+    torch.testing.assert_close(
+        combined[0, 1, :nnz], v.view(nnz, num_kv_heads, head_dim)
+    )
+
+
 @requires_aiter
 def test_append_aiter_accepts_the_5d_combined_cache():
     """The documented 5-D [P, 2, S, H, D] cache must still reach AITER.
