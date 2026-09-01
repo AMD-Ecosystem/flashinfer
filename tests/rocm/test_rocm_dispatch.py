@@ -76,7 +76,14 @@ def test_gate_installs_on_demand_and_widens_in_place(restore_gate):
 
 
 def test_gate_tolerates_a_foreign_marker(restore_gate):
-    """A marker-bearing object we cannot widen must not break gating."""
+    """A marker-bearing object we cannot widen must not break gating.
+
+    The real finder is lifted out first: flashinfer/rocm/api.py installs it
+    during `import flashinfer`, so leaving it in place would widen it and this
+    would stop being the only test that reaches the insert branch. That branch
+    is what puts the finder ahead of PathFinder -- append instead of insert
+    silently disables the gate, and nothing else would catch it.
+    """
     import flashinfer  # noqa: F401
 
     class Impostor:
@@ -85,10 +92,19 @@ def test_gate_tolerates_a_foreign_marker(restore_gate):
         def find_spec(self, *args, **kwargs):
             return None
 
+    marked = lambda f: getattr(f, "_is_flashinfer_cuda_only_finder", False)
+    real = [f for f in sys.meta_path if marked(f)]
+    sys.meta_path[:] = [f for f in sys.meta_path if not marked(f)]
     sys.meta_path.insert(0, Impostor())
     try:
         gate_cuda_only_modules({"flashinfer.comm._foreign_marker_probe"})
         with pytest.raises(ImportError, match="CUDA-only"):
             importlib.import_module("flashinfer.comm._foreign_marker_probe")
     finally:
-        sys.meta_path[:] = [f for f in sys.meta_path if not isinstance(f, Impostor)]
+        # Drop the Impostor and the finder this test installed, then put the
+        # process-wide one back -- a leftover second finder would break the
+        # len(finders()) == 1 assertion in the sibling test.
+        sys.meta_path[:] = [
+            f for f in sys.meta_path if not marked(f) and not isinstance(f, Impostor)
+        ]
+        sys.meta_path[:0] = real

@@ -628,22 +628,51 @@ def test_half_input_is_upcast_not_read_at_a_float_stride(op, dtype):
     assert torch.equal(got, op(x.float(), 10).to(dtype))
 
 
-def test_a_tensor_seed_is_rejected_rather_than_collapsed():
-    """One scalar seed covers the batch, so a per-request tensor must not be ignored."""
-    probs = torch.rand(4, 128, device="cuda")
-    probs /= probs.sum(dim=-1, keepdim=True)
+@pytest.mark.parametrize(
+    "op",
+    [
+        "sampling_from_logits",
+        "sampling_from_probs",
+        "top_p_sampling_from_probs",
+        "top_k_sampling_from_probs",
+        "min_p_sampling_from_probs",
+        "top_k_top_p_sampling_from_probs",
+    ],
+)
+def test_a_tensor_seed_is_rejected_rather_than_collapsed(op):
+    """One scalar seed covers the batch, so a per-request tensor must not be ignored.
+
+    Every entry point, because a collapsed seed is invisible in the output -- the
+    samples are still valid tokens, just all drawn from one stream.
+    """
+    x = torch.rand(4, 128, device="cuda")
+    if "probs" in op:
+        x /= x.sum(dim=-1, keepdim=True)
     seed = torch.arange(4, dtype=torch.int64, device="cuda")
+    args = {"top_p": 0.9, "top_k": 10, "min_p": 0.1}
+    kwargs = {k: v for k, v in args.items() if k in op}
+
     with pytest.raises(RuntimeError, match="not supported on ROCm"):
-        flashinfer.sampling.sampling_from_probs(
-            probs, seed=seed, offset=torch.zeros_like(seed)
+        getattr(flashinfer.sampling, op)(
+            x, **kwargs, seed=seed, offset=torch.zeros_like(seed)
         )
 
 
 def test_every_row_reports_valid():
-    """ROCm's kernels have no reject path, so return_valid is uniformly true."""
+    """ROCm's kernels have no reject path, so return_valid is uniformly true.
+
+    Calls the raw op with a false-filled `valid`. Through the wrapper the buffer
+    is torch.empty, so `valid.all()` would pass on any recycled nonzero block --
+    the assertion would hold with mark_all_valid deleted.
+    """
     probs = torch.rand(8, 128, device="cuda")
     probs /= probs.sum(dim=-1, keepdim=True)
-    samples, valid = flashinfer.sampling.sampling_from_probs(probs, return_valid=True)
-    assert valid.dtype == torch.bool and valid.shape == (8,)
+
+    flashinfer.sampling.get_sampling_module()  # loads torch.ops.sampling
+    samples = torch.empty(8, dtype=torch.int32, device="cuda")
+    valid = torch.zeros(8, dtype=torch.bool, device="cuda")
+    torch.ops.sampling.sampling_from_probs(
+        probs, samples, valid, None, False, None, 0, None, 0
+    )
     assert bool(valid.all())
     assert torch.all((samples >= 0) & (samples < 128))

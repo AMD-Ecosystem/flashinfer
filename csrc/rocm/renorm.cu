@@ -28,6 +28,9 @@ inline Fp32Pair as_fp32(const at::Tensor& in, const at::Tensor& out) {
   // straight to the kernel -- is checked as strictly as the cast path.
   CHECK_INPUT(out);
   CHECK_SHAPE(in, out);
+  TORCH_CHECK(in.scalar_type() == at::kFloat || in.scalar_type() == at::kHalf ||
+                  in.scalar_type() == at::kBFloat16,
+              "expected float32, float16 or bfloat16, got ", in.scalar_type());
   if (in.scalar_type() == at::kFloat && out.scalar_type() == at::kFloat) {
     return {in, out, false};
   }
@@ -46,6 +49,8 @@ void top_p_renorm_probs(at::Tensor probs, at::Tensor renorm_probs,
   unsigned int batch_size = probs.size(0);
   unsigned int vocab_size = probs.size(1);
   bool has_top_p_arr = maybe_top_p_arr.has_value();
+  TORCH_CHECK(workspace.numel() == 1,
+              "the ternary-search kernel reads no workspace; sampling.py sizes it 1");
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();

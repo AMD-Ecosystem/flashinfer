@@ -11,7 +11,7 @@
 # than skipping it. `excluded` is not checked that way: it exists to name
 # generated artifacts, which a checkout that has never been built does not have.
 
-# Files with a zero-line Python diff whose implementation is nonetheless ours:
+# Files whose implementation is ours regardless of how large their Python diff is:
 # jit_env.FLASHINFER_CSRC_DIR resolves to flashinfer/csrc/rocm/ on HIP, so these
 # wrappers load AMD kernels through an unmodified upstream source path. A
 # diff-based classifier cannot see that, and scoring them as upstream would
@@ -44,11 +44,11 @@ reason = "upstream, unmodified; the retired include list carried it only because
 
 [[unowned]]
 path = "flashinfer/fp4_quantization.py"
-reason = "basename collision only -- resolves to nv_internal/cpp/kernels/quantization.cu, not ours"
+reason = "re-export stub over the CUDA-only flashinfer/quantization/fp4_quantization.py"
 
 [[unowned]]
 path = "flashinfer/fp8_quantization.py"
-reason = "basename collision only -- resolves to nv_internal/cpp/kernels/quantization.cu, not ours"
+reason = "re-export stub over the CUDA-only flashinfer/quantization/fp8_quantization.py"
 
 # Measured by coverage because they sit under flashinfer/, but not source we own.
 [[excluded]]
