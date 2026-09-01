@@ -61,8 +61,8 @@ def test_gate_installs_on_demand_and_widens_in_place(restore_gate):
             if getattr(f, "_is_flashinfer_cuda_only_finder", False)
         ]
 
-    # Not asserted as pre-installed: nothing on the HIP path imports
-    # flashinfer.comm, so the gate may legitimately not be up yet.
+    # Widening an already-installed finder, not installing a second one:
+    # flashinfer/rocm/api.py puts the gate up during `import flashinfer`.
     gate_cuda_only_modules({"flashinfer.comm._not_a_real_module"})
     assert len(finders()) == 1
     with pytest.raises(ImportError, match="CUDA-only"):

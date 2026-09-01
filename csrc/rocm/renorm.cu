@@ -13,16 +13,21 @@ using namespace flashinfer;
 // ternary-search kernels, which need neither and are deterministic already,
 // so those parameters are accepted to match the schema and left unused.
 
-// ROCm's kernels are float32-only, and v0.6.18 stopped casting for these two:
-// the wrapper now admits fp16/bf16 and passes the tensor through, so a half
-// input would be read at a float stride -- a silent 2x overrun of both buffers.
-// Upcast rather than reject; the wrapper itself did this up to 0.5.3.
+// ROCm's kernels are float32-only. v0.6.18 dropped the wrapper's probs.float()
+// for the two top_k ops, so a half input reached the kernel and was read at a
+// float stride -- a silent 2x overrun of both buffers. Upcast rather than
+// reject, which is what the wrapper did up to 0.5.3. top_p still casts in
+// Python; it goes through here anyway so the next sync cannot reopen this.
 struct Fp32Pair {
   at::Tensor in, out;
   bool cast_back;
 };
 
 inline Fp32Pair as_fp32(const at::Tensor& in, const at::Tensor& out) {
+  // Before the branch, so the fp32 fast path -- which hands the caller's buffer
+  // straight to the kernel -- is checked as strictly as the cast path.
+  CHECK_INPUT(out);
+  CHECK_SHAPE(in, out);
   if (in.scalar_type() == at::kFloat && out.scalar_type() == at::kFloat) {
     return {in, out, false};
   }
@@ -35,6 +40,7 @@ void top_p_renorm_probs(at::Tensor probs, at::Tensor renorm_probs,
                         std::optional<at::Tensor> maybe_top_p_arr, double top_p_val,
                         bool is_deterministic, at::Tensor workspace) {
   CHECK_INPUT(probs);
+  auto fp32 = as_fp32(probs, renorm_probs);
   auto device = probs.device();
   CHECK_DIM(2, probs);  // probs: (batch_size, vocab_size)
   unsigned int batch_size = probs.size(0);
@@ -44,11 +50,12 @@ void top_p_renorm_probs(at::Tensor probs, at::Tensor renorm_probs,
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
   hipError_t status = sampling::TopPRenormProb<float>(
-      static_cast<float*>(probs.data_ptr()), static_cast<float*>(renorm_probs.data_ptr()),
+      static_cast<float*>(fp32.in.data_ptr()), static_cast<float*>(fp32.out.data_ptr()),
       has_top_p_arr ? static_cast<float*>(maybe_top_p_arr->data_ptr()) : nullptr, batch_size,
       top_p_val, vocab_size, stream);
   TORCH_CHECK(status == hipSuccess,
               "TopPRenormProb failed with error code " + std::string(hipGetErrorString(status)));
+  if (fp32.cast_back) renorm_probs.copy_(fp32.out);
 }
 
 void top_k_renorm_probs(at::Tensor probs, at::Tensor renorm_probs,

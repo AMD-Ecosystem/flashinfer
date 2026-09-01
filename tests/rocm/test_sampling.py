@@ -617,8 +617,8 @@ def test_half_input_is_upcast_not_read_at_a_float_stride(op, dtype):
     """v0.6.18 admits fp16/bf16 here and stopped casting; ROCm's kernels are fp32.
 
     Unhandled, the kernel walks 4 bytes per element of a 2-byte buffer and writes
-    the overrun back -- silent corruption, not a crash. The dtype round-trip is
-    what proves the cast-back ran rather than the caller's buffer being reused.
+    the overrun back -- silent corruption, not a crash. torch.equal is the
+    assertion that fails without the fix; the dtype only restates the wrapper.
     """
     x = torch.rand(4, 512, device="cuda").to(dtype)
 

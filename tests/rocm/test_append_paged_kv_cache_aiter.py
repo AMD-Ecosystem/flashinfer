@@ -295,8 +295,9 @@ def test_append_aiter_rejects_noncontiguous_inputs():
 def test_append_native_accepts_the_5d_combined_cache():
     """Same shape as the aiter case below, but reachable without amd-aiter installed.
 
-    Every other 5-D case is @requires_aiter, so on a box without the package this
-    is the only thing that launches the native kernel on the combined layout.
+    Every other 5-D case is @requires_aiter. Upstream's test_page.py covered the
+    layout, but asserted nothing about the bytes written -- and 0.6.18 made it
+    uncollectable on ROCm anyway.
     """
     device = torch.device("cuda:0")
     dtype = torch.bfloat16
@@ -324,12 +325,9 @@ def test_append_native_accepts_the_5d_combined_cache():
         torch.tensor([nnz], dtype=torch.int32, device=device),
         backend="native",
     )
-    torch.testing.assert_close(
-        combined[0, 0, :nnz], k.view(nnz, num_kv_heads, head_dim)
-    )
-    torch.testing.assert_close(
-        combined[0, 1, :nnz], v.view(nnz, num_kv_heads, head_dim)
-    )
+    # Bit-exact: the append is a scatter, not arithmetic.
+    torch.testing.assert_close(combined[0, 0, :nnz], k, rtol=0, atol=0)
+    torch.testing.assert_close(combined[0, 1, :nnz], v, rtol=0, atol=0)
 
 
 @requires_aiter
