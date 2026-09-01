@@ -111,8 +111,8 @@ cause subtle build failures.
 
 **Test parallelism**: `pytest -n auto` automatically halves the physical GPU
 count to avoid HSA/HIPBLAS flakiness under concurrent load. The `slow` marker
-gates footprint, not runtime, and nothing runs `-m slow` — marking a test
-retires it, so do not reach for it to speed a lane up.
+gates footprint, not runtime, and no CI job or script runs `-m slow` —
+marking a test retires it, so do not reach for it to speed a lane up.
 
 **A cold JIT cache dominates the suite**: 118 min cold against 10 min warm on
 gfx950 at `-n 1`, so 92% of a first run is compilation. Clearing

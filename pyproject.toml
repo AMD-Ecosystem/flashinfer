@@ -196,7 +196,7 @@ testpaths = [
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
-    "slow: ROCm tests whose memory footprint is unsafe alongside others under '-n auto' — never a runtime judgement. Nothing runs '-m slow', so marking a test retires it rather than deferring it.",
+    "slow: ROCm tests whose memory footprint is unsafe alongside others under '-n auto' — never a runtime judgement. No CI job or script runs '-m slow', so marking a test retires it from every automated lane rather than deferring it.",
 ]
 
 [tool.coverage.run]

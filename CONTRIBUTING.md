@@ -79,7 +79,7 @@ on a missing kernel instead of silently triggering a build.
 # Running Tests
 
 ```bash
-# Fast path -- skips the multi-GB and bespoke-compile cases:
+# Fast path -- skips the multi-GB speculative-sampling cases:
 pytest -n auto --reruns 2 -m "not slow"
 
 # Full coverage:
