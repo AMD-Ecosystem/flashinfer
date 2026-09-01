@@ -8,13 +8,25 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union, Hashable
 
-import tvm_ffi
 from filelock import FileLock
 
-from ..compilation_context import CompilationContext
+from ..rocm.device_utils import IS_CUDA, IS_HIP
 from . import env as jit_env
-from .cpp_ext import generate_ninja_build_for_op, get_nvcc_parallelism_flags, run_ninja
 from .utils import write_if_different
+
+if IS_CUDA:
+    import tvm_ffi
+
+    from ..compilation_context import CompilationContext
+    from .cpp_ext import (
+        generate_ninja_build_for_op,
+        get_nvcc_parallelism_flags,
+        run_ninja,
+    )
+elif IS_HIP:
+    from ..rocm.compilation_context import CompilationContext  # type: ignore[assignment]
+    from .rocm.cpp_ext import generate_ninja_build_for_op, run_ninja  # type: ignore[no-redef]
+    from .rocm.core import check_rocm_arch as check_rocm_arch
 
 os.makedirs(jit_env.FLASHINFER_WORKSPACE_DIR, exist_ok=True)
 # Note: Do NOT create FLASHINFER_CSRC_DIR here - it's the package directory
@@ -427,7 +439,15 @@ class JitSpecNvcc(JitSpec):
             run_ninja(self.build_dir, self.ninja_path, verbose)
 
     def load(self, so_path: Optional[Path] = None):
-        return tvm_ffi.load_module(str(so_path or self.jit_library_path))
+        so_path = so_path or self.jit_library_path
+        if IS_HIP:
+            # torch's own loader, not tvm_ffi: the HIP sources register through
+            # TORCH_LIBRARY, so the ops land on torch.ops.<name>.
+            import torch
+
+            torch.ops.load_library(so_path)
+            return getattr(torch.ops, self.name)
+        return tvm_ffi.load_module(str(so_path))
 
     def get_compile_commands(self) -> List[dict]:
         """
@@ -521,55 +541,61 @@ def gen_jit_spec(
     extra_include_paths: Optional[List[Union[str, Path]]] = None,
     needs_device_linking: bool = False,
 ) -> JitSpec:
-    check_cuda_arch()
-    # Use FLASHINFER_JIT_DEBUG if set, otherwise use FLASHINFER_JIT_VERBOSE (for backward compatibility)
-    debug_env = os.environ.get("FLASHINFER_JIT_DEBUG")
-    verbose_env = os.environ.get("FLASHINFER_JIT_VERBOSE", "0")
-    debug = (debug_env if debug_env is not None else verbose_env) == "1"
+    if IS_CUDA:
+        check_cuda_arch()
+        # Use FLASHINFER_JIT_DEBUG if set, otherwise use FLASHINFER_JIT_VERBOSE (for backward compatibility)
+        debug_env = os.environ.get("FLASHINFER_JIT_DEBUG")
+        verbose_env = os.environ.get("FLASHINFER_JIT_VERBOSE", "0")
+        debug = (debug_env if debug_env is not None else verbose_env) == "1"
 
-    # Only add default C++ standard if not specified in extra flags
-    cflags_has_std = extra_cflags is not None and any(
-        f.startswith("-std=") for f in extra_cflags
-    )
-    cuda_cflags_has_std = extra_cuda_cflags is not None and any(
-        f.startswith("-std=") for f in extra_cuda_cflags
-    )
+        # Only add default C++ standard if not specified in extra flags
+        cflags_has_std = extra_cflags is not None and any(
+            f.startswith("-std=") for f in extra_cflags
+        )
+        cuda_cflags_has_std = extra_cuda_cflags is not None and any(
+            f.startswith("-std=") for f in extra_cuda_cflags
+        )
 
-    cflags = ["-Wno-switch-bool"]
-    if not cflags_has_std:
-        cflags.insert(0, "-std=c++17")
+        cflags = ["-Wno-switch-bool"]
+        if not cflags_has_std:
+            cflags.insert(0, "-std=c++17")
 
-    cuda_cflags = [
-        *get_nvcc_parallelism_flags(),
-        "-use_fast_math",
-        "-Xfatbin=-compress-all",  # Ensure all device binaries are compressed
-        "--compress-mode=size",
-        "-DFLASHINFER_ENABLE_F16",
-        "-DFLASHINFER_ENABLE_BF16",
-        "-DFLASHINFER_ENABLE_FP8_E4M3",
-        "-DFLASHINFER_ENABLE_FP8_E5M2",
-    ]
-    if not cuda_cflags_has_std:
-        cuda_cflags.insert(0, "-std=c++17")
-
-    if debug:
-        cflags += ["-O0", "-g"]
-        cuda_cflags += [
-            "-g",
-            "-O0",
-            "--device-debug",
-            "-lineinfo",
-            "--ptxas-options=-v",
-            "-DCUTLASS_DEBUG_TRACE_LEVEL=2",
+        cuda_cflags = [
+            *get_nvcc_parallelism_flags(),
+            "-use_fast_math",
+            "-Xfatbin=-compress-all",  # Ensure all device binaries are compressed
+            "--compress-mode=size",
+            "-DFLASHINFER_ENABLE_F16",
+            "-DFLASHINFER_ENABLE_BF16",
+            "-DFLASHINFER_ENABLE_FP8_E4M3",
+            "-DFLASHINFER_ENABLE_FP8_E5M2",
         ]
-    else:
-        # non debug mode
-        cuda_cflags += ["-DNDEBUG", "-O3"]
-        cflags += ["-DNDEBUG", "-O3"]
+        if not cuda_cflags_has_std:
+            cuda_cflags.insert(0, "-std=c++17")
 
-    # useful for ncu source correlation
-    if os.environ.get("FLASHINFER_JIT_LINEINFO", "0") == "1":
-        cuda_cflags += ["-lineinfo"]
+        if debug:
+            cflags += ["-O0", "-g"]
+            cuda_cflags += [
+                "-g",
+                "-O0",
+                "--device-debug",
+                "-lineinfo",
+                "--ptxas-options=-v",
+                "-DCUTLASS_DEBUG_TRACE_LEVEL=2",
+            ]
+        else:
+            # non debug mode
+            cuda_cflags += ["-DNDEBUG", "-O3"]
+            cflags += ["-DNDEBUG", "-O3"]
+
+        # useful for ncu source correlation
+        if os.environ.get("FLASHINFER_JIT_LINEINFO", "0") == "1":
+            cuda_cflags += ["-lineinfo"]
+    else:
+        from .rocm.core import build_flags
+
+        check_rocm_arch()
+        cflags, cuda_cflags = build_flags(current_compilation_context)
 
     if extra_cflags is not None:
         cflags += extra_cflags

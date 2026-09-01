@@ -1,5 +1,6 @@
 """
 Copyright (c) 2024 by FlashInfer team.
+Copyright (c) 2025-2026 Advanced Micro Devices, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,8 +22,8 @@ limitations under the License.
 import logging
 import os
 import pathlib
-from ..compilation_context import CompilationContext
-from ..version import __version__ as flashinfer_version
+
+from ..rocm.device_utils import IS_CUDA, IS_HIP
 
 # NOTE: use stdlib logging (namespaced under flashinfer.jit) instead of the
 # FlashInferJITLogger from core.py -- core.py imports this module, so importing
@@ -55,12 +56,28 @@ def has_flashinfer_cubin() -> bool:
     return importlib.util.find_spec("flashinfer_cubin") is not None
 
 
+def has_amd_flashinfer_jit_cache() -> bool:
+    """
+    Check if amd_flashinfer_jit_cache module is available.
+
+    Returns:
+        True if amd_flashinfer_jit_cache exists, False otherwise
+    """
+    import importlib.util
+
+    return importlib.util.find_spec("amd_flashinfer_jit_cache") is not None
+
+
 FLASHINFER_BASE_DIR: pathlib.Path = pathlib.Path(
     os.getenv("FLASHINFER_WORKSPACE_BASE", pathlib.Path.home().as_posix())
 )
 
 FLASHINFER_CACHE_DIR: pathlib.Path = FLASHINFER_BASE_DIR / ".cache" / "flashinfer"
 _package_root: pathlib.Path = pathlib.Path(__file__).resolve().parents[1]
+
+if IS_CUDA:
+    from ..compilation_context import CompilationContext
+    from ..version import __version__ as flashinfer_version
 
 
 def _get_cubin_dir():
@@ -107,9 +124,6 @@ def _get_cubin_dir():
     return FLASHINFER_CACHE_DIR / "cubins"
 
 
-FLASHINFER_CUBIN_DIR: pathlib.Path = _get_cubin_dir()
-
-
 def _get_aot_dir():
     """
     Get the AOT directory path with the following priority:
@@ -142,9 +156,6 @@ def _get_aot_dir():
     return _package_root / "data" / "aot"
 
 
-FLASHINFER_AOT_DIR: pathlib.Path = _get_aot_dir()
-
-
 def _get_workspace_dir_name() -> pathlib.Path:
     compilation_context = CompilationContext()
     # NOTE(Zihao): sorted() is crucial here to ensure deterministic directory names.
@@ -157,21 +168,39 @@ def _get_workspace_dir_name() -> pathlib.Path:
     return FLASHINFER_CACHE_DIR / flashinfer_version / arch
 
 
-# use pathlib
-FLASHINFER_WORKSPACE_DIR: pathlib.Path = _get_workspace_dir_name()
-FLASHINFER_JIT_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "cached_ops"
-FLASHINFER_GEN_SRC_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "generated"
-FLASHINFER_DATA: pathlib.Path = _package_root / "data"
-FLASHINFER_INCLUDE_DIR: pathlib.Path = _package_root / "data" / "include"
-FLASHINFER_CSRC_DIR: pathlib.Path = _package_root / "data" / "csrc"
-# FLASHINFER_SRC_DIR = _package_root / "data" / "src"
-CUTLASS_INCLUDE_DIRS: list[pathlib.Path] = [
-    _package_root / "data" / "cutlass" / "include",
-    _package_root / "data" / "cutlass" / "tools" / "util" / "include",
-]
-SPDLOG_INCLUDE_DIR: pathlib.Path = _package_root / "data" / "spdlog" / "include"
-CCCL_INCLUDE_DIRS: list[pathlib.Path] = [
-    _package_root / "data" / "cccl" / "cub",
-    _package_root / "data" / "cccl" / "libcudacxx" / "include",
-    _package_root / "data" / "cccl" / "thrust",
-]
+if IS_CUDA:
+    FLASHINFER_CUBIN_DIR: pathlib.Path = _get_cubin_dir()
+    FLASHINFER_AOT_DIR: pathlib.Path = _get_aot_dir()
+    # use pathlib
+    FLASHINFER_WORKSPACE_DIR: pathlib.Path = _get_workspace_dir_name()
+    FLASHINFER_JIT_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "cached_ops"
+    FLASHINFER_GEN_SRC_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "generated"
+    FLASHINFER_DATA: pathlib.Path = _package_root / "data"
+    FLASHINFER_INCLUDE_DIR: pathlib.Path = _package_root / "data" / "include"
+    FLASHINFER_CSRC_DIR: pathlib.Path = _package_root / "data" / "csrc"
+    # FLASHINFER_SRC_DIR = _package_root / "data" / "src"
+    CUTLASS_INCLUDE_DIRS: list[pathlib.Path] = [
+        _package_root / "data" / "cutlass" / "include",
+        _package_root / "data" / "cutlass" / "tools" / "util" / "include",
+    ]
+    SPDLOG_INCLUDE_DIR: pathlib.Path = _package_root / "data" / "spdlog" / "include"
+    CCCL_INCLUDE_DIRS: list[pathlib.Path] = [
+        _package_root / "data" / "cccl" / "cub",
+        _package_root / "data" / "cccl" / "libcudacxx" / "include",
+        _package_root / "data" / "cccl" / "thrust",
+    ]
+elif IS_HIP:
+    from ..get_include_paths import get_csrc_dir, get_include
+    from .rocm.env import get_aot_dir as _get_aot_dir_hip
+    from .rocm.env import get_workspace_dir as _get_workspace_dir_hip
+
+    FLASHINFER_AOT_DIR: pathlib.Path = _get_aot_dir_hip(  # type: ignore[no-redef]
+        _package_root, has_amd_flashinfer_jit_cache
+    )
+    FLASHINFER_WORKSPACE_DIR: pathlib.Path = _get_workspace_dir_hip(  # type: ignore[no-redef]
+        FLASHINFER_CACHE_DIR
+    )
+    FLASHINFER_JIT_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "cached_ops"  # type: ignore[no-redef]
+    FLASHINFER_GEN_SRC_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "generated"  # type: ignore[no-redef]
+    FLASHINFER_INCLUDE_DIR: pathlib.Path = pathlib.Path(get_include())  # type: ignore[no-redef]
+    FLASHINFER_CSRC_DIR: pathlib.Path = pathlib.Path(get_csrc_dir())  # type: ignore[no-redef]
