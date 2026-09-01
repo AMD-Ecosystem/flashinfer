@@ -21,8 +21,8 @@ path = "flashinfer/sampling.py"
 reason = "wrapper over flashinfer/csrc/rocm/sampling.cu and renorm.cu"
 
 [[redirect_owned]]
-path = "flashinfer/quantization.py"
-reason = "wrapper over flashinfer/csrc/rocm/quantization.cu"
+path = "flashinfer/quantization/packbits.py"
+reason = "wrapper over flashinfer/csrc/rocm/quantization.cu; v0.6.18 split it out of quantization.py"
 
 [[redirect_owned]]
 path = "flashinfer/jit/sampling.py"
