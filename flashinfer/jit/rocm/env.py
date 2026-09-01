@@ -99,10 +99,12 @@ def _aot_arch_is_usable(cache_dir: pathlib.Path) -> bool:
     if not manifest.exists():
         return True
 
+    # Imported outside the try: an ImportError here is a packaging bug, and
+    # swallowing it would silently disable the guard rather than report it.
+    from ...rocm.hip_utils import _canonical_arch_list
+
     try:
         built_for = json.loads(manifest.read_text())["rocm_arch_list"]
-        from ...hip_utils import _canonical_arch_list
-
         built = set(_canonical_arch_list(built_for).split(","))
     except Exception:
         # Catch-all on purpose: a hand-edited or half-written manifest can fail

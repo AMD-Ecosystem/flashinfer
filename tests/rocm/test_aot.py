@@ -704,18 +704,18 @@ def _add_group_keys_of(module_path):
 
 
 def test_the_rocm_default_config_carries_the_same_add_groups_as_cuda():
-    """aot_hip.py is a hand-maintained fork of aot.py and drifts silently.
+    """rocm/aot.py is a hand-maintained fork of aot.py and drifts silently.
 
     That drift is why the singletons were missing here while CUDA shipped them.
     Comparing the group toggles is the cheap tripwire for the next divergence.
     """
-    pkg = Path(aot_hip.__file__).parent
-    cuda_keys = _add_group_keys_of(pkg / "aot.py")
-    rocm_keys = _add_group_keys_of(pkg / "aot_hip.py")
+    rocm_pkg = Path(aot_hip.__file__).parent
+    cuda_keys = _add_group_keys_of(rocm_pkg.parent / "aot.py")
+    rocm_keys = _add_group_keys_of(rocm_pkg / "aot.py")
 
     assert cuda_keys, "parsed no add_* groups from aot.py -- the parser is broken"
     assert cuda_keys - rocm_keys <= _CUDA_ONLY_ADD_GROUPS, (
-        "CUDA grew an add_* group with no ROCm counterpart. Add it to aot_hip, "
+        "CUDA grew an add_* group with no ROCm counterpart. Add it to rocm/aot.py, "
         "or to _CUDA_ONLY_ADD_GROUPS if ROCm genuinely has no equivalent."
     )
 
