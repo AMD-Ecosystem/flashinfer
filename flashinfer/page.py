@@ -20,6 +20,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 
+from .rocm.device_utils import IS_HIP
 from .api_logging import flashinfer_api
 from .trace.templates.page import (
     append_paged_kv_cache_trace,
@@ -36,6 +37,11 @@ from .utils import (
     register_custom_op,
     register_fake_op,
 )
+
+if IS_HIP:
+    # Module scope: registers the AITER custom ops at import time, as the
+    # inline block did, and keeps the delegation off the per-call path.
+    from .rocm.page import maybe_append_paged_kv_cache
 
 
 @functools.cache
@@ -74,6 +80,24 @@ def _append_paged_mla_kv_cache_kernel(
         kv_indptr,
         kv_last_page_len,
     )
+
+
+# Mirrors the append_paged_kv_cache fake below. What actually makes this op
+# traceable is the custom-op wrapper above -- removing this decorator alone
+# leaves torch.compile working, since a None-returning op needs no fake impl.
+@register_fake_op("flashinfer::append_paged_mla_kv_cache")
+def _fake_append_paged_mla_kv_cache_kernel(
+    append_ckv: torch.Tensor,
+    append_kpe: torch.Tensor,
+    batch_indices: torch.Tensor,
+    positions: torch.Tensor,
+    ckv_cache: Optional[torch.Tensor],
+    kpe_cache: Optional[torch.Tensor],
+    kv_indices: torch.Tensor,
+    kv_indptr: torch.Tensor,
+    kv_last_page_len: torch.Tensor,
+) -> None:
+    pass
 
 
 @register_custom_op(
@@ -364,6 +388,10 @@ def append_paged_mla_kv_cache(
     r"""Append a batch of key-value pairs to a paged key-value cache,
     Note: current only support ckv=512 and kpe=64
 
+    On ROCm, this accepts fp8 caches, but
+    :class:`~flashinfer.rocm.mla.BatchMLAPagedAttentionWrapper` takes only
+    fp16/bf16 -- an fp8 MLA cache is currently write-only.
+
     Parameters
     ----------
     append_ckv : torch.Tensor
@@ -410,6 +438,7 @@ def append_paged_kv_cache(
     kv_indptr: torch.Tensor,
     kv_last_page_len: torch.Tensor,
     kv_layout: str = "NHD",
+    backend: str = "auto",
 ) -> None:
     r"""Append a batch of key-value pairs to a paged key-value cache.
 
@@ -448,6 +477,13 @@ def append_paged_kv_cache(
         shape: ``[batch_size]``.
     kv_layout : str
         The layout of the paged kv-cache, either ``NHD`` or ``HND``.
+    backend : str
+        Kernel backend to use. ``"auto"`` (default) resolves to the native
+        FlashInfer JIT kernel on all platforms — it is the faster kernel on ROCm
+        (3.62 TB/s against AITER's 2.86 on gfx942).
+        ``"native"`` uses the FlashInfer JIT kernel on all platforms.
+        ``"aiter"`` uses AMD AITER's ``reshape_and_cache_flash`` — ROCm (gfx942/gfx950) only;
+        requires the ``aiter`` package, NHD layout, and fp16/bf16 dtype.
 
     Example
     -------
@@ -516,12 +552,29 @@ def append_paged_kv_cache(
     get_batch_indices_positions
     """
     _check_kv_layout(kv_layout)
+    paged_k_cache, paged_v_cache = _unpack_paged_kv_cache(paged_kv_cache, kv_layout)
+    if IS_HIP:
+        if maybe_append_paged_kv_cache(
+            append_key,
+            append_value,
+            batch_indices,
+            positions,
+            paged_k_cache,
+            paged_v_cache,
+            kv_indices,
+            kv_indptr,
+            kv_last_page_len,
+            kv_layout,
+            backend,
+        ):
+            return
     _append_paged_kv_cache_kernel(
         append_key,
         append_value,
         batch_indices,
         positions,
-        *_unpack_paged_kv_cache(paged_kv_cache, kv_layout),
+        paged_k_cache,
+        paged_v_cache,
         kv_indices,
         kv_indptr,
         kv_last_page_len,

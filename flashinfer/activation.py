@@ -20,6 +20,11 @@ from typing import Optional
 
 import torch
 
+from .rocm.device_utils import IS_CUDA, IS_HIP
+
+if IS_HIP:
+    from .rocm.activation import maybe_silu_and_mul
+
 from .api_logging import flashinfer_api
 from .jit import gen_act_and_mul_module
 from .trace.templates.activation import (
@@ -34,7 +39,8 @@ from .utils import (
     register_fake_op,
     get_compute_capability,
 )
-from .quantization.fp4_quantization import get_fp4_quantization_module
+if IS_CUDA:
+    from .quantization.fp4_quantization import get_fp4_quantization_module
 
 
 @functools.cache
@@ -75,7 +81,10 @@ def _check_shape(input: torch.Tensor, output: torch.Tensor) -> None:
 
 @flashinfer_api(trace=silu_and_mul_trace)
 def silu_and_mul(
-    input: torch.Tensor, out: torch.Tensor = None, enable_pdl: Optional[bool] = None
+    input: torch.Tensor,
+    out: Optional[torch.Tensor] = None,
+    enable_pdl: Optional[bool] = None,
+    backend: str = "auto",
 ) -> torch.Tensor:
     r"""Fused SiLU and Mul operation.
 
@@ -93,13 +102,29 @@ def silu_and_mul(
         Whether to enable `programmatic dependent launch
         <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
 
+    backend: str
+        Kernel backend to use. ``"auto"`` (default) resolves to the native
+        FlashInfer JIT kernel on all platforms.
+        ``"native"`` uses the FlashInfer JIT kernel on all platforms.
+        ``"aiter"`` uses AMD AITER's ``silu_and_mul`` C++ kernel — ROCm
+        (gfx942/gfx950) only; raises ``ValueError`` on any other platform.
+
     Returns
     -------
     output: torch.Tensor
         Output tensor, shape (..., hidden_size).
     """
-    if enable_pdl is None:
-        enable_pdl = device_support_pdl(input.device)
+    if backend not in ("auto", "native", "aiter"):
+        raise ValueError(
+            f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
+        )
+    if backend == "aiter":
+        # Validate the explicit opt-in up front so a misconfiguration (unsupported
+        # device or missing aiter package) surfaces as a clear ValueError here
+        # instead of a raw import/build error deeper in the JIT loader.
+        from .rocm.aiter_utils import require_aiter
+
+        require_aiter(input.device, "silu_and_mul")
     if input.shape[-1] * input.dtype.itemsize % 16 != 0:
         raise ValueError("The pointers must be multiple of 16 bytes.")
     if out is not None:
@@ -110,6 +135,11 @@ def silu_and_mul(
             device=input.device,
             dtype=input.dtype,
         )
+    if IS_HIP:
+        if (result := maybe_silu_and_mul(out, input, backend)) is not None:
+            return result
+    if enable_pdl is None:
+        enable_pdl = device_support_pdl(input.device)
     get_act_and_mul_module("silu").silu_and_mul(
         out,
         input,

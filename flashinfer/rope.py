@@ -19,6 +19,11 @@ from typing import Optional, Tuple
 
 import torch
 
+from .rocm.device_utils import IS_HIP
+
+if IS_HIP:
+    from .rocm.rope import maybe_apply_rope_cos_sin_cache
+
 from .api_logging import flashinfer_api
 from .trace.templates.rope import (
     apply_llama31_rope_inplace_trace,
@@ -84,7 +89,7 @@ def _fake_apply_rope(
     rope_scale: float,
     rope_theta: float,
 ) -> None:
-    pass
+    pass  # pragma: no cover
 
 
 @register_custom_op("flashinfer::apply_llama31_rope", mutates_args=("q_rope", "k_rope"))
@@ -136,7 +141,7 @@ def _fake_apply_llama31_rope(
     high_freq_factor: float,
     old_context_len: float,
 ) -> None:
-    pass
+    pass  # pragma: no cover
 
 
 @register_custom_op("flashinfer::apply_rope_pos_ids", mutates_args=("q_rope", "k_rope"))
@@ -176,7 +181,7 @@ def _fake_apply_rope_pos_ids(
     rope_scale: float,
     rope_theta: float,
 ) -> None:
-    pass
+    pass  # pragma: no cover
 
 
 @register_custom_op(
@@ -239,7 +244,7 @@ def _fake_rope_quantize(
     interleave: bool,
     enable_pdl: bool,
 ) -> None:
-    pass
+    pass  # pragma: no cover
 
 
 @register_custom_op(
@@ -338,7 +343,7 @@ def _fake_rope_quantize_fp8_append_paged_kv_cache(
     interleave: bool,
     enable_pdl: bool,
 ) -> None:
-    pass
+    pass  # pragma: no cover
 
 
 @register_custom_op(
@@ -375,7 +380,7 @@ def _fake_apply_rope_pos_ids_cos_sin_cache(
     pos_ids: torch.Tensor,
     interleave: bool,
 ) -> None:
-    pass
+    pass  # pragma: no cover
 
 
 @register_custom_op(
@@ -426,7 +431,7 @@ def _fake_apply_llama31_rope_pos_ids(
     high_freq_factor: float,
     old_context_len: float,
 ) -> None:
-    pass
+    pass  # pragma: no cover
 
 
 @flashinfer_api(trace=apply_rope_inplace_trace)
@@ -1163,6 +1168,7 @@ def apply_rope_with_cos_sin_cache(
     head_size: int,
     cos_sin_cache: torch.Tensor,
     is_neox: bool = True,
+    backend: str = "auto",
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Apply rotary embedding to keys and queries with precomputed cos/sin values.
@@ -1194,6 +1200,14 @@ def apply_rope_with_cos_sin_cache(
         * If ``False``, the last dimension of the query/key tensor is interleaved, i.e.,
           we rotate the even dimensions ``([..., ::2])`` and odd dimensions ``([..., 1::2])``.
 
+    backend : str
+        Kernel backend to use. ``"auto"`` (default) resolves to the native
+        FlashInfer JIT kernel on all platforms.
+        ``"native"`` uses the FlashInfer JIT kernel on all platforms.
+        ``"aiter"`` uses AMD AITER's C++ ``rope_cached_positions_2c_fwd_impl``
+        kernel — ROCm (gfx942/gfx950) only; requires the ``aiter`` package and
+        query/key to share a dtype.
+
     Returns
     -------
     query_out : torch.Tensor
@@ -1208,8 +1222,34 @@ def apply_rope_with_cos_sin_cache(
     if cos_sin_cache.dtype != torch.float32:
         raise ValueError("cos_sin_cache should be float32")
 
+    if backend not in ("auto", "native", "aiter"):
+        raise ValueError(
+            f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
+        )
+    if backend == "aiter":
+        # Validate the explicit opt-in up front so a misconfiguration (unsupported
+        # device or missing aiter package) surfaces as a clear ValueError here
+        # instead of silently falling through to native on non-HIP platforms.
+        from .rocm.aiter_utils import require_aiter
+
+        require_aiter(query.device, "rope")
+
     query_out = torch.empty_like(query)
     key_out = torch.empty_like(key)
+
+    if IS_HIP:
+        if maybe_apply_rope_cos_sin_cache(
+            query,
+            key,
+            query_out,
+            key_out,
+            cos_sin_cache,
+            positions,
+            head_size,
+            is_neox,
+            backend,
+        ):
+            return query_out, key_out
 
     _apply_rope_pos_ids_cos_sin_cache(
         q=query.view(query.shape[0], -1, head_size),
@@ -1232,6 +1272,7 @@ def apply_rope_with_cos_sin_cache_inplace(
     head_size: int,
     cos_sin_cache: torch.Tensor,
     is_neox: bool = True,
+    backend: str = "auto",
 ) -> None:
     r"""
     Apply rotary embedding to keys and queries with precomputed cos/sin values.
@@ -1263,12 +1304,47 @@ def apply_rope_with_cos_sin_cache_inplace(
 
         * If ``False``, the last dimension of the query/key tensor is interleaved, i.e.,
           we rotate the even dimensions ``([..., ::2])`` and odd dimensions ``([..., 1::2])``.
+
+    backend : str
+        Kernel backend to use. ``"auto"`` (default) resolves to the native
+        FlashInfer JIT kernel on all platforms.
+        ``"native"`` uses the FlashInfer JIT kernel on all platforms.
+        ``"aiter"`` uses AMD AITER's C++ ``rope_cached_positions_2c_fwd_impl``
+        kernel — ROCm (gfx942/gfx950) only; requires the ``aiter`` package and
+        query/key to share a dtype.
+
     Note
     ----
     The rotary dimension is determined by the cosine cache and sine cache.
     """
     if cos_sin_cache.dtype != torch.float32:
         raise ValueError("cos_sin_cache should be float32")
+
+    if backend not in ("auto", "native", "aiter"):
+        raise ValueError(
+            f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
+        )
+    if backend == "aiter":
+        # Validate the explicit opt-in up front so a misconfiguration (unsupported
+        # device or missing aiter package) surfaces as a clear ValueError here
+        # instead of silently falling through to native on non-HIP platforms.
+        from .rocm.aiter_utils import require_aiter
+
+        require_aiter(query.device, "rope")
+
+    if IS_HIP:
+        if maybe_apply_rope_cos_sin_cache(
+            query,
+            key,
+            query,
+            key,
+            cos_sin_cache,
+            positions,
+            head_size,
+            is_neox,
+            backend,
+        ):
+            return
 
     # pass q_rope and k_rope as q and k to perform inplace operation
     _apply_rope_pos_ids_cos_sin_cache(
@@ -1530,6 +1606,11 @@ def rope_quantize_fp8(
         else torch.empty_like(k_nope, dtype=quantize_dtype)
     )
 
+    # The ROCm C++ binding uses int32_t for IdType; coerce here so callers
+    # that pass the default int64 torch.arange() tensor still work correctly.
+    if pos_ids.dtype != torch.int32:
+        pos_ids = pos_ids.to(torch.int32)
+
     _rope_quantize(
         q_rope,
         k_rope,
@@ -1739,6 +1820,10 @@ def rope_quantize_fp8_append_paged_kv_cache(
                 "GQA/MHA expects a V tensor, but got None. "
                 "Only MLA uses None for V (compressed KV representation)."
             )
+        if v.dtype != q_rope.dtype:
+            raise ValueError(
+                f"v dtype must match q_rope/k_rope ({q_rope.dtype}); got {v.dtype}"
+            )
         if k_cache.dtype != quantize_dtype or v_cache.dtype != quantize_dtype:
             raise ValueError(
                 f"GQA/MHA cache dtype mismatch: expected {quantize_dtype}, "
@@ -1756,6 +1841,11 @@ def rope_quantize_fp8_append_paged_kv_cache(
     from .utils import TensorLayout
 
     kv_layout_code = TensorLayout[kv_layout].value
+
+    # The ROCm C++ binding uses int32_t for IdType; coerce here so callers
+    # that pass the default int64 torch.arange() tensor still work correctly.
+    if pos_ids.dtype != torch.int32:
+        pos_ids = pos_ids.to(torch.int32)
 
     batch_indices = batch_indices.int()
     positions = positions.int()

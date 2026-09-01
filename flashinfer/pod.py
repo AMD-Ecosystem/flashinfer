@@ -21,6 +21,7 @@ from typing import Any, List, Optional, Tuple, Union
 
 import torch
 
+from .rocm.device_utils import IS_HIP
 from .api_logging import flashinfer_api
 from .trace.templates.attention import (
     batch_pod_with_paged_kv_cache_run_trace,
@@ -34,6 +35,7 @@ from .utils import (
     MaskMode,
     PosEncodingMode,
     TensorLayout,
+    plan_info_vec_as_tensor,
     _check_cached_qkv_data_type,
     _check_kv_layout,
     _check_pos_encoding_mode,
@@ -416,7 +418,7 @@ class PODWithPagedKVCacheWrapper:
                 False,  # use_fp16_qk_reduction
             )
 
-        self._plan_info = self._cached_module.plan(
+        _plan_args = [
             self._float_workspace_buffer,
             self._int_workspace_buffer,
             self._pin_memory_int_workspace_buffer,
@@ -432,12 +434,17 @@ class PODWithPagedKVCacheWrapper:
             head_dim,
             head_dim,
             False,  # causal
-            window_left,
-            -1,  # fixed_split_size
-            False,  # disable_split_kv
-            0,  # num_colocated_ctas
-            0,  # uniform_q_len
-        )
+        ]
+        if IS_HIP:
+            self._plan_info = plan_info_vec_as_tensor(
+                self._cached_module.plan(*_plan_args),
+                device=self._float_workspace_buffer.device,
+            )
+        else:
+            # window_left, fixed_split_size, disable_split_kv,
+            # num_colocated_ctas, uniform_q_len
+            _plan_args += [window_left, -1, False, 0, 0]
+            self._plan_info = self._cached_module.plan(*_plan_args)
 
         self._indptr_type = indptr.dtype
         self._pos_encoding_mode = pos_encoding_mode
@@ -1064,7 +1071,7 @@ class BatchPODWithPagedKVCacheWrapper:
             kv_indptr_host_d, last_page_len_host_d, page_size
         )
 
-        self._plan_info_d = self._cached_module.plan(
+        _plan_args_d = [
             self._float_workspace_buffer_d,
             self._int_workspace_buffer_d,
             self._pin_memory_int_workspace_buffer_d,
@@ -1080,18 +1087,22 @@ class BatchPODWithPagedKVCacheWrapper:
             head_dim,
             head_dim,
             False,  # causal
-            window_left,
-            -1,  # fixed_split_size
-            False,  # disable_split_kv
-            0,  # num_colocated_ctas
-            0,  # uniform_q_len
-        )
+        ]
+        if IS_HIP:
+            self._plan_info_d = plan_info_vec_as_tensor(
+                self._cached_module.plan(*_plan_args_d),
+                device=self._float_workspace_buffer_d.device,
+            )
+            num_colocated_ctas = 0  # colocated-CTA scheduling is CUDA-only
+        else:
+            _plan_args_d += [window_left, -1, False, 0, 0]
+            self._plan_info_d = self._cached_module.plan(*_plan_args_d)
+            num_colocated_ctas = self._plan_info_d[0]
 
-        num_colocated_ctas = self._plan_info_d[0]
         # Splitting small prefill causes unecessary bandwidth contention
         if total_num_rows_p > 1536:
             num_colocated_ctas = 0
-        self._plan_info_p = self._cached_module.plan(
+        _plan_args_p = [
             self._float_workspace_buffer_p,
             self._int_workspace_buffer_p,
             self._pin_memory_int_workspace_buffer_p,
@@ -1107,12 +1118,15 @@ class BatchPODWithPagedKVCacheWrapper:
             head_dim,
             head_dim,
             False,  # causal
-            window_left,
-            -1,  # fixed_split_size
-            False,  # disable_split_kv
-            num_colocated_ctas,
-            0,  # uniform_q_len
-        )
+        ]
+        if IS_HIP:
+            self._plan_info_p = plan_info_vec_as_tensor(
+                self._cached_module.plan(*_plan_args_p),
+                device=self._float_workspace_buffer_p.device,
+            )
+        else:
+            _plan_args_p += [window_left, -1, False, num_colocated_ctas, 0]
+            self._plan_info_p = self._cached_module.plan(*_plan_args_p)
         self._indptr_type = kv_indptr_p.dtype
         self._pos_encoding_mode = pos_encoding_mode
         self._window_left = window_left
