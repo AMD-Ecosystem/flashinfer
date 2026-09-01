@@ -44,7 +44,9 @@ if IS_CUDA:
     from .attention import (
         gen_customize_single_prefill_module as gen_customize_single_prefill_module,
     )
-    from .attention import gen_fmha_cutlass_sm100a_module as gen_fmha_cutlass_sm100a_module
+    from .attention import (
+        gen_fmha_cutlass_sm100a_module as gen_fmha_cutlass_sm100a_module,
+    )
     from .attention import gen_batch_pod_module as gen_batch_pod_module
     from .attention import gen_pod_module as gen_pod_module
     from .attention import gen_single_decode_module as gen_single_decode_module
@@ -133,7 +135,6 @@ if IS_CUDA:
     from .bgmv_moe import load_bgmv_moe_module as load_bgmv_moe_module
     from .monomoe import gen_monomoe_module as gen_monomoe_module
     from .monomoe import load_monomoe_module as load_monomoe_module
-
 
     cuda_lib_path = os.environ.get(
         "CUDA_LIB_PATH", "/usr/local/cuda/targets/x86_64-linux/lib/"

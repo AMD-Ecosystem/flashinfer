@@ -24,7 +24,6 @@ if IS_CUDA:
     from .version import __git_commit__ as __git_commit__
     from .version import __git_version__ as __git_version__  # backward compat
 
-
     from . import jit as jit
     from .activation import gelu_and_mul as gelu_and_mul
     from .activation import gelu_tanh_and_mul as gelu_tanh_and_mul
@@ -61,7 +60,9 @@ if IS_CUDA:
     from .decode import (
         fast_decode_plan as fast_decode_plan,
     )
-    from .decode import cudnn_batch_decode_with_kv_cache as cudnn_batch_decode_with_kv_cache
+    from .decode import (
+        cudnn_batch_decode_with_kv_cache as cudnn_batch_decode_with_kv_cache,
+    )
     from .decode import single_decode_with_kv_cache as single_decode_with_kv_cache
     from .quantization.fp4_quantization import (
         block_scale_interleave,
@@ -224,7 +225,9 @@ if IS_CUDA:
     from .sampling import (
         top_k_top_p_sampling_from_logits as top_k_top_p_sampling_from_logits,
     )
-    from .sampling import top_k_top_p_sampling_from_probs as top_k_top_p_sampling_from_probs
+    from .sampling import (
+        top_k_top_p_sampling_from_probs as top_k_top_p_sampling_from_probs,
+    )
     from .sampling import top_p_renorm_probs as top_p_renorm_probs
     from .sampling import top_p_sampling_from_probs as top_p_sampling_from_probs
     from .tllm_enums import (
@@ -253,7 +256,7 @@ if IS_CUDA:
     from .fi_trace import fi_trace as fi_trace
 elif IS_HIP:
     # `import *` cannot carry a dunder; the IS_CUDA arm binds it directly too.
-    from ._version import __version__ as __version__
+    from ._version import __version__ as __version__  # type: ignore[no-redef]
 
     # Imported for its side effect first: rocm.api runs
     # check_torch_rocm_compatibility() before it pulls in any wrapper, so an

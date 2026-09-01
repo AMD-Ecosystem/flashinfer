@@ -40,8 +40,8 @@ from ..page import get_seq_lens as get_seq_lens
 from .prefill import (
     single_prefill_with_kv_cache_return_lse as single_prefill_with_kv_cache_return_lse,
 )
-from ..quantization import packbits as packbits
-from ..quantization import segment_packbits as segment_packbits
+from ..quantization.packbits import packbits as packbits
+from ..quantization.packbits import segment_packbits as segment_packbits
 from ..rope import apply_llama31_rope as apply_llama31_rope
 from ..rope import apply_llama31_rope_inplace as apply_llama31_rope_inplace
 from ..rope import apply_llama31_rope_pos_ids as apply_llama31_rope_pos_ids

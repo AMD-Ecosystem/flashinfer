@@ -52,6 +52,7 @@ def plan_info_vec_as_tensor(
         return plan_info.to(device="cpu", dtype=torch.int64)
     return torch.tensor(list(plan_info), dtype=torch.int64, device="cpu")
 
+
 logger = logging.getLogger(__name__)
 
 

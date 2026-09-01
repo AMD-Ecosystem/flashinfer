@@ -36,7 +36,9 @@ if IS_CUDA:
         trtllm_destroy_ipc_workspace_for_all_reduce_fusion as trtllm_destroy_ipc_workspace_for_all_reduce_fusion,
     )
     from .trtllm_ar import trtllm_lamport_initialize as trtllm_lamport_initialize
-    from .trtllm_ar import trtllm_lamport_initialize_all as trtllm_lamport_initialize_all
+    from .trtllm_ar import (
+        trtllm_lamport_initialize_all as trtllm_lamport_initialize_all,
+    )
     from .trtllm_ar import trtllm_moe_allreduce_fusion as trtllm_moe_allreduce_fusion
     from .trtllm_ar import (
         trtllm_moe_finalize_allreduce_fusion as trtllm_moe_finalize_allreduce_fusion,
@@ -70,7 +72,9 @@ if IS_CUDA:
     from .trtllm_mnnvl_ar import (
         MNNVLAllReduceFusionWorkspace as MNNVLAllReduceFusionWorkspace,
     )
-    from .allreduce import TRTLLMAllReduceFusionWorkspace as TRTLLMAllReduceFusionWorkspace
+    from .allreduce import (
+        TRTLLMAllReduceFusionWorkspace as TRTLLMAllReduceFusionWorkspace,
+    )
     from .allreduce import allreduce_fusion as allreduce_fusion
     from .allreduce import (
         create_allreduce_fusion_workspace as create_allreduce_fusion_workspace,
@@ -78,7 +82,9 @@ if IS_CUDA:
 
     # MNNVL A2A (Throughput Backend)
     from .trtllm_moe_alltoall import MoeAlltoAll as MoeAlltoAll
-    from .trtllm_moe_alltoall import moe_a2a_active_rank_mask as moe_a2a_active_rank_mask
+    from .trtllm_moe_alltoall import (
+        moe_a2a_active_rank_mask as moe_a2a_active_rank_mask,
+    )
     from .trtllm_moe_alltoall import moe_a2a_combine as moe_a2a_combine
     from .trtllm_moe_alltoall import moe_a2a_dispatch as moe_a2a_dispatch
     from .trtllm_moe_alltoall import moe_a2a_initialize as moe_a2a_initialize
@@ -97,8 +103,12 @@ if IS_CUDA:
     from .dcp_alltoall import (
         decode_cp_a2a_allocate_mnnvl_workspace as decode_cp_a2a_allocate_mnnvl_workspace,
     )
-    from .dcp_alltoall import decode_cp_a2a_init_workspace as decode_cp_a2a_init_workspace
-    from .dcp_alltoall import decode_cp_a2a_workspace_size as decode_cp_a2a_workspace_size
+    from .dcp_alltoall import (
+        decode_cp_a2a_init_workspace as decode_cp_a2a_init_workspace,
+    )
+    from .dcp_alltoall import (
+        decode_cp_a2a_workspace_size as decode_cp_a2a_workspace_size,
+    )
 else:
     from ..rocm import gate_cuda_only_modules
 

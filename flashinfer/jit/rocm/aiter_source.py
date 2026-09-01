@@ -277,10 +277,12 @@ def refresh_aiter_jitspec(spec: JitSpec) -> JitSpec:
     Returns:
         The same spec, for use as ``return refresh_aiter_jitspec(gen_jit_spec(...))``.
     """
-    if spec.is_aot or os.environ.get("FLASHINFER_DISABLE_JIT"):
+    # v0.6.18 made JitSpec an ABC; is_aot and write_ninja live on JitSpecNvcc,
+    # which is what gen_jit_spec() actually returns under its JitSpec annotation.
+    if spec.is_aot or os.environ.get("FLASHINFER_DISABLE_JIT"):  # type: ignore[attr-defined]
         return spec
     with FileLock(spec.lock_path, thread_local=False):
-        spec.write_ninja()
+        spec.write_ninja()  # type: ignore[attr-defined]
     return spec
 
 
