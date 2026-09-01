@@ -350,7 +350,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "single_prefill",
         "aiter",
         _archs(_OK_942, _OK_950),
-        note="MHA / GQA / MQA; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP.",
+        note="MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP.",
         fallback="fa2",
     ),
     Capability(
@@ -365,7 +365,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
                 known_bad=(_ROCM72_CAUSAL_PREFILL,),
             ),
         ),
-        note="Paged and ragged. Page sizes 128/256/1024 are native on amd-aiter >= 0.1.10; others take a flat gather.",
+        note="Paged and ragged, with sliding window. Page sizes 128/256/1024 are native on amd-aiter >= 0.1.10; others take a flat gather.",
         fallback="fa2",
     ),
     # No alternative backend -- hence no fallback=.

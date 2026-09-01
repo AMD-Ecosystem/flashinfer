@@ -150,8 +150,8 @@ decisions the library makes. Do not edit it by hand; run
 | Op | Backend | gfx942 (CDNA3) | gfx950 (CDNA4) | Notes |
 | :--- | :--- | :---: | :---: | :--- |
 | `batch_decode` | `aiter` | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Under graph capture `auto` needs a declared `max_seq_len`, else it stays on fa2. |
-| `single_prefill` | `aiter` | ✅ | ✅ | MHA / GQA / MQA; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. |
-| `batch_prefill` | `aiter` | ✅ | ⚠️[^kb1] | Paged and ragged. Page sizes 128/256/1024 are native on amd-aiter >= 0.1.10; others take a flat gather. |
+| `single_prefill` | `aiter` | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. |
+| `batch_prefill` | `aiter` | ✅ | ⚠️[^kb1] | Paged and ragged, with sliding window. Page sizes 128/256/1024 are native on amd-aiter >= 0.1.10; others take a flat gather. |
 | `mla` | `aiter` | ✅ | ✅ | DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here. |
 | `rope` | `aiter` | ✅ | ✅ | `apply_rope_with_cos_sin_cache` and its inplace variant, linked at the C++ level. Opt-in. |
 | `append_paged_kv_cache` | `aiter` | ✅ | ✅ | fp16/bf16 + NHD. Bit-exact with the in-tree kernel but slower, so `auto` picks `native`. |

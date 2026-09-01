@@ -56,9 +56,16 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
   const bool has_lse = (params.lse != nullptr);
   const bool has_logits_cap = (params.logits_soft_cap > 0.0f);
 
+  // A window wider than the sequence masks nothing; normalizing it here (as AITER's
+  // own torch path does) keeps such a call off the _mask variant and its cold build.
+  const int32_t window_left = (params.window_left >= static_cast<int32_t>(params.kv_len))
+                                  ? -1
+                                  : static_cast<int32_t>(params.window_left);
+  const bool needs_mask = causal || window_left >= 0;
+
   const flashinfer::aiter::VariantKey key{
       .dtype = dtype_enum,
-      .causal = causal,
+      .needs_mask = needs_mask,
       .has_lse = has_lse,
       .has_alibi = false,
       .has_logits_cap = has_logits_cap,
@@ -84,7 +91,7 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
   // ASM v3 path (bf16 + hd128) is ~10-15% faster than CK Tile, gated by the same
   // eligibility predicate as aiter::fmha_fwd_v3.
   args.use_asm_v3 =
-      AiterAsmV3Eligible(HEAD_DIM_QK, HEAD_DIM_VO, dtype_enum, has_logits_cap, params.window_left);
+      AiterAsmV3Eligible(HEAD_DIM_QK, HEAD_DIM_VO, dtype_enum, has_logits_cap, window_left);
   args.v3_api_check = false;
   args.how_v3_bf16_cvt = 0;
   args.data_type = dtype_str;
@@ -133,10 +140,10 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
 
   // mask_bottom_right: q[i] attends to kv[kv_len−qo_len+i], correct for prefill-with-history.
   // When qo_len == kv_len, mask_bottom_right degenerates to mask_top_left.
-  // window_size_right=0 is the CK Tile convention for causal (no future tokens);
-  // -1 means "no right-window constraint" which disables the causal masking.
-  args.mask_type = causal ? kAiterMaskBottomRight : kAiterMaskNone;
-  args.window_size_left = static_cast<int32_t>(params.window_left);
+  // A window needs it too: right=-1 saturates to the full extent, leaving the
+  // left-bound-only band FlashInfer defines. right=0 is the causal convention.
+  args.mask_type = needs_mask ? kAiterMaskBottomRight : kAiterMaskNone;
+  args.window_size_left = window_left;
   args.window_size_right = causal ? 0 : -1;
 
   ::ck_tile::stream_config sconfig{};
