@@ -195,7 +195,7 @@ testpaths = [
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
-    "slow: heavy ROCm tests (1M-trial sampling frequency, 4GB-tensor speculative-sampling) — exclude with '-m \"not slow\"' for fast iteration; nightly runs include them.",
+    "slow: ROCm tests whose memory footprint is unsafe alongside others under '-n auto' — never a runtime judgement. No CI job or script runs '-m slow', so marking a test retires it from every automated lane rather than deferring it.",
 ]
 
 [tool.coverage.run]

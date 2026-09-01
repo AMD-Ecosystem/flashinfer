@@ -79,15 +79,14 @@ on a missing kernel instead of silently triggering a build.
 # Running Tests
 
 ```bash
-# Fast path -- skips 1M-trial sampling-frequency tests and 4 GB
-# speculative-sampling cases (~7 min on a CPX 8-card host):
+# Fast path -- skips the multi-GB speculative-sampling cases:
 pytest -n auto --reruns 2 -m "not slow"
 
-# Full coverage (~20 min):
+# Full coverage:
 pytest -n auto --reruns 2
 
-# Slow tests only (~13 min):
-pytest -n auto --reruns 2 -m "slow"
+# Slow tests only -- -n 1 on purpose, that is what the marker means:
+pytest -n 1 --reruns 2 -m "slow"
 
 # One file, or a pattern:
 pytest tests/rocm/test_batch_decode_kernels.py
@@ -97,6 +96,18 @@ pytest -k "test_batch_decode_kernels"
 `testpaths` in [pyproject.toml](pyproject.toml) sets the default
 selection. `pytest-rerunfailures` comes from the `dev` extra
 (`pip install -e ".[dev]"`).
+
+**Warm the JIT cache before you time anything.** On gfx950 at `a85540294`,
+one MI350X and `-n 1`, the full suite took **118 min cold and 10 min warm**:
+92% of a cold run is compilation, not test execution. A first run against an
+empty `~/.cache/flashinfer` looks like a hung suite — there is no
+`pytest-timeout` here, and a single AITER CK build can sit for tens of
+minutes with no output. Expect less wall time with `-n auto` on a
+multi-card host.
+
+After this change `-m "not slow"` is within ~10 s of the full run — the
+marker gates footprint, not time. That figure is the post-change split;
+at `a85540294` the fast lane also excluded the 343 cases now unmarked.
 
 **Worker count.** `pytest -n auto` spawns **half as many xdist workers as
 physical AMD cards** (4 workers on a CPX-mode 8-card host) and assigns each
@@ -111,9 +122,16 @@ intermittent generator non-determinism — that worker pinning cannot
 eliminate. Only failed tests are retried.
 
 **`slow` marker.** Registered in [pyproject.toml](pyproject.toml). It tags
-the 1M-trial sampling-frequency tests, the 4 GB-tensor speculative-sampling
-cases, and the whole `TestLogitsPipeCompilationHIP` class (each test runs
-the sampling kernel twice, for `compile=True` and `False`).
+one thing: `test_chain_speculative_sampling`, whose worst case holds four
+probability tensors live at once (~15 GB) and so cannot share a box with
+other workers under `-n auto`.
+
+**Nothing runs `-m slow`** — no CI job, no script — and `-m "not slow"` is
+also what the coverage recipe below uses. Marking a test therefore retires
+it rather than deferring it, so footprint is the only admissible reason.
+Runtime never is: the whole suite is ~10 min warm, and case count is
+actively misleading — `test_rope.py` is the largest matrix at 13,080 cases
+and costs 1.2 ms each.
 
 **HIPBLAS retry.** The reference attention helper in
 `tests/attention_reference.py` wraps `torch.matmul` in a
@@ -135,7 +153,7 @@ python3 scripts/amd_coverage.py                           # re-score an existing
 
 **What is deliberately left out, and why the report says so.** Lines inside `if IS_CUDA:` are excluded and counted in the output: the port re-indented upstream code under those guards, so git attributes it to us even though no ROCm box can execute it — in `flashinfer/jit/env.py` that is about half the owned lines. Lines that run at `import flashinfer` are reported as their own bucket rather than in the headline, because `tests/conftest.py` imports the package at collection and would otherwise credit every module-level statement before a test body runs. C++ under `csrc/rocm/` is JIT-compiled and has no line data at all; instead the report counts how many of its translation units a run actually built and loaded, labelled as reach, not coverage.
 
-**Nothing is committed, on purpose.** A snapshot of the last run used to live in the repository; it recorded no HEAD sha, so a merge invalidated its per-file line numbers with nothing to detect that, and no tooling ever read it. Measure on demand instead — the run takes about 75 minutes under `--cov` instrumentation, against the ~20 min in the table above uninstrumented — and use `--fail-under` if you want a threshold enforced.
+**Nothing is committed, on purpose.** A snapshot of the last run used to live in the repository; it recorded no HEAD sha, so a merge invalidated its per-file line numbers with nothing to detect that, and no tooling ever read it. Measure on demand instead — the run takes about 75 minutes under `--cov` instrumentation, against the ~10 min warm measured above — and use `--fail-under` if you want a threshold enforced.
 
 **Say what the AITER lib cache was.** `jit/rocm/aiter_source.py`'s build path executes only when `ensure_aiter_lib` actually builds, so that file measures **32 lines higher** on a cold `~/.cache/flashinfer` than on a warm one — 120/124 against 88/124, observed across two runs on gfx942 on 2026-08-28. Neither is wrong, but two numbers only compare if the cache policy matched, and roughly 0.9 points of the headline turns on it — so state which you ran. (The two runs differed by other commits as well, so they do not isolate the effect at the headline level — the per-file figure is what was measured.)
 
