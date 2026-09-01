@@ -178,11 +178,11 @@ void* get_aiter_mha_fwd_handle(VariantKey const& key) {
   std::string so_path = get_jit_dir() + "/" + mha_fwd_variant_so_name(key);
   return load_and_cache_sym(s_mf_mu, s_mf_cache, key, so_path, kMhaFwdSymbol, [&key, &so_path]() {
     return "  Hint: trigger AITER's lazy JIT build by importing aiter.ops.mha and "
-           "calling mha_fwd with matching (dtype=" +
+           "calling mha_fwd with matching (q dtype=" +
            std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
            ", is_causal=" + (key.needs_mask ? "true" : "false") +
            " (window_size_left>=0 selects the same variant)" +
-           ", has_lse=" + (key.has_lse ? "true" : "false") + ")." + kAbiPinNote;
+           ", return_softmax_lse=" + (key.has_lse ? "true" : "false") + ")." + kAbiPinNote;
   });
 }
 
@@ -190,11 +190,11 @@ void* get_aiter_mha_varlen_fwd_handle(VariantKey const& key) {
   std::string so_path = get_jit_dir() + "/" + mha_varlen_fwd_variant_so_name(key);
   return load_and_cache_sym(s_vl_mu, s_vl_cache, key, so_path, kMhaFwdSymbol, [&key, &so_path]() {
     return "  Hint: trigger AITER's lazy JIT build by importing aiter.ops.mha and "
-           "calling mha_varlen_fwd with matching (dtype=" +
+           "calling mha_varlen_fwd with matching (q dtype=" +
            std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
            ", is_causal=" + (key.needs_mask ? "true" : "false") +
            " (window_size_left>=0 selects the same variant)" +
-           ", has_lse=" + (key.has_lse ? "true" : "false") + ")." + kAbiPinNote;
+           ", return_softmax_lse=" + (key.has_lse ? "true" : "false") + ")." + kAbiPinNote;
   });
 }
 
@@ -203,13 +203,13 @@ void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key) {
   return load_and_cache_sym(
       s_bp_mu, s_bp_cache, key, so_path, kMhaBatchPrefillSymbol, [&key, &so_path]() {
         return "  Hint: trigger AITER's lazy JIT build by calling "
-               "aiter.ops.mha.mha_batch_prefill_func() once with matching (dtype=" +
+               "aiter.ops.mha.mha_batch_prefill_func() once with matching (q dtype=" +
                std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
                // mha_batch_prefill_func takes `causal`; mha_fwd/mha_varlen_fwd
                // take `is_causal`.
                ", causal=" + (key.needs_mask ? "true" : "false") +
                " (a window selects the same variant)" +
-               ", has_lse=" + (key.has_lse ? "true" : "false") +
+               ", return_lse=" + (key.has_lse ? "true" : "false") +
                ") before this C++ path.\n"
                "  If the .so exists but dlsym fails, run: nm -D " +
                so_path + " | grep mha_batch_prefill" + kAbiPinNote;
