@@ -54,8 +54,8 @@ built. Details: `pr-workflow` skill.
 | Task | Command |
 |------|---------|
 | Install for development | `python -m pip install --no-build-isolation -ve.` |
-| Run tests (fast) | `pytest -n auto --reruns 2 -m "not slow"` |
-| Run all tests | `pytest -n auto --reruns 2` |
+| Run tests | `pytest -n auto --reruns 2` |
+| Skip the multi-GB cases | `pytest -n auto --reruns 2 -m "not slow"` |
 | Clear JIT cache | `rm -rf ~/.cache/flashinfer/` |
 | Set target arch | `export FLASHINFER_ROCM_ARCH_LIST="gfx942,gfx950"` |
 | Limit parallel build | `export MAX_JOBS=4` |
@@ -111,8 +111,12 @@ cause subtle build failures.
 
 **Test parallelism**: `pytest -n auto` automatically halves the physical GPU
 count to avoid HSA/HIPBLAS flakiness under concurrent load. The `slow` marker
-gates 1M-trial sampling and 4 GB tensor tests — exclude with `-m "not slow"`
-for fast iteration.
+gates footprint, not runtime, and nothing runs `-m slow` — marking a test
+retires it, so do not reach for it to speed a lane up.
+
+**A cold JIT cache dominates the suite**: 118 min cold against 10 min warm on
+gfx950 at `-n 1`, so 92% of a first run is compilation. Clearing
+`~/.cache/flashinfer` before timing anything makes the result meaningless.
 
 **AITER is version-pinned, and the pin depends on the channel**: the
 devcontainer bundles the wheel, so no separate install is needed there. CI and
