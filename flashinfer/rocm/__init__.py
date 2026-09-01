@@ -43,6 +43,13 @@ CUDA_ONLY_MODULES = frozenset(
         "flashinfer.comm.trtllm_ar",
         "flashinfer.comm.trtllm_mnnvl_ar",
         "flashinfer.comm.vllm_ar",
+        # v0.6.18 made quantization a package; these two reach CUDA-only jit
+        # exports at import. Gating them turns an obscure sm121a_nvcc_flags
+        # ImportError into the uniform CUDA-only one, stubs included.
+        "flashinfer.quantization.fp4_quantization",
+        "flashinfer.quantization.fp8_quantization",
+        "flashinfer.fp4_quantization",
+        "flashinfer.fp8_quantization",
     }
 )
 

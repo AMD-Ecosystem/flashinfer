@@ -603,3 +603,43 @@ def test_chain_speculative_sampling(
                     assert torch.all(output_token_ids[row, mismatch_idx[0] + 1 :] == -1)
 
         assert torch.all(emitted_num + 1 == (output_token_ids != -1).sum(dim=1))
+
+
+# --- ROCm's three departures from the v0.6.18 sampling ABI ------------------
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize(
+    "op",
+    [flashinfer.sampling.top_k_renorm_probs, flashinfer.sampling.top_k_mask_logits],
+)
+def test_half_input_is_rejected_not_read_at_a_float_stride(op, dtype):
+    """v0.6.18 accepts fp16/bf16 here; ROCm's kernels are float32-only.
+
+    Without the guard the kernel walks 4 bytes per element of a 2-byte buffer
+    and writes the overrun back -- silent corruption, not a crash.
+    """
+    x = torch.rand(4, 512, device="cuda").to(dtype)
+    with pytest.raises(RuntimeError, match="float32-only on ROCm"):
+        op(x, 10)
+
+
+def test_a_tensor_seed_is_rejected_rather_than_collapsed():
+    """One scalar seed covers the batch, so a per-request tensor must not be ignored."""
+    probs = torch.rand(4, 128, device="cuda")
+    probs /= probs.sum(dim=-1, keepdim=True)
+    seed = torch.arange(4, dtype=torch.int64, device="cuda")
+    with pytest.raises(RuntimeError, match="not supported on ROCm"):
+        flashinfer.sampling.sampling_from_probs(
+            probs, seed=seed, offset=torch.zeros_like(seed)
+        )
+
+
+def test_every_row_reports_valid():
+    """ROCm's kernels have no reject path, so return_valid is uniformly true."""
+    probs = torch.rand(8, 128, device="cuda")
+    probs /= probs.sum(dim=-1, keepdim=True)
+    samples, valid = flashinfer.sampling.sampling_from_probs(probs, return_valid=True)
+    assert valid.dtype == torch.bool and valid.shape == (8,)
+    assert bool(valid.all())
+    assert torch.all((samples >= 0) & (samples < 128))

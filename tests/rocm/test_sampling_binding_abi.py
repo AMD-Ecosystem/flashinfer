@@ -69,7 +69,9 @@ def _binding_arities() -> dict[str, int]:
 
 def test_the_binding_declares_every_op_the_python_calls():
     missing = sorted(set(_python_call_arities()) - set(_binding_arities()))
-    assert not missing, f"declared in sampling.py but not in the ROCm binding: {missing}"
+    assert not missing, (
+        f"declared in sampling.py but not in the ROCm binding: {missing}"
+    )
 
 
 @pytest.mark.parametrize("op", sorted(_python_call_arities()))

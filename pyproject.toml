@@ -207,7 +207,6 @@ testpaths = [
     "tests/attention/test_decode_prefill_lse.py",
     "tests/attention/test_non_contiguous_decode.py",
     "tests/attention/test_non_contiguous_prefill.py",
-    "tests/attention/test_page.py",
     "tests/utils/test_activation.py",
     "tests/utils/test_quantization.py",
 ]

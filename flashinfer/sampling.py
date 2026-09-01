@@ -1822,6 +1822,10 @@ def top_p_renorm_probs(
         + align256(4 * buf_len * batch_size)  # buf1
         + align256(4 * buf_len * batch_size)  # buf2
     )
+    # ROCm keeps the ternary-search kernel and never reads this; a fresh ~12 MB
+    # at batch 256 / vocab 152k would be paid on every decode step via TopPOp.
+    if IS_HIP:
+        ws_size = 1
     workspace = torch.empty(ws_size, dtype=torch.uint8, device=probs.device)
     return get_sampling_module().top_p_renorm_probs(
         probs, *_to_tensor_scalar_tuple(top_p), is_deterministic, workspace

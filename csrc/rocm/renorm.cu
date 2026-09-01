@@ -13,6 +13,14 @@ using namespace flashinfer;
 // ternary-search kernels, which need neither and are deterministic already,
 // so those parameters are accepted to match the schema and left unused.
 
+// ROCm's kernels are float32-only, and v0.6.18 stopped casting for these two:
+// the wrapper now asserts fp32/fp16/bf16 and passes the tensor through. A half
+// input would be read at a float stride -- a silent 2x overrun of both buffers.
+inline void require_fp32(const at::Tensor& in, const at::Tensor& out, const char* op) {
+  TORCH_CHECK(in.scalar_type() == at::kFloat && out.scalar_type() == at::kFloat, op,
+              " is float32-only on ROCm, got ", in.scalar_type());
+}
+
 void top_p_renorm_probs(at::Tensor probs, at::Tensor renorm_probs,
                         std::optional<at::Tensor> maybe_top_p_arr, double top_p_val,
                         bool is_deterministic, at::Tensor workspace) {
@@ -37,6 +45,7 @@ void top_k_renorm_probs(at::Tensor probs, at::Tensor renorm_probs,
                         std::optional<at::Tensor> maybe_top_k_arr, int64_t top_k_val,
                         at::Tensor row_states_buffer) {
   CHECK_INPUT(probs);
+  require_fp32(probs, renorm_probs, "top_k_renorm_probs");
   auto device = probs.device();
   CHECK_DIM(2, probs);  // probs: (batch_size, vocab_size)
   unsigned int batch_size = probs.size(0);
@@ -58,6 +67,7 @@ void top_k_mask_logits(at::Tensor logits, at::Tensor mask_logits,
                        std::optional<at::Tensor> maybe_top_k_arr, int64_t top_k_val,
                        at::Tensor row_states_buffer) {
   CHECK_INPUT(logits);
+  require_fp32(logits, mask_logits, "top_k_mask_logits");
   auto device = logits.device();
   CHECK_DIM(2, logits);  // logits: (batch_size, vocab_size)
   unsigned int batch_size = logits.size(0);
