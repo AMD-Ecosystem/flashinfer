@@ -35,15 +35,32 @@ def _names_bound_in_init(package: str) -> frozenset:
     if not init.exists():
         return frozenset()
 
-    names = set()
-    for node in ast.walk(ast.parse(init.read_text(), filename=str(init))):
+    names: set = set()
+    _collect_module_scope(ast.parse(init.read_text(), filename=str(init)).body, names)
+    return frozenset(names)
+
+
+def _collect_module_scope(body, names: set) -> None:
+    """Names bound at module scope, not locals borrowed from a nested scope.
+
+    ast.walk would descend into function and class bodies, so a local would
+    make `from . import <that name>` look resolvable when nothing exports it.
+    """
+    for node in body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.add(node.name)
+            names.add(node.name)  # the def binds, its body does not
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             names.update(a.asname or a.name.split(".")[0] for a in node.names)
         elif isinstance(node, ast.Assign):
             names.update(t.id for t in node.targets if isinstance(t, ast.Name))
-    return frozenset(names)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            if isinstance(node.target, ast.Name):
+                names.add(node.target.id)
+        elif isinstance(node, (ast.If, ast.Try, ast.For, ast.While, ast.With)):
+            for attr in ("body", "orelse", "finalbody"):
+                _collect_module_scope(getattr(node, attr, []), names)
+            for handler in getattr(node, "handlers", []):
+                _collect_module_scope(handler.body, names)
 
 
 def _relative_imports():
