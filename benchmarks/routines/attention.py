@@ -42,6 +42,15 @@ from .flashinfer_benchmark_utils import (
     is_close_stats,
     filter_backends_by_compute_capability,
 )
+from flashinfer.rocm.device_utils import IS_HIP
+from .rocm import (
+    HIP_DECODE_GQA_GROUP_SIZES,
+    as_nhd_paged_kv_cache,
+    bench_timing_kwargs,
+    fa2_backed_backends,
+    record_backend_resolution,
+    use_cuda_graph_for,
+)
 
 
 def normalize_backends(backends):
@@ -621,14 +630,12 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
 
     backends = filter_backends_by_compute_capability(backends, args.routine, device)
     # Check for backend-specific constraints
+    head_grp_size = num_qo_heads // num_kv_heads  # If 5, FA2 backend is not supported.
     if "fa2" in backends:
         remove_fa2 = False
         if speculative_decode:
             print("[INFO] FA2 backend does not support speculative decode. Skipping.")
             remove_fa2 = True
-        head_grp_size = (
-            num_qo_heads // num_kv_heads
-        )  # If 5, FA2 backend is not supported.
         if head_grp_size == 5:
             print(
                 "[INFO] FA2 backend is not supported for this configuration. Skipping."
@@ -636,6 +643,17 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
             remove_fa2 = True
         if remove_fa2:
             backends.remove("fa2")
+    if IS_HIP:
+        # DISPATCH_GQA_GROUP_SIZE covers a fixed set; anything else raises from
+        # inside the kernel and takes the whole test case down. "auto" inherits
+        # the constraint because it resolves to fa2 whenever AITER is declined.
+        for name in fa2_backed_backends(backends, device, "batch_decode"):
+            if head_grp_size not in HIP_DECODE_GQA_GROUP_SIZES:
+                print(
+                    f"[INFO] {name} runs the HIP kernel, which does not support "
+                    f"GQA group size {head_grp_size}. Skipping."
+                )
+                backends.remove(name)
 
     if "fa2_tc" in backends:
         remove_fa2_tc = False
@@ -909,11 +927,17 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
             # Map fa2_tc to fa2 for the actual backend parameter
             # fa2_tc is a benchmark-specific name meaning "fa2 with tensor cores"
             actual_backend = "fa2" if backend == "fa2_tc" else backend
+            # AITER decode needs NHD, use_tensor_cores=False and no graph capture;
+            # `auto` silently resolves to fa2 if any of those is not met, so pass
+            # all three or the row measures fa2 while claiming to be auto.
             backend_wrappers[backend] = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
                 workspace_buffer,
-                "HND",
-                use_cuda_graph=is_cuda_graph_compatible,
-                use_tensor_cores=(backend != "fa2"),
+                "NHD" if IS_HIP and backend == "auto" else "HND",
+                use_cuda_graph=is_cuda_graph_compatible
+                and not (IS_HIP and backend == "auto"),
+                use_tensor_cores=(
+                    backend != "fa2" and not (IS_HIP and backend == "auto")
+                ),
                 paged_kv_indptr_buffer=plan_kv_indptr,
                 paged_kv_indices_buffer=kv_indices,
                 paged_kv_last_page_len_buffer=kv_last_page_len,
@@ -1096,6 +1120,10 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
         # Clear workspace buffer to prevent unexpected interactions between backends.
         workspace_buffer.zero_()
         runtime_kv_cache = prims_ts_kv_cache if cur_backend == "prims-ts" else kv_cache
+        if IS_HIP and cur_backend == "auto":
+            # AITER paged kernels require NHD; without this `auto` falls back
+            # to fa2 and the row measures fa2 while claiming to be auto.
+            runtime_kv_cache = as_nhd_paged_kv_cache(runtime_kv_cache)
         runtime_out = backend_outputs[cur_backend]
         runtime_k_cache = k_cache if cur_backend == "cudnn" else None
         runtime_v_cache = v_cache if cur_backend == "cudnn" else None
@@ -1141,12 +1169,10 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
 
         backend_times[cur_backend] = bench_gpu_time(
             fn=run_timed_backend,
-            dry_run_iters=args.dry_run_iters,
-            repeat_iters=args.num_iters,
+            **bench_timing_kwargs(args, device),
             sleep_after_run=False,
             enable_cupti=args.use_cupti,
-            use_cuda_graph=(is_cuda_graph_compatible and cur_backend != "fa2"),
-            cold_l2_cache=True,
+            use_cuda_graph=use_cuda_graph_for(cur_backend, is_cuda_graph_compatible),
             input_args=(
                 q,
                 runtime_kv_cache,
@@ -1259,6 +1285,7 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
                 cur_res["tflops"] = tflops
                 cur_res["tb_per_sec"] = tb_per_sec
                 cur_res["backend"] = backend
+                record_backend_resolution(cur_res, backend_wrappers.get(backend))
                 cur_res["resolved_backend"] = resolved_backend
                 cur_res["page_size"] = page_size
                 cur_res["batch_size"] = batch_size
@@ -1725,9 +1752,11 @@ def testBatchPrefillWithPagedKVCacheWrapper(args):
             backend_wrappers[backend] = (
                 flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
                     workspace_buffer,
-                    "HND",
+                    # AITER paged prefill requires NHD; `auto` falls back to fa2
+                    # without it, and without graph capture suppressed.
+                    "NHD" if IS_HIP and backend == "auto" else "HND",
                     use_cuda_graph=is_cuda_graph_compatible
-                    if backend != "fa2"
+                    if backend != "fa2" and not (IS_HIP and backend == "auto")
                     else False,
                     qo_indptr_buf=qo_indptr,
                     paged_kv_indptr_buf=kv_indptr,
@@ -1943,6 +1972,10 @@ def testBatchPrefillWithPagedKVCacheWrapper(args):
             if cur_backend == "trtllm-fmha-v2"
             else kv_cache
         )
+        if IS_HIP and cur_backend == "auto":
+            # AITER paged kernels require NHD; without this `auto` falls back
+            # to fa2 and the row measures fa2 while claiming to be auto.
+            runtime_kv_cache = as_nhd_paged_kv_cache(runtime_kv_cache)
         runtime_workspace = None if cur_backend == "prims-ts" else workspace_buffer
         if run_refcheck:
             outputs[cur_backend] = (
@@ -1990,12 +2023,10 @@ def testBatchPrefillWithPagedKVCacheWrapper(args):
 
         backend_times[cur_backend] = bench_gpu_time(
             fn=run_timed_backend,
-            dry_run_iters=args.dry_run_iters,
-            repeat_iters=args.num_iters,
+            **bench_timing_kwargs(args, device),
             sleep_after_run=False,
             enable_cupti=args.use_cupti,
-            use_cuda_graph=(is_cuda_graph_compatible and cur_backend != "fa2"),
-            cold_l2_cache=True,
+            use_cuda_graph=use_cuda_graph_for(cur_backend, is_cuda_graph_compatible),
             input_args=(
                 q,
                 runtime_kv_cache,
@@ -2156,6 +2187,7 @@ def testBatchPrefillWithPagedKVCacheWrapper(args):
                 cur_res["tflops"] = tflops
                 cur_res["tb_per_sec"] = tb_per_sec
                 cur_res["backend"] = backend
+                record_backend_resolution(cur_res, backend_wrappers.get(backend))
                 cur_res["resolved_backend"] = resolved_backend
                 cur_res["page_size"] = page_size
                 cur_res["batch_size"] = batch_size
@@ -2550,13 +2582,14 @@ def testBatchPrefillWithRaggedKVCacheWrapper(args):
     # Prepare wrappers
     backend_wrappers = {}
     for backend in backends:
-        if backend in ["cutlass", "fa2", "fa3", "trtllm-gen"]:
+        if backend in ["cutlass", "fa2", "fa3", "trtllm-gen", "auto"]:
             backend_wrappers[backend] = (
                 flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
                     workspace_buffer,
+                    # Already NHD, so `auto` only needs graph capture suppressed.
                     "NHD",
                     use_cuda_graph=is_cuda_graph_compatible
-                    if backend != "fa2"
+                    if backend != "fa2" and not (IS_HIP and backend == "auto")
                     else False,
                     qo_indptr_buf=qo_indptr,
                     kv_indptr_buf=kv_indptr,
@@ -2687,7 +2720,7 @@ def testBatchPrefillWithRaggedKVCacheWrapper(args):
         kv_indptr,
         out,
     ):
-        if backend in ["cutlass", "fa2", "fa3", "trtllm-gen"]:
+        if backend in ["cutlass", "fa2", "fa3", "trtllm-gen", "auto"]:
             return backend_wrappers[backend].run_return_lse(
                 q, k, v, enable_pdl=args.enable_pdl, out=out
             )[0]
@@ -2853,12 +2886,10 @@ def testBatchPrefillWithRaggedKVCacheWrapper(args):
 
         backend_times[cur_backend] = bench_gpu_time(
             fn=run_timed_backend,
-            dry_run_iters=args.dry_run_iters,
-            repeat_iters=args.num_iters,
+            **bench_timing_kwargs(args, device),
             sleep_after_run=True,
             enable_cupti=args.use_cupti,
-            use_cuda_graph=(is_cuda_graph_compatible and cur_backend != "fa2"),
-            cold_l2_cache=True,
+            use_cuda_graph=use_cuda_graph_for(cur_backend, is_cuda_graph_compatible),
             input_args=(
                 q,
                 k,
@@ -2998,6 +3029,7 @@ def testBatchPrefillWithRaggedKVCacheWrapper(args):
                 cur_res["tflops"] = tflops
                 cur_res["tb_per_sec"] = tb_per_sec
                 cur_res["backend"] = backend
+                record_backend_resolution(cur_res, backend_wrappers.get(backend))
                 cur_res["page_size"] = 0  # No page size for ragged
                 cur_res["batch_size"] = batch_size
                 cur_res["s_qo"] = s_qo
@@ -3632,12 +3664,10 @@ def testBatchMLAPagedAttentionWrapper(args):
 
         backend_times[cur_backend] = bench_gpu_time(
             fn=run_timed_backend,
-            dry_run_iters=args.dry_run_iters,
-            repeat_iters=args.num_iters,
+            **bench_timing_kwargs(args, device),
             sleep_after_run=False,
             enable_cupti=args.use_cupti,
-            use_cuda_graph=(is_cuda_graph_compatible and cur_backend != "fa2"),
-            cold_l2_cache=True,
+            use_cuda_graph=use_cuda_graph_for(cur_backend, is_cuda_graph_compatible),
             input_args=(
                 runtime_q_nope,
                 runtime_q_pe,
@@ -3751,6 +3781,7 @@ def testBatchMLAPagedAttentionWrapper(args):
                 cur_res["tflops"] = tflops
                 cur_res["tb_per_sec"] = tb_per_sec
                 cur_res["backend"] = backend
+                record_backend_resolution(cur_res, backend_wrappers.get(backend))
                 cur_res["page_size"] = page_size
                 cur_res["batch_size"] = batch_size
                 cur_res["s_qo"] = s_qo

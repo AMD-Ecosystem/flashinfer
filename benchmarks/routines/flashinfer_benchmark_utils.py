@@ -1,8 +1,11 @@
 import argparse
 import torch
 
+from flashinfer.rocm.device_utils import IS_HIP
 from flashinfer.testing.utils import set_seed
 from flashinfer.utils import get_compute_capability
+
+from .rocm import PERF_COLUMNS, filter_backends_by_arch
 
 # Output columns for the test results.
 output_column_dict = {
@@ -14,6 +17,7 @@ output_column_dict = {
         "tb_per_sec",
         "backend",
         "resolved_backend",
+        *PERF_COLUMNS,  # what backend="auto" resolved to; empty on CUDA
     ],
     "attention": [
         "s_qo",
@@ -1078,6 +1082,8 @@ routine_cc_to_supported_backends = {
 def filter_backends_by_compute_capability(backends, routine, device):
     # FlashInfer currently does not have an isSupported() function that checks support.
     # WAR: Use helper function to check support.
+    if IS_HIP:
+        return filter_backends_by_arch(backends, routine, device)
     major, minor = get_compute_capability(device)
     compute_capability = f"{major}.{minor}"
 
