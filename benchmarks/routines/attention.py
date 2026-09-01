@@ -21,9 +21,6 @@ except OSError as e:
     is_lib_missing = any(ext in error_msg for ext in [".so", ".dll"])
     if not is_lib_missing:
         raise
-from flashinfer import autotune
-from flashinfer.fp4_quantization import nvfp4_quantize_paged_kv_cache
-from flashinfer.prefill import trtllm_fmha_v2_prefill
 from flashinfer.utils import (
     get_device_sm_count,
     get_trtllm_gen_multi_ctas_kv_counter_bytes,
@@ -971,6 +968,8 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
         if q_dtype != torch.float8_e4m3fn:
             print("[ERROR] NVFP4 KV cache requires --q_dtype fp8_e4m3.")
             return res
+        from flashinfer.fp4_quantization import nvfp4_quantize_paged_kv_cache
+
         kv_cache_nvfp4, kv_cache_sf, k_scale, v_scale = nvfp4_quantize_paged_kv_cache(
             kv_cache[:, 0], kv_cache[:, 1]
         )
@@ -1682,6 +1681,8 @@ def testBatchPrefillWithPagedKVCacheWrapper(args):
         # o_data_type stays as q_dtype (FP8 output)
 
     if is_nvfp4_kv:
+        from flashinfer.fp4_quantization import nvfp4_quantize_paged_kv_cache
+
         kv_cache_nvfp4, kv_cache_sf, k_scale, v_scale = nvfp4_quantize_paged_kv_cache(
             kv_cache[:, 0], kv_cache[:, 1]
         )
@@ -1921,6 +1922,8 @@ def testBatchPrefillWithPagedKVCacheWrapper(args):
             _q_scale = q_scale if q_scale is not None else 1.0
             _k_scale = k_scale if k_scale is not None else 1.0
             _fmha_v2_bmm2_scale = v_scale if v_scale is not None else 1.0
+            from flashinfer.prefill import trtllm_fmha_v2_prefill
+
             return trtllm_fmha_v2_prefill(
                 qkv=(q, kv_cache),
                 input_layout="Q_PAGED_KV_HND",
@@ -2806,6 +2809,8 @@ def testBatchPrefillWithRaggedKVCacheWrapper(args):
             _q_scale = q_scale if q_scale is not None else 1.0
             _k_scale = k_scale if k_scale is not None else 1.0
             _fmha_v2_bmm2_scale = v_scale if v_scale is not None else 1.0
+            from flashinfer.prefill import trtllm_fmha_v2_prefill
+
             return trtllm_fmha_v2_prefill(
                 qkv=fmha_v2_qkv,
                 input_layout=fmha_v2_layout,
@@ -3561,6 +3566,11 @@ def testBatchMLAPagedAttentionWrapper(args):
     # internally).
     autotune_supported_backends = {"auto"}
     cache_path = getattr(args, "autotune_cache", None)
+    if getattr(args, "autotune", False) or cache_path:
+        # CUDA-only, and only reachable behind --autotune/--autotune_cache. At
+        # module scope this import aborts the harness on ROCm: flashinfer binds
+        # `autotune` in its IS_CUDA arm only.
+        from flashinfer import autotune
     if getattr(args, "autotune", False):
         warmup_iters = (
             args.dry_run_iters if args.dry_run_iters and args.dry_run_iters > 0 else 10

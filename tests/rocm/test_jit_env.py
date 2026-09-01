@@ -105,18 +105,21 @@ def test_rocm_env_constants_do_not_come_from_the_cuda_helpers():
         e._get_workspace_dir_name()
 
 
-def test_nvshmem_helpers_stay_absent_on_rocm():
-    """gen_nvshmem_module() must fail at the env layer, naming a CUDA-only API.
+def test_nvshmem_stays_unreachable_on_rocm():
+    """NVSHMEM must not be reachable, and must not write sources on the way out.
 
-    jit/comm.py imports fine on ROCm, so with these defined the failure moves
-    to an absent nvidia.nvshmem -- or, with NVSHMEM_* set, to a build against
-    flashinfer/csrc/rocm/nvshmem_binding.cu, which does not exist.
+    v0.6.18 deleted gen_nvshmem_module() and the jit/env helpers it used, and
+    folded the build into gen_mixed_comm_module() -- which renders .cu templates
+    into FLASHINFER_GEN_SRC_DIR *before* it reaches `import nvidia.nvshmem`. The
+    module gate is what stops a ROCm caller getting that far.
     """
-    from flashinfer.jit import comm as jit_comm
+    import importlib
+
     from flashinfer.jit import env as e
+    from flashinfer.rocm import CUDA_ONLY_MODULES
 
     assert not hasattr(e, "get_nvshmem_include_dirs")
     assert not hasattr(e, "get_nvshmem_lib_dirs")
-    # First statement in gen_nvshmem_module, so this builds nothing on the way.
-    with pytest.raises(AttributeError, match="get_nvshmem_lib_dirs"):
-        jit_comm.gen_nvshmem_module()
+    assert "flashinfer.comm.mixed_comm" in CUDA_ONLY_MODULES
+    with pytest.raises(ImportError, match="CUDA-only"):
+        importlib.import_module("flashinfer.comm.mixed_comm")

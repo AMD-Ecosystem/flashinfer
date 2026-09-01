@@ -8,7 +8,12 @@ from routines.flashinfer_benchmark_utils import (
     benchmark_apis,
     full_output_columns,
 )
-from routines.rocm import add_timing_budget_args
+from routines.rocm import add_timing_budget_args, load_routine_group
+
+# Deferred to first use, so a group that cannot import on this platform
+# reports that by name instead of aborting the run.
+gemm = load_routine_group("gemm")
+moe = load_routine_group("moe")
 
 
 def run_test(args):
@@ -26,13 +31,9 @@ def run_test(args):
 
         res = run_attention_test(args)
     elif args.routine in benchmark_apis["gemm"]:
-        from routines.gemm import run_gemm_test
-
-        res = run_gemm_test(args)
+        res = gemm.run_gemm_test(args)
     elif args.routine in benchmark_apis["moe"]:
-        from routines.moe import run_moe_test
-
-        res = run_moe_test(args)
+        res = moe.run_moe_test(args)
     elif args.routine in benchmark_apis["moe_comm"]:
         from routines.moe_comm import run_moe_comm_test
 
@@ -245,13 +246,9 @@ def parse_args(line=sys.argv[1:]):
 
         args = parse_attention_args(line, parser)
     elif args.routine in benchmark_apis["gemm"]:
-        from routines.gemm import parse_gemm_args
-
-        args = parse_gemm_args(line, parser)
+        args = gemm.parse_gemm_args(line, parser)
     elif args.routine in benchmark_apis["moe"]:
-        from routines.moe import parse_moe_args
-
-        args = parse_moe_args(line, parser)
+        args = moe.parse_moe_args(line, parser)
     elif args.routine in benchmark_apis["moe_comm"]:
         from routines.moe_comm import parse_moe_comm_args
 
