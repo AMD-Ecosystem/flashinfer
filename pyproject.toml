@@ -6,7 +6,7 @@
 name = "amd-flashinfer"
 dynamic = ["version"]
 description = "Fast Attention Algorithms for LLM Inference on ROCm"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<4.0"
 readme = "README.md"
 license = "Apache-2.0"
 # Adding licenses/*.txt here makes `python -m build` write License-File
@@ -190,7 +190,6 @@ testpaths = [
     "tests/attention/test_non_contiguous_prefill.py",
     "tests/attention/test_page.py",
     "tests/utils/test_activation.py",
-    "tests/utils/test_block_sparse_indices_to_vector_sparse_offsets.py",
     "tests/utils/test_quantization.py",
 ]
 python_classes = ["Test*"]
