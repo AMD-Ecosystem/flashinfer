@@ -160,6 +160,22 @@ class TestClosestTagSelection:
         assert gd.main() == 0
         assert capsys.readouterr().out.strip() == f"v1.0.0-0-g{_short_head(repo)}"
 
+    def test_a_nearer_upstream_tag_does_not_displace_the_fork_tag(self, repo, capsys):
+        """Merging an upstream release makes its bare tag a nearer ancestor than
+        the fork's own release tag. Picking it would emit a version with no
+        `+amd` local segment -- indistinguishable from upstream's wheel, and
+        with nothing to signal it. The fork tag wins at any distance."""
+        _git(repo, "tag", "v0.5.3+amd.2")
+        _commit(repo, "one")
+        _git(repo, "tag", "v0.6.18")
+        _commit(repo, "two")
+
+        assert gd.main() == 0
+        assert (
+            capsys.readouterr().out.strip()
+            == f"v0.5.3+amd.2.dev2-0-g{_short_head(repo)}"
+        )
+
 
 class TestFailure:
     def test_git_failure_is_reported_on_stderr_and_returns_one(
