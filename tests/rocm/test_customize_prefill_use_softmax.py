@@ -50,7 +50,6 @@ struct FlashSigmoid : AttentionVariantBase {
 """
 
 
-@pytest.mark.slow
 def test_use_softmax_false_ragged_prefill_matches_reference():
     # b=8/s=256/h=8 with head_dim=128 splits KV into 2 chunks per row, so the
     # sum merge runs; wider head counts and longer sequences do not split.

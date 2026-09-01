@@ -47,7 +47,6 @@ def gumbel_distribution(beta):
     return gumbel_noise
 
 
-@pytest.mark.slow
 @pytest.mark.parametrize("vocab_size", [111, 32000, 128256])
 @pytest.mark.parametrize(
     "distribution",
@@ -88,7 +87,6 @@ def test_sampling_freq(vocab_size, distribution, zero_ratio):
     ],
 )
 @pytest.mark.parametrize("p", [0.1, 0.5, 0.9])
-@pytest.mark.slow
 def test_top_p_sampling_freq(vocab_size, distribution, p):
     torch.manual_seed(42)
     logits = distribution((1, vocab_size), "cuda:0")
@@ -124,7 +122,6 @@ def test_top_p_sampling_freq(vocab_size, distribution, p):
     ],
 )
 @pytest.mark.parametrize("k", [10, 100, 500])
-@pytest.mark.slow
 def test_top_k_sampling_freq(vocab_size, distribution, k):
     if k > vocab_size:
         pytest.skip("k should be less than vocab_size")
@@ -216,7 +213,6 @@ def test_sampling_from_logits(batch_size, vocab_size):
         gumbel_distribution(0.1),
     ],
 )
-@pytest.mark.slow
 def test_sampling_from_logits_freq(vocab_size, distribution):
     torch.manual_seed(42)
     # 1M samples: enough for cosine_similarity > 0.95 even at 128k vocab,
@@ -542,6 +538,8 @@ def test_top_k_mask_logits(batch_size, vocab_size, k, neginf_input):
 @pytest.mark.parametrize("vocab_size", [111, 32000, 128256])
 @pytest.mark.parametrize("num_speculate_tokens", [1, 3, 5, 7])
 @pytest.mark.parametrize("onehot_target", [False, True])
+# Marked for footprint, not runtime: the worst case holds four probability
+# tensors live at once, ~15 GB, and -n auto runs several of these together.
 @pytest.mark.slow
 def test_chain_speculative_sampling(
     batch_size,
