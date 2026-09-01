@@ -205,8 +205,10 @@ void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key) {
         return "  Hint: trigger AITER's lazy JIT build by calling "
                "aiter.ops.mha.mha_batch_prefill_func() once with matching (dtype=" +
                std::string(key.dtype == VariantKey::Dtype::kFp16 ? "fp16" : "bf16") +
-               ", is_causal=" + (key.needs_mask ? "true" : "false") +
-               " (window_size_left>=0 selects the same variant)" +
+               // mha_batch_prefill_func takes `causal`; mha_fwd/mha_varlen_fwd
+               // take `is_causal`.
+               ", causal=" + (key.needs_mask ? "true" : "false") +
+               " (a window selects the same variant)" +
                ", has_lse=" + (key.has_lse ? "true" : "false") +
                ") before this C++ path.\n"
                "  If the .so exists but dlsym fails, run: nm -D " +
