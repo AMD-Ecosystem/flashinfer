@@ -85,8 +85,8 @@ pytest -n auto --reruns 2 -m "not slow"
 # Full coverage:
 pytest -n auto --reruns 2
 
-# Slow tests only:
-pytest -n auto --reruns 2 -m "slow"
+# Slow tests only -- -n 1 on purpose, that is what the marker means:
+pytest -n 1 --reruns 2 -m "slow"
 
 # One file, or a pattern:
 pytest tests/rocm/test_batch_decode_kernels.py
@@ -102,9 +102,12 @@ one MI350X and `-n 1`, the full suite took **118 min cold and 10 min warm**:
 92% of a cold run is compilation, not test execution. A first run against an
 empty `~/.cache/flashinfer` looks like a hung suite — there is no
 `pytest-timeout` here, and a single AITER CK build can sit for tens of
-minutes with no output. `-m "not slow"` is within ~10 s of the full run —
-the marker gates footprint, not time. Expect less wall time with `-n auto`
-on a multi-card host.
+minutes with no output. Expect less wall time with `-n auto` on a
+multi-card host.
+
+After this change `-m "not slow"` is within ~10 s of the full run — the
+marker gates footprint, not time. That figure is the post-change split;
+at `a85540294` the fast lane also excluded the 343 cases now unmarked.
 
 **Worker count.** `pytest -n auto` spawns **half as many xdist workers as
 physical AMD cards** (4 workers on a CPX-mode 8-card host) and assigns each
