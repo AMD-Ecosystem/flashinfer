@@ -356,16 +356,16 @@ def _require_aiter_runtime(device: torch.device, op: str = "batch_prefill") -> N
 _aiter_auto_warned: set[tuple[torch.device, str]] = set()
 
 
-def _aiter_needs_mask(
-    causal: bool, window_left: int, kv_len: Optional[int] = None
-) -> bool:
+def _aiter_needs_mask(causal: bool, window_left: int, kv_len: Optional[int]) -> bool:
     """Does this call need AITER's ``_mask`` .so variant?
 
     AITER splits the variant on "is there any mask", not on causality, so a
     non-causal sliding window needs it too. Must stay in lockstep with
     ``needs_mask`` in ``single_prefill.cuh`` / ``batch_prefill.cuh``: bootstrap
-    the wrong variant and the C++ dlopen misses. Pass kv_len only where it is
-    known -- a window at least that wide masks nothing.
+    the wrong variant and the C++ dlopen misses. kv_len is required rather than
+    defaulted because omitting it where the shim normalizes is a desync, not a
+    safe over-approximation; the batch sites pass None because plan() only has
+    a maximum.
     """
     if kv_len is not None and window_left >= kv_len:
         return causal
@@ -1662,10 +1662,10 @@ def single_prefill_with_kv_cache(
                 "use backend='fa2' or backend='auto' instead."
             )
         # logits_soft_cap > 0 forces the varlen .so (mha_fwd template has no _logits
-        # arm); the logits .so is split by causality (mask vs nmask) and neither is
+        # arm); the logits .so is split on masking (mask vs nmask) and neither is
         # pre-shipped by AITER, so bootstrap the variant matching the request.
         # logits_soft_cap == 0 takes the mha_fwd .so, none of whose variants are
-        # pre-shipped — JIT-build the exact (dtype, causal, has_lse) we need.
+        # pre-shipped — JIT-build the exact (dtype, needs_mask, has_lse) we need.
         with _aiter_bootstrap_lock:
             if resolved_from_auto:
                 # auto promised "AITER when possible, otherwise fa2", and whether
@@ -2025,7 +2025,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._backend = backend
         # plan() overwrites _backend with the concrete choice, so it cannot say
         # whether the *caller* asked for auto. Later plan() calls need that: the
-        # probe key varies per call (causal, dtype), so a wrapper that planned
+        # probe key varies per call (needs_mask, dtype), so a wrapper that planned
         # once on AITER can still meet an unbuildable variant later.
         self._backend_requested = backend
         self._backend_fallback_reason: Optional[str] = None
@@ -2444,7 +2444,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
             has_logits = logits_soft_cap > 0
             # No kv_len here: plan() only has a maximum, and the batch shims do
             # not normalize a too-wide window, so neither may this.
-            needs_mask = _aiter_needs_mask(causal, window_left)
+            needs_mask = _aiter_needs_mask(causal, window_left, kv_len=None)
             reason = None
             with _aiter_bootstrap_lock:
                 if page_size in _aiter_native_page_sizes():
@@ -3479,7 +3479,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         # so a demotion to fa2 cannot strand plan bookkeeping built for AITER.
         if self._backend == "aiter":
             dev_idx = self.device.index if self.device.index is not None else 0
-            needs_mask = _aiter_needs_mask(causal, window_left)
+            needs_mask = _aiter_needs_mask(causal, window_left, kv_len=None)
             reason = None
             with _aiter_bootstrap_lock:
                 if resolved_from_auto:

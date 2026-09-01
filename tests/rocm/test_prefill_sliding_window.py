@@ -15,9 +15,9 @@ import pytest
 import torch
 
 import flashinfer
-from flashinfer.aiter_utils import is_aiter_supported
 from flashinfer.jit.core import logger
-from flashinfer.prefill_rocm import _aiter_needs_mask, _aiter_ops_importable
+from flashinfer.rocm.aiter_utils import is_aiter_supported
+from flashinfer.rocm.prefill import _aiter_needs_mask, _aiter_ops_importable
 
 logger.setLevel(logging.ERROR)
 
@@ -25,11 +25,22 @@ HEAD_DIM = 128
 NUM_HEADS = 4
 
 
-def _skip_unless_aiter(backend: str, device: torch.device) -> None:
-    if backend == "aiter" and (
-        not is_aiter_supported(device) or not _aiter_ops_importable()
-    ):
+def _skip_unless_aiter(backend: str, device: torch.device, op: str) -> None:
+    """Stand down when AITER cannot serve ``op`` here.
+
+    The arch check alone is not enough: a gated toolchain (gfx950 on ROCm 7.2.x)
+    raises ArchCapabilityError from the wrapper constructor, which would error
+    these tests rather than skip them.
+    """
+    if backend != "aiter":
+        return
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+
+    from flashinfer.rocm.arch_caps import capability_available, capability_reason
+
+    if not capability_available(device, op, "aiter"):
+        pytest.skip(capability_reason(device, op, "aiter"))
 
 
 def _reference(q, k, v, causal: bool, window_left: int) -> torch.Tensor:
@@ -64,8 +75,8 @@ def _tolerance(dtype: torch.dtype) -> float:
     return 2e-2 if dtype is torch.bfloat16 else 1e-2
 
 
-# window_left=0 keeps only the diagonal token, which is the tightest band and the
-# one most likely to expose an off-by-one in the bottom-right anchoring.
+# window_left=0 is the tightest band -- one token per row -- and the case most
+# likely to expose an off-by-one in the bottom-right anchoring.
 WINDOWS = [-1, 0, 31, 127]
 DTYPES = [torch.float16, torch.bfloat16]
 BACKENDS = ["fa2", "aiter"]
@@ -77,7 +88,7 @@ BACKENDS = ["fa2", "aiter"]
 @pytest.mark.parametrize("causal", [False, True])
 def test_single_prefill_window(backend, dtype, window_left, causal):
     device = torch.device("cuda:0")
-    _skip_unless_aiter(backend, device)
+    _skip_unless_aiter(backend, device, "single_prefill")
 
     qo_len, kv_len = 37, 512
     torch.manual_seed(0)
@@ -98,7 +109,7 @@ def test_single_prefill_window(backend, dtype, window_left, causal):
 @pytest.mark.parametrize("causal", [False, True])
 def test_ragged_prefill_window(backend, dtype, window_left, causal):
     device = torch.device("cuda:0")
-    _skip_unless_aiter(backend, device)
+    _skip_unless_aiter(backend, device, "batch_prefill")
 
     qo_len, kv_len = 37, 512
     torch.manual_seed(0)
@@ -135,7 +146,7 @@ def test_ragged_prefill_window(backend, dtype, window_left, causal):
 @pytest.mark.parametrize("causal", [False, True])
 def test_paged_prefill_window(page_size, backend, dtype, window_left, causal):
     device = torch.device("cuda:0")
-    _skip_unless_aiter(backend, device)
+    _skip_unless_aiter(backend, device, "batch_prefill")
 
     qo_len, kv_len = 37, 2048
     num_pages = (kv_len + page_size - 1) // page_size
@@ -161,6 +172,16 @@ def test_paged_prefill_window(page_size, backend, dtype, window_left, causal):
         q_data_type=dtype,
         kv_data_type=dtype,
     )
+    # Without this the test can silently narrow: if the native-paging probe
+    # degrades, both page sizes take flat-gather and the native args site goes
+    # untested while the suite stays green.
+    if backend == "aiter" and page_size == 1024:
+        assert wrapper._aiter_flat_gather_idx is None, (
+            "expected the native-paged kernel at page_size=1024; AITER degraded "
+            "to flat-gather, so this case no longer covers batch_prefill.cuh's "
+            "native args site"
+        )
+
     out = wrapper.run(q, kv).float()
     ref = _reference(q, k, v, causal, window_left)
     torch.testing.assert_close(out, ref, rtol=_tolerance(dtype), atol=_tolerance(dtype))
@@ -182,7 +203,7 @@ def test_paged_prefill_window(page_size, backend, dtype, window_left, causal):
         (False, 512, None, True),
     ],
 )
-def test_needs_mask_matches_the_shim(causal, window_left, kv_len, expected):
+def test_needs_mask_table(causal, window_left, kv_len, expected):
     assert _aiter_needs_mask(causal, window_left, kv_len) is expected
 
 
@@ -190,7 +211,7 @@ def test_needs_mask_matches_the_shim(causal, window_left, kv_len, expected):
 def test_window_wider_than_sequence_matches_no_window(dtype):
     """The normalization must be numerically invisible, not just cheaper."""
     device = torch.device("cuda:0")
-    _skip_unless_aiter("aiter", device)
+    _skip_unless_aiter("aiter", device, "single_prefill")
 
     qo_len, kv_len = 37, 256
     torch.manual_seed(0)
@@ -210,7 +231,7 @@ def test_window_wider_than_sequence_matches_no_window(dtype):
 def test_aiter_and_fa2_agree_on_a_non_causal_window():
     """The regression itself: fa2 was right and AITER silently was not."""
     device = torch.device("cuda:0")
-    _skip_unless_aiter("aiter", device)
+    _skip_unless_aiter("aiter", device, "single_prefill")
 
     qo_len, kv_len, window_left = 37, 512, 64
     torch.manual_seed(0)
