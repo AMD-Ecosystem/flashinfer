@@ -14,9 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import os
+import logging
 import functools
 import math
 from enum import Enum
+from functools import lru_cache
 from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
 
 import torch
@@ -48,6 +51,8 @@ def plan_info_vec_as_tensor(
             return plan_info
         return plan_info.to(device="cpu", dtype=torch.int64)
     return torch.tensor(list(plan_info), dtype=torch.int64, device="cpu")
+
+logger = logging.getLogger(__name__)
 
 
 class PosEncodingMode(Enum):
@@ -142,6 +147,18 @@ def next_positive_power_of_2(x: int) -> int:
     return n + 1
 
 
+def last_positive_power_of_2(x: int) -> int:
+    """Return the largest power of 2 that is ``<= x``.
+
+    If *x* is itself a power of 2, returns *x*.
+    """
+    n = next_positive_power_of_2(x)
+    if n == x:
+        return n
+
+    return n // 2
+
+
 def calculate_tile_tokens_dim(
     num_tokens: int, num_experts: int, top_k: int, max_tile_tokens_dim: int = 128
 ) -> int:
@@ -210,25 +227,36 @@ def _unpack_paged_kv_cache(
         )
 
 
-def get_alibi_slopes(n_heads: int) -> torch.Tensor:
+def get_alibi_slopes(
+    n_heads: int, device: Optional[torch.device] = None
+) -> torch.Tensor:
     n = 2 ** math.floor(math.log2(n_heads))
     m_0 = 2.0 ** (-8.0 / n)
-    m = torch.pow(m_0, torch.arange(1, 1 + n))
+    m = torch.pow(m_0, torch.arange(1, 1 + n, device=device))
     if n < n_heads:
         m_hat_0 = 2.0 ** (-4.0 / n)
-        m_hat = torch.pow(m_hat_0, torch.arange(1, 1 + 2 * (n_heads - n), 2))
+        m_hat = torch.pow(
+            m_hat_0, torch.arange(1, 1 + 2 * (n_heads - n), 2, device=device)
+        )
         m = torch.cat([m, m_hat])
     return m.float()
 
 
+SINGLE_KERNEL_TMP_SIZE = 32 * 1024 * 1024
+
 _cache_buf: Dict[Tuple[str, torch.device], torch.Tensor] = {}
 
 
-def _get_cache_buf(name: str, bytes: int, device: torch.device) -> torch.Tensor:
+def _get_cache_buf(
+    name: str, bytes: int, device: torch.device, zero_init: bool = False
+) -> torch.Tensor:
     key = (name, device)
     buf = _cache_buf.get(key)
     if buf is None or buf.size(0) < bytes:
-        buf = torch.empty(bytes, dtype=torch.uint8, device=device)
+        if zero_init:
+            buf = torch.zeros(bytes, dtype=torch.uint8, device=device)
+        else:
+            buf = torch.empty(bytes, dtype=torch.uint8, device=device)
         _cache_buf[key] = buf
     return buf
 
@@ -254,7 +282,7 @@ def _get_cache_alibi_slopes_buf(
     key = (f"alibi_slopes_{num_qo_heads}", device)
     buf = _cache_buf.get(key)
     if buf is None:
-        buf = get_alibi_slopes(num_qo_heads).to(device)
+        buf = get_alibi_slopes(num_qo_heads, device=device)
         _cache_buf[key] = buf
     return buf
 
@@ -271,10 +299,33 @@ def canonicalize_torch_dtype(dtype: Union[torch.dtype, str]) -> torch.dtype:
 
 
 @functools.cache
+def get_device_properties(device: torch.device):
+    return torch.cuda.get_device_properties(device)
+
+
+@functools.cache
 def get_compute_capability(device: torch.device) -> Tuple[int, int]:
     if device.type != "cuda":
         raise ValueError("device must be a cuda device")
-    return torch.cuda.get_device_capability(device.index)
+    properties = get_device_properties(device)
+    return properties.major, properties.minor
+
+
+# trtllm-gen ships the Fp16Softmax and Spcomp cubin variants for SM107 (Rubin) only - the
+# public FMHA packs contain zero of either for sm100a/sm100f/sm103a. Requesting one on another
+# architecture cannot be served, and without this check it surfaces late as a "Missing
+# TRTLLM-GEN kernel" from the launcher rather than as a clear error at the call site.
+def check_trtllm_gen_sm107_only_feature(
+    enabled: Optional[bool], feature_name: str, device: torch.device
+) -> None:
+    if not enabled:
+        return
+    major, minor = get_compute_capability(device)
+    if (major, minor) != (10, 7):
+        raise ValueError(
+            f"{feature_name} is only supported on SM107 (Rubin); the current device is "
+            f"sm{major}{minor}. trtllm-gen exports those cubin variants for SM107 only."
+        )
 
 
 @functools.cache
@@ -317,6 +368,12 @@ def get_gpu_memory_bandwidth(device: torch.device) -> float:
         return bandwidth
     finally:
         pynvml.nvmlShutdown()
+
+
+@functools.cache
+def get_shared_bytes_per_block_optin(device: torch.device) -> int:
+    cap = get_device_properties(device)
+    return cap.shared_memory_per_block_optin
 
 
 def _check_cached_qkv_data_type(
@@ -421,7 +478,23 @@ def is_fa3_backend_supported(
         return False
     if use_fp16_qk_reductions:
         return False
+    # FA3 FP8 KV cache currently requires FP8 query.
+    if dtype_kv in {torch.float8_e4m3fn, torch.float8_e5m2} and dtype_q not in {
+        torch.float8_e4m3fn,
+        torch.float8_e5m2,
+    }:
+        return False
+    # FA3 does not support NVFP4 KV cache (uint8 packed FP4).
+    if dtype_kv == torch.uint8:
+        return False
     return True
+
+
+def is_fa3_prefill_head_dim_supported(head_dim_qk: int, head_dim_vo: int) -> bool:
+    """Return whether FA3 prefill supports the QK/VO head-dim pair."""
+    if head_dim_qk == head_dim_vo:
+        return head_dim_qk in {64, 128, 256}
+    return (head_dim_qk, head_dim_vo) == (192, 128)
 
 
 def is_cutlass_backend_supported(
@@ -465,6 +538,28 @@ def is_cutlass_backend_supported(
     return True
 
 
+def _should_use_fmha_v2_sm120(
+    device: torch.device,
+    pos_encoding_mode: int,
+    use_custom_mask: bool,
+    dtype_q: torch.dtype,
+    dtype_kv: torch.dtype,
+) -> bool:
+    """Check if fmha_v2 HMMA kernels should be used for SM12x attention.
+
+    SM12x supports Ampere-compatible HMMA tensor core instructions (sm_mma=80).
+    The fmha_v2 library has SM120 kernel variants that use these instructions
+    and outperform generic FA2 on SM12x.
+    """
+    return (
+        (is_sm120a_supported(device) or is_sm121a_supported(device))
+        and not use_custom_mask
+        and pos_encoding_mode == PosEncodingMode.NONE.value
+        and dtype_q in {torch.float16, torch.bfloat16}
+        and dtype_kv in {torch.float16, torch.bfloat16}
+    )
+
+
 def determine_attention_backend(
     device: torch.device,
     pos_encoding_mode: int,
@@ -472,6 +567,9 @@ def determine_attention_backend(
     use_custom_mask: bool,
     dtype_q: torch.dtype,
     dtype_kv: torch.dtype,
+    *,
+    head_dim_qk: Optional[int] = None,
+    head_dim_vo: Optional[int] = None,
 ) -> str:
     """
     Determine the appropriate attention backend based on the device and parameters.
@@ -492,6 +590,12 @@ def determine_attention_backend(
         The data type of the query tensor.
     dtype_kv : torch.dtype
         The data type of the key-value tensor.
+    head_dim_qk : int, optional
+        The QK head dimension. When provided with ``head_dim_vo``, this is used
+        to avoid selecting FA3 for prefill dimensions that its Hopper kernels do
+        not instantiate.
+    head_dim_vo : int, optional
+        The VO head dimension.
 
     Returns
     -------
@@ -505,9 +609,13 @@ def determine_attention_backend(
         dtype_q,
         dtype_kv,
     ):
-        return "fa3"
+        if head_dim_qk is None or head_dim_vo is None:
+            return "fa3"
+        if is_fa3_prefill_head_dim_supported(head_dim_qk, head_dim_vo):
+            return "fa3"
     else:
         return "fa2"
+    return "fa2"
 
 
 def version_at_least(version: str, base_version: str) -> bool:
@@ -569,13 +677,104 @@ def is_sm120a_supported(device: torch.device) -> bool:
     return major == 12 and minor == 0 and version_at_least(torch.version.cuda, "12.8")
 
 
+def is_sm120f_supported(device: torch.device) -> bool:
+    major, _ = get_compute_capability(device)
+    return major == 12 and version_at_least(torch.version.cuda, "12.9")
+
+
 def is_sm121a_supported(device: torch.device) -> bool:
     major, minor = get_compute_capability(device)
     return major == 12 and minor == 1 and version_at_least(torch.version.cuda, "12.9")
 
 
+def is_sm12x_supported(device: torch.device) -> bool:
+    """Check if the device is any SM12x GPU (SM120a, SM121a, or future variants).
+
+    Uses a major-version check (``major == 12``) so that future SM12x minor
+    variants are automatically covered without code changes, matching the
+    pattern used by ``is_sm100a_supported`` (``major == 10``).
+
+    The minimum CUDA version depends on the minor variant:
+    SM120a requires CUDA 12.8, SM121a requires CUDA 12.9.
+    """
+    major, minor = get_compute_capability(device)
+    if major != 12:
+        return False
+    min_cuda = "12.9" if minor >= 1 else "12.8"
+    return version_at_least(torch.version.cuda, min_cuda)
+
+
+def is_cvt_rs_supported(device: torch.device = None) -> bool:
+    """Check if the GPU supports the PTX cvt.rs.f16x2.f32 instruction.
+
+    This is a non-forward-compatible SM100a feature — not all SM >= 100 have it.
+    In particular, SM120 (Blackwell lite) does NOT support it.
+    """
+    if device is None:
+        device = torch.device("cuda")
+    major, _ = get_compute_capability(device)
+    # SM100a and SM110a support cvt.rs; SM120 does not.
+    return major in (10, 11)
+
+
 def determine_mla_backend(device: torch.device) -> str:
     return "fa3" if is_sm90a_supported(device) else "fa2"
+
+
+def _check_block_tables_shape(
+    block_tables: torch.Tensor,
+    uses_shared_paged_kv_idx: bool,
+    block_sparse: bool = False,
+    num_kv_heads: Optional[int] = None,
+    batch_size: Optional[int] = None,
+) -> None:
+    """Validate ``block_tables`` rank against the paged KV index layout.
+
+    Shared layout (``uses_shared_paged_kv_idx=True``) expects a 2-D tensor
+    ``[batch_size, max_num_pages_per_seq]``.  Separate layout expects a 3-D
+    tensor ``[batch_size, 2, max_num_pages_per_seq]`` where dim1 distinguishes
+    K (0) and V (1) page indices.
+
+    Block-sparse attention (``block_sparse=True``) uses per-KV-head page
+    tables and expects a 3-D tensor ``[num_kv_heads, batch_size,
+    max_num_pages_per_seq]`` with the shared layout; the selected sparse
+    pages must be packed densely at the front of each row.
+    """
+    if block_sparse:
+        if not uses_shared_paged_kv_idx:
+            raise ValueError(
+                "block-sparse attention currently requires the shared paged-KV "
+                "index layout (uses_shared_paged_kv_idx=True)"
+            )
+        if block_tables.ndim != 3:
+            raise ValueError(
+                f"block_tables must be 3D [num_kv_heads, batch_size, "
+                f"max_num_pages_per_seq] for block-sparse attention, "
+                f"got ndim={block_tables.ndim}"
+            )
+        if num_kv_heads is not None and block_tables.shape[0] != num_kv_heads:
+            raise ValueError(
+                f"block_tables must have shape[0]==num_kv_heads ({num_kv_heads}) "
+                f"for block-sparse attention, got shape={block_tables.shape}"
+            )
+        if batch_size is not None and block_tables.shape[1] != batch_size:
+            raise ValueError(
+                f"block_tables must have shape[1]==batch_size ({batch_size}) "
+                f"for block-sparse attention, got shape={block_tables.shape}"
+            )
+        return
+    expected_ndim = 2 if uses_shared_paged_kv_idx else 3
+    if block_tables.ndim != expected_ndim:
+        layout = "shared" if uses_shared_paged_kv_idx else "separate"
+        raise ValueError(
+            f"block_tables must be {expected_ndim}D for {layout} paged KV layout, "
+            f"got ndim={block_tables.ndim}"
+        )
+    if not uses_shared_paged_kv_idx and block_tables.shape[1] != 2:
+        raise ValueError(
+            f"block_tables must have shape[1]==2 for separate KV indices, "
+            f"got shape={block_tables.shape}"
+        )
 
 
 def check_shape_dtype_device(
@@ -596,6 +795,19 @@ def check_shape_dtype_device(
     if expected_device and x.device != expected_device:
         raise ValueError(
             f"Invalid device of {name}: expected {expected_device}, got {x.device}"
+        )
+
+
+def _check_workspace_buffer_alignment(
+    x: torch.Tensor, name: str, alignment: int = 16
+) -> None:
+    if x.numel() == 0:
+        return
+    data_ptr = x.data_ptr()
+    if data_ptr % alignment != 0:
+        raise ValueError(
+            f"{name} must be {alignment}-byte aligned, got data_ptr % "
+            f"{alignment} = {data_ptr % alignment}"
         )
 
 
@@ -656,7 +868,76 @@ def round_up(x: int, y: int) -> int:
 
 @functools.cache
 def get_device_sm_count(device: torch.device) -> int:
-    return torch.cuda.get_device_properties(device).multi_processor_count
+    return get_device_properties(device).multi_processor_count
+
+
+@functools.cache
+def get_device_name(device: torch.device) -> str:
+    return get_device_properties(device).name
+
+
+def get_device_index(device: torch.device) -> int:
+    """Concrete CUDA device index for *device* (bare "cuda" -> current device)."""
+    return device.index if device.index is not None else torch.cuda.current_device()
+
+
+def get_trtllm_gen_multi_ctas_kv_counter_bytes(
+    batch_size: int, num_qo_heads: int, sm_count: int
+) -> int:
+    """Return bytes needed by trtllm-gen multi-CTA KV counter semaphores."""
+    num_semaphores = round_up(max(batch_size * num_qo_heads, sm_count), 8)
+    return num_semaphores * 4
+
+
+def _get_trtllm_gen_multi_ctas_kv_counter_buffer(
+    batch_size: int,
+    num_qo_heads: int,
+    sm_count: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Allocate a fresh, zero-initialized multi-CTA KV counter buffer.
+
+    The trtllm-gen kernel resets these semaphores back to zero at the end of
+    every launch, so the buffer only needs to be zeroed once at allocation and
+    can then be reused across launches without re-zeroing. Callers that reuse a
+    buffer should hold it on their own instance (e.g. a wrapper/runner) rather
+    than a module-global cache, so its lifetime is tied to the owner.
+    """
+    counter_bytes = get_trtllm_gen_multi_ctas_kv_counter_bytes(
+        batch_size, num_qo_heads, sm_count
+    )
+    return torch.zeros(counter_bytes, dtype=torch.uint8, device=device)
+
+
+def _resolve_trtllm_gen_multi_ctas_kv_counter_buffer(
+    counter_buffer: Optional[torch.Tensor],
+    batch_size: int,
+    num_qo_heads: int,
+    sm_count: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Allocate or validate a trtllm-gen multi-CTA KV counter buffer."""
+    required_counter_bytes = get_trtllm_gen_multi_ctas_kv_counter_bytes(
+        batch_size, num_qo_heads, sm_count
+    )
+    if counter_buffer is None:
+        return _get_trtllm_gen_multi_ctas_kv_counter_buffer(
+            batch_size, num_qo_heads, sm_count, device
+        )
+    if counter_buffer.device != device:
+        raise ValueError(
+            "multi_ctas_kv_counter_buffer must be on the same device as query"
+        )
+    if not counter_buffer.is_contiguous():
+        raise ValueError("multi_ctas_kv_counter_buffer must be contiguous")
+    _check_workspace_buffer_alignment(counter_buffer, "multi_ctas_kv_counter_buffer")
+    counter_buffer_bytes = counter_buffer.numel() * counter_buffer.element_size()
+    if counter_buffer_bytes < required_counter_bytes:
+        raise ValueError(
+            "multi_ctas_kv_counter_buffer is too small: got "
+            f"{counter_buffer_bytes} bytes, need {required_counter_bytes} bytes"
+        )
+    return counter_buffer
 
 
 class FP4Tensor:
@@ -790,16 +1071,14 @@ def get_shuffle_matrix_a_row_indices(
     # row_indices[new_row] = old_row
     # so row_indices is an array of size M telling us from which old_row
     # the new_row should be taken.
+    # Vectorized: avoids a slow Python for-loop over M rows (CPU contention
+    # when many ranks call this simultaneously on large weight matrices).
+    old_rows = torch.arange(M, dtype=torch.long)
+    row_map_tensor = torch.tensor(row_map, dtype=torch.long)
+    mapped_rows = row_map_tensor[old_rows % shuffle_block_size]
+    new_rows = (old_rows // shuffle_block_size) * shuffle_block_size + mapped_rows
     row_indices = torch.empty(M, dtype=torch.long)
-
-    for old_row in range(M):
-        block_idx = old_row // shuffle_block_size
-        row_in_block = old_row % shuffle_block_size
-        mapped_row_in_block = row_map[row_in_block]
-
-        new_row = block_idx * shuffle_block_size + mapped_row_in_block
-
-        row_indices[new_row] = old_row
+    row_indices[new_rows] = old_rows
 
     return row_indices
 
@@ -807,8 +1086,8 @@ def get_shuffle_matrix_a_row_indices(
 def get_shuffle_matrix_sf_a_row_indices(
     input_tensor: torch.Tensor, epilogue_tile_m: int, num_elts_per_sf: int = 16
 ) -> torch.Tensor:
-    assert input_tensor.dtype == torch.uint8
-    assert num_elts_per_sf == 16
+    assert input_tensor.dtype == torch.uint8 or input_tensor.dtype == torch.bfloat16
+    assert num_elts_per_sf == 16 or num_elts_per_sf == 32
 
     assert input_tensor.dim() == 2, (
         f"input_tensor should be a 2D tensor, not {input_tensor.dim()}"
@@ -817,8 +1096,7 @@ def get_shuffle_matrix_sf_a_row_indices(
     # M, K from the input
     M, K = input_tensor.shape
     assert M % 128 == 0
-    assert K % 4 == 0
-
+    # K % 4 alignment is not required here, downstream block_scale_interleave kernel pads K to a multiple of 4 internally
     row_indices = get_shuffle_matrix_a_row_indices(input_tensor, epilogue_tile_m)
 
     return row_indices
@@ -942,6 +1220,13 @@ def backend_requirement(
         backends. Should accept the same arguments as the decorated function and return
         True if requirements are met, False otherwise.
         In the case where the kernel function does not have any specific backends, this can be decorated with @supported_compute_capability to specify the function's supported compute capabilities.
+    heuristic_func : callable, optional
+        A function that performs heuristic backend selection when backend is "auto".
+        Must be provided if backend is "auto". Does not do anything if backend is not "auto".
+        Should accept the same arguments as the decorated function.
+        Should return an ordered list of runnable backends with the most preferred backend first.
+        When decorated function is not autotuned, the first backend in the heuristic list will be run.
+        When decorated function is autotuned, the backends in the heuristic list will be autotuned over to find the best backend.
 
     Returns
     -------
@@ -1097,8 +1382,8 @@ def backend_requirement(
                 except ValueError:
                     continue
             # If a heuristic function is provided, filter the suitable backends based on the heuristic function
-            if heuristic_func is not None:
-                suitable_backends = heuristic_func(suitable_backends, *args, **kwargs)
+            assert heuristic_func is not None, "Heuristic function must be provided"
+            suitable_backends = heuristic_func(suitable_backends, *args, **kwargs)
             if not suitable_backends:
                 return False
             wrapper.suitable_auto_backends = suitable_backends
@@ -1191,3 +1476,103 @@ def backend_requirement(
         return wrapper
 
     return decorator
+
+
+@functools.cache
+def get_default_generators(device: torch.device):
+    torch.cuda.init()
+    return torch.cuda.default_generators[device.index]
+
+
+def prepare_jit_additional_args(
+    jit_additional_tensor_names: list,
+    known_bufs: dict,
+    user_args: tuple,
+) -> list:
+    """Map well-known JIT additional tensor names to internal buffers.
+
+    For each name in jit_additional_tensor_names:
+      - If the name is in known_bufs, use the corresponding value.
+        Values may be callables (evaluated lazily only when needed).
+      - Otherwise, consume the next value from user_args.
+      - If user_args is exhausted, use None.
+    Any remaining user_args are appended at the end.
+    """
+    result = []
+    user_args_list = list(user_args)
+    for name in jit_additional_tensor_names:
+        if name in known_bufs:
+            val = known_bufs[name]
+            result.append(val() if callable(val) else val)
+        elif user_args_list:
+            result.append(user_args_list.pop(0))
+        else:
+            result.append(None)
+    result.extend(user_args_list)
+    return result
+
+
+@lru_cache(maxsize=1)
+def is_confidential_compute() -> bool:
+    """Whether the GPU is running in NVIDIA Confidential Computing (CC) mode.
+
+    Detected once via NVML and cached.
+    Overridable with ``FLASHINFER_CONFIDENTIAL_COMPUTE=1/0``.
+    """
+    forced = os.environ.get("FLASHINFER_CONFIDENTIAL_COMPUTE")
+    if forced is not None:
+        if forced not in ("0", "1"):
+            raise ValueError(
+                f"FLASHINFER_CONFIDENTIAL_COMPUTE must be '0' or '1', got {forced!r}"
+            )
+        return forced == "1"
+    if not torch.cuda.is_available():
+        return False
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        try:
+            state = pynvml.nvmlSystemGetConfComputeState()
+            # ccFeature != 0 means CC is enabled (ON or devtools).
+            return int(getattr(state, "ccFeature", 0)) != 0
+        finally:
+            pynvml.nvmlShutdown()
+    except Exception as e:
+        logger.debug("[Flashinfer]: Confidential-compute detection failed: %r", e)
+        return False
+
+
+@lru_cache(maxsize=1)
+def get_globaltimer_kernel():
+    """Lazily JIT-build the %globaltimer kernel."""
+
+    _GLOBALTIMER_KERNEL_CU = r"""
+    #include <torch/extension.h>
+    #include <ATen/cuda/CUDAContext.h>
+    __global__ void _get_globaltimer_timestamp(uint64_t* timestamp) {
+        asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(*timestamp));
+    }
+    void get_globaltimer_timestamp(torch::Tensor timestamp) {
+        _get_globaltimer_timestamp<<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(
+        reinterpret_cast<uint64_t*>(timestamp.data_ptr<int64_t>()));
+    }
+    """
+
+    try:
+        from torch.utils.cpp_extension import load_inline
+
+        mod = load_inline(
+            name="flashinfer_globaltimer",
+            cpp_sources="void get_globaltimer_timestamp(torch::Tensor);",
+            cuda_sources=_GLOBALTIMER_KERNEL_CU,
+            functions=["get_globaltimer_timestamp"],
+            verbose=False,
+        )
+        return mod.get_globaltimer_timestamp
+    except Exception as e:
+        logger.warning(
+            f"[Flashinfer]: %globaltimer stamp kernel build failed ({e}); "
+            f"falling back to cudaEvent timing."
+        )
+    return None

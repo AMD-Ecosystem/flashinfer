@@ -20,20 +20,21 @@ from typing import Optional
 
 import torch
 
-from .rocm.device_utils import IS_CUDA, IS_HIP
-
-if IS_HIP:
-    from .rocm.activation import maybe_silu_and_mul
+from .api_logging import flashinfer_api
 from .jit import gen_act_and_mul_module
+from .trace.templates.activation import (
+    gelu_and_mul_trace,
+    gelu_tanh_and_mul_trace,
+    silu_and_mul_scaled_nvfp4_experts_quantize_trace,
+    silu_and_mul_trace,
+)
 from .utils import (
     device_support_pdl,
     register_custom_op,
     register_fake_op,
     get_compute_capability,
 )
-
-if IS_CUDA:
-    from .fp4_quantization import get_fp4_quantization_module
+from .quantization.fp4_quantization import get_fp4_quantization_module
 
 
 @functools.cache
@@ -72,11 +73,9 @@ def _check_shape(input: torch.Tensor, output: torch.Tensor) -> None:
     )
 
 
+@flashinfer_api(trace=silu_and_mul_trace)
 def silu_and_mul(
-    input: torch.Tensor,
-    out: Optional[torch.Tensor] = None,
-    enable_pdl: Optional[bool] = None,
-    backend: str = "auto",
+    input: torch.Tensor, out: torch.Tensor = None, enable_pdl: Optional[bool] = None
 ) -> torch.Tensor:
     r"""Fused SiLU and Mul operation.
 
@@ -94,29 +93,13 @@ def silu_and_mul(
         Whether to enable `programmatic dependent launch
         <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
 
-    backend: str
-        Kernel backend to use. ``"auto"`` (default) resolves to the native
-        FlashInfer JIT kernel on all platforms.
-        ``"native"`` uses the FlashInfer JIT kernel on all platforms.
-        ``"aiter"`` uses AMD AITER's ``silu_and_mul`` C++ kernel — ROCm
-        (gfx942/gfx950) only; raises ``ValueError`` on any other platform.
-
     Returns
     -------
     output: torch.Tensor
         Output tensor, shape (..., hidden_size).
     """
-    if backend not in ("auto", "native", "aiter"):
-        raise ValueError(
-            f"Unknown backend {backend!r}; expected one of 'auto', 'native', 'aiter'."
-        )
-    if backend == "aiter":
-        # Validate the explicit opt-in up front so a misconfiguration (unsupported
-        # device or missing aiter package) surfaces as a clear ValueError here
-        # instead of a raw import/build error deeper in the JIT loader.
-        from .rocm.aiter_utils import require_aiter
-
-        require_aiter(input.device, "silu_and_mul")
+    if enable_pdl is None:
+        enable_pdl = device_support_pdl(input.device)
     if input.shape[-1] * input.dtype.itemsize % 16 != 0:
         raise ValueError("The pointers must be multiple of 16 bytes.")
     if out is not None:
@@ -127,11 +110,6 @@ def silu_and_mul(
             device=input.device,
             dtype=input.dtype,
         )
-    if IS_HIP:
-        if (result := maybe_silu_and_mul(out, input, backend)) is not None:
-            return result
-    if enable_pdl is None:
-        enable_pdl = device_support_pdl(input.device)
     get_act_and_mul_module("silu").silu_and_mul(
         out,
         input,
@@ -140,6 +118,7 @@ def silu_and_mul(
     return out
 
 
+@flashinfer_api(trace=gelu_tanh_and_mul_trace)
 def gelu_tanh_and_mul(
     input: torch.Tensor, out: torch.Tensor = None, enable_pdl: Optional[bool] = None
 ) -> torch.Tensor:
@@ -180,6 +159,7 @@ def gelu_tanh_and_mul(
     return out
 
 
+@flashinfer_api(trace=gelu_and_mul_trace)
 def gelu_and_mul(
     input: torch.Tensor, out: torch.Tensor = None, enable_pdl: Optional[bool] = None
 ) -> torch.Tensor:
@@ -220,22 +200,41 @@ def gelu_and_mul(
     return out
 
 
+@flashinfer_api(trace=silu_and_mul_scaled_nvfp4_experts_quantize_trace)
 def silu_and_mul_scaled_nvfp4_experts_quantize(
     a,
     mask,
     a_global_sf,
 ):
-    """
-    Silu and multiply and quantize batched input tensor to NVFP4 format with mask.
-    Parameters:
-        a (torch.Tensor): Input tensor of shape [B, M, K] with dtype fp16/bf16.
-        a_global_sf (torch.Tensor): Global scale factor of shape [1] with dtype float32.
-        mask (torch.Tensor): Mask tensor to apply before quantization.
-        sf_vec_size (int, optional): Scale factor vector size. Defaults to 16.
-    Returns:
-        Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
-            - Quantized tensor of shape [B, M, K/2] with dtype FLOAT4_E2M1X2
-            - Scale factors tensor with shape determined by layout and sf_vec_size
+    r"""Fused SiLU + mul + per-expert NVFP4 quantization with a per-row mask.
+
+    Used by mixture-of-experts pipelines to fuse the SiLU-gated activation
+    of each expert with NVFP4 quantization, applying ``mask`` to skip rows
+    that do not belong to the current expert.
+
+    Parameters
+    ----------
+    a : torch.Tensor
+        Input tensor of shape ``[B, M, K]`` with dtype fp16/bf16.
+    mask : torch.Tensor
+        Mask tensor applied before quantization (typically the
+        expert-assignment mask).
+    a_global_sf : torch.Tensor
+        Global scale factor of shape ``[1]`` with dtype ``float32``.
+
+    Returns
+    -------
+    Tuple[torch.Tensor, torch.Tensor]
+        ``(x_q, sf)`` where ``x_q`` has logical shape ``[M, K/2, B]``
+        with dtype ``FLOAT4_E2M1X2`` (the implementation permutes the
+        ``[B, M, K/2]`` physical layout so that the batch dim is last,
+        matching the grouped-GEMM expectation) and ``sf`` is the 6D
+        swizzled scale-factor tensor of logical shape
+        ``[32, 4, padded_M // 128, 4, padded_K // 64, B]`` viewed as
+        ``float8_e4m3fn``.  ``padded_M`` rounds ``M`` up to a multiple
+        of 128 and ``padded_K`` rounds ``K // sf_vec_size`` up to a
+        multiple of 4.  Here ``sf_vec_size`` is fixed at ``16`` (NVFP4),
+        matching :func:`flashinfer.quantization.nvfp4_quantize`.
     """
     major, minor = get_compute_capability(a.device)
     device_arch = f"{major * 10 + minor}"

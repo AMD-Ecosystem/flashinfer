@@ -42,6 +42,8 @@ Array<int64_t> BatchDecodeWithPagedKVCachePlan(
     int64_t num_qo_heads, int64_t num_kv_heads, int64_t page_size, bool enable_cuda_graph,
     int64_t window_left, double logits_soft_cap, int64_t head_dim_qk, int64_t head_dim_vo,
     TensorView empty_q_data, TensorView empty_kv_data) {
+  CHECK_INPUT_TYPE(indptr, dl_int32);
+
   size_t float_workspace_size_in_bytes =
       float_workspace_buffer.size(0) * get_element_size(float_workspace_buffer);
   size_t int_workspace_size_in_bytes =
@@ -53,7 +55,7 @@ Array<int64_t> BatchDecodeWithPagedKVCachePlan(
       << "CUDA cores template only supports equal head dim for QK and VO, please use tensor "
          "cores template for different head dim";
 
-  cudaSetDevice(float_workspace_buffer.device().device_id);
+  ffi::CUDADeviceGuard device_guard(float_workspace_buffer.device().device_id);
   const cudaStream_t stream = get_stream(float_workspace_buffer.device());
   DISPATCH_context(
       DTypeQ, DTypeKV, DTypeO, IdType, HEAD_DIM_QK, HEAD_DIM_VO, POS_ENCODING_MODE,
@@ -78,6 +80,52 @@ Array<int64_t> BatchDecodeWithPagedKVCachePlan(
   return Array(plan_info.ToVector());
 }
 
+Array<int64_t> BatchDecodeWithPagedKVCacheWorkspaceSize(
+    TensorView device_buffer, TensorView indptr, int64_t batch_size, int64_t num_qo_heads,
+    int64_t num_kv_heads, int64_t page_size, bool enable_cuda_graph, int64_t window_left,
+    double logits_soft_cap, int64_t head_dim_qk, int64_t head_dim_vo, TensorView empty_q_data,
+    TensorView empty_kv_data) {
+  (void)window_left;
+  (void)logits_soft_cap;
+  (void)empty_q_data;
+  (void)empty_kv_data;
+  CHECK_INPUT_TYPE(indptr, dl_int32);
+
+  TVM_FFI_ICHECK_EQ(head_dim_qk, head_dim_vo)
+      << "CUDA cores template only supports equal head dim for QK and VO, please use tensor "
+         "cores template for different head dim";
+
+  ffi::CUDADeviceGuard device_guard(device_buffer.device().device_id);
+  const cudaStream_t stream = get_stream(device_buffer.device());
+  size_t float_workspace_size_in_bytes = 0;
+  size_t int_workspace_size_in_bytes = 0;
+
+  DISPATCH_context(
+      DTypeQ, DTypeKV, DTypeO, IdType, HEAD_DIM_QK, HEAD_DIM_VO, POS_ENCODING_MODE,
+      USE_SLIDING_WINDOW, USE_LOGITS_SOFT_CAP, AttentionVariant, Params, [&] {
+        DISPATCH_GQA_GROUP_SIZE(num_qo_heads / num_kv_heads, GROUP_SIZE, {
+          auto work_estimation_func = BatchDecodeWithPagedKVCacheWorkEstimationDispatched<
+              GROUP_SIZE, HEAD_DIM_QK, POS_ENCODING_MODE, AttentionVariant, Params>;
+          cudaError_t status =
+              DecodePlanWorkspaceSize<HEAD_DIM_QK, POS_ENCODING_MODE, AttentionVariant, Params>(
+                  float_workspace_size_in_bytes, int_workspace_size_in_bytes,
+                  static_cast<IdType*>(indptr.data_ptr()), batch_size, num_qo_heads, page_size,
+                  enable_cuda_graph, /*stream=*/stream, work_estimation_func);
+
+          TVM_FFI_ICHECK(status == cudaSuccess)
+              << "BatchDecodeWithPagedKVCache workspace size failed with error "
+              << cudaGetErrorString(status);
+          return true;
+        });
+      });
+
+  std::vector<int64_t> workspace_sizes = {
+      static_cast<int64_t>(float_workspace_size_in_bytes),
+      static_cast<int64_t>(int_workspace_size_in_bytes),
+  };
+  return Array(workspace_sizes);
+}
+
 void BatchDecodeWithPagedKVCacheRun(TensorView float_workspace_buffer,
                                     TensorView int_workspace_buffer, Array<int64_t> plan_info_vec,
                                     TensorView q, TensorView paged_k_cache,
@@ -86,6 +134,10 @@ void BatchDecodeWithPagedKVCacheRun(TensorView float_workspace_buffer,
                                     TensorView o, Optional<TensorView> maybe_lse,
                                     int64_t kv_layout_code, int64_t window_left,
                                     bool enable_pdl ADDITIONAL_FUNC_PARAMS) {
+  CHECK_INPUT_TYPE(paged_kv_indptr, dl_int32);
+  CHECK_INPUT_TYPE(paged_kv_indices, dl_int32);
+  CHECK_INPUT_TYPE(paged_kv_last_page_len, dl_int32);
+
   DecodePlanInfo plan_info;
   plan_info.FromVector(std::vector<int64_t>(plan_info_vec.begin(), plan_info_vec.end()));
   QKVLayout kv_layout = static_cast<QKVLayout>(kv_layout_code);
@@ -120,17 +172,19 @@ void BatchDecodeWithPagedKVCacheRun(TensorView float_workspace_buffer,
   const auto q_stride_n = q.stride(0);
   const auto q_stride_h = q.stride(1);
 
-  // get kv_cache_strides
-  const int64_t* kv_cache_strides = nullptr;
+  // get kv-cache strides
   auto k_strides = paged_k_cache.strides();
   auto v_strides = paged_v_cache.strides();
   TVM_FFI_ICHECK_EQ(k_strides.size(), v_strides.size());
   for (int i = 0; i < k_strides.size(); ++i) {
-    TVM_FFI_ICHECK_EQ(k_strides[i], v_strides[i]);
+    TVM_FFI_ICHECK_EQ(k_strides[i], v_strides[i])
+        << "K/V strides differ at dim " << i
+        << ": the FA2 decode kernel addresses both K and V through a single set of "
+           "(K) strides, so paged_k_cache and paged_v_cache must have identical strides; "
+           "NVFP4/asymmetric decode with independent K/V strides is not yet supported.";
   }
-  kv_cache_strides = k_strides.data();
 
-  cudaSetDevice(q.device().device_id);
+  ffi::CUDADeviceGuard device_guard(q.device().device_id);
   const cudaStream_t stream = get_stream(q.device());
 
   DISPATCH_context(
@@ -139,7 +193,7 @@ void BatchDecodeWithPagedKVCacheRun(TensorView float_workspace_buffer,
         paged_kv_t<DTypeKV, IdType> paged_kv(
             num_kv_heads, page_size, HEAD_DIM_QK, batch_size, kv_layout,
             static_cast<DTypeKV*>(paged_k_cache.data_ptr()),
-            static_cast<DTypeKV*>(paged_v_cache.data_ptr()), kv_cache_strides,
+            static_cast<DTypeKV*>(paged_v_cache.data_ptr()), k_strides.data(), v_strides.data(),
             static_cast<IdType*>(paged_kv_indices.data_ptr()),
             static_cast<IdType*>(paged_kv_indptr.data_ptr()),
             static_cast<IdType*>(paged_kv_last_page_len.data_ptr()));

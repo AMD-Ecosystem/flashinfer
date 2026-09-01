@@ -1,18 +1,12 @@
 import argparse
-import csv
 import sys
 
-from routines.attention import parse_attention_args, run_attention_test
+# Only import utilities at module level - routine modules are imported lazily
+# to avoid loading unnecessary dependencies (e.g., mpi4py for non-MPI benchmarks)
 from routines.flashinfer_benchmark_utils import (
     benchmark_apis,
     full_output_columns,
-    output_column_dict,
 )
-from routines.rocm import add_timing_budget_args, load_routine_group
-
-# A failure to import either is deferred to first use rather than taken here.
-gemm = load_routine_group("gemm")
-moe = load_routine_group("moe")
 
 
 def run_test(args):
@@ -24,24 +18,82 @@ def run_test(args):
     """
 
     ## Depending on routine type, route to corresponding test routine
+    ## Imports are done lazily to avoid loading unnecessary dependencies
     if args.routine in benchmark_apis["attention"]:
+        from routines.attention import run_attention_test
+
         res = run_attention_test(args)
     elif args.routine in benchmark_apis["gemm"]:
-        res = gemm.run_gemm_test(args)
+        from routines.gemm import run_gemm_test
+
+        res = run_gemm_test(args)
     elif args.routine in benchmark_apis["moe"]:
-        res = moe.run_moe_test(args)
+        from routines.moe import run_moe_test
+
+        res = run_moe_test(args)
+    elif args.routine in benchmark_apis["moe_comm"]:
+        from routines.moe_comm import run_moe_comm_test
+
+        res = run_moe_comm_test(args)
+    elif args.routine in benchmark_apis["allreduce_comm"]:
+        from routines.allreduce_comm import run_allreduce_comm_test
+
+        res = run_allreduce_comm_test(args)
+    elif args.routine in benchmark_apis["mixed_comm"]:
+        from routines.mixed_comm import run_mixed_comm_test
+
+        res = run_mixed_comm_test(args)
+    elif args.routine in benchmark_apis["norm"]:
+        from routines.norm import run_norm_test
+
+        res = run_norm_test(args)
+    elif args.routine in benchmark_apis["quantization"]:
+        from routines.quantization import run_quantization_test
+
+        res = run_quantization_test(args)
+    elif args.routine in benchmark_apis["sampling"]:
+        from routines.sampling import run_sampling_test
+
+        res = run_sampling_test(args)
+    elif args.routine in benchmark_apis["topk_varlen"]:
+        from routines.topk_varlen import run_topk_varlen_test
+
+        res = run_topk_varlen_test(args)
+    elif args.routine in benchmark_apis["rope"]:
+        from routines.rope import run_rope_test
+
+        res = run_rope_test(args)
+    elif args.routine in benchmark_apis["mamba"]:
+        from routines.mamba import run_mamba_test
+
+        res = run_mamba_test(args)
+    elif args.routine in benchmark_apis["gdn"]:
+        from routines.gdn import run_gdn_test
+
+        res = run_gdn_test(args)
+    elif args.routine in benchmark_apis["sparse_attention"]:
+        from routines.sparse_attention import run_sparse_attention_test
+
+        res = run_sparse_attention_test(args)
     else:
         raise ValueError(f"Unsupported routine: {args.routine}")
 
     # Write results to output file if specified
     if args.output_path is not None:
-        with open(args.output_path, "a", newline="") as fout:
-            writer = csv.writer(fout, lineterminator="\n")
+        with open(args.output_path, "a") as fout:
             for cur_res in res:
-                for key in output_column_dict["general"]:
-                    cur_res[key] = getattr(args, key)
+                for key in full_output_columns:
+                    # Backfill every output column the routine didn't set: from
+                    # args when available, else "".  Covers columns belonging to
+                    # other routines (e.g. attention's s_qo) that would otherwise
+                    # KeyError below.  Routine-set values are preserved.
+                    if key not in cur_res or cur_res[key] == "":
+                        cur_res[key] = getattr(args, key, "")
 
-                writer.writerow([str(cur_res[col]) for col in full_output_columns])
+                output_line = ",".join(
+                    [str(cur_res[col]) for col in full_output_columns]
+                )
+                fout.write(output_line + "\n")
             fout.flush()
     return
 
@@ -67,7 +119,18 @@ def parse_args(line=sys.argv[1:]):
         required=True,
         choices=list(benchmark_apis["attention"])
         + list(benchmark_apis["gemm"])
-        + list(benchmark_apis["moe"]),
+        + list(benchmark_apis["moe"])
+        + list(benchmark_apis["moe_comm"])
+        + list(benchmark_apis["allreduce_comm"])
+        + list(benchmark_apis["mixed_comm"])
+        + list(benchmark_apis["norm"])
+        + list(benchmark_apis["quantization"])
+        + list(benchmark_apis["sampling"])
+        + list(benchmark_apis["rope"])
+        + list(benchmark_apis["mamba"])
+        + list(benchmark_apis["gdn"])
+        + list(benchmark_apis["sparse_attention"])
+        + list(benchmark_apis["topk_varlen"]),
     )
     args, _ = parser.parse_known_args(line[:])
 
@@ -81,7 +144,13 @@ def parse_args(line=sys.argv[1:]):
         "--use_cupti",
         action="store_true",
         default=False,
-        help="Use CUPTI for timing GPU kernels when available.",
+        help="[DEPRECATED] Use CUPTI for timing GPU kernels. This is now the default behavior.",
+    )
+    parser.add_argument(
+        "--use_cuda_events",
+        action="store_true",
+        default=False,
+        help="Use CUDA events for timing GPU kernels instead of CUPTI.",
     )
     parser.add_argument(
         "--refcheck",
@@ -124,7 +193,19 @@ def parse_args(line=sys.argv[1:]):
         default=5,
         help="Number of dry runs.",
     )
-    add_timing_budget_args(parser)
+    parser.add_argument(
+        "--autotune_cache",
+        type=str,
+        required=False,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to a JSON file for autotuner config caching. "
+            "When used with --autotune, loads cached configs on entry and "
+            "saves newly tuned configs on exit. Without --autotune, loads "
+            "cached configs for inference without profiling."
+        ),
+    )
     parser.add_argument(
         "--case_tag",
         type=str,
@@ -145,19 +226,90 @@ def parse_args(line=sys.argv[1:]):
         default="",
         help="Placeholder for generated reproducer command for the test case. Not to be used directly.",
     )
+    parser.add_argument(
+        "--enable_pdl",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable Programmatic Dependent Launch (PDL) for routines whose backing "
+            "API accepts it. When omitted, PDL is forced off for every routine. "
+            "Routines whose API does not accept PDL emit a warning and ignore the flag."
+        ),
+    )
 
     ## Check routine and pass on to routine-specific argument parser
+    ## Imports are done lazily to avoid loading unnecessary dependencies
     if args.routine in benchmark_apis["attention"]:
+        from routines.attention import parse_attention_args
+
         args = parse_attention_args(line, parser)
     elif args.routine in benchmark_apis["gemm"]:
-        args = gemm.parse_gemm_args(line, parser)
+        from routines.gemm import parse_gemm_args
+
+        args = parse_gemm_args(line, parser)
     elif args.routine in benchmark_apis["moe"]:
-        args = moe.parse_moe_args(line, parser)
+        from routines.moe import parse_moe_args
+
+        args = parse_moe_args(line, parser)
+    elif args.routine in benchmark_apis["moe_comm"]:
+        from routines.moe_comm import parse_moe_comm_args
+
+        args = parse_moe_comm_args(line, parser)
+    elif args.routine in benchmark_apis["allreduce_comm"]:
+        from routines.allreduce_comm import parse_allreduce_comm_args
+
+        args = parse_allreduce_comm_args(line, parser)
+    elif args.routine in benchmark_apis["mixed_comm"]:
+        from routines.mixed_comm import parse_mixed_comm_args
+
+        args = parse_mixed_comm_args(line, parser)
+    elif args.routine in benchmark_apis["norm"]:
+        from routines.norm import parse_norm_args
+
+        args = parse_norm_args(line, parser)
+    elif args.routine in benchmark_apis["quantization"]:
+        from routines.quantization import parse_quantization_args
+
+        args = parse_quantization_args(line, parser)
+    elif args.routine in benchmark_apis["sampling"]:
+        from routines.sampling import parse_sampling_args
+
+        args = parse_sampling_args(line, parser)
+    elif args.routine in benchmark_apis["topk_varlen"]:
+        from routines.topk_varlen import parse_topk_varlen_args
+
+        args = parse_topk_varlen_args(line, parser)
+    elif args.routine in benchmark_apis["rope"]:
+        from routines.rope import parse_rope_args
+
+        args = parse_rope_args(line, parser)
+    elif args.routine in benchmark_apis["mamba"]:
+        from routines.mamba import parse_mamba_args
+
+        args = parse_mamba_args(line, parser)
+    elif args.routine in benchmark_apis["gdn"]:
+        from routines.gdn import parse_gdn_args
+
+        args = parse_gdn_args(line, parser)
+    elif args.routine in benchmark_apis["sparse_attention"]:
+        from routines.sparse_attention import parse_sparse_attention_args
+
+        args = parse_sparse_attention_args(line, parser)
     else:
         raise ValueError(f"Unsupported routine: {args.routine}")
 
     if args.generate_repro_command:
         args.repro_command = "python3 flashinfer_benchmark.py " + " ".join(line)
+
+    # Deprecation warning for use_cupti
+    if args.use_cupti:
+        print(
+            "[WARNING] --use_cupti is deprecated and will be removed in a future release. CUPTI is now enabled by default."
+        )
+    # use_cupti is deprecated and will be removed in a future release. CUPTI is now enabled by default.
+    # If --use_cuda_events is passed, disable use_cupti
+    args.use_cupti = not args.use_cuda_events
+
     return args
 
 
@@ -182,8 +334,8 @@ if __name__ == "__main__":
 
     # Setup output file if specified
     if testlist_args.output_path is not None:
-        with open(testlist_args.output_path, "w", newline="") as fout:
-            csv.writer(fout, lineterminator="\n").writerow(full_output_columns)
+        with open(testlist_args.output_path, "w") as fout:
+            fout.write(",".join(full_output_columns) + "\n")
 
     # Process tests either from testlist file or command line arguments
     if testlist_args.testlist is not None:

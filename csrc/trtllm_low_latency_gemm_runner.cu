@@ -19,6 +19,7 @@
 #include <tvm/ffi/error.h>
 #include <tvm_ffi_utils.h>
 
+#include <algorithm>
 #include <vector>
 
 #include "flashinfer/exception.h"
@@ -37,6 +38,28 @@ namespace flashinfer {
 using tvm::ffi::Array;
 using tvm::ffi::Optional;
 
+namespace {
+
+bool isArchCompatible(int smVersion, gemm::trtllm::gen::CudaArch cubinArch) {
+  using CudaArch = gemm::trtllm::gen::CudaArch;
+  switch (cubinArch) {
+    case CudaArch::Sm100a:
+      return smVersion == 100;
+    case CudaArch::Sm100f:
+      return smVersion == 100 || smVersion == 103 || smVersion == 107;
+    case CudaArch::Sm103a:
+      return smVersion == 103;
+#ifdef TLLM_RUBIN_FEATURES
+    case CudaArch::Sm107a:
+      return smVersion == 107;
+#endif
+    default:
+      return false;
+  }
+}
+
+}  // namespace
+
 struct TrtllmLowLatencyGemmRunnerOptions {
   gemm::trtllm::gen::Dtype eltType;
   gemm::trtllm::gen::Dtype outputType;
@@ -49,6 +72,9 @@ gemm::gemm::GemmData createGemmData(int64_t m, int64_t n, int64_t k) {
   gemmData.mProblemDimensions.mM = n;
   gemmData.mProblemDimensions.mN = m;
   gemmData.mProblemDimensions.mK = k;
+  gemmData.mProblemDimensions.mValidM = gemmData.mProblemDimensions.mM;
+  gemmData.mProblemDimensions.mValidN = gemmData.mProblemDimensions.mN;
+  gemmData.mProblemDimensions.mValidK = gemmData.mProblemDimensions.mK;
   gemmData.mProblemDimensions.mRank = 0;
   gemmData.mProblemDimensions.mWorldSize = 1;
 
@@ -59,64 +85,40 @@ gemm::gemm::GemmData createGemmData(int64_t m, int64_t n, int64_t k) {
  * Very rough heuristic for selecting a kernel. Prefer using auto-tuning.
  */
 int64_t select_kernel(int32_t m, int32_t n, int32_t k, const gemm::gemm::GemmInterface& interface) {
-  static constexpr const char* KERNEL_MMAN_8_TILEK_128_SPLITK_2 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x8x128_s7_et128x8_m128x8x32_cga1x1x2_16dp256b_splitK2_BN_"
+  static constexpr const char* KERNEL_MMAN_8_TILEK_128 =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x8x128_s7_et128x8_m128x8x32_c1x1x1_rM_BN_"
       "transOut_schedS_sm100f";
-  static constexpr const char* KERNEL_MMAN_8_TILEK_128_SPLITK_3 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x8x128_s7_et128x8_m128x8x32_cga1x1x3_16dp256b_splitK3_BN_"
+  static constexpr const char* KERNEL_MMAN_8_TILEK_256 =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x8x256_s4_et128x8_m128x8x32_c1x1x1_rM_BN_"
       "transOut_schedS_sm100f";
-  static constexpr const char* KERNEL_MMAN_8_TILEK_256_SPLITK_2 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x8x256_s4_et128x8_m128x8x32_cga1x1x2_16dp256b_splitK2_BN_"
+  static constexpr const char* KERNEL_MMAN_16_TILEK_128 =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x64x128_s7_et128x32_m128x64x32_c1x1x1_rM_BN_"
       "transOut_schedS_sm100f";
-  static constexpr const char* KERNEL_MMAN_8_TILEK_256_SPLITK_3 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x8x256_s4_et128x8_m128x8x32_cga1x1x3_16dp256b_splitK3_BN_"
+  static constexpr const char* KERNEL_MMAN_16_TILEK_256 =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x64x256_s3_et128x32_m128x64x32_c1x1x1_rM_BN_"
       "transOut_schedS_sm100f";
-  static constexpr const char* KERNEL_MMAN_16_TILEK_128_SPLITK_2 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x16x128_s7_et128x16_m128x16x32_cga1x1x2_16dp256b_splitK2_BN_"
+  static constexpr const char* KERNEL_MMAN_32_TILEK_128 =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x32x128_s9_et128x32_m128x32x32_c1x1x1_rM_BN_"
       "transOut_schedS_sm100f";
-  static constexpr const char* KERNEL_MMAN_16_TILEK_128_SPLITK_3 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x16x128_s7_et128x16_m128x16x32_cga1x1x3_16dp256b_splitK3_BN_"
+  static constexpr const char* KERNEL_MMAN_32_TILEK_256 =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x32x256_s5_et128x32_m128x32x32_c1x1x1_rM_BN_"
       "transOut_schedS_sm100f";
-  static constexpr const char* KERNEL_MMAN_16_TILEK_256_SPLITK_2 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x16x256_s5_et128x16_m128x16x32_cga1x1x2_16dp256b_splitK2_BN_"
+  static constexpr const char* KERNEL_MMAN_64_TILEK_128 =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x16x128_s7_et128x16_m128x16x32_c1x1x1_rM_BN_"
       "transOut_schedS_sm100f";
-  static constexpr const char* KERNEL_MMAN_16_TILEK_256_SPLITK_3 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x16x256_s5_et128x16_m128x16x32_cga1x1x3_16dp256b_splitK3_BN_"
-      "transOut_schedS_sm100f";
-  static constexpr const char* KERNEL_MMAN_32_TILEK_128_SPLITK_2 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x32x128_s9_et128x32_m128x32x32_cga1x1x2_16dp256b_splitK2_BN_"
-      "transOut_schedS_sm100f";
-  static constexpr const char* KERNEL_MMAN_32_TILEK_128_SPLITK_3 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x32x128_s9_et128x32_m128x32x32_cga1x1x3_16dp256b_splitK3_BN_"
-      "transOut_schedS_sm100f";
-  static constexpr const char* KERNEL_MMAN_32_TILEK_256_SPLITK_2 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x32x256_s5_et128x32_m128x32x32_cga1x1x2_16dp256b_splitK2_BN_"
-      "transOut_schedS_sm100f";
-  static constexpr const char* KERNEL_MMAN_32_TILEK_256_SPLITK_3 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x32x256_s5_et128x32_m128x32x32_cga1x1x3_16dp256b_splitK3_BN_"
-      "transOut_schedS_sm100f";
-  static constexpr const char* KERNEL_MMAN_64_TILEK_128_SPLITK_2 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x64x128_s7_et128x64_m128x64x32_cga1x1x2_16dp256b_splitK2_BN_"
-      "transOut_schedS_sm100f";
-  static constexpr const char* KERNEL_MMAN_64_TILEK_128_SPLITK_3 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x64x128_s7_et128x64_m128x64x32_cga1x1x3_16dp256b_splitK3_BN_"
-      "transOut_schedS_sm100f";
-  static constexpr const char* KERNEL_MMAN_64_TILEK_256_SPLITK_2 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x64x256_s3_et128x64_m128x64x32_cga1x1x2_16dp256b_splitK2_BN_"
-      "transOut_schedS_sm100f";
-  static constexpr const char* KERNEL_MMAN_64_TILEK_256_SPLITK_3 =
-      "Gemm_Bfloat16_E4m3E4m3_Fp32_t128x64x256_s3_et128x64_m128x64x32_cga1x1x3_16dp256b_splitK3_BN_"
+  static constexpr const char* KERNEL_MMAN_64_TILEK_256 =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x16x256_s5_et128x16_m128x16x32_c1x1x1_rM_BN_"
       "transOut_schedS_sm100f";
 
   std::string kernel_name;
   if (m <= 8) {
-    kernel_name = KERNEL_MMAN_8_TILEK_128_SPLITK_2;
+    kernel_name = KERNEL_MMAN_8_TILEK_128;
   } else if (m <= 16) {
-    kernel_name = KERNEL_MMAN_16_TILEK_128_SPLITK_2;
+    kernel_name = KERNEL_MMAN_16_TILEK_128;
   } else if (m <= 32) {
-    kernel_name = KERNEL_MMAN_32_TILEK_128_SPLITK_2;
+    kernel_name = KERNEL_MMAN_32_TILEK_128;
   } else {
-    kernel_name = KERNEL_MMAN_64_TILEK_128_SPLITK_2;
+    kernel_name = KERNEL_MMAN_64_TILEK_128;
   }
 
   auto const& configs = interface.getGemmConfigs();
@@ -158,6 +160,7 @@ class TrtllmLowLatencyGemmRunner {
     auto const configs = gemm.getGemmConfigs();
 
     mPassingConfigIndices.clear();
+    int const sv = getSMVersion();
 
     for (size_t i = 0; i < gemm.getNumGemmConfigs(); ++i) {
       auto const configOptions = configs[i].mOptions;
@@ -166,7 +169,8 @@ class TrtllmLowLatencyGemmRunner {
           configOptions.mDtypeC == mOptions.outputType &&
           configOptions.mTransposeMmaOutput == true &&
           configOptions.mLayoutA == gemm::gemm::MatrixLayout::BlockMajorK &&
-          configOptions.mUseShuffledMatrixA) {
+          configOptions.mUseShuffledMatrix) {
+        if (!isArchCompatible(sv, configs[i].mSm)) continue;
         mPassingConfigIndices.push_back(i);
       }
     }
@@ -176,11 +180,24 @@ class TrtllmLowLatencyGemmRunner {
         "No valid low latency TRTLLM-GEN GEMM kernel was found for the given data types.");
   }
 
+  // Tactic ids are indices into the cubin manifest, which spans several
+  // architectures. A tactic that never came from getValidTactics() (a config
+  // file saved on other hardware, an explicit FFI argument) would otherwise
+  // reach cuModuleLoadData and fault instead of erroring.
+  void checkPassingConfigIndex(int64_t tactic) const {
+    auto it = std::find(mPassingConfigIndices.begin(), mPassingConfigIndices.end(), tactic);
+    TVM_FFI_ICHECK(it != mPassingConfigIndices.end())
+        << "Tactic " << tactic
+        << " is not in this runner's compatible config set (device architecture or GEMM options "
+           "mismatch)";
+  }
+
   void run(int64_t m, int64_t n, int64_t k, void const* a, void const* b, void* c, void* cScale,
            void* workspace, CUstream stream, int32_t device_index, int64_t tactic) {
     auto gemm = gemm::gemm::GemmInterface();
     auto const configs = gemm.getGemmConfigs();
     TVM_FFI_ICHECK(tactic >= 0 && tactic < gemm.getNumGemmConfigs()) << "Invalid tactic id in run";
+    checkPassingConfigIndex(tactic);
     auto const& config = configs[tactic];
 
     gemm::gemm::GemmData gemmData = createGemmData(m, n, k);
