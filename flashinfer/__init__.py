@@ -17,237 +17,282 @@ limitations under the License.
 import contextlib
 import importlib.util
 
-from .version import __version__ as __version__
-from .version import __git_commit__ as __git_commit__
-from .version import __git_version__ as __git_version__  # backward compat
+from .rocm.device_utils import IS_CUDA, IS_HIP
+
+if IS_CUDA:
+    from .version import __version__ as __version__
+    from .version import __git_commit__ as __git_commit__
+    from .version import __git_version__ as __git_version__  # backward compat
 
 
-from . import jit as jit
-from .activation import gelu_and_mul as gelu_and_mul
-from .activation import gelu_tanh_and_mul as gelu_tanh_and_mul
-from .activation import silu_and_mul as silu_and_mul
-from .activation import (
-    silu_and_mul_scaled_nvfp4_experts_quantize as silu_and_mul_scaled_nvfp4_experts_quantize,
-)
-from .attention import BatchAttention as BatchAttention
-from .attention import (
-    BatchAttentionWithAttentionSinkWrapper as BatchAttentionWithAttentionSinkWrapper,
-)
-from .autotuner import autotune as autotune
-from .cascade import (
-    BatchDecodeWithSharedPrefixPagedKVCacheWrapper as BatchDecodeWithSharedPrefixPagedKVCacheWrapper,
-)
-from .cascade import (
-    BatchPrefillWithSharedPrefixPagedKVCacheWrapper as BatchPrefillWithSharedPrefixPagedKVCacheWrapper,
-)
-from .cascade import (
-    MultiLevelCascadeAttentionWrapper as MultiLevelCascadeAttentionWrapper,
-)
-from .cascade import merge_state as merge_state
-from .cascade import merge_state_in_place as merge_state_in_place
-from .cascade import merge_states as merge_states
-from .decode import (
-    BatchDecodeMlaWithPagedKVCacheWrapper as BatchDecodeMlaWithPagedKVCacheWrapper,
-)
-from .decode import (
-    BatchDecodeWithPagedKVCacheWrapper as BatchDecodeWithPagedKVCacheWrapper,
-)
-from .decode import (
-    CUDAGraphBatchDecodeWithPagedKVCacheWrapper as CUDAGraphBatchDecodeWithPagedKVCacheWrapper,
-)
-from .decode import (
-    fast_decode_plan as fast_decode_plan,
-)
-from .decode import cudnn_batch_decode_with_kv_cache as cudnn_batch_decode_with_kv_cache
-from .decode import single_decode_with_kv_cache as single_decode_with_kv_cache
-from .quantization.fp4_quantization import (
-    block_scale_interleave,
-    nvfp4_block_scale_interleave,
-    e2m1_and_ufp8sf_scale_to_float,
-    fp4_quantize,
-    mxfp4_dequantize_host,
-    mxfp4_dequantize,
-    mxfp4_quantize,
-    nvfp4_quantize,
-    nvfp4_quantize_paged_kv_cache,
-    nvfp4_batched_quantize,
-    shuffle_matrix_a,
-    shuffle_matrix_sf_a,
-    scaled_fp4_grouped_quantize,
-    silu_and_mul_nvfp4_quantize,
-    get_fp4_quantization_module,
-    nvfp4_kv_dequantize,
-    nvfp4_kv_dequantize_paged,
-    nvfp4_kv_quantize,
-)
-from .quantization.fp8_quantization import (
-    mxfp8_dequantize_host,
-    mxfp8_grouped_quantize,
-    mxfp8_quantize,
-)
-from .fused_moe import (
-    cutlass_fused_moe,
-    reorder_rows_for_gated_act_gemm,
-    trtllm_bf16_moe,
-    trtllm_bf16_routed_moe,
-    trtllm_fp4_block_scale_moe,
-    trtllm_fp4_block_scale_routed_moe,
-    trtllm_fp8_block_scale_moe,
-    trtllm_fp8_block_scale_routed_moe,
-    trtllm_fp8_per_tensor_scale_moe,
-    trtllm_fp8_per_tensor_scale_routed_moe,
-)
-
-# CuteDSL high-level APIs (conditionally if cute_dsl available)
-with contextlib.suppress(ImportError):
-    from .fused_moe import (
-        cute_dsl_fused_moe_nvfp4 as cute_dsl_fused_moe_nvfp4,
-        CuteDslMoEWrapper as CuteDslMoEWrapper,
-        cute_dsl_fused_moe_mxfp8_mxfp4 as cute_dsl_fused_moe_mxfp8_mxfp4,
-        CuteDslMxfp8Mxfp4MoEWrapper as CuteDslMxfp8Mxfp4MoEWrapper,
-        b12x_fused_moe as b12x_fused_moe,
-        B12xMoEWrapper as B12xMoEWrapper,
+    from . import jit as jit
+    from .activation import gelu_and_mul as gelu_and_mul
+    from .activation import gelu_tanh_and_mul as gelu_tanh_and_mul
+    from .activation import silu_and_mul as silu_and_mul
+    from .activation import (
+        silu_and_mul_scaled_nvfp4_experts_quantize as silu_and_mul_scaled_nvfp4_experts_quantize,
     )
-    from .gdn_prefill import chunk_gated_delta_rule as chunk_gated_delta_rule
-from .gemm import SegmentGEMMWrapper as SegmentGEMMWrapper
-from .gemm import bmm_bf16 as bmm_bf16
-from .gemm import bmm_fp8 as bmm_fp8
-from .gemm import bmm_mxfp8 as bmm_mxfp8
-from .gemm import mm_bf16 as mm_bf16
-from .gemm import mm_fp4 as mm_fp4
-from .gemm import mm_nvfp4_svdquant as mm_nvfp4_svdquant
-from .gemm import nvfp4_quantize_smooth as nvfp4_quantize_smooth
-from .gemm import svdquant_linear as svdquant_linear
-from .gemm import mm_bf16_fp4 as mm_bf16_fp4
-from .gemm import prepare_bf16_fp4_weights as prepare_bf16_fp4_weights
-from .gemm import mm_fp8 as mm_fp8
-from .gemm import mm_mxfp8 as mm_mxfp8
-from .gemm import tgv_gemm_sm100 as tgv_gemm_sm100
-from .grouped_mm import grouped_mm_bf16 as grouped_mm_bf16
-from .grouped_mm import grouped_mm_fp8 as grouped_mm_fp8
-from .grouped_mm import grouped_mm_mxfp8 as grouped_mm_mxfp8
-from .grouped_mm import grouped_mm_fp4 as grouped_mm_fp4
-from .kda_prefill import (
-    RecurrentKDAPrefillWorkspace as RecurrentKDAPrefillWorkspace,
-)
-from .kda import recurrent_kda as recurrent_kda
-from .kda_decode import fused_kda_decode as fused_kda_decode
-from .kda_decode import packed_kda_decode as packed_kda_decode
-from .mla import BatchMLAPagedAttentionWrapper as BatchMLAPagedAttentionWrapper
-from . import mhc as mhc
-from . import msa_ops as msa_ops
-from .norm import fused_add_rmsnorm as fused_add_rmsnorm
-from .norm import fused_add_rmsnorm_quant as fused_add_rmsnorm_quant
-from .norm import layernorm as layernorm
-from .norm import layernorm_quant as layernorm_quant
-from .norm import gemma_fused_add_rmsnorm as gemma_fused_add_rmsnorm
-from .norm import gemma_rmsnorm as gemma_rmsnorm
-from .norm import rmsnorm as rmsnorm
-from .norm import rmsnorm_quant as rmsnorm_quant
-from .norm import fused_rmsnorm_silu as fused_rmsnorm_silu
-from .norm import fused_qk_rmsnorm_rope as fused_qk_rmsnorm_rope
-from . import nvfp4_attention_sm120 as nvfp4_attention_sm120
-from .nvfp4_attention_sm120 import (
-    nvfp4_attention_sm120_fwd as nvfp4_attention_sm120_fwd,
-)
-from .nvfp4_attention_sm120 import (
-    nvfp4_attention_sm120_quantize_qkv as nvfp4_attention_sm120_quantize_qkv,
-)
-from .norm import (
-    fused_dit_residual_layernorm_scale_shift as fused_dit_residual_layernorm_scale_shift,
-)
-from .norm import (
-    fused_dit_gate_residual_layernorm_scale_shift as fused_dit_gate_residual_layernorm_scale_shift,
-)
-from .norm import (
-    fused_dit_gate_residual_layernorm_gamma_beta as fused_dit_gate_residual_layernorm_gamma_beta,
-)
+    from .attention import BatchAttention as BatchAttention
+    from .attention import (
+        BatchAttentionWithAttentionSinkWrapper as BatchAttentionWithAttentionSinkWrapper,
+    )
+    from .autotuner import autotune as autotune
+    from .cascade import (
+        BatchDecodeWithSharedPrefixPagedKVCacheWrapper as BatchDecodeWithSharedPrefixPagedKVCacheWrapper,
+    )
+    from .cascade import (
+        BatchPrefillWithSharedPrefixPagedKVCacheWrapper as BatchPrefillWithSharedPrefixPagedKVCacheWrapper,
+    )
+    from .cascade import (
+        MultiLevelCascadeAttentionWrapper as MultiLevelCascadeAttentionWrapper,
+    )
+    from .cascade import merge_state as merge_state
+    from .cascade import merge_state_in_place as merge_state_in_place
+    from .cascade import merge_states as merge_states
+    from .decode import (
+        BatchDecodeMlaWithPagedKVCacheWrapper as BatchDecodeMlaWithPagedKVCacheWrapper,
+    )
+    from .decode import (
+        BatchDecodeWithPagedKVCacheWrapper as BatchDecodeWithPagedKVCacheWrapper,
+    )
+    from .decode import (
+        CUDAGraphBatchDecodeWithPagedKVCacheWrapper as CUDAGraphBatchDecodeWithPagedKVCacheWrapper,
+    )
+    from .decode import (
+        fast_decode_plan as fast_decode_plan,
+    )
+    from .decode import cudnn_batch_decode_with_kv_cache as cudnn_batch_decode_with_kv_cache
+    from .decode import single_decode_with_kv_cache as single_decode_with_kv_cache
+    from .quantization.fp4_quantization import (
+        block_scale_interleave,
+        nvfp4_block_scale_interleave,
+        e2m1_and_ufp8sf_scale_to_float,
+        fp4_quantize,
+        mxfp4_dequantize_host,
+        mxfp4_dequantize,
+        mxfp4_quantize,
+        nvfp4_quantize,
+        nvfp4_quantize_paged_kv_cache,
+        nvfp4_batched_quantize,
+        shuffle_matrix_a,
+        shuffle_matrix_sf_a,
+        scaled_fp4_grouped_quantize,
+        silu_and_mul_nvfp4_quantize,
+        get_fp4_quantization_module,
+        nvfp4_kv_dequantize,
+        nvfp4_kv_dequantize_paged,
+        nvfp4_kv_quantize,
+    )
+    from .quantization.fp8_quantization import (
+        mxfp8_dequantize_host,
+        mxfp8_grouped_quantize,
+        mxfp8_quantize,
+    )
+    from .fused_moe import (
+        cutlass_fused_moe,
+        reorder_rows_for_gated_act_gemm,
+        trtllm_bf16_moe,
+        trtllm_bf16_routed_moe,
+        trtllm_fp4_block_scale_moe,
+        trtllm_fp4_block_scale_routed_moe,
+        trtllm_fp8_block_scale_moe,
+        trtllm_fp8_block_scale_routed_moe,
+        trtllm_fp8_per_tensor_scale_moe,
+        trtllm_fp8_per_tensor_scale_routed_moe,
+    )
 
-try:
-    from .norm import rmsnorm_fp4quant as rmsnorm_fp4quant
-    from .norm import add_rmsnorm_fp4quant as add_rmsnorm_fp4quant
-except (ImportError, AttributeError):
-    pass  # nvidia-cutlass-dsl not installed
-from .page import append_paged_kv_cache as append_paged_kv_cache
-from .page import append_paged_mla_kv_cache as append_paged_mla_kv_cache
-from .page import get_batch_indices_positions as get_batch_indices_positions
-from .page import get_seq_lens as get_seq_lens
-from .page import (
-    nvfp4_quantize_append_paged_kv_cache as nvfp4_quantize_append_paged_kv_cache,
-)
-from .page import (
-    nvfp4_quantize_append_paged_kv_cache_with_slot_mapping as nvfp4_quantize_append_paged_kv_cache_with_slot_mapping,
-)
-from .pod import PODWithPagedKVCacheWrapper as PODWithPagedKVCacheWrapper
-from .pod import BatchPODWithPagedKVCacheWrapper as BatchPODWithPagedKVCacheWrapper
-from .prefill import (
-    BatchPrefillWithPagedKVCacheWrapper as BatchPrefillWithPagedKVCacheWrapper,
-)
-from .prefill import (
-    BatchPrefillWithRaggedKVCacheWrapper as BatchPrefillWithRaggedKVCacheWrapper,
-)
-from .prefill import single_prefill_with_kv_cache as single_prefill_with_kv_cache
-from .prefill import (
-    single_prefill_with_kv_cache_return_lse as single_prefill_with_kv_cache_return_lse,
-)
-from .prefill import trtllm_fmha_v2_prefill as trtllm_fmha_v2_prefill
-from .prefill import (
-    trtllm_sage_attention_quantize as trtllm_sage_attention_quantize,
-)
-from .quantization import packbits as packbits
-from .quantization import segment_packbits as segment_packbits
-from .rope import apply_llama31_rope as apply_llama31_rope
-from .rope import apply_llama31_rope_inplace as apply_llama31_rope_inplace
-from .rope import apply_llama31_rope_pos_ids as apply_llama31_rope_pos_ids
-from .rope import (
-    apply_llama31_rope_pos_ids_inplace as apply_llama31_rope_pos_ids_inplace,
-)
-from .rope import apply_rope as apply_rope
-from .rope import apply_rope_inplace as apply_rope_inplace
-from .rope import apply_rope_pos_ids as apply_rope_pos_ids
-from .rope import apply_rope_pos_ids_inplace as apply_rope_pos_ids_inplace
-from .rope import apply_rope_with_cos_sin_cache as apply_rope_with_cos_sin_cache
-from .rope import (
-    apply_rope_with_cos_sin_cache_inplace as apply_rope_with_cos_sin_cache_inplace,
-)
-from .sampling import chain_speculative_sampling as chain_speculative_sampling
-from .sampling import min_p_sampling_from_probs as min_p_sampling_from_probs
-from .sampling import sampling_from_logits as sampling_from_logits
-from .sampling import sampling_from_probs as sampling_from_probs
-from .sampling import softmax as softmax
-from .sampling import top_k_mask_logits as top_k_mask_logits
-from .sampling import top_k_renorm_probs as top_k_renorm_probs
-from .sampling import top_k_sampling_from_probs as top_k_sampling_from_probs
-from .sampling import (
-    top_k_top_p_sampling_from_logits as top_k_top_p_sampling_from_logits,
-)
-from .sampling import top_k_top_p_sampling_from_probs as top_k_top_p_sampling_from_probs
-from .sampling import top_p_renorm_probs as top_p_renorm_probs
-from .sampling import top_p_sampling_from_probs as top_p_sampling_from_probs
-from .tllm_enums import (
-    SfLayout,
-    ActivationType,
-    RoutingMethodType,
-    is_gated_activation as is_gated_activation,
-)
-from . import topk as topk
-from .topk import top_k as top_k
-from .topk import top_k_page_table_transform as top_k_page_table_transform
-from .topk import top_k_ragged_transform as top_k_ragged_transform
-from .topk import TopKTieBreak as TopKTieBreak
-from .topk_varlen.topk_varlen import top_k_varlen as top_k_varlen
-from .sparse import BlockSparseAttentionWrapper as BlockSparseAttentionWrapper
-from .sparse import (
-    VariableBlockSparseAttentionWrapper as VariableBlockSparseAttentionWrapper,
-)
-from .trtllm_low_latency_gemm import (
-    prepare_low_latency_gemm_weights as prepare_low_latency_gemm_weights,
-)
-from .utils import next_positive_power_of_2 as next_positive_power_of_2
-from .xqa import xqa as xqa
-from .xqa import xqa_mla as xqa_mla
-from . import mamba as mamba
-from .fi_trace import fi_trace as fi_trace
+    # CuteDSL high-level APIs (conditionally if cute_dsl available)
+    with contextlib.suppress(ImportError):
+        from .fused_moe import (
+            cute_dsl_fused_moe_nvfp4 as cute_dsl_fused_moe_nvfp4,
+            CuteDslMoEWrapper as CuteDslMoEWrapper,
+            cute_dsl_fused_moe_mxfp8_mxfp4 as cute_dsl_fused_moe_mxfp8_mxfp4,
+            CuteDslMxfp8Mxfp4MoEWrapper as CuteDslMxfp8Mxfp4MoEWrapper,
+            b12x_fused_moe as b12x_fused_moe,
+            B12xMoEWrapper as B12xMoEWrapper,
+        )
+        from .gdn_prefill import chunk_gated_delta_rule as chunk_gated_delta_rule
+    from .gemm import SegmentGEMMWrapper as SegmentGEMMWrapper
+    from .gemm import bmm_bf16 as bmm_bf16
+    from .gemm import bmm_fp8 as bmm_fp8
+    from .gemm import bmm_mxfp8 as bmm_mxfp8
+    from .gemm import mm_bf16 as mm_bf16
+    from .gemm import mm_fp4 as mm_fp4
+    from .gemm import mm_nvfp4_svdquant as mm_nvfp4_svdquant
+    from .gemm import nvfp4_quantize_smooth as nvfp4_quantize_smooth
+    from .gemm import svdquant_linear as svdquant_linear
+    from .gemm import mm_bf16_fp4 as mm_bf16_fp4
+    from .gemm import prepare_bf16_fp4_weights as prepare_bf16_fp4_weights
+    from .gemm import mm_fp8 as mm_fp8
+    from .gemm import mm_mxfp8 as mm_mxfp8
+    from .gemm import tgv_gemm_sm100 as tgv_gemm_sm100
+    from .grouped_mm import grouped_mm_bf16 as grouped_mm_bf16
+    from .grouped_mm import grouped_mm_fp8 as grouped_mm_fp8
+    from .grouped_mm import grouped_mm_mxfp8 as grouped_mm_mxfp8
+    from .grouped_mm import grouped_mm_fp4 as grouped_mm_fp4
+    from .kda_prefill import (
+        RecurrentKDAPrefillWorkspace as RecurrentKDAPrefillWorkspace,
+    )
+    from .kda import recurrent_kda as recurrent_kda
+    from .kda_decode import fused_kda_decode as fused_kda_decode
+    from .kda_decode import packed_kda_decode as packed_kda_decode
+    from .mla import BatchMLAPagedAttentionWrapper as BatchMLAPagedAttentionWrapper
+    from . import mhc as mhc
+    from . import msa_ops as msa_ops
+    from .norm import fused_add_rmsnorm as fused_add_rmsnorm
+    from .norm import fused_add_rmsnorm_quant as fused_add_rmsnorm_quant
+    from .norm import layernorm as layernorm
+    from .norm import layernorm_quant as layernorm_quant
+    from .norm import gemma_fused_add_rmsnorm as gemma_fused_add_rmsnorm
+    from .norm import gemma_rmsnorm as gemma_rmsnorm
+    from .norm import rmsnorm as rmsnorm
+    from .norm import rmsnorm_quant as rmsnorm_quant
+    from .norm import fused_rmsnorm_silu as fused_rmsnorm_silu
+    from .norm import fused_qk_rmsnorm_rope as fused_qk_rmsnorm_rope
+    from . import nvfp4_attention_sm120 as nvfp4_attention_sm120
+    from .nvfp4_attention_sm120 import (
+        nvfp4_attention_sm120_fwd as nvfp4_attention_sm120_fwd,
+    )
+    from .nvfp4_attention_sm120 import (
+        nvfp4_attention_sm120_quantize_qkv as nvfp4_attention_sm120_quantize_qkv,
+    )
+    from .norm import (
+        fused_dit_residual_layernorm_scale_shift as fused_dit_residual_layernorm_scale_shift,
+    )
+    from .norm import (
+        fused_dit_gate_residual_layernorm_scale_shift as fused_dit_gate_residual_layernorm_scale_shift,
+    )
+    from .norm import (
+        fused_dit_gate_residual_layernorm_gamma_beta as fused_dit_gate_residual_layernorm_gamma_beta,
+    )
+
+    try:
+        from .norm import rmsnorm_fp4quant as rmsnorm_fp4quant
+        from .norm import add_rmsnorm_fp4quant as add_rmsnorm_fp4quant
+    except (ImportError, AttributeError):
+        pass  # nvidia-cutlass-dsl not installed
+    from .page import append_paged_kv_cache as append_paged_kv_cache
+    from .page import append_paged_mla_kv_cache as append_paged_mla_kv_cache
+    from .page import get_batch_indices_positions as get_batch_indices_positions
+    from .page import get_seq_lens as get_seq_lens
+    from .page import (
+        nvfp4_quantize_append_paged_kv_cache as nvfp4_quantize_append_paged_kv_cache,
+    )
+    from .page import (
+        nvfp4_quantize_append_paged_kv_cache_with_slot_mapping as nvfp4_quantize_append_paged_kv_cache_with_slot_mapping,
+    )
+    from .pod import PODWithPagedKVCacheWrapper as PODWithPagedKVCacheWrapper
+    from .pod import BatchPODWithPagedKVCacheWrapper as BatchPODWithPagedKVCacheWrapper
+    from .prefill import (
+        BatchPrefillWithPagedKVCacheWrapper as BatchPrefillWithPagedKVCacheWrapper,
+    )
+    from .prefill import (
+        BatchPrefillWithRaggedKVCacheWrapper as BatchPrefillWithRaggedKVCacheWrapper,
+    )
+    from .prefill import single_prefill_with_kv_cache as single_prefill_with_kv_cache
+    from .prefill import (
+        single_prefill_with_kv_cache_return_lse as single_prefill_with_kv_cache_return_lse,
+    )
+    from .prefill import trtllm_fmha_v2_prefill as trtllm_fmha_v2_prefill
+    from .prefill import (
+        trtllm_sage_attention_quantize as trtllm_sage_attention_quantize,
+    )
+    from .quantization import packbits as packbits
+    from .quantization import segment_packbits as segment_packbits
+    from .rope import apply_llama31_rope as apply_llama31_rope
+    from .rope import apply_llama31_rope_inplace as apply_llama31_rope_inplace
+    from .rope import apply_llama31_rope_pos_ids as apply_llama31_rope_pos_ids
+    from .rope import (
+        apply_llama31_rope_pos_ids_inplace as apply_llama31_rope_pos_ids_inplace,
+    )
+    from .rope import apply_rope as apply_rope
+    from .rope import apply_rope_inplace as apply_rope_inplace
+    from .rope import apply_rope_pos_ids as apply_rope_pos_ids
+    from .rope import apply_rope_pos_ids_inplace as apply_rope_pos_ids_inplace
+    from .rope import apply_rope_with_cos_sin_cache as apply_rope_with_cos_sin_cache
+    from .rope import (
+        apply_rope_with_cos_sin_cache_inplace as apply_rope_with_cos_sin_cache_inplace,
+    )
+    from .sampling import chain_speculative_sampling as chain_speculative_sampling
+    from .sampling import min_p_sampling_from_probs as min_p_sampling_from_probs
+    from .sampling import sampling_from_logits as sampling_from_logits
+    from .sampling import sampling_from_probs as sampling_from_probs
+    from .sampling import softmax as softmax
+    from .sampling import top_k_mask_logits as top_k_mask_logits
+    from .sampling import top_k_renorm_probs as top_k_renorm_probs
+    from .sampling import top_k_sampling_from_probs as top_k_sampling_from_probs
+    from .sampling import (
+        top_k_top_p_sampling_from_logits as top_k_top_p_sampling_from_logits,
+    )
+    from .sampling import top_k_top_p_sampling_from_probs as top_k_top_p_sampling_from_probs
+    from .sampling import top_p_renorm_probs as top_p_renorm_probs
+    from .sampling import top_p_sampling_from_probs as top_p_sampling_from_probs
+    from .tllm_enums import (
+        SfLayout,
+        ActivationType,
+        RoutingMethodType,
+        is_gated_activation as is_gated_activation,
+    )
+    from . import topk as topk
+    from .topk import top_k as top_k
+    from .topk import top_k_page_table_transform as top_k_page_table_transform
+    from .topk import top_k_ragged_transform as top_k_ragged_transform
+    from .topk import TopKTieBreak as TopKTieBreak
+    from .topk_varlen.topk_varlen import top_k_varlen as top_k_varlen
+    from .sparse import BlockSparseAttentionWrapper as BlockSparseAttentionWrapper
+    from .sparse import (
+        VariableBlockSparseAttentionWrapper as VariableBlockSparseAttentionWrapper,
+    )
+    from .trtllm_low_latency_gemm import (
+        prepare_low_latency_gemm_weights as prepare_low_latency_gemm_weights,
+    )
+    from .utils import next_positive_power_of_2 as next_positive_power_of_2
+    from .xqa import xqa as xqa
+    from .xqa import xqa_mla as xqa_mla
+    from . import mamba as mamba
+    from .fi_trace import fi_trace as fi_trace
+elif IS_HIP:
+    # `import *` cannot carry a dunder; the IS_CUDA arm binds it directly too.
+    from ._version import __version__ as __version__
+
+    # Imported for its side effect first: rocm.api runs
+    # check_torch_rocm_compatibility() before it pulls in any wrapper, so an
+    # incompatible torch reports that rather than failing inside decode_rocm.
+    from .rocm import api as _rocm_api  # noqa: F401
+
+    del _rocm_api  # the import ran the check; the alias is not part of the surface
+
+    # These seven rebind names the IS_CUDA arm above already bound with a different
+    # type, and mypy analyses both arms. A star import gives it nowhere to attach a
+    # targeted ignore, so they are re-imported explicitly; the rest arrive via *.
+    from .rocm.decode import (  # type: ignore[assignment]
+        BatchDecodeWithPagedKVCacheWrapper as BatchDecodeWithPagedKVCacheWrapper,
+    )
+    from .rocm.decode import (  # type: ignore[assignment]
+        CUDAGraphBatchDecodeWithPagedKVCacheWrapper as CUDAGraphBatchDecodeWithPagedKVCacheWrapper,
+    )
+    from .rocm.decode import (  # type: ignore[no-redef]
+        single_decode_with_kv_cache as single_decode_with_kv_cache,
+    )
+    from .rocm.mla import (  # type: ignore[assignment]
+        BatchMLAPagedAttentionWrapper as BatchMLAPagedAttentionWrapper,
+    )
+    from .rocm.prefill import (  # type: ignore[assignment]
+        BatchPrefillWithPagedKVCacheWrapper as BatchPrefillWithPagedKVCacheWrapper,
+    )
+    from .rocm.prefill import (  # type: ignore[assignment]
+        BatchPrefillWithRaggedKVCacheWrapper as BatchPrefillWithRaggedKVCacheWrapper,
+    )
+    from .rocm.prefill import (  # type: ignore[no-redef]
+        single_prefill_with_kv_cache as single_prefill_with_kv_cache,
+    )
+    from .rocm.api import *  # noqa: F401,F403
+else:
+    # CPU-only torch (no CUDA or HIP)
+    raise RuntimeError(
+        "FlashInfer requires either CUDA or ROCm/HIP backend. "
+        "Detected CPU-only PyTorch installation."
+    )
 
 # ---------------------------------------------------------------------------
 # Trace Apply (opt-in): zero-code kernel substitution from the FlashInfer Trace.
