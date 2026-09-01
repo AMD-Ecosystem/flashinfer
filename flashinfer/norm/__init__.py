@@ -31,6 +31,11 @@ from typing import Optional, Tuple, Union
 
 import torch
 
+from ..rocm.device_utils import IS_HIP
+
+if IS_HIP:
+    from ..rocm.norm import maybe_fused_add_rmsnorm, maybe_rmsnorm
+
 from ..api_logging import flashinfer_api
 from ..trace.templates.norm import (
     fused_add_rmsnorm_quant_trace,
@@ -58,6 +63,12 @@ from ..jit.norm import gen_norm_module
 # Use CUDA JIT implementation instead of CuTe DSL (for debugging/fallback)
 # Also fallback to CUDA JIT if nvidia-cutlass-dsl is not installed
 _USE_CUDA_NORM = os.environ.get("FLASHINFER_USE_CUDA_NORM", "0") == "1"
+
+# ROCm has no CuTe DSL path. Stating that here rather than relying on the
+# ImportError below: nvidia-cutlass-dsl can be present in a ROCm environment,
+# and then the default would silently stop being the native kernel.
+if IS_HIP:
+    _USE_CUDA_NORM = True
 
 if not _USE_CUDA_NORM:
     try:
@@ -145,6 +156,7 @@ def rmsnorm(
     eps: float = 1e-6,
     out: Optional[torch.Tensor] = None,
     enable_pdl: Optional[bool] = None,
+    backend: str = "auto",
 ) -> torch.Tensor:
     r"""Root mean square normalization.
 
@@ -163,12 +175,25 @@ def rmsnorm(
     enable_pdl: bool
         Whether to enable `programmatic dependent launch
         <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
+    backend: str
+        Kernel backend to use. ``"auto"`` (default) is the FlashInfer JIT kernel
+        everywhere, including ROCm — see ``docs/rocm/backends.md``.
+        ``"native"`` is the same kernel, requested explicitly.
+        ``"aiter"`` uses AMD AITER's ``aiter::rmsnorm`` C++ kernel — ROCm (gfx942/gfx950)
+        only, 2D fp16/bf16 inputs only, ``weight.dtype == input.dtype``, and an even
+        ``hidden_size`` of at most 8192 (the kernel is silently wrong on odd sizes and
+        refuses larger ones). Shapes outside that raise rather than fall back.
+        Precision is slightly lower than ``"native"`` at ``hidden_size >= 1024``
+        (fp16 atol ~4e-3, bf16 ~7e-2).
 
     Returns
     -------
     output: torch.Tensor
         Normalized tensor, 2D shape (batch_size, hidden_size) or 3D shape (batch_size, num_heads, hidden_size).
     """
+    if IS_HIP:
+        if (result := maybe_rmsnorm(out, input, weight, eps, backend)) is not None:
+            return result
     if out is None:
         out = torch.empty_like(input)
     _rmsnorm_impl(out, input, weight, eps, enable_pdl)
@@ -265,13 +290,13 @@ def _rmsnorm_quant_fake(
 
 
 @flashinfer_api(trace=fused_add_rmsnorm_trace)
-@register_custom_op("flashinfer::fused_add_rmsnorm", mutates_args=("input", "residual"))
 def fused_add_rmsnorm(
     input: torch.Tensor,
     residual: torch.Tensor,
     weight: torch.Tensor,
     eps: float = 1e-6,
     enable_pdl: Optional[bool] = None,
+    backend: str = "auto",
 ) -> None:
     r"""Fused add root mean square normalization.
 
@@ -294,7 +319,37 @@ def fused_add_rmsnorm(
     enable_pdl: bool
         Whether to enable `programmatic dependent launch
         <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programmatic-dependent-launch-and-synchronization>`_
+    backend: str
+        Kernel backend to use. ``"auto"`` (default) is the FlashInfer JIT kernel
+        everywhere, including ROCm — see ``docs/rocm/backends.md``.
+        ``"native"`` is the same kernel, requested explicitly.
+        ``"aiter"`` uses AMD AITER's ``aiter::add_rmsnorm`` C++ kernel — ROCm
+        (gfx942/gfx950) only, 2D inputs only, ``weight.dtype == input.dtype``, and an
+        even ``hidden_size`` of at most 8192; shapes outside that raise rather than
+        fall back. Measurably slower than ``"native"`` on both arches, and slightly
+        lower precision at ``hidden_size >= 1024``.
     """
+    # Both the native and AITER kernels are 2D-only (the native kernel enforces
+    # CHECK_DIM(2) on input/residual), so reject other ranks up front with a clear
+    # Python error rather than letting it fail deeper in the kernel.
+    if input.ndim != 2:
+        raise ValueError(
+            f"fused_add_rmsnorm only supports 2D inputs; got {input.ndim}D."
+        )
+    if IS_HIP:
+        if maybe_fused_add_rmsnorm(input, residual, weight, eps, backend):
+            return
+    _fused_add_rmsnorm(input, residual, weight, eps, enable_pdl)
+
+
+@register_custom_op("flashinfer::fused_add_rmsnorm", mutates_args=("input", "residual"))
+def _fused_add_rmsnorm(
+    input: torch.Tensor,
+    residual: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float,
+    enable_pdl: Optional[bool],
+) -> None:
     if enable_pdl is None or enable_pdl:
         enable_pdl = device_support_pdl(input.device)
     if _use_cuda_norm(input.device):
@@ -310,8 +365,8 @@ def _fused_add_rmsnorm_fake(
     input: torch.Tensor,
     residual: torch.Tensor,
     weight: torch.Tensor,
-    eps: float = 1e-6,
-    enable_pdl: Optional[bool] = None,
+    eps: float,
+    enable_pdl: Optional[bool],
 ) -> None:
     pass
 
