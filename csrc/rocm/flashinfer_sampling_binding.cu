@@ -21,48 +21,62 @@ void softmax(at::Tensor workspace_buffer, at::Tensor logits, at::Tensor output,
 
 void sampling_from_logits(at::Tensor logits, at::Tensor output,
                           std::optional<at::Tensor> maybe_indices, bool deterministic,
-                          int64_t philox_seed, int64_t philox_offset);
+                          std::optional<at::Tensor> maybe_seed_arr, int64_t philox_seed,
+                          std::optional<at::Tensor> maybe_offset_arr, int64_t philox_offset);
 
-void sampling_from_probs(at::Tensor probs, at::Tensor output,
+void sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor valid,
                          std::optional<at::Tensor> maybe_indices, bool deterministic,
-                         int64_t philox_seed, int64_t philox_offset);
+                         std::optional<at::Tensor> maybe_seed_arr, int64_t philox_seed,
+                         std::optional<at::Tensor> maybe_offset_arr, int64_t philox_offset);
 
-void top_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
+void top_p_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor valid,
                                std::optional<at::Tensor> maybe_indices,
                                std::optional<at::Tensor> maybe_top_p_arr, double top_p_val,
-                               bool deterministic, int64_t philox_seed, int64_t philox_offset);
+                               bool deterministic, std::optional<at::Tensor> maybe_seed_arr,
+                               int64_t philox_seed, std::optional<at::Tensor> maybe_offset_arr,
+                               int64_t philox_offset);
 
-void top_k_sampling_from_probs(at::Tensor probs, at::Tensor output,
+void top_k_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor valid,
                                std::optional<at::Tensor> maybe_indices,
                                std::optional<at::Tensor> maybe_top_k_arr, int64_t top_k_val,
-                               bool deterministic, int64_t philox_seed, int64_t philox_offset);
+                               bool deterministic, std::optional<at::Tensor> maybe_seed_arr,
+                               int64_t philox_seed, std::optional<at::Tensor> maybe_offset_arr,
+                               int64_t philox_offset);
 
-void min_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
+void min_p_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor valid,
                                std::optional<at::Tensor> maybe_indices,
                                std::optional<at::Tensor> maybe_min_p_arr, double min_p_val,
-                               bool deterministic, int64_t philox_seed, int64_t philox_offset);
+                               bool deterministic, std::optional<at::Tensor> maybe_seed_arr,
+                               int64_t philox_seed, std::optional<at::Tensor> maybe_offset_arr,
+                               int64_t philox_offset);
 
-void top_k_top_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
+void top_k_top_p_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor valid,
                                      std::optional<at::Tensor> maybe_indices,
                                      std::optional<at::Tensor> maybe_top_k_arr, double top_k_val,
                                      std::optional<at::Tensor> maybe_top_p_arr, double top_p_val,
-                                     bool deterministic, int64_t philox_seed,
+                                     bool deterministic, std::optional<at::Tensor> maybe_seed_arr,
+                                     int64_t philox_seed,
+                                     std::optional<at::Tensor> maybe_offset_arr,
                                      int64_t philox_offset);
 
 void top_p_renorm_probs(at::Tensor probs, at::Tensor renorm_probs,
-                        std::optional<at::Tensor> maybe_top_p_arr, double top_p_val);
+                        std::optional<at::Tensor> maybe_top_p_arr, double top_p_val,
+                        bool is_deterministic, at::Tensor workspace);
 
 void top_k_renorm_probs(at::Tensor probs, at::Tensor renorm_probs,
-                        std::optional<at::Tensor> maybe_top_k_arr, int64_t top_k_val);
+                        std::optional<at::Tensor> maybe_top_k_arr, int64_t top_k_val,
+                        at::Tensor row_states_buffer);
 
 void top_k_mask_logits(at::Tensor logits, at::Tensor mask_logits,
-                       std::optional<at::Tensor> maybe_top_k_arr, int64_t top_k_val);
+                       std::optional<at::Tensor> maybe_top_k_arr, int64_t top_k_val,
+                       at::Tensor row_states_buffer);
 
 void chain_speculative_sampling(at::Tensor draft_probs, at::Tensor draft_token_ids,
                                 at::Tensor target_probs, at::Tensor output_token_ids,
                                 at::Tensor output_accepted_token_num,
                                 at::Tensor output_emitted_draft_token_num, bool deterministic,
-                                int64_t philox_seed, int64_t philox_offset);
+                                std::optional<at::Tensor> maybe_seed_arr, int64_t philox_seed,
+                                std::optional<at::Tensor> maybe_offset_arr, int64_t philox_offset);
 
 TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) {
   // Online safe softmax with temperature scaling

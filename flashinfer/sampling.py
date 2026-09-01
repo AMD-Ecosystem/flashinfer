@@ -21,6 +21,7 @@ import torch
 
 from .api_logging import flashinfer_api
 from .jit.sampling import gen_sampling_module
+from .rocm.device_utils import IS_HIP
 from .trace.templates.sampling import (
     chain_speculative_sampling_trace,
     min_p_sampling_trace,
@@ -1348,7 +1349,10 @@ def _top_k_first_fast_path_applicable(
     indices: Optional[torch.Tensor],
 ) -> bool:
     return (
-        indices is None
+        # The fast path needs the radix top-k kernel, and csrc/rocm has no
+        # topk.cu -- reaching it fails in ninja, not at import.
+        not IS_HIP
+        and indices is None
         and isinstance(top_k, int)
         and 0 < top_k <= _TOP_K_FIRST_FAST_PATH_MAX_K
         and x.size(-1) >= _TOP_K_FIRST_FAST_PATH_MIN_VOCAB

@@ -63,7 +63,11 @@ def test_the_fake_op_matches_the_real_shape(device):
     """torch.compile traces the fake; a wrong shape here surfaces only there."""
     x = torch.randint(0, 2, (17,), dtype=torch.uint8, device=device)
 
-    assert quantization._fake_packbits(x, "big").shape == (3,)
+    # v0.6.18 made quantization a package; the fake stayed private to packbits
+    # and is no longer re-exported from the package root.
+    from flashinfer.quantization.packbits import _fake_packbits
+
+    assert _fake_packbits(x, "big").shape == (3,)
     assert quantization.packbits(x, "big").shape == (3,)
 
 
