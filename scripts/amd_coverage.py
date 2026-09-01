@@ -966,9 +966,8 @@ def run(args: argparse.Namespace) -> int:
             "unowned": unowned,
             "ruled_unowned": ruled,
         }
-        # Anchored like --out-dir and --data-file: the documented refresh writes
-        # docs/rocm/coverage-gfx942.json, and a cwd-relative path would put it
-        # under whichever directory the caller happened to be in.
+        # Anchored like --out-dir and --data-file: a cwd-relative path would put
+        # the payload under whichever directory the caller happened to be in.
         json_out = _anchor(repo, args.json_out, repo)
         json_out.parent.mkdir(parents=True, exist_ok=True)
         json_out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
