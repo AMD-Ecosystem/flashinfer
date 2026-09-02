@@ -8,11 +8,13 @@ The `amd-flashinfer-jit-cache` package provides ahead-of-time (AOT) compiled ker
 
 ## Installation
 
-This package is intended to be installed alongside the main `amd-flashinfer` package:
+Install alongside the main `amd-flashinfer` package, naming the architecture in full:
 
 ```bash
-pip install amd-flashinfer amd-flashinfer-jit-cache
+pip install amd-flashinfer "amd-flashinfer-jit-cache==0.6.18+amd.1.gfx942"
 ```
+
+The architecture rides in the local version segment because a wheel tag cannot carry it. Pin it: an unqualified requirement resolves to whichever architecture sorts highest, which need not be yours.
 
 ## Contents
 
@@ -28,12 +30,13 @@ to another machine.
 
 ## Architecture Support
 
-This package is built specifically for the **AMD MI300 series (gfx942)** architecture.
+One wheel per architecture: gfx942 (MI300/MI325) and gfx950 (MI350/MI355). Which
+one a wheel holds is in its version's local segment and in
+`jit_cache/aot_manifest.json`.
 
-The architecture it was built for is recorded in `jit_cache/aot_manifest.json`.
 On a GPU it does not cover, FlashInfer ignores the prebuilt kernels, warns, and
-compiles from source rather than loading the wrong ISA. The wheel tag carries no
-architecture, so nothing prevents installing it on an unsupported GPU.
+compiles from source rather than loading the wrong ISA. Nothing at install time
+enforces the match — the version is a label, not a platform tag.
 
 The check reads the running device, not `FLASHINFER_ROCM_ARCH_LIST` — that
 variable is build intent and says nothing about the installed GPU. Set
@@ -45,14 +48,17 @@ To build this package from source:
 
 ```bash
 cd amd-flashinfer-jit-cache
-python -m build --wheel
+FLASHINFER_ROCM_ARCH_LIST=gfx942 python -m build --wheel --no-isolation
 ```
 
 The build process will:
 
 1. Generate kernel specifications using `flashinfer.rocm.aot`
-2. Compile kernels for the gfx942 architecture
+2. Compile kernels for `FLASHINFER_ROCM_ARCH_LIST`, and append it to the version
 3. Package compiled `.so` files into the wheel
+
+The build fails if the toolchain drops a requested architecture, rather than
+labelling the wheel for kernels it does not contain.
 
 ## Environment Variables
 
