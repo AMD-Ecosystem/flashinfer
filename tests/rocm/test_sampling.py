@@ -766,6 +766,38 @@ def test_a_row_with_no_positive_probability_reports_invalid(op, kwargs):
     assert not bool(valid.any()), "a row with no positive probability is not valid"
 
 
+@pytest.mark.parametrize("id_dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize(
+    "op, kwargs",
+    [
+        ("sampling_from_logits", {}),
+        ("sampling_from_probs", {}),
+        ("top_p_sampling_from_probs", {"top_p": 0.9}),
+        ("top_k_sampling_from_probs", {"top_k": 10}),
+        ("min_p_sampling_from_probs", {"min_p": 0.1}),
+        ("top_k_top_p_sampling_from_probs", {"top_k": 10, "top_p": 0.9}),
+    ],
+)
+def test_indices_dtype_is_dispatched_not_assumed(op, kwargs, id_dtype):
+    """sampling.py sizes `samples` as indices.dtype, so int64 is a normal call.
+
+    ROCm cast output/indices to int* regardless, so an int64 buffer read back two
+    int32s as one id -- e.g. 468151435296 for a 128-wide vocab. Upstream
+    dispatches on output.dtype(); this asserts ROCm now does too.
+    """
+    torch.manual_seed(0)
+    vocab = 128
+    x = torch.rand(4, vocab, device="cuda")
+    if "probs" in op:
+        x /= x.sum(dim=-1, keepdim=True)
+    indices = torch.arange(4, dtype=id_dtype, device="cuda")
+
+    got = getattr(flashinfer.sampling, op)(x, **kwargs, indices=indices)
+
+    assert got.dtype == id_dtype
+    assert torch.all((got >= 0) & (got < vocab)), f"out-of-range ids: {got.tolist()}"
+
+
 def test_a_mismatched_seed_tensor_is_rejected_at_the_op():
     """ROCm indexes seed_arr[bx], so a short tensor would read past the end.
 
