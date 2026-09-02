@@ -42,9 +42,11 @@ def _tracked_restricted_files() -> list[str]:
         text=True,
         check=True,
     ).stdout.split("\0")
+    self_path = str(pathlib.Path(__file__).resolve().relative_to(_ROOT))
     hits = []
     for name in listing:
-        if not name or pathlib.Path(name).suffix not in _SUFFIXES:
+        # This file spells the markers out, so it matches itself.
+        if not name or name == self_path or pathlib.Path(name).suffix not in _SUFFIXES:
             continue
         try:
             text = (_ROOT / name).read_text(errors="ignore")
