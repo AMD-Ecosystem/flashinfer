@@ -11,6 +11,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 
+from .api_compat import reject_cuda_only
 from .arch_caps import require_capability
 
 
@@ -173,6 +174,10 @@ class BatchMLAPagedAttentionWrapper:
     ----------
     float_workspace_buffer : torch.Tensor
         Reserved workspace.  Size is ignored; only the device is used.
+    use_cuda_graph, qo_indptr, kv_indptr, kv_indices, kv_len_arr
+        Upstream's CUDA-graph capture buffers, declared in upstream's positional
+        order so a CUDA caller binds correctly. Each raises when set: the AITER
+        MLA path cannot pre-bind capture-time pointers.
     backend : str
         Either ``"auto"`` (the default, resolves to ``"aiter"`` on ROCm)
         or ``"aiter"``. Any other value raises ``ValueError``.
@@ -181,6 +186,11 @@ class BatchMLAPagedAttentionWrapper:
     def __init__(
         self,
         float_workspace_buffer: torch.Tensor,
+        use_cuda_graph: bool = False,
+        qo_indptr: Optional[torch.Tensor] = None,
+        kv_indptr: Optional[torch.Tensor] = None,
+        kv_indices: Optional[torch.Tensor] = None,
+        kv_len_arr: Optional[torch.Tensor] = None,
         backend: str = "auto",
     ) -> None:
         if backend not in ("auto", "aiter"):
@@ -189,6 +199,18 @@ class BatchMLAPagedAttentionWrapper:
                 f"'aiter') is supported on ROCm; got {backend!r}."
             )
         backend = "aiter"
+        # Declared so a CUDA-graph caller's arguments bind where it intends;
+        # the AITER MLA path has no capture support to hand them to.
+        if use_cuda_graph:
+            raise NotImplementedError(
+                "use_cuda_graph=True is not supported by the AITER MLA backend "
+                "on ROCm; the wrapper cannot pre-bind capture-time buffers."
+            )
+        reject_cuda_only("qo_indptr", qo_indptr, None)
+        reject_cuda_only("kv_indptr", kv_indptr, None)
+        reject_cuda_only("kv_indices", kv_indices, None)
+        reject_cuda_only("kv_len_arr", kv_len_arr, None)
+
         self.device = float_workspace_buffer.device
         _require_aiter_mla(self.device)
 
@@ -325,7 +347,17 @@ class BatchMLAPagedAttentionWrapper:
         ckv_cache: torch.Tensor,
         kpe_cache: torch.Tensor,
         out: Optional[torch.Tensor] = None,
+        lse: Optional[torch.Tensor] = None,
         return_lse: bool = False,
+        profiler_buffer: Optional[torch.Tensor] = None,
+        kv_len: Optional[torch.Tensor] = None,
+        page_table: Optional[torch.Tensor] = None,
+        return_lse_base_on_e: bool = False,
+        o_scale: Optional[float] = None,
+        *,
+        ckv_scale: Optional[float] = None,
+        ckv_scale_arr: Optional[torch.Tensor] = None,
+        kpe_scale: Optional[float] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         r"""Run MLA attention.
 
@@ -348,6 +380,10 @@ class BatchMLAPagedAttentionWrapper:
             Pre-allocated output, shape ``[total_q, num_heads, head_dim_ckv]``.
         return_lse : bool
             Not supported; raises ``NotImplementedError`` if ``True``.
+        lse, profiler_buffer, kv_len, page_table, return_lse_base_on_e, o_scale, ckv_scale, ckv_scale_arr, kpe_scale
+            Accepted in upstream's positional order so a CUDA caller binds
+            correctly; each raises when set. ROCm produces no LSE, and plan()
+            owns the page table and sequence lengths.
 
         Returns
         -------
@@ -358,6 +394,17 @@ class BatchMLAPagedAttentionWrapper:
             raise NotImplementedError(
                 "return_lse is not currently supported by the AITER MLA backend."
             )
+        # No LSE is produced, so a caller-supplied buffer cannot be filled.
+        reject_cuda_only("lse", lse, None)
+        reject_cuda_only("return_lse_base_on_e", return_lse_base_on_e, False)
+        reject_cuda_only("profiler_buffer", profiler_buffer, None)
+        # plan() owns the page table and lengths on ROCm.
+        reject_cuda_only("kv_len", kv_len, None)
+        reject_cuda_only("page_table", page_table, None)
+        reject_cuda_only("o_scale", o_scale, None, neutral=1.0)
+        reject_cuda_only("ckv_scale", ckv_scale, None, neutral=1.0)
+        reject_cuda_only("ckv_scale_arr", ckv_scale_arr, None)
+        reject_cuda_only("kpe_scale", kpe_scale, None, neutral=1.0)
         if self._qo_indptr is None:
             raise RuntimeError("plan() must be called before run().")
 

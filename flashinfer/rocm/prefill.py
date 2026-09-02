@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 import torch
 from .aiter_utils import handle_aiter_probe_failure
+from .api_compat import reject_cuda_only
 from .arch_caps import capability_reason, require_capability
 from ..jit.core import logger
 from ..jit import (
@@ -1400,6 +1401,9 @@ def single_prefill_with_kv_cache(
     rope_theta: Optional[float] = None,
     backend: str = "auto",
     return_lse: Literal[False] = False,
+    kv_cache_sf: Optional[torch.Tensor] = None,
+    k_scale: Optional[float] = None,
+    v_scale: Optional[float] = None,
 ) -> torch.Tensor: ...
 
 
@@ -1425,6 +1429,9 @@ def single_prefill_with_kv_cache(
     rope_theta: Optional[float] = None,
     backend: str = "auto",
     return_lse: Literal[True] = True,
+    kv_cache_sf: Optional[torch.Tensor] = None,
+    k_scale: Optional[float] = None,
+    v_scale: Optional[float] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]: ...
 
 
@@ -1449,6 +1456,9 @@ def single_prefill_with_kv_cache(
     rope_theta: Optional[float] = None,
     backend: str = "auto",
     return_lse: bool = False,
+    kv_cache_sf: Optional[torch.Tensor] = None,
+    k_scale: Optional[float] = None,
+    v_scale: Optional[float] = None,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     r"""Prefill/Append attention with KV cache for single request, return the attention
     output.
@@ -1572,6 +1582,8 @@ def single_prefill_with_kv_cache(
     not equal to ``num_kv_heads``, the function will use
     `grouped query attention <https://arxiv.org/abs/2305.13245>`_.
     """
+    reject_cuda_only("kv_cache_sf", kv_cache_sf, None)
+
     _check_pos_encoding_mode(pos_encoding_mode)
     _check_kv_layout(kv_layout)
     tmp = _get_cache_buf("single_prefill_with_kv_cache_tmp", 32 * 1024 * 1024, q.device)
@@ -1579,6 +1591,8 @@ def single_prefill_with_kv_cache(
         logits_soft_cap = 0.0
     if sm_scale is None:
         sm_scale = 1.0 / math.sqrt(q.size(-1))
+    if k_scale is not None:
+        sm_scale *= k_scale
     if rope_scale is None:
         rope_scale = 1.0
     if rope_theta is None:
@@ -1734,6 +1748,11 @@ def single_prefill_with_kv_cache(
         rope_theta,
     )
 
+    if v_scale is not None:
+        if is_float8(out):
+            out = (out.to(torch.float32) * v_scale).to(out.dtype)
+        else:
+            out *= v_scale
     return (out, lse) if return_lse else out
 
 
@@ -2081,6 +2100,54 @@ class BatchPrefillWithPagedKVCacheWrapper:
             pin_memory=True,
         )
 
+    def workspace_size(
+        self,
+        qo_indptr: torch.Tensor,
+        paged_kv_indptr: torch.Tensor,
+        paged_kv_indices: torch.Tensor,
+        paged_kv_last_page_len: torch.Tensor,
+        num_qo_heads: int,
+        num_kv_heads: int,
+        head_dim_qk: int,
+        page_size: int,
+        head_dim_vo: Optional[int] = None,
+        custom_mask: Optional[torch.Tensor] = None,
+        packed_custom_mask: Optional[torch.Tensor] = None,
+        causal: bool = False,
+        pos_encoding_mode: str = "NONE",
+        use_fp16_qk_reduction: bool = False,
+        sm_scale: Optional[float] = None,
+        window_left: int = -1,
+        logits_soft_cap: Optional[float] = None,
+        rope_scale: Optional[float] = None,
+        rope_theta: Optional[float] = None,
+        q_data_type: Union[str, torch.dtype] = "float16",
+        kv_data_type: Optional[Union[str, torch.dtype]] = None,
+        o_data_type: Optional[Union[str, torch.dtype]] = None,
+        prefix_len_ptr: Optional[torch.Tensor] = None,
+        token_pos_in_items_ptr: Optional[torch.Tensor] = None,
+        token_pos_in_items_len: int = 0,
+        max_item_len_ptr: Optional[torch.Tensor] = None,
+        seq_lens: Optional[torch.Tensor] = None,
+        seq_lens_q: Optional[torch.Tensor] = None,
+        block_tables: Optional[torch.Tensor] = None,
+        max_token_per_sequence: Optional[int] = None,
+        max_sequence_kv: Optional[int] = None,
+        fixed_split_size: Optional[int] = None,
+        disable_split_kv: bool = False,
+    ) -> Tuple[int, int]:
+        r"""Not available on ROCm.
+
+        Upstream queries the CUDA scheduler for the workspace a given problem
+        needs before the caller allocates it. Neither ROCm backend exposes such
+        a query, so size the buffers as :meth:`__init__` documents.
+        """
+        raise NotImplementedError(
+            "workspace_size() is not available on ROCm: neither the FA2 nor the "
+            "AITER prefill backend exposes a required-size query. Allocate the "
+            "workspace buffers as documented on the constructor instead."
+        )
+
     def plan(
         self,
         qo_indptr: torch.Tensor,
@@ -2104,6 +2171,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         rope_theta: Optional[float] = None,
         q_data_type: Union[str, torch.dtype] = "float16",
         kv_data_type: Optional[Union[str, torch.dtype]] = None,
+        o_data_type: Optional[Union[str, torch.dtype]] = None,
         non_blocking: bool = True,
         prefix_len_ptr: Optional[torch.Tensor] = None,
         token_pos_in_items_ptr: Optional[torch.Tensor] = None,
@@ -2114,6 +2182,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
         block_tables: Optional[torch.Tensor] = None,
         max_token_per_sequence: Optional[int] = None,
         max_sequence_kv: Optional[int] = None,
+        fixed_split_size: Optional[int] = None,
+        disable_split_kv: bool = False,
     ) -> None:
         r"""Plan batch prefill/append attention on Paged KV-Cache for given problem specification.
 
@@ -2225,10 +2295,24 @@ class BatchPrefillWithPagedKVCacheWrapper:
 
         The :meth:`plan` method cannot be used in Cuda Graph or in ``torch.compile``.
         """
+        reject_cuda_only("fixed_split_size", fixed_split_size, None)
+        reject_cuda_only("disable_split_kv", disable_split_kv, False)
         q_data_type = canonicalize_torch_dtype(q_data_type)
         if kv_data_type is None:
             kv_data_type = q_data_type
         kv_data_type = canonicalize_torch_dtype(kv_data_type)
+        # ROCm prefill writes the output in the query dtype, so this is the
+        # only o_data_type it can satisfy.
+        o_data_type = canonicalize_torch_dtype(
+            q_data_type if o_data_type is None else o_data_type
+        )
+        if o_data_type != q_data_type:
+            raise NotImplementedError(
+                f"o_data_type={o_data_type} differs from q_data_type="
+                f"{q_data_type}; ROCm prefill writes the output in the query "
+                "dtype and cannot convert."
+            )
+        self._cached_o_data_type = o_data_type
 
         if logits_soft_cap is None:
             logits_soft_cap = 0.0
@@ -2643,6 +2727,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         q: torch.Tensor,
         paged_kv_cache: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
         *args,
+        q_scale: Optional[float] = None,
         k_scale: Optional[float] = None,
         v_scale: Optional[float] = None,
         out: Optional[torch.Tensor] = None,
@@ -2650,6 +2735,12 @@ class BatchPrefillWithPagedKVCacheWrapper:
         return_lse: Literal[False] = False,
         enable_pdl: Optional[bool] = None,
         window_left: Optional[int] = None,
+        sinks: Optional[torch.Tensor] = None,
+        partial_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        kv_cache_sf: Optional[torch.Tensor] = None,
+        skip_softmax_threshold_scale_factor: Optional[float] = None,
+        use_fp16_softmax: Optional[bool] = None,
+        uses_spcompress: Optional[bool] = None,
     ) -> torch.Tensor: ...
 
     @overload
@@ -2658,6 +2749,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         q: torch.Tensor,
         paged_kv_cache: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
         *args,
+        q_scale: Optional[float] = None,
         k_scale: Optional[float] = None,
         v_scale: Optional[float] = None,
         out: Optional[torch.Tensor] = None,
@@ -2665,6 +2757,12 @@ class BatchPrefillWithPagedKVCacheWrapper:
         return_lse: Literal[True] = True,
         enable_pdl: Optional[bool] = None,
         window_left: Optional[int] = None,
+        sinks: Optional[torch.Tensor] = None,
+        partial_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        kv_cache_sf: Optional[torch.Tensor] = None,
+        skip_softmax_threshold_scale_factor: Optional[float] = None,
+        use_fp16_softmax: Optional[bool] = None,
+        uses_spcompress: Optional[bool] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]: ...
 
     def run(
@@ -2682,6 +2780,10 @@ class BatchPrefillWithPagedKVCacheWrapper:
         window_left: Optional[int] = None,
         sinks: Optional[torch.Tensor] = None,
         partial_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        kv_cache_sf: Optional[torch.Tensor] = None,
+        skip_softmax_threshold_scale_factor: Optional[float] = None,
+        use_fp16_softmax: Optional[bool] = None,
+        uses_spcompress: Optional[bool] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         r"""Compute batch prefill/append attention between query and paged kv-cache.
 
@@ -2727,6 +2829,15 @@ class BatchPrefillWithPagedKVCacheWrapper:
             * The attention output, shape: ``[qo_indptr[-1], num_qo_heads, head_dim]``.
             * The logsumexp of attention output, shape: ``[qo_indptr[-1], num_qo_heads]``.
         """
+        reject_cuda_only("kv_cache_sf", kv_cache_sf, None)
+        reject_cuda_only(
+            "skip_softmax_threshold_scale_factor",
+            skip_softmax_threshold_scale_factor,
+            None,
+        )
+        reject_cuda_only("use_fp16_softmax", use_fp16_softmax, None, neutral=False)
+        reject_cuda_only("uses_spcompress", uses_spcompress, None, neutral=False)
+
         if enable_pdl is None:
             enable_pdl = device_support_pdl(q.device)
         if enable_pdl:
@@ -3225,11 +3336,20 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         rope_theta: Optional[float] = None,
         q_data_type: Union[str, torch.dtype] = "float16",
         kv_data_type: Optional[Union[str, torch.dtype]] = None,
+        o_data_type: Optional[Union[str, torch.dtype]] = None,
         non_blocking: bool = True,
         prefix_len_ptr: Optional[torch.Tensor] = None,
         token_pos_in_items_ptr: Optional[torch.Tensor] = None,
         token_pos_in_items_len: int = 0,
         max_item_len_ptr: Optional[torch.Tensor] = None,
+        fixed_split_size: Optional[int] = None,
+        disable_split_kv: bool = False,
+        seq_lens: Optional[torch.Tensor] = None,
+        seq_lens_q: Optional[torch.Tensor] = None,
+        max_token_per_sequence: Optional[int] = None,
+        max_sequence_kv: Optional[int] = None,
+        v_indptr: Optional[torch.Tensor] = None,
+        o_indptr: Optional[torch.Tensor] = None,
     ) -> None:
         r"""Plan batch prefill/append attention on Ragged KV-Cache for given problem specification.
 
@@ -3326,10 +3446,30 @@ class BatchPrefillWithRaggedKVCacheWrapper:
 
         The :meth:`plan` method cannot be used in Cuda Graph or in ``torch.compile``.
         """
+        reject_cuda_only("fixed_split_size", fixed_split_size, None)
+        reject_cuda_only("disable_split_kv", disable_split_kv, False)
+        reject_cuda_only("seq_lens", seq_lens, None)
+        reject_cuda_only("seq_lens_q", seq_lens_q, None)
+        reject_cuda_only("max_token_per_sequence", max_token_per_sequence, None)
+        reject_cuda_only("max_sequence_kv", max_sequence_kv, None)
+        reject_cuda_only("v_indptr", v_indptr, None)
+        reject_cuda_only("o_indptr", o_indptr, None)
         q_data_type = canonicalize_torch_dtype(q_data_type)
         if kv_data_type is None:
             kv_data_type = q_data_type
         kv_data_type = canonicalize_torch_dtype(kv_data_type)
+        # ROCm prefill writes the output in the query dtype, so this is the
+        # only o_data_type it can satisfy.
+        o_data_type = canonicalize_torch_dtype(
+            q_data_type if o_data_type is None else o_data_type
+        )
+        if o_data_type != q_data_type:
+            raise NotImplementedError(
+                f"o_data_type={o_data_type} differs from q_data_type="
+                f"{q_data_type}; ROCm prefill writes the output in the query "
+                "dtype and cannot convert."
+            )
+        self._cached_o_data_type = o_data_type
         if head_dim_vo is None:
             head_dim_vo = head_dim_qk
 
@@ -3526,8 +3666,8 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         )
 
         self._causal: bool = causal
-        self._pos_encoding_mode = pos_encoding_mode
-        self._use_fp16_qk_reduction = use_fp16_qk_reduction
+        self._pos_encoding_mode: str = pos_encoding_mode
+        self._use_fp16_qk_reduction: bool = use_fp16_qk_reduction
         self._window_left: int = window_left
         self._logits_soft_cap: float = logits_soft_cap
         self._sm_scale: float = sm_scale
@@ -3543,10 +3683,15 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         k: torch.Tensor,
         v: torch.Tensor,
         *args,
+        q_scale: Optional[float] = None,
+        k_scale: Optional[float] = None,
+        v_scale: Optional[float] = None,
+        o_scale: Optional[float] = None,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
         return_lse: Literal[False] = False,
         enable_pdl: Optional[bool] = None,
+        kv_cache_sf: Optional[torch.Tensor] = None,
     ) -> torch.Tensor: ...
 
     @overload
@@ -3556,10 +3701,15 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         k: torch.Tensor,
         v: torch.Tensor,
         *args,
+        q_scale: Optional[float] = None,
+        k_scale: Optional[float] = None,
+        v_scale: Optional[float] = None,
+        o_scale: Optional[float] = None,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
         return_lse: Literal[True] = True,
         enable_pdl: Optional[bool] = None,
+        kv_cache_sf: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]: ...
 
     def run(
@@ -3568,10 +3718,15 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         k: torch.Tensor,
         v: torch.Tensor,
         *args,
+        q_scale: Optional[float] = None,
+        k_scale: Optional[float] = None,
+        v_scale: Optional[float] = None,
+        o_scale: Optional[float] = None,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
         return_lse: bool = False,
         enable_pdl: Optional[bool] = None,
+        kv_cache_sf: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         r"""Compute batch prefill/append attention between query and kv-cache stored as
         ragged tensor.
@@ -3604,6 +3759,9 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             * The attention output, shape: ``[qo_indptr[-1], num_qo_heads, head_dim_vo]``.
             * The logsumexp of attention output, shape: ``[qo_indptr[-1], num_qo_heads]``.
         """
+        reject_cuda_only("o_scale", o_scale, None, neutral=1.0)
+        reject_cuda_only("kv_cache_sf", kv_cache_sf, None)
+
         if enable_pdl is None:
             enable_pdl = device_support_pdl(q.device)
         _check_cached_qkv_data_type(
@@ -3619,6 +3777,10 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             logits_soft_cap = 0.0
         if sm_scale is None:
             sm_scale = 1.0 / math.sqrt(q.size(-1))
+        if q_scale is not None:
+            sm_scale *= q_scale
+        if k_scale is not None:
+            sm_scale *= k_scale
         if rope_scale is None:
             rope_scale = 1.0
         if rope_theta is None:
@@ -3694,6 +3856,66 @@ class BatchPrefillWithRaggedKVCacheWrapper:
 
         assert self._cached_module is not None, "cached module is not initialized"
         self._cached_module.ragged_run(*run_args)
+        if v_scale is not None:
+            # TODO(Zihao): fused into kernel
+            if is_float8(out):
+                out = (out.to(torch.float32) * v_scale).to(out.dtype)
+            else:
+                out *= v_scale
         return (out, lse) if return_lse else out
 
     run_return_lse = functools.partialmethod(run, return_lse=True)
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        causal: bool = False,
+        pos_encoding_mode: str = "NONE",
+        use_fp16_qk_reduction: bool = False,
+        window_left: int = -1,
+        logits_soft_cap: Optional[float] = None,
+        sm_scale: Optional[float] = None,
+        rope_scale: Optional[float] = None,
+        rope_theta: Optional[float] = None,
+    ) -> torch.Tensor:
+        r"""Warning: This function is deprecated, please use :meth:`run` instead."""
+        self._causal = causal
+        self._pos_encoding_mode = pos_encoding_mode
+        self._use_fp16_qk_reduction = use_fp16_qk_reduction
+        self._window_left = window_left
+        self._logits_soft_cap = logits_soft_cap
+        self._sm_scale = sm_scale
+        self._rope_scale = rope_scale
+        self._rope_theta = rope_theta
+        return self.run(q, k, v)
+
+    def forward_return_lse(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        causal: bool = False,
+        pos_encoding_mode: str = "NONE",
+        use_fp16_qk_reduction: bool = False,
+        window_left: int = -1,
+        logits_soft_cap: Optional[float] = None,
+        sm_scale: Optional[float] = None,
+        rope_scale: Optional[float] = None,
+        rope_theta: Optional[float] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        r"""Warning: This function is deprecated, please use :meth:`run_return_lse` instead."""
+        self._causal = causal
+        self._pos_encoding_mode = pos_encoding_mode
+        self._use_fp16_qk_reduction = use_fp16_qk_reduction
+        self._window_left = window_left
+        self._logits_soft_cap = logits_soft_cap
+        self._sm_scale = sm_scale
+        self._rope_scale = rope_scale
+        self._rope_theta = rope_theta
+        return self.run_return_lse(q, k, v)
+
+    def end_forward(self) -> None:
+        r"""Warning: this function is deprecated and has no effect."""
+        pass
