@@ -112,31 +112,6 @@ void append_paged_kv_cache(at::Tensor append_key, at::Tensor append_value, at::T
   TORCH_CHECK(success, "AppendPagedKVCache failed to dispatch with dtype ", kv_scalar_dtype);
 }
 
-void block_sparse_indices_to_vector_sparse_offsets(
-    at::Tensor block_sparse_indices, at::Tensor block_sparse_indptr,
-    at::Tensor vector_sparse_offsets, at::Tensor vector_sparse_indptr, at::Tensor kv_len_arr,
-    int64_t stride_block, int64_t stride_n, int64_t batch_size, int64_t block_size) {
-  CHECK_INPUT(block_sparse_indices);
-  CHECK_INPUT(block_sparse_indptr);
-  CHECK_INPUT(vector_sparse_offsets);
-  CHECK_INPUT(vector_sparse_indptr);
-  CHECK_INPUT(kv_len_arr);
-
-  const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(block_sparse_indices.device());
-  auto stream = at::hip::getCurrentHIPStream();
-
-  hipError_t status = BlockSparseIndicesToVectorSparseOffset(
-      static_cast<int32_t*>(block_sparse_indices.data_ptr()),
-      static_cast<int32_t*>(block_sparse_indptr.data_ptr()),
-      static_cast<int32_t*>(vector_sparse_offsets.data_ptr()),
-      static_cast<int32_t*>(vector_sparse_indptr.data_ptr()),
-      static_cast<int32_t*>(kv_len_arr.data_ptr()), stride_block, stride_n, batch_size, block_size,
-      stream);
-
-  TORCH_CHECK(status == hipSuccess, "BlockSparseIndicesToVectorSparseOffset failed with error: ",
-              hipGetErrorString(status));
-}
-
 void append_paged_mla_kv_cache(at::Tensor append_ckv, at::Tensor append_kpe,
                                at::Tensor batch_indices, at::Tensor positions, at::Tensor ckv_cache,
                                at::Tensor kpe_cache, at::Tensor kv_indices, at::Tensor kv_indptr,
