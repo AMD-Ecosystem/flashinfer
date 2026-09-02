@@ -83,9 +83,20 @@ jobs:
       # The unit tests once stayed green while the tool itself raised on every
       # invocation, so CI has to actually invoke it. This also fails loudly if
       # the test above starts skipping for want of a base: no suite run, no GPU.
+      # The recorded base is reachable from no branch by design, so it arrives
+      # only via the upstream-base/* tag. fetch-depth: 0 supplies it today, but
+      # nothing here pins that, and an unresolvable base fails the step below
+      # with a bare "unknown object".
+      - name: Upstream base is present
+        run: |
+          read -r ref sha < <(grep -v '^[[:space:]]*#' upstream-base | grep -v '^[[:space:]]*$' | head -1)
+          echo "fork is based on upstream $ref ($sha)"
+          git rev-parse --verify --quiet "$sha^{commit}" >/dev/null \
+            || git fetch --depth=1 origin "refs/tags/upstream-base/$ref:refs/tags/upstream-base/$ref"
+          git rev-parse --verify --quiet "$sha^{commit}" >/dev/null
+
       - name: Coverage tool runs at all
         run: |
-          echo "fork is based on upstream $(git describe --tags --abbrev=0 --match '*+amd.*' | cut -d+ -f1)"
           python -c "
           import importlib.util, pathlib, sys
           spec = importlib.util.spec_from_file_location('ac', 'scripts/amd_coverage.py')
