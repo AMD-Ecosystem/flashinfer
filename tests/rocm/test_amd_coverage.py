@@ -230,6 +230,37 @@ class TestUpstreamBase:
         _git(repo, "commit", "-qm", "port work")
         _git(repo, "tag", amd_tag)
 
+    def _squashed(self, repo):
+        """A sync landed as a squash: the tag's tree is here, its ancestry is not."""
+        self._tagged(repo, "v0.5.3+amd.1")
+        _git(repo, "checkout", "-q", "-b", "upstream-next", "v0.5.3")
+        _write(repo, "flashinfer/new.py", "n = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "upstream v0.6.0")
+        _git(repo, "tag", "v0.6.0")
+        target = ac._git(str(repo), "rev-parse", "v0.6.0^{commit}")
+
+        _git(repo, "checkout", "-q", "main")
+        _write(repo, "flashinfer/new.py", "n = 1\n")
+        _write(repo, "upstream-base", f"v0.6.0 {target}\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "squashed sync to v0.6.0")
+        return target
+
+    def test_the_recorded_base_beats_ancestry_against_our_own_tip(self, repo):
+        """Without it the base walks back to v0.5.3 and the delta reads as ours."""
+        target = self._squashed(repo)
+        stale = ac._git(str(repo), "merge-base", "HEAD", "v0.6.0")
+        assert stale != target, "fixture no longer reproduces the stale base"
+
+        assert ac._resolve_base(str(repo), None) == target
+        assert ac._resolve_base_detail(str(repo), None)[1] == "recorded"
+
+    def test_without_the_file_it_falls_back_and_says_so(self, repo):
+        self._tagged(repo, "v0.5.3+amd.1")
+
+        assert ac._resolve_base_detail(str(repo), None)[1] == "ancestry"
+
     def test_release_tag_yields_the_upstream_version(self, repo):
         self._tagged(repo, "v0.5.3+amd.2")
 

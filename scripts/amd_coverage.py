@@ -33,6 +33,12 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
+# The workflow and the tests load this file via spec_from_file_location, which
+# does not put scripts/ on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import upstream_base  # noqa: E402
+
 EXIT_OK, EXIT_RATCHET, EXIT_ERROR = 0, 1, 2
 
 _MANIFEST = "scripts/coverage_ownership.toml"
@@ -174,14 +180,23 @@ def _upstream_release(repo: str) -> str:
 
 
 def _resolve_base(repo: str, upstream_ref: Optional[str]) -> str:
-    """The commit this fork diverged from.
+    return _resolve_base_detail(repo, upstream_ref)[0]
+
+
+def _resolve_base_detail(repo: str, upstream_ref: Optional[str]) -> Tuple[str, str]:
+    """``(base, source)`` for the commit this fork diverged from.
 
     Defaults to the upstream *release* the port is based on, not to a moving
     branch: `upstream/main` advances independently, which silently reclassifies
     files and makes two runs weeks apart incomparable. The release tag is fixed
     for the life of a port, so the number means the same thing each time.
+
+    Anchored on the recorded base rather than our own tip, because a squash-merged
+    sync leaves no merge parent and `merge-base(HEAD, <tag>)` then walks back to
+    the *previous* fork point -- 2468 files misclassified as owned instead of 290.
     """
-    ref = upstream_ref or _upstream_release(repo)
+    recorded = upstream_base.read_worktree(repo)
+    ref = upstream_ref or (recorded.ref if recorded else _upstream_release(repo))
     probe = _run(
         repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False
     )
@@ -201,17 +216,16 @@ def _resolve_base(repo: str, upstream_ref: Optional[str]) -> str:
             f"remote is needed:\n  git fetch origin tag {ref}"
         )
         raise ToolError(f"unknown ref '{ref}'. {how}" + _unshallow_hint(repo))
-    merge_base = _run(repo, "merge-base", "HEAD", ref, check=False)
-    if merge_base.returncode:
-        # rc 1 is the documented "no common ancestor"; anything else is a real
-        # git error whose stderr is the only clue, so do not bury it.
-        detail = (
-            _unshallow_hint(repo)
-            if merge_base.returncode == 1
-            else "\n" + merge_base.stderr.strip()
-        )
-        raise ToolError(f"'{ref}' shares no history with HEAD.{detail}")
-    return merge_base.stdout.strip()
+    try:
+        return upstream_base.select(_run, repo, "HEAD", ref, recorded)
+    except upstream_base.MissingBaseObject as exc:
+        # Not _unshallow_hint: an explicit base needs the object present, not
+        # reachable, so "fetching tags will not help" would contradict the fix.
+        raise ToolError(str(exc)) from exc
+    except upstream_base.UpstreamBaseError as exc:
+        # rc 1 reads as "no common ancestor"; on a grafted clone that is the
+        # graft talking, and the hint is the only actionable part.
+        raise ToolError(f"{exc}{_unshallow_hint(repo)}") from exc
 
 
 def _diff_status(repo: str, base: str) -> Tuple[Dict[str, str], Dict[str, str]]:
@@ -876,7 +890,9 @@ def _anchor(repo: Path, value: Optional[str], default: Path) -> Path:
 
 def run(args: argparse.Namespace) -> int:
     repo = Path(_git(None, "rev-parse", "--show-toplevel"))
-    base = _resolve_base(str(repo), args.upstream_ref)
+    base, base_source = _resolve_base_detail(str(repo), args.upstream_ref)
+    if base_source == "ancestry":
+        print(upstream_base.missing_note(repo / upstream_base.FILENAME))
     manifest_path = repo / _MANIFEST
     if not manifest_path.exists():
         raise ToolError(f"missing {_MANIFEST}")
@@ -940,6 +956,7 @@ def run(args: argparse.Namespace) -> int:
         payload = {
             "base": base,
             "base_desc": base_desc,
+            "base_source": base_source,
             "dirty": dirty,
             "arch": arch,
             "stale_sources": stale,
@@ -1031,7 +1048,7 @@ def main() -> int:
 
     try:
         return run(parser.parse_args())
-    except ToolError as exc:
+    except (ToolError, upstream_base.UpstreamBaseError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
 
