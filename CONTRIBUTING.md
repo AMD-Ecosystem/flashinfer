@@ -310,10 +310,40 @@ commit stays fetchable — it is reachable from no branch:
 git push origin "$(git rev-parse v0.6.19^{commit})":refs/tags/upstream-base/v0.6.19
 ```
 
-That tag is the only thing that has to reach `origin`. The tools resolve the
-base by **sha**, so the plain `v0.6.19` tag never needs pushing here — which is
-just as well, since `origin` carries no plain upstream release tag past
-`v0.5.3`.
+That tag is the only thing the *tools* need on `origin`: they resolve the base
+by **sha**, and `upstream_base._require_present` wants the commit in the object
+store, not reachable from anything.
+
+### Then record the ancestry, in its own PR
+
+A squash-merged sync leaves upstream's commits unreachable from
+`amd-integration`, so GitHub's fork banner counts back to the original fork
+point — 1192 commits behind instead of 114. The base-resolving tools do not read
+that reachability, but the banner is the first thing anyone sees.
+
+```bash
+git switch -c record-v0619-ancestry
+git merge -s ours v0.6.19 -m "chore: record v0.6.19 as an ancestor of the fork"
+```
+
+The branch matters: after the sync PR merges you are on `amd-integration`, which
+must never be a PR head. `-s ours` leaves our tree byte-identical — the commit
+exists only for the second parent. Three things make or break it:
+
+- **Merge that PR with a merge commit. Squashing it flattens the second parent
+  and silently discards the ancestry** — the whole point of the PR.
+- `required_linear_history` rejects a merge commit, and ruleset `8494465` lists a
+  single bypass actor, so only that account can land this one. Everyone else
+  will find the button blocked with no recourse.
+- Push the plain `v0.6.19` tag to `origin` too, so the parent stays identifiable
+  by name. `origin` carries `v0.5.3` and `v0.6.18` for this reason.
+
+Reachability is not free: it inflates any `git rev-list <tag>..HEAD` walk that
+counts every parent. `git_describe_rocm.py` therefore measures `.devN` along
+`--first-parent` — see `test_an_absorbed_upstream_branch_does_not_inflate_the_distance`
+for why counting the merged side breaks version ordering outright. The canary's
+`ours` commit count does rise by the release branch's length; that one is
+cosmetic.
 
 # Adding a Kernel
 

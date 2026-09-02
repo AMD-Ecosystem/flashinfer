@@ -197,9 +197,9 @@ def _resolve_base_detail(repo: str, upstream_ref: Optional[str]) -> Tuple[str, s
     """
     recorded = upstream_base.read_worktree(repo)
     if upstream_ref is None and recorded is not None:
-        # By sha, not by name: `origin` carries no plain upstream release tag
-        # past v0.5.3, and CI fetches tags from origin only, so requiring
-        # `v0.6.18` to resolve fails on every clone without an upstream remote.
+        # By sha, not by name: `origin` carries plain upstream release tags only
+        # where one was needed, and CI fetches tags from origin only, so
+        # requiring the name to resolve fails on a clone that happens to lack it.
         return _select(repo, recorded.sha, recorded)
     ref = upstream_ref or _upstream_release(repo)
     probe = _run(
@@ -217,8 +217,8 @@ def _resolve_base_detail(repo: str, upstream_ref: Optional[str]) -> Tuple[str, s
             f"you passed it to --upstream-ref; fetch whatever provides it:\n"
             f"  git fetch <remote> {ref}"
             if upstream_ref
-            # origin carries no plain upstream release tag past v0.5.3, so this
-            # path really does need the upstream remote.
+            # Reached only when the derived tag is absent from origin, which is
+            # the common case -- the fork parent is where they all live.
             else "it was derived from this fork's own release tag; the plain "
             "upstream tag lives on the fork parent:\n"
             "  git remote add upstream https://github.com/flashinfer-ai/flashinfer.git\n"

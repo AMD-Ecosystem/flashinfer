@@ -176,6 +176,32 @@ class TestClosestTagSelection:
             == f"v0.5.3+amd.2.dev2-0-g{_short_head(repo)}"
         )
 
+    def test_an_absorbed_upstream_branch_does_not_inflate_the_distance(
+        self, repo, capsys
+    ):
+        """CONTRIBUTING.md's `git merge -s ours <release>` makes upstream's whole
+        history reachable. Counting every parent would put all of it in .devN,
+        and PEP 440 compares that segment lexically -- .dev12 sorts below .dev2,
+        so each new build would lose to the one before it.
+
+        The sibling test above is linear, so it pins tag *selection* only; this
+        is the one that needs a real second parent.
+        """
+        _git(repo, "tag", "v0.5.3+amd.2")
+        _git(repo, "checkout", "-b", "upstream", "--quiet")
+        for i in range(10):
+            _commit(repo, f"upstream {i}")
+        _git(repo, "checkout", "-", "--quiet")
+        _commit(repo, "ours")
+        _git(repo, "merge", "-s", "ours", "--no-edit", "upstream")
+
+        # Two first-parent commits since the tag, not twelve.
+        assert gd.main() == 0
+        assert (
+            capsys.readouterr().out.strip()
+            == f"v0.5.3+amd.2.dev2-0-g{_short_head(repo)}"
+        )
+
 
 class TestFailure:
     def test_git_failure_is_reported_on_stderr_and_returns_one(
