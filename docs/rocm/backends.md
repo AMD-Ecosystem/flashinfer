@@ -159,6 +159,24 @@ not because AITER is unavailable:
   and then without `--aa`; read the A/A first, since a margin inside it is
   not a result.
 
+## CUDA-only arguments
+
+The decode, prefill and MLA wrappers declare upstream's full parameter list, in
+upstream's order, so a caller written against the CUDA API binds correctly and
+an argument left at its default costs nothing. An argument that actually asks
+for a CUDA feature — NVFP4 KV-cache scale factors, trtllm-gen skip-softmax, the
+split-KV scheduler knobs, CUDA-graph MLA capture — raises `NotImplementedError`
+naming itself rather than being ignored. A value that means "not requested"
+(`False` for an enable flag, `1.0` for a calibration scale) is accepted.
+
+`q_scale`, `k_scale` and `v_scale` are *not* in that set: every attention entry
+point folds them into `sm_scale` and the output.
+
+`CUDA_ONLY_PARAMS` in `scripts/rocm_api_parity.py` is the full list. The script
+also fails on any undeclared signature divergence from upstream — a missing
+parameter, a reordered one, or a drifted default; `tests/rocm/test_api_parity.py`
+runs it in CI.
+
 ## Known limitations
 
 AITER constraints fall into two groups. The first errors out under
