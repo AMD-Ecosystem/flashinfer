@@ -628,6 +628,16 @@ def test_half_input_is_upcast_not_read_at_a_float_stride(op, dtype):
     assert torch.equal(got, op(x.float(), 10).to(dtype))
 
 
+def _seed_case(op):
+    """A 4-row input plus the kwargs `op` needs, seeded for reproducibility."""
+    torch.manual_seed(0)
+    x = torch.rand(4, 128, device="cuda")
+    if "probs" in op:
+        x /= x.sum(dim=-1, keepdim=True)
+    args = {"top_p": 0.9, "top_k": 10, "min_p": 0.1}
+    return x, {k: v for k, v in args.items() if k in op}
+
+
 @pytest.mark.parametrize(
     "op",
     [
@@ -639,23 +649,66 @@ def test_half_input_is_upcast_not_read_at_a_float_stride(op, dtype):
         "top_k_top_p_sampling_from_probs",
     ],
 )
-def test_a_tensor_seed_is_rejected_rather_than_collapsed(op):
-    """One scalar seed covers the batch, so a per-request tensor must not be ignored.
+def test_a_length_one_seed_tensor_matches_the_scalar_seed(op):
+    """A device-resident seed is upstream's way to avoid a host sync."""
+    x, kwargs = _seed_case(op)
+    fn = getattr(flashinfer.sampling, op)
 
-    Every entry point, because a collapsed seed is invisible in the output -- the
-    samples are still valid tokens, just all drawn from one stream.
+    scalar = fn(x, **kwargs, seed=7, offset=0)
+    tensor = fn(
+        x,
+        **kwargs,
+        seed=torch.tensor([7], dtype=torch.int64, device="cuda"),
+        offset=torch.zeros(1, dtype=torch.int64, device="cuda"),
+    )
+    assert torch.equal(scalar, tensor)
+
+
+@pytest.mark.parametrize(
+    "op",
+    [
+        "sampling_from_logits",
+        "sampling_from_probs",
+        "top_p_sampling_from_probs",
+        "top_k_sampling_from_probs",
+        "min_p_sampling_from_probs",
+        "top_k_top_p_sampling_from_probs",
+    ],
+)
+def test_a_per_row_seed_tensor_is_honoured_not_collapsed(op):
+    """ROCm reads seed_arr[bx]; CUDA reads seed_arr[0] whatever the length.
+
+    A deliberate divergence, so this is the test that pins it. Each row must
+    match the scalar-seeded call for its own seed -- which also rules out the
+    collapse, since row i would otherwise carry row 0's draw.
     """
-    x = torch.rand(4, 128, device="cuda")
-    if "probs" in op:
-        x /= x.sum(dim=-1, keepdim=True)
-    seed = torch.arange(4, dtype=torch.int64, device="cuda")
-    args = {"top_p": 0.9, "top_k": 10, "min_p": 0.1}
-    kwargs = {k: v for k, v in args.items() if k in op}
+    x, kwargs = _seed_case(op)
+    fn = getattr(flashinfer.sampling, op)
+    seeds = torch.tensor([11, 22, 33, 44], dtype=torch.int64, device="cuda")
 
-    with pytest.raises(RuntimeError, match="not supported on ROCm"):
-        getattr(flashinfer.sampling, op)(
-            x, **kwargs, seed=seed, offset=torch.zeros_like(seed)
-        )
+    got = fn(x, **kwargs, seed=seeds, offset=torch.zeros_like(seeds))
+    for row, seed in enumerate(seeds.tolist()):
+        want = fn(x, **kwargs, seed=seed, offset=0)
+        assert got[row] == want[row], f"row {row} was not seeded from {seed}"
+
+
+@pytest.mark.parametrize(
+    "op",
+    ["sampling_from_probs", "top_k_sampling_from_probs"],
+)
+def test_a_uniform_per_row_seed_tensor_matches_the_scalar(op):
+    """Length batch_size but every entry equal: [0] and [bx] agree here.
+
+    Separates "honours the stride" from "reads the tensor at all".
+    """
+    x, kwargs = _seed_case(op)
+    fn = getattr(flashinfer.sampling, op)
+    seeds = torch.full((4,), 7, dtype=torch.int64, device="cuda")
+
+    assert torch.equal(
+        fn(x, **kwargs, seed=seeds, offset=torch.zeros_like(seeds)),
+        fn(x, **kwargs, seed=7, offset=0),
+    )
 
 
 @pytest.mark.parametrize(
