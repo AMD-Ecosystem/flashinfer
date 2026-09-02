@@ -42,17 +42,18 @@ def backend(monkeypatch):
     touched = ("FLASHINFER_DISABLE_VERSION_CHECK", _PRETEND_VERSION_NAME)
     saved = {name: os.environ.pop(name, None) for name in touched}
 
-    spec = importlib.util.spec_from_file_location("_jit_cache_backend", _BACKEND)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    assert module._PRETEND_VERSION == _PRETEND_VERSION_NAME
-    yield module
-
-    for name, value in saved.items():
-        if value is None:
-            os.environ.pop(name, None)
-        else:
-            os.environ[name] = value
+    try:
+        spec = importlib.util.spec_from_file_location("_jit_cache_backend", _BACKEND)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert module._PRETEND_VERSION == _PRETEND_VERSION_NAME
+        yield module
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 @pytest.mark.parametrize(

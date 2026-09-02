@@ -67,7 +67,8 @@ architectures.
 
 ## Environment Variables
 
-- `FLASHINFER_ROCM_ARCH_LIST`: Target architecture (default: "gfx942")
+- `FLASHINFER_ROCM_ARCH_LIST`: Target architectures. Unset, the supported GPUs
+  present are used, and only a host with none falls back to `gfx942`.
 - `HIP_PATH`: Path to ROCm/HIP installation (auto-detected if not set)
 
 ## License
