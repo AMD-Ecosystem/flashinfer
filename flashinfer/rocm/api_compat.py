@@ -38,7 +38,8 @@ def reject_cuda_only(
             return
         if isinstance(value, (bool, int, float, str)) and value == accepted:
             return
+    allowed = f"{default!r}" if neutral is _MISSING else f"{default!r} or {neutral!r}"
     raise NotImplementedError(
         f"{name} is a CUDA-only feature and is not supported on ROCm; "
-        f"pass {name}={default!r} or omit it"
+        f"pass {name}={allowed}, or omit it"
     )
