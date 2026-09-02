@@ -276,8 +276,8 @@ __device__ __forceinline__ void DeterministicInclusiveSum(
 }
 
 template <uint32_t VEC_SIZE, uint32_t BLOCK_THREADS, BlockReduceAlgorithm REDUCE_ALGORITHM,
-          typename TempStorage>
-__device__ __forceinline__ std::tuple<float, float> GetMinMaxValue(float* in_data, uint32_t row_idx,
+          typename TempStorage, typename DType>
+__device__ __forceinline__ std::tuple<float, float> GetMinMaxValue(DType* in_data, uint32_t row_idx,
                                                                    uint32_t d,
                                                                    TempStorage& temp_storage) {
   const uint32_t tx = threadIdx.x;
@@ -318,9 +318,11 @@ __device__ __forceinline__ std::tuple<float, float> GetMinMaxValue(float* in_dat
   return std::make_tuple(min_val, max_val);
 }
 
+// DType is deduced from in_data and so stays last: every call site names the
+// first four arguments explicitly. The body already reads through cast_load.
 template <uint32_t VEC_SIZE, uint32_t BLOCK_THREADS, BlockReduceAlgorithm REDUCE_ALGORITHM,
-          typename TempStorage>
-__device__ __forceinline__ float GetMaxValue(float* in_data, uint32_t row_idx, uint32_t d,
+          typename TempStorage, typename DType>
+__device__ __forceinline__ float GetMaxValue(DType* in_data, uint32_t row_idx, uint32_t d,
                                              TempStorage& temp_storage) {
   const uint32_t tx = threadIdx.x;
   vec_t<float, VEC_SIZE> in_data_vec;
@@ -1873,7 +1875,8 @@ __global__ void TopKMaskLogitsKernel(DType* logits, DType* masked_logits, IdType
           (logits_vec[j] > pivot) ? logits_vec[j] : -cuda::std::numeric_limits<float>::infinity();
     }
     if ((i * BLOCK_THREADS + tx) * VEC_SIZE < d) {
-      logits_vec.store(masked_logits + row_idx * d + i * BLOCK_THREADS * VEC_SIZE + tx * VEC_SIZE);
+      logits_vec.cast_store(masked_logits + row_idx * d + i * BLOCK_THREADS * VEC_SIZE +
+                            tx * VEC_SIZE);
     }
   }
 }
@@ -2000,7 +2003,8 @@ __global__ void TopKRenormProbKernel(DType* probs, DType* renormed_prob, IdType*
       probs_vec[j] = (probs_vec[j] > pivot) ? probs_vec[j] * normalizer : 0;
     }
     if ((i * BLOCK_THREADS + tx) * VEC_SIZE < d) {
-      probs_vec.store(renormed_prob + row_idx * d + i * BLOCK_THREADS * VEC_SIZE + tx * VEC_SIZE);
+      probs_vec.cast_store(renormed_prob + row_idx * d + i * BLOCK_THREADS * VEC_SIZE +
+                           tx * VEC_SIZE);
     }
   }
 }

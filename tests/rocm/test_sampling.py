@@ -613,8 +613,8 @@ def test_chain_speculative_sampling(
     "op",
     [flashinfer.sampling.top_k_renorm_probs, flashinfer.sampling.top_k_mask_logits],
 )
-def test_half_input_is_upcast_not_read_at_a_float_stride(op, dtype):
-    """v0.6.18 admits fp16/bf16 here and stopped casting; ROCm's kernels are fp32.
+def test_half_input_runs_natively_and_matches_fp32(op, dtype):
+    """v0.6.18 admits fp16/bf16 here; the kernels now instantiate at that dtype.
 
     Unhandled, the kernel walks 4 bytes per element of a 2-byte buffer and writes
     the overrun back -- silent corruption, not a crash. torch.equal is the
@@ -636,6 +636,28 @@ def _seed_case(op):
         x /= x.sum(dim=-1, keepdim=True)
     args = {"top_p": 0.9, "top_k": 10, "min_p": 0.1}
     return x, {k: v for k, v in args.items() if k in op}
+
+
+def test_top_p_renorm_rejects_half_because_python_casts_first():
+    """sampling.py casts before calling, so the op is fp32-only by contract.
+
+    Asserted at the op, not the wrapper: the wrapper would hide a half tensor
+    reaching a kernel that no longer upcasts it.
+    """
+    flashinfer.sampling.get_sampling_module()
+    probs = torch.rand(4, 128, dtype=torch.float16, device="cuda")
+    probs /= probs.sum(dim=-1, keepdim=True)
+    out = torch.empty_like(probs)
+
+    with pytest.raises(RuntimeError, match="fp32 on ROCm"):
+        torch.ops.sampling.top_p_renorm_probs(
+            probs,
+            out,
+            None,
+            0.9,
+            False,
+            torch.empty(1, dtype=torch.int32, device="cuda"),
+        )
 
 
 @pytest.mark.parametrize(
@@ -739,6 +761,30 @@ def test_a_row_with_no_positive_probability_reports_invalid(op, kwargs):
         f"out-of-range token id: {samples[(samples < 0) | (samples >= vocab)][:8]}"
     )
     assert not bool(valid.any()), "a row with no positive probability is not valid"
+
+
+def test_valid_is_written_per_row_not_filled():
+    """`valid` used to be fill_(true) before the kernel ran; now the kernel writes it.
+
+    Half the rows have no positive probability, so a fill -- in either direction
+    -- fails. Pre-filling the opposite of the expected answer is what makes the
+    write observable.
+    """
+    batch, vocab = 64, 256
+    probs = torch.rand(batch, vocab, device="cuda")
+    probs /= probs.sum(dim=-1, keepdim=True)
+    probs[1::2] = 0.0
+
+    flashinfer.sampling.get_sampling_module()
+    samples = torch.empty(batch, dtype=torch.int32, device="cuda")
+    valid = torch.zeros(batch, dtype=torch.bool, device="cuda")
+    torch.ops.sampling.sampling_from_probs(
+        probs, samples, valid, None, False, None, 0, None, 0
+    )
+
+    assert bool(valid[0::2].all()), "rows that can be sampled must report valid"
+    assert not bool(valid[1::2].any()), "all-zero rows must report invalid"
+    assert torch.all((samples >= 0) & (samples < vocab))
 
 
 def test_every_row_reports_valid():
