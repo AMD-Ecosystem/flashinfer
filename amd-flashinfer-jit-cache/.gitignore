@@ -1,3 +1,5 @@
 # Build time generated files
 amd_flashinfer_jit_cache/_build_meta.py
 amd_flashinfer_jit_cache/_version.py
+# ~33 MB of compiled kernels the build drops into the package directory.
+amd_flashinfer_jit_cache/jit_cache/

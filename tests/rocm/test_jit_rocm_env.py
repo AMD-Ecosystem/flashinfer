@@ -63,6 +63,28 @@ def test_aot_dir_version_check_can_be_bypassed(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("arch", ["gfx942", "gfx950", "gfx942.gfx950"])
+def test_an_arch_tagged_cache_version_is_not_skew(monkeypatch, tmp_path, arch):
+    """Every shipped wheel's version ends in the architecture it holds.
+
+    build_backend appends it so the two arch builds get distinct filenames; the
+    comparison here is a startswith, which has to keep tolerating that.
+    """
+    import sys
+    import types
+
+    from flashinfer._version import __version__
+    from flashinfer.jit.rocm.env import get_aot_dir
+
+    fake = types.ModuleType("amd_flashinfer_jit_cache")
+    fake.__version__ = f"{__version__}.{arch}"
+    fake.get_jit_cache_dir = lambda: str(tmp_path)
+    monkeypatch.setitem(sys.modules, "amd_flashinfer_jit_cache", fake)
+    monkeypatch.delenv("FLASHINFER_DISABLE_VERSION_CHECK", raising=False)
+
+    assert get_aot_dir(pathlib.Path("/unused"), lambda: True) == tmp_path
+
+
 def _wheel_with_manifest(monkeypatch, tmp_path, manifest_text, device_arch):
     """A fake jit-cache wheel whose kernels were built for `manifest_text`.
 

@@ -15,6 +15,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import json
 import os
 import sys
 import sysconfig
@@ -28,6 +29,89 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Skip version check when building amd-flashinfer-jit-cache package
 os.environ["FLASHINFER_DISABLE_VERSION_CHECK"] = "1"
+
+_HERE = Path(__file__).parent
+_JIT_CACHE_DIR = _HERE / "amd_flashinfer_jit_cache" / "jit_cache"
+# setuptools_scm's per-distribution override, name-normalized and upper-cased.
+_PRETEND_VERSION = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_AMD_FLASHINFER_JIT_CACHE"
+
+
+def _target_arch_list() -> str:
+    """The architectures this build compiles for, e.g. ``"gfx942,gfx950"``.
+
+    Needs torch, like the compile itself, so build isolation is not an option
+    here -- see the ``--no-isolation`` in README.md.
+    """
+    from flashinfer.rocm.compilation_context import CompilationContext
+
+    return ",".join(
+        flag.removeprefix("--offload-arch=") for flag in CompilationContext().arch_flags
+    )
+
+
+def _scm_version() -> str:
+    """The version setuptools_scm would compute, read out of pyproject.toml.
+
+    Resolved here rather than restated, so the scheme, tag regex and custom
+    describe command stay declared in exactly one place.
+    """
+    from setuptools_scm import Configuration, get_version
+
+    cfg = Configuration.from_file(str(_HERE / "pyproject.toml"))
+    return get_version(
+        root=cfg.absolute_root,
+        version_scheme=cfg.version_scheme,
+        local_scheme=cfg.local_scheme,
+        tag_regex=cfg.tag_regex,
+        fallback_version=cfg.fallback_version,
+        git_describe_command=cfg.git_describe_command,
+    )
+
+
+def _pin_arch_tagged_version() -> tuple[str, str]:
+    """``(version, architectures)``, with the architectures named in the version.
+
+    ``0.6.18+amd.1`` -> ``0.6.18+amd.1.gfx942``. Nothing else in a wheel's name
+    carries the architecture, so without this the gfx942 and gfx950 builds are
+    the same filename and one silently replaces the other on an index. Set
+    ``FLASHINFER_ROCM_ARCH_LIST`` to choose; there is deliberately no separate
+    version override, which could only ever contradict what gets compiled.
+    """
+    archs = _target_arch_list()
+    base = _scm_version()
+    # A local version segment is dot-separated; a comma is not representable.
+    joiner = "." if "+" in base else "+"
+    version = f"{base}{joiner}{archs.replace(',', '.')}"
+    os.environ[_PRETEND_VERSION] = version
+    return version, archs
+
+
+def _check_kernels_match(archs: str) -> None:
+    """Fail rather than ship a wheel labelled for kernels it does not contain.
+
+    The version is composed before the build and the manifest written during it,
+    from two independent resolutions. With FLASHINFER_ROCM_ARCH_LIST unset those
+    probe rocminfo under a timeout, so agreement is not structural.
+    """
+    from flashinfer.jit.rocm.env import AOT_MANIFEST_NAME
+
+    manifest = _JIT_CACHE_DIR / AOT_MANIFEST_NAME
+    try:
+        built = json.loads(manifest.read_text())["rocm_arch_list"]
+        # Split inside the try: a null or list value fails here as
+        # AttributeError/TypeError, which jit/rocm/env.py guards against too.
+        built_archs = set(built.split(","))
+    except (OSError, ValueError, KeyError, AttributeError, TypeError) as exc:
+        raise RuntimeError(
+            f"cannot confirm the version names the kernels it ships: {manifest} "
+            f"is missing or unusable ({exc!r})"
+        ) from exc
+
+    if built_archs != set(archs.split(",")):
+        raise RuntimeError(
+            f"the version names {archs} but the build produced {built}. Set "
+            "FLASHINFER_ROCM_ARCH_LIST to what this toolchain can compile."
+        )
 
 
 def _compile_jit_cache(output_dir: Path, verbose: bool = True):
@@ -54,7 +138,7 @@ def _compile_jit_cache(output_dir: Path, verbose: bool = True):
 def _build_aot_modules():
     """Build AOT HIP modules."""
     # First, ensure AOT modules are compiled
-    aot_package_dir = Path(__file__).parent / "amd_flashinfer_jit_cache" / "jit_cache"
+    aot_package_dir = _JIT_CACHE_DIR
     aot_package_dir.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -119,7 +203,13 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     """Build wheel with custom AOT module compilation."""
     print("Building amd-flashinfer-jit-cache wheel...")
 
+    # Recomputed, not carried over from prepare_metadata_for_build_wheel: pip
+    # runs each hook in its own subprocess, so no environment reaches this one.
+    version, archs = _pin_arch_tagged_version()
+    print(f"Version: {version}")
+
     _prepare_build()
+    _check_kernels_match(archs)
 
     with _MonkeyPatchBdistWheel():
         return _orig.build_wheel(wheel_directory, config_settings, metadata_directory)
@@ -129,7 +219,9 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
     """Build editable install with custom AOT module compilation."""
     print("Building amd-flashinfer-jit-cache in editable mode...")
 
+    _, archs = _pin_arch_tagged_version()
     _prepare_build()
+    _check_kernels_match(archs)
 
     # Now build the editable install using setuptools
     _orig_build_editable = getattr(_orig, "build_editable", None)
@@ -143,6 +235,7 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
 
 def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
     """Prepare metadata with platform-specific wheel tags."""
+    _pin_arch_tagged_version()
     with _MonkeyPatchBdistWheel():
         return _orig.prepare_metadata_for_build_wheel(
             metadata_directory, config_settings
@@ -151,6 +244,7 @@ def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
 
 def prepare_metadata_for_build_editable(metadata_directory, config_settings=None):
     """Prepare metadata for editable install."""
+    _pin_arch_tagged_version()
     with _MonkeyPatchBdistWheel():
         return _orig.prepare_metadata_for_build_editable(
             metadata_directory, config_settings
