@@ -226,7 +226,7 @@ class TestMergeTree:
         _commit(repo, "upstream")
         _git(repo, "checkout", "-q", "main")
 
-        assert uc._merge_tree(str(repo), "main", "theirs") == []
+        assert uc._merge_tree(str(repo), _rev(repo, "theirs~1"), "main", "theirs") == []
 
     def test_content_conflict_is_reported_with_its_kind(self, repo):
         _git(repo, "checkout", "-q", "theirs")
@@ -236,7 +236,7 @@ class TestMergeTree:
         _write(repo, "shared.cu", "our version\n")
         _commit(repo, "our edit")
 
-        result = uc._merge_tree(str(repo), "main", "theirs")
+        result = uc._merge_tree(str(repo), _rev(repo, "theirs~1"), "main", "theirs")
 
         assert [p for p, _ in result] == ["shared.cu"]
         assert result[0][1] == "contents"
@@ -246,14 +246,14 @@ class TestMergeTree:
             uc, "_run", lambda *a, **k: _Proc(stderr="boom", returncode=128)
         )
         with pytest.raises(uc.ToolError, match="merge-tree failed"):
-            uc._merge_tree("/nowhere", "a", "b")
+            uc._merge_tree("/nowhere", "base", "a", "b")
 
     def test_non_conflict_records_are_skipped(self, monkeypatch):
         stream = _merge_tree_stream("1", "shared.cu", "Auto-merging", "msg")
         monkeypatch.setattr(
             uc, "_run", lambda *a, **k: _Proc(stdout=stream, returncode=1)
         )
-        assert uc._merge_tree("/nowhere", "a", "b") == []
+        assert uc._merge_tree("/nowhere", "base", "a", "b") == []
 
     def test_multi_path_record_reports_every_path_once(self, monkeypatch):
         stream = _merge_tree_stream(
@@ -271,7 +271,7 @@ class TestMergeTree:
             uc, "_run", lambda *a, **k: _Proc(stdout=stream, returncode=1)
         )
 
-        result = uc._merge_tree("/nowhere", "a", "b")
+        result = uc._merge_tree("/nowhere", "base", "a", "b")
 
         # First-seen order is kept, but the later kind wins for a repeated path.
         assert [p for p, _ in result] == ["old.cu", "new.cu"]
@@ -287,7 +287,7 @@ class TestMergeTree:
             else _Proc(stdout="git version 2.43.0\n"),
         )
         with pytest.raises(uc.ToolError, match="unparsed merge-tree"):
-            uc._merge_tree("/nowhere", "a", "b")
+            uc._merge_tree("/nowhere", "base", "a", "b")
 
     def test_truncated_record_raises(self, monkeypatch):
         # Claims two paths but supplies one, and no type/message follow.
@@ -296,14 +296,14 @@ class TestMergeTree:
             uc, "_run", lambda *a, **k: _Proc(stdout=stream, returncode=1)
         )
         with pytest.raises(uc.ToolError, match="truncated merge-tree"):
-            uc._merge_tree("/nowhere", "a", "b")
+            uc._merge_tree("/nowhere", "base", "a", "b")
 
     def test_kind_without_parentheses_is_kept_verbatim(self, monkeypatch):
         stream = _merge_tree_stream("1", "x.cu", "CONFLICT", "msg")
         monkeypatch.setattr(
             uc, "_run", lambda *a, **k: _Proc(stdout=stream, returncode=1)
         )
-        assert uc._merge_tree("/nowhere", "a", "b") == [("x.cu", "CONFLICT")]
+        assert uc._merge_tree("/nowhere", "base", "a", "b") == [("x.cu", "CONFLICT")]
 
 
 class TestReporting:
@@ -647,3 +647,80 @@ class TestMain:
 
         assert seen["a"].fail_over == 14
         assert seen["a"].ours == "main"
+
+
+class TestRecordedBase:
+    """A squash-merged sync leaves no merge parent, so `ours` reaches nothing.
+
+    The base then has to come from the recorded file, or every already-absorbed
+    upstream change is re-reported as a conflict.
+    """
+
+    def _squashed(self, repo):
+        """`theirs` moves on; `ours` gets its tree with no ancestry to it."""
+        _git(repo, "checkout", "-q", "theirs")
+        _write(repo, "shared.cu", "upstream v2\n")
+        _commit(repo, "upstream moves on")
+        theirs = _rev(repo, "theirs")
+
+        _git(repo, "checkout", "-q", "main")
+        _write(repo, "shared.cu", "upstream v2\n")
+        _write(repo, uc.upstream_base.FILENAME, f"theirs {theirs}\n")
+        _commit(repo, "squashed sync")
+        return theirs
+
+    def test_absorbed_upstream_is_not_reported_as_conflicts(
+        self, repo, monkeypatch, capsys
+    ):
+        theirs = self._squashed(repo)
+        monkeypatch.chdir(repo)
+        stale = _rev(repo, "HEAD~1")
+        assert (
+            subprocess.run(
+                ["git", "-C", str(repo), "merge-base", "HEAD", theirs],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            == stale
+        ), "fixture no longer reproduces the stale base"
+
+        assert uc.run(_args()) == uc.EXIT_OK
+        out = capsys.readouterr().out
+        assert "clean merge -- nothing to do" in out
+        assert theirs[:7] in out, "position should name the recorded base"
+
+    def test_missing_record_announces_the_fallback(self, repo, monkeypatch, capsys):
+        _diverge(repo)
+        monkeypatch.chdir(repo)
+
+        uc.run(_args())
+
+        assert "NOTE: no upstream-base" in capsys.readouterr().out
+
+    def test_the_explicit_base_reaches_git_merge_tree(self, repo, monkeypatch):
+        """Content assertions pass without it; only argv proves it is wired."""
+        seen = {}
+
+        def _fake(repo_arg, *args, check=True):
+            if args and args[0] == "merge-tree":
+                seen["argv"] = args
+                return _Proc(returncode=0)
+            return uc._run(repo_arg, *args, check=check)
+
+        monkeypatch.setattr(uc, "_run", _fake)
+        uc._merge_tree("/nowhere", "deadbeef", "a", "b")
+
+        assert "--merge-base=deadbeef" in seen["argv"]
+
+    def test_an_old_git_without_merge_base_is_named(self, monkeypatch):
+        monkeypatch.setattr(
+            uc,
+            "_run",
+            lambda *a, **k: _Proc(
+                stderr="error: unknown option `merge-base=x'", returncode=129
+            ),
+        )
+        monkeypatch.setattr(uc, "_git", lambda *a: "git version 2.30.0")
+
+        with pytest.raises(uc.ToolError, match="git 2.40 or newer"):
+            uc._merge_tree("/nowhere", "base", "a", "b")

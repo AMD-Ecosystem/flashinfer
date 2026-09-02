@@ -27,7 +27,14 @@ import os
 import posixpath
 import subprocess
 import sys
+from pathlib import Path
 from typing import Dict, FrozenSet, List, NamedTuple, Optional, Set, Tuple
+
+# The workflow and the tests load this file via spec_from_file_location, which
+# does not put scripts/ on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import upstream_base  # noqa: E402
 
 EXIT_OK, EXIT_RATCHET, EXIT_ERROR = 0, 1, 2
 
@@ -161,16 +168,31 @@ def _churn_map(
     return churn, renames
 
 
-def _merge_tree(repo: str, ours: str, theirs: str) -> List[Tuple[str, str]]:
+def _merge_tree(repo: str, base: str, ours: str, theirs: str) -> List[Tuple[str, str]]:
     """(path, conflict-type) for a merge that is never made.
 
     The ``-z`` info section is ``<n-paths> NUL <path>... NUL <type> NUL <message>``,
     so the type is a field rather than something scraped from git's English prose.
+    ``--merge-base`` is explicit because our tip may share no ancestry with theirs.
     """
-    proc = _run(repo, "merge-tree", "--write-tree", "-z", ours, theirs, check=False)
+    proc = _run(
+        repo,
+        "merge-tree",
+        "--write-tree",
+        "-z",
+        f"--merge-base={base}",
+        ours,
+        theirs,
+        check=False,
+    )
     if proc.returncode == 0:
         return []
     if proc.returncode != 1:
+        if "merge-base" in proc.stderr:
+            raise ToolError(
+                "git merge-tree does not accept --merge-base here; it needs "
+                f"git 2.40 or newer ({_git(repo, 'version')}):\n{proc.stderr.strip()}"
+            )
         raise ToolError(f"git merge-tree failed:\n{proc.stderr.strip()}")
 
     fields = proc.stdout.split("\0")
@@ -328,11 +350,20 @@ def run(args: argparse.Namespace) -> int:
     repo = _git(None, "rev-parse", "--show-toplevel")
     ours = _resolve(repo, args.ours, "--ours")
     theirs = _resolve(repo, args.upstream_ref, "--upstream-ref")
-    base = _git(repo, "merge-base", ours, theirs)
 
-    if len(_git(repo, "merge-base", "--all", ours, theirs).split()) > 1:
-        print("NOTE: multiple merge bases -- churn is measured against one of them,")
-        print("      while the merge itself resolves against a virtual base.\n")
+    # Read from `ours`, not the working tree, for the same reason _report_drift
+    # does: --ours may name a commit that predates or postdates this checkout.
+    recorded = upstream_base.read_ref(_run, repo, ours)
+    if recorded is None:
+        print(
+            upstream_base.missing_note(f"{ours[:12]}:{upstream_base.FILENAME}") + "\n"
+        )
+    base, _ = upstream_base.select(_run, repo, ours, theirs, recorded)
+
+    anchor = recorded.sha if recorded else ours
+    if upstream_base.multiple_bases(_run, repo, anchor, theirs):
+        print("NOTE: multiple merge bases -- churn and the merge below both use")
+        print("      the one shown; a real `git merge` will build a virtual base.\n")
 
     our_churn, _ = _churn_map(repo, base, ours)
     their_churn, their_renames = _churn_map(repo, base, theirs)
@@ -343,7 +374,7 @@ def run(args: argparse.Namespace) -> int:
         (int(_git(repo, "rev-list", "--count", f"{base}..{theirs}")), len(their_churn)),
     )
 
-    merged = _merge_tree(repo, ours, theirs)
+    merged = _merge_tree(repo, base, ours, theirs)
     at_base = _ls_tree(repo, base, "") if merged else set()
     conflicts = []
     for path, kind in merged:
@@ -389,7 +420,7 @@ def main() -> int:
     )
     try:
         return run(parser.parse_args())
-    except ToolError as exc:
+    except (ToolError, upstream_base.UpstreamBaseError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
 

@@ -1,0 +1,5 @@
+# The upstream commit this fork is synced to: <ref> <sha>.
+# Recorded rather than inferred, because a squash-merged sync leaves no merge
+# parent for `git merge-base` to find. Every upstream sync PR updates this line
+# and pushes a matching lightweight tag `upstream-base/<ref>` to origin.
+v0.6.18 69ff11fc4954396d98326656dc85debd2223f637
