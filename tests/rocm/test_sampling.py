@@ -658,6 +658,36 @@ def test_a_tensor_seed_is_rejected_rather_than_collapsed(op):
         )
 
 
+@pytest.mark.parametrize(
+    "op, kwargs",
+    [
+        ("sampling_from_probs", {}),
+        ("top_p_sampling_from_probs", {"top_p": 0.9}),
+        ("top_k_sampling_from_probs", {"top_k": 10}),
+        ("top_k_top_p_sampling_from_probs", {"top_k": 10, "top_p": 0.9}),
+    ],
+)
+def test_a_row_with_no_positive_probability_reports_invalid(op, kwargs):
+    """No element satisfies the predicate, so no index is ever marked valid.
+
+    `last_valid_id` is never initialised on ROCm, so the fallback reads whatever
+    the previous block left in LDS -- asserting on a sentinel would test the
+    wrong thing. The batch is wide enough to recycle LDS across blocks; a single
+    block can read a plausible in-range value and hide the bug.
+    """
+    batch, vocab = 256, 512
+    probs = torch.zeros(batch, vocab, device="cuda")
+
+    samples, valid = getattr(flashinfer.sampling, op)(
+        probs, **kwargs, return_valid=True
+    )
+
+    assert torch.all((samples >= 0) & (samples < vocab)), (
+        f"out-of-range token id: {samples[(samples < 0) | (samples >= vocab)][:8]}"
+    )
+    assert not bool(valid.any()), "a row with no positive probability is not valid"
+
+
 def test_every_row_reports_valid():
     """ROCm's kernels have no reject path, so return_valid is uniformly true.
 
