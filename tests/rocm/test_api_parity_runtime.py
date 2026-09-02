@@ -81,6 +81,13 @@ class TestScalesAreHonouredNotRefused:
             scaled.float(), base.float() * 2.0, rtol=2e-2, atol=2e-2
         )
 
+        # k_scale folds into sm_scale, so it reshapes the softmax rather than
+        # scaling the result; assert only that it is not dropped.
+        k_scaled = flashinfer.single_prefill_with_kv_cache(
+            q, k, v, causal=False, k_scale=4.0
+        )
+        assert not torch.allclose(k_scaled.float(), base.float(), rtol=1e-2, atol=1e-2)
+
     def test_ragged_run_folds_v_scale(self):
         torch.manual_seed(0)
         ws = torch.empty(128 * 1024 * 1024, dtype=torch.int8, device="cuda")
