@@ -1,0 +1,343 @@
+# SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+"""The ROCm twins must present upstream's decode/prefill/MLA signatures.
+
+A vLLM or SGLang caller reaches ``flashinfer/rocm/{decode,prefill,mla}.py``
+through the shadow install, so an upstream parameter the twin does not declare
+is a ``TypeError`` at their call site, and one declared in the wrong position
+binds the wrong value silently.
+
+The static half drives ``scripts/rocm_api_parity.py``; the runtime half asserts
+each CUDA-only argument raises rather than being ignored. Only the runtime half
+needs a GPU.
+"""
+
+import importlib.util
+import inspect
+import sys
+import warnings
+from pathlib import Path
+
+import pytest
+import torch
+
+import flashinfer
+from flashinfer.rocm.api_compat import reject_cuda_only
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_tool():
+    name = "_fi_rocm_api_parity"
+    target = _REPO_ROOT / "scripts" / "rocm_api_parity.py"
+    spec = importlib.util.spec_from_file_location(name, target)
+    assert spec is not None and spec.loader is not None, f"cannot load {target}"
+    module = importlib.util.module_from_spec(spec)
+    # Registered before exec: @dataclass resolves annotations through
+    # sys.modules[cls.__module__] and raises on a module that is not there yet.
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+parity = _load_tool()
+
+
+class TestStaticParity:
+    def test_no_divergence_from_upstream(self):
+        findings, _ = parity.audit(_REPO_ROOT)
+        assert findings == [], "\n".join(
+            f"{f.kind}: {f.where} -- {f.detail}" for f in findings
+        )
+
+    def test_no_stale_allowlist_entries(self):
+        assert parity.stale_allowlist_entries(_REPO_ROOT) == []
+
+    def test_a_dropped_parameter_is_reported(self, tmp_path):
+        """The guard is only worth having if removing a kwarg fails it."""
+        root = _make_shadow_tree(tmp_path)
+        target = root / "flashinfer/rocm/decode.py"
+        text = target.read_text()
+        dropped = "        kv_cache_sf: Optional[torch.Tensor] = None,\n"
+        assert dropped in text
+        # Every occurrence: the audit reads the implementation, and leaving it
+        # while stripping the @overload stubs would not change what binds.
+        target.write_text(text.replace(dropped, ""))
+
+        findings, _ = parity.audit(root)
+        assert any(
+            f.kind == "missing-param" and "kv_cache_sf" in f.detail for f in findings
+        ), findings
+
+    def test_a_reordered_parameter_is_reported(self, tmp_path):
+        """Mis-binds are the failure the ordering check exists for."""
+        root = _make_shadow_tree(tmp_path)
+        target = root / "flashinfer/rocm/mla.py"
+        text = target.read_text()
+        pair = (
+            "        use_cuda_graph: bool = False,\n"
+            "        qo_indptr: Optional[torch.Tensor] = None,\n"
+        )
+        assert pair in text
+        swapped = (
+            "        qo_indptr: Optional[torch.Tensor] = None,\n"
+            "        use_cuda_graph: bool = False,\n"
+        )
+        target.write_text(text.replace(pair, swapped, 1))
+
+        findings, _ = parity.audit(root)
+        assert any(f.kind == "misbind" for f in findings), findings
+
+    def test_a_stale_legacy_positional_copy_is_reported(self, tmp_path):
+        root = _make_shadow_tree(tmp_path)
+        target = root / "flashinfer/rocm/decode.py"
+        text = target.read_text()
+        assert '    "o_data_type",\n' in text
+        target.write_text(text.replace('    "o_data_type",\n', "", 1))
+
+        findings, _ = parity.audit(root)
+        assert any(f.kind == "stale-copy" for f in findings), findings
+
+
+def _make_shadow_tree(tmp_path):
+    """Copy only the files the audit reads, so a mutation cannot touch the repo."""
+    root = tmp_path / "tree"
+    for rel in (
+        "flashinfer/decode.py",
+        "flashinfer/prefill.py",
+        "flashinfer/mla/_core.py",
+        "flashinfer/rocm/decode.py",
+        "flashinfer/rocm/prefill.py",
+        "flashinfer/rocm/mla.py",
+    ):
+        dst = root / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text((_REPO_ROOT / rel).read_text())
+    return root
+
+
+class TestRejectHelper:
+    def test_default_is_a_no_op(self):
+        reject_cuda_only("x", None, None)
+        reject_cuda_only("x", False, False)
+        reject_cuda_only("x", 0, 0)
+
+    def test_non_default_raises_naming_the_argument(self):
+        with pytest.raises(NotImplementedError, match="kv_cache_sf"):
+            reject_cuda_only("kv_cache_sf", object(), None)
+
+    def test_a_tensor_never_reaches_an_ambiguous_comparison(self):
+        """``tensor == None`` has no truth value; the helper must not evaluate it."""
+        with pytest.raises(NotImplementedError, match="kv_cache_sf"):
+            reject_cuda_only("kv_cache_sf", torch.zeros(4), None)
+
+    def test_a_neutral_value_is_accepted(self):
+        """Asking for a feature to be *off* is not asking for the feature."""
+        reject_cuda_only("use_fp16_softmax", False, None, neutral=False)
+        reject_cuda_only("o_scale", 1.0, None, neutral=1.0)
+        with pytest.raises(NotImplementedError):
+            reject_cuda_only("o_scale", 2.0, None, neutral=1.0)
+
+
+class TestScalesAreHonouredNotRefused:
+    """q/k/v_scale are implemented on every path, so they must not raise.
+
+    They were refused on the ragged and single paths in an earlier revision;
+    the fold is three lines the paged wrapper already had.
+    """
+
+    def test_single_prefill_folds_k_scale_and_v_scale(self):
+        torch.manual_seed(0)
+        q = torch.randn(4, 4, 128, dtype=torch.float16, device="cuda")
+        k = torch.randn(4, 4, 128, dtype=torch.float16, device="cuda")
+        v = torch.randn(4, 4, 128, dtype=torch.float16, device="cuda")
+        base = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=False)
+        scaled = flashinfer.single_prefill_with_kv_cache(
+            q, k, v, causal=False, v_scale=2.0
+        )
+        torch.testing.assert_close(
+            scaled.float(), base.float() * 2.0, rtol=2e-2, atol=2e-2
+        )
+
+    def test_ragged_run_folds_v_scale(self):
+        torch.manual_seed(0)
+        ws = torch.empty(128 * 1024 * 1024, dtype=torch.int8, device="cuda")
+        qo_indptr = torch.tensor([0, 4], dtype=torch.int32, device="cuda")
+        kv_indptr = torch.tensor([0, 4], dtype=torch.int32, device="cuda")
+        q = torch.randn(4, 4, 128, dtype=torch.float16, device="cuda")
+        k = torch.randn(4, 4, 128, dtype=torch.float16, device="cuda")
+        v = torch.randn(4, 4, 128, dtype=torch.float16, device="cuda")
+
+        wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(ws, "NHD")
+        wrapper.plan(qo_indptr, kv_indptr, 4, 4, 128, causal=False)
+        base = wrapper.run(q, k, v)
+        scaled = wrapper.run(q, k, v, v_scale=2.0)
+        torch.testing.assert_close(
+            scaled.float(), base.float() * 2.0, rtol=2e-2, atol=2e-2
+        )
+
+
+def _plan_kwargs(name, method):
+    """Every CUDA-only parameter the given callable declares, with a live value."""
+    values = {
+        bool: True,
+        int: 7,
+        float: 2.0,
+    }
+    out = {}
+    for pname, param in inspect.signature(method).parameters.items():
+        if pname not in parity.CUDA_ONLY_PARAMS:
+            continue
+        if isinstance(param.default, bool):
+            out[pname] = not param.default
+        elif isinstance(param.default, (int, float)) and param.default is not None:
+            out[pname] = values[type(param.default)]
+        else:
+            out[pname] = torch.zeros(1) if "indptr" in pname or "sf" in pname else 2.0
+    return out
+
+
+class TestCudaOnlyArgumentsRaise:
+    """Each declared CUDA-only argument must raise, not be quietly dropped."""
+
+    @pytest.mark.parametrize(
+        "factory, method_name",
+        [
+            (
+                lambda ws: flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD"),
+                "plan",
+            ),
+            (
+                lambda ws: flashinfer.BatchPrefillWithPagedKVCacheWrapper(ws, "NHD"),
+                "plan",
+            ),
+            (
+                lambda ws: flashinfer.BatchPrefillWithRaggedKVCacheWrapper(ws, "NHD"),
+                "plan",
+            ),
+        ],
+    )
+    def test_each_cuda_only_plan_argument_raises(self, factory, method_name):
+        ws = torch.empty(128 * 1024 * 1024, dtype=torch.int8, device="cuda")
+        wrapper = factory(ws)
+        method = getattr(wrapper, method_name)
+        target = getattr(wrapper, "_plan_impl", method)
+        candidates = _plan_kwargs(method_name, target)
+        assert candidates, "no CUDA-only parameters found -- the table went stale"
+        for pname, value in candidates.items():
+            with pytest.raises(NotImplementedError, match=pname):
+                method(*_MINIMAL_PLAN_ARGS[type(wrapper).__name__], **{pname: value})
+
+    def test_decode_rejects_multi_token_query(self):
+        ws = torch.empty(128 * 1024 * 1024, dtype=torch.int8, device="cuda")
+        wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD")
+        with pytest.raises(NotImplementedError, match="q_len_per_req"):
+            wrapper.plan(
+                *_MINIMAL_PLAN_ARGS["BatchDecodeWithPagedKVCacheWrapper"],
+                q_len_per_req=2,
+            )
+
+    def test_workspace_size_is_unavailable_not_missing(self):
+        """AttributeError would read as "old FlashInfer"; this says what is wrong."""
+        ws = torch.empty(1024, dtype=torch.int8, device="cuda")
+        decode = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD")
+        prefill = flashinfer.BatchPrefillWithPagedKVCacheWrapper(ws, "NHD")
+        for wrapper in (decode, prefill):
+            assert hasattr(wrapper, "workspace_size")
+            with pytest.raises(NotImplementedError, match="workspace_size"):
+                wrapper.workspace_size(*_MINIMAL_PLAN_ARGS[type(wrapper).__name__])
+
+
+_MINIMAL_PLAN_ARGS = {
+    # indptr/indices/last_page_len, num_qo_heads, num_kv_heads, head_dim, page_size
+    "BatchDecodeWithPagedKVCacheWrapper": (
+        torch.tensor([0, 1], dtype=torch.int32),
+        torch.tensor([0], dtype=torch.int32),
+        torch.tensor([16], dtype=torch.int32),
+        8,
+        8,
+        128,
+        16,
+    ),
+    # qo_indptr, kv_indptr, kv_indices, last_page_len, heads, head_dim_qk, page_size
+    "BatchPrefillWithPagedKVCacheWrapper": (
+        torch.tensor([0, 1], dtype=torch.int32),
+        torch.tensor([0, 1], dtype=torch.int32),
+        torch.tensor([0], dtype=torch.int32),
+        torch.tensor([16], dtype=torch.int32),
+        8,
+        8,
+        128,
+        16,
+    ),
+    # qo_indptr, kv_indptr, num_qo_heads, num_kv_heads, head_dim_qk
+    "BatchPrefillWithRaggedKVCacheWrapper": (
+        torch.tensor([0, 1], dtype=torch.int32),
+        torch.tensor([0, 1], dtype=torch.int32),
+        8,
+        8,
+        128,
+    ),
+}
+
+
+class TestPositionalBindings:
+    """The three signatures where upstream inserted a parameter mid-list.
+
+    A wrong bind is silent, so each case asserts the error names the argument
+    upstream puts at that position -- not merely that something raised.
+    """
+
+    def test_mla_second_positional_is_use_cuda_graph(self):
+        ws = torch.empty(1024, dtype=torch.int8)
+        with pytest.raises(NotImplementedError, match="use_cuda_graph"):
+            flashinfer.BatchMLAPagedAttentionWrapper(ws, True)
+
+    def test_mla_backend_is_still_reachable_by_keyword(self):
+        ws = torch.empty(1024, dtype=torch.int8)
+        with pytest.raises(ValueError, match="backend"):
+            flashinfer.BatchMLAPagedAttentionWrapper(ws, backend="fa2")
+
+    def test_mla_run_sixth_positional_is_lse(self):
+        ws = torch.empty(1024, dtype=torch.int8, device="cuda")
+        wrapper = flashinfer.BatchMLAPagedAttentionWrapper(ws)
+        q = torch.zeros(1, 1, 512, device="cuda")
+        with pytest.raises(NotImplementedError, match="lse"):
+            wrapper.run(q, q, q, q, None, torch.zeros(1))
+
+    def test_decode_plan_sixth_optional_positional_is_o_data_type(self):
+        """Upstream inserted o_data_type here; ROCm used to bind data_type."""
+        ws = torch.empty(128 * 1024 * 1024, dtype=torch.int8, device="cuda")
+        wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD")
+        args = _MINIMAL_PLAN_ARGS["BatchDecodeWithPagedKVCacheWrapper"]
+        legacy = ("NONE", -1, None, torch.float16, torch.float16, torch.float32)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            with pytest.raises(NotImplementedError, match="o_data_type"):
+                wrapper.plan(*args, *legacy)
+
+
+class TestDeprecatedPositionalPlan:
+    """pyproject silences DeprecationWarning suite-wide, so assert it explicitly."""
+
+    def test_positional_optionals_warn(self):
+        ws = torch.empty(128 * 1024 * 1024, dtype=torch.int8, device="cuda")
+        wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD")
+        args = _MINIMAL_PLAN_ARGS["BatchDecodeWithPagedKVCacheWrapper"]
+        with pytest.warns(DeprecationWarning, match="positionally is"):
+            wrapper.plan(*args, "NONE", q_data_type=torch.float16)
+
+    def test_keyword_only_call_does_not_warn(self):
+        ws = torch.empty(128 * 1024 * 1024, dtype=torch.int8, device="cuda")
+        wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD")
+        args = _MINIMAL_PLAN_ARGS["BatchDecodeWithPagedKVCacheWrapper"]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            wrapper.plan(*args, pos_encoding_mode="NONE", q_data_type=torch.float16)
+
+    def test_duplicate_between_positional_and_keyword_is_a_type_error(self):
+        ws = torch.empty(128 * 1024 * 1024, dtype=torch.int8, device="cuda")
+        wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD")
+        args = _MINIMAL_PLAN_ARGS["BatchDecodeWithPagedKVCacheWrapper"]
+        with pytest.raises(TypeError, match="pos_encoding_mode"):
+            wrapper.plan(*args, "NONE", pos_encoding_mode="NONE")
