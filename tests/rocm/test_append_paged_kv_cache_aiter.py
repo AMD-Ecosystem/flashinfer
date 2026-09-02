@@ -387,9 +387,9 @@ def test_append_empty_batch_is_a_noop_under_aiter():
 
     backend='native' is deliberately not exercised: it raises
     hipErrorInvalidConfiguration for the same input, because
-    include/flashinfer/rocm/attention/page.cuh:398 computes nblks(0). That is
-    upstream CUDA code this port does not modify, so the shim is simply better
-    here rather than at parity.
+    AppendPagedKVCache in include/flashinfer/rocm/attention/page.cuh computes
+    nblks(0). That is upstream CUDA code this port does not modify, so the shim
+    is simply better here rather than at parity.
     """
     device = torch.device("cuda:0")
     dtype = torch.bfloat16
