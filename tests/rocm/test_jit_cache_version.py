@@ -137,7 +137,17 @@ def test_a_dropped_architecture_fails_the_build(backend, tmp_path, built):
         backend._check_kernels_match("gfx942,gfx950")
 
 
-@pytest.mark.parametrize("text", [None, "{}", "not json at all"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        None,
+        "{}",
+        "not json at all",
+        '{"rocm_arch_list": null}',  # AttributeError on .split
+        '{"rocm_arch_list": ["gfx942"]}',  # TypeError on .split
+        '{"rocm_arch_list": 942}',
+    ],
+)
 def test_an_unusable_manifest_is_reported_not_ignored(backend, tmp_path, text):
     """copy_built_kernels skips the manifest entirely when the arch list is empty.
 

@@ -98,13 +98,16 @@ def _check_kernels_match(archs: str) -> None:
     manifest = _JIT_CACHE_DIR / AOT_MANIFEST_NAME
     try:
         built = json.loads(manifest.read_text())["rocm_arch_list"]
-    except (OSError, ValueError, KeyError) as exc:
+        # Split inside the try: a null or list value fails here as
+        # AttributeError/TypeError, which jit/rocm/env.py guards against too.
+        built_archs = set(built.split(","))
+    except (OSError, ValueError, KeyError, AttributeError, TypeError) as exc:
         raise RuntimeError(
             f"cannot confirm the version names the kernels it ships: {manifest} "
-            f"is missing or unusable ({exc})"
+            f"is missing or unusable ({exc!r})"
         ) from exc
 
-    if set(built.split(",")) != set(archs.split(",")):
+    if built_archs != set(archs.split(",")):
         raise RuntimeError(
             f"the version names {archs} but the build produced {built}. Set "
             "FLASHINFER_ROCM_ARCH_LIST to what this toolchain can compile."
