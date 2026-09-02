@@ -38,13 +38,13 @@ inline void reject_per_request_seed(const std::optional<at::Tensor>& maybe_seed_
               "pass int seed/offset instead");
 }
 
-// The ROCm kernels carry the last-valid-index fallback but not upstream's reject
-// flag, so every row yields a sample and `valid` is uniformly true.
-inline void mark_all_valid(at::Tensor valid, unsigned int batch_size) {
+// The kernels write `valid` per row now; this only checks the buffer they write
+// into. It replaced a fill_(true), which is why the shape checks live here.
+inline void check_valid_out(at::Tensor valid, unsigned int batch_size) {
   CHECK_INPUT(valid);
   CHECK_DIM(1, valid);
   CHECK_EQ(valid.size(0), static_cast<int64_t>(batch_size));
-  valid.fill_(true);
+  TORCH_CHECK(valid.scalar_type() == at::kBool, "valid must be bool, got ", valid.scalar_type());
 }
 
 void softmax(at::Tensor workspace_buffer, at::Tensor logits, at::Tensor output,
@@ -106,12 +106,13 @@ void sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor valid,
   unsigned int vocab_size = probs.size(1);
 
   reject_per_request_seed(maybe_seed_arr, maybe_offset_arr);
-  mark_all_valid(valid, batch_size);
+  check_valid_out(valid, batch_size);
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
   hipError_t status = sampling::SamplingFromProb(
       static_cast<float*>(probs.data_ptr()), static_cast<int*>(output.data_ptr()),
+      valid.data_ptr<bool>(),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       batch_size, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
       static_cast<uint64_t>(philox_offset), stream);
@@ -133,12 +134,13 @@ void top_p_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor v
   bool has_top_p_arr = maybe_top_p_arr.has_value();
 
   reject_per_request_seed(maybe_seed_arr, maybe_offset_arr);
-  mark_all_valid(valid, batch_size);
+  check_valid_out(valid, batch_size);
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
   hipError_t status = sampling::TopPSamplingFromProb<float, int>(
       static_cast<float*>(probs.data_ptr()), static_cast<int*>(output.data_ptr()),
+      valid.data_ptr<bool>(),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       has_top_p_arr ? static_cast<float*>(maybe_top_p_arr->data_ptr()) : nullptr, batch_size,
       top_p_val, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
@@ -164,12 +166,13 @@ void top_k_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor v
   bool has_top_k_arr = maybe_top_k_arr.has_value();
 
   reject_per_request_seed(maybe_seed_arr, maybe_offset_arr);
-  mark_all_valid(valid, batch_size);
+  check_valid_out(valid, batch_size);
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
   hipError_t status = sampling::TopKSamplingFromProb<float, int>(
       static_cast<float*>(probs.data_ptr()), static_cast<int*>(output.data_ptr()),
+      valid.data_ptr<bool>(),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       has_top_k_arr ? static_cast<float*>(maybe_top_k_arr->data_ptr()) : nullptr, batch_size,
       top_k_val, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
@@ -195,14 +198,14 @@ void min_p_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor v
   bool has_min_p_arr = maybe_min_p_arr.has_value();
 
   reject_per_request_seed(maybe_seed_arr, maybe_offset_arr);
-  mark_all_valid(valid, batch_size);
+  check_valid_out(valid, batch_size);
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
   hipError_t status = sampling::MinPSamplingFromProb<float, int>(
       static_cast<float*>(probs.data_ptr()),
       has_min_p_arr ? static_cast<float*>(maybe_min_p_arr->data_ptr()) : nullptr,
-      static_cast<int*>(output.data_ptr()),
+      static_cast<int*>(output.data_ptr()), valid.data_ptr<bool>(),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       batch_size, min_p_val, vocab_size, deterministic, static_cast<uint64_t>(philox_seed),
       static_cast<uint64_t>(philox_offset), stream);
@@ -230,7 +233,7 @@ void top_k_top_p_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Te
   bool has_top_p_arr = maybe_top_p_arr.has_value();
 
   reject_per_request_seed(maybe_seed_arr, maybe_offset_arr);
-  mark_all_valid(valid, batch_size);
+  check_valid_out(valid, batch_size);
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
@@ -238,7 +241,7 @@ void top_k_top_p_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Te
       static_cast<float*>(probs.data_ptr()),
       has_top_k_arr ? static_cast<int*>(maybe_top_k_arr->data_ptr()) : nullptr,
       has_top_p_arr ? static_cast<float*>(maybe_top_p_arr->data_ptr()) : nullptr,
-      static_cast<int*>(output.data_ptr()),
+      static_cast<int*>(output.data_ptr()), valid.data_ptr<bool>(),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       batch_size, top_k_val, top_p_val, vocab_size, deterministic,
       static_cast<uint64_t>(philox_seed), static_cast<uint64_t>(philox_offset), stream);
