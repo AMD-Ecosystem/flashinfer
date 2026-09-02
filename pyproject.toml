@@ -79,8 +79,11 @@ backend-path = ["."]
 # flashinfer-cubin/ and flashinfer-jit-cache/ project roots and shipped them.
 include = ["flashinfer", "flashinfer.*"]
 # v0.6.18 added generators carrying the NVIDIA TensorRT Source Code License,
-# which forbids redistribution. Nothing on the HIP path imports them -- the
-# flashinfer.jit.attention re-exports are all inside the IS_CUDA arm.
+# which forbids redistribution. `find` defaults to namespaces = true, so the
+# directory ships as a namespace package despite having no __init__.py -- this
+# exclude is what drops it, and exclude-package-data would not (the files are
+# modules, not data). Nothing on HIP imports them: flashinfer.jit.attention
+# reaches .modules only inside its IS_CUDA arm.
 exclude = ["flashinfer.jit.attention.fmha_v2*"]
 
 [tool.setuptools.package-data]
@@ -99,12 +102,6 @@ flashinfer = [
     "include/**/*.h",
     "include/**/*.hpp",
 ]
-
-[tool.setuptools.exclude-package-data]
-# include-package-data defaults true for a pyproject project, so setuptools-scm's
-# file finder sweeps every tracked file under flashinfer/ into the wheel -- the
-# packages.find exclude above does not reach a directory with no __init__.py.
-"flashinfer.jit.attention" = ["fmha_v2/*"]
 
 [tool.setuptools_scm]
 write_to = "flashinfer/_version.py"

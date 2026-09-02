@@ -40,6 +40,7 @@ recursive-include licenses *.txt
 # forbids redistribution. They arrived with v0.6.18 and no ROCm build reads them.
 prune csrc/fmha_v2
 prune flashinfer/jit/attention/fmha_v2
+exclude csrc/cudnn_sdpa_utils.h
 
 prune tests
 prune docs

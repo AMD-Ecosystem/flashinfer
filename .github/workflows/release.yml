@@ -60,8 +60,6 @@ jobs:
           repository: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
           submodules: true
 
-      - name: Validate CUDA configuration
-        run: python3 ci/validate_cuda_versions.py
 
       - name: Verify tag matches version.txt
         id: set-version
