@@ -19,10 +19,17 @@ limitations under the License.
 # Do "from .jit import env as jit_env" and use "jit_env.xxx" instead.
 # This helps AOT script to override envs.
 
+import logging
 import os
 import pathlib
 
 from ..rocm.device_utils import IS_CUDA, IS_HIP
+
+# NOTE: use stdlib logging (namespaced under flashinfer.jit) instead of the
+# FlashInferJITLogger from core.py -- core.py imports this module, so importing
+# it here would create a circular import. A plain warning is fine because
+# _get_cubin_dir() only runs once, at module import.
+logger = logging.getLogger("flashinfer.jit")
 
 
 def has_flashinfer_jit_cache() -> bool:
@@ -76,16 +83,32 @@ if IS_CUDA:
 def _get_cubin_dir():
     """
     Get the cubin directory path with the following priority:
-    1. flashinfer-cubin package if installed
-    2. Environment variable FLASHINFER_CUBIN_DIR
+    1. Environment variable FLASHINFER_CUBIN_DIR
+    2. flashinfer-cubin package if installed
     3. Default cache directory
     """
+    # First check environment variable
+    env_dir = os.getenv("FLASHINFER_CUBIN_DIR")
+    if env_dir:
+        if has_flashinfer_cubin():
+            logger.warning(
+                "FLASHINFER_CUBIN_DIR=%s overrides the installed flashinfer-cubin "
+                "package; cubins will be read from that path instead of the package.",
+                env_dir,
+            )
+        return pathlib.Path(env_dir)
+
+    # Then check if flashinfer-cubin package is installed
     if has_flashinfer_cubin():
         import flashinfer_cubin
 
         flashinfer_cubin_version = flashinfer_cubin.__version__
+        # Allow bypassing version check with environment variable
+        # NOTE(yiyang): skip version check for editable/source installs where
+        # flashinfer_version falls back to "0.0.0+unknown" (no _build_meta.py).
         if (
             not os.getenv("FLASHINFER_DISABLE_VERSION_CHECK")
+            and flashinfer_version != "0.0.0+unknown"
             and flashinfer_version != flashinfer_cubin_version
         ):
             raise RuntimeError(
@@ -97,10 +120,7 @@ def _get_cubin_dir():
 
         return pathlib.Path(flashinfer_cubin.get_cubin_dir())
 
-    env_dir = os.getenv("FLASHINFER_CUBIN_DIR")
-    if env_dir:
-        return pathlib.Path(env_dir)
-
+    # Fall back to default cache directory
     return FLASHINFER_CACHE_DIR / "cubins"
 
 
@@ -110,15 +130,19 @@ def _get_aot_dir():
     1. flashinfer-jit-cache package if installed
     2. Default fallback to _package_root / "data" / "aot"
     """
+    # First check if flashinfer-jit-cache package is installed
     if has_flashinfer_jit_cache():
         import flashinfer_jit_cache
 
         flashinfer_jit_cache_version = flashinfer_jit_cache.__version__
         # NOTE(Zihao): we don't use exact version match here because the version of flashinfer-jit-cache
         # contains the CUDA version suffix: e.g. 0.3.1+cu129.
-        if not os.getenv(
-            "FLASHINFER_DISABLE_VERSION_CHECK"
-        ) and not flashinfer_jit_cache_version.startswith(flashinfer_version):
+        # Allow bypassing version check with environment variable
+        if (
+            not os.getenv("FLASHINFER_DISABLE_VERSION_CHECK")
+            and flashinfer_version != "0.0.0+unknown"
+            and not flashinfer_jit_cache_version.startswith(flashinfer_version)
+        ):
             raise RuntimeError(
                 f"flashinfer-jit-cache version ({flashinfer_jit_cache_version}) does not match "
                 f"flashinfer version ({flashinfer_version}). "
@@ -128,12 +152,15 @@ def _get_aot_dir():
 
         return pathlib.Path(flashinfer_jit_cache.get_jit_cache_dir())
 
+    # Fall back to default directory
     return _package_root / "data" / "aot"
 
 
 def _get_workspace_dir_name() -> pathlib.Path:
     compilation_context = CompilationContext()
     # NOTE(Zihao): sorted() is crucial here to ensure deterministic directory names.
+    # Without it, the same set of CUDA archs could generate different directory names
+    # across runs (e.g., "75_80_89" vs "89_75_80"), causing cache fragmentation.
     arch = "_".join(
         f"{major}{minor}"
         for major, minor in sorted(compilation_context.TARGET_CUDA_ARCHS)
@@ -142,33 +169,9 @@ def _get_workspace_dir_name() -> pathlib.Path:
 
 
 if IS_CUDA:
-    # These must stay gated, unlike the helpers above: jit/comm.py imports on
-    # ROCm, so gen_nvshmem_module() would reach them and fail on an absent
-    # nvidia.nvshmem -- or, with NVSHMEM_* set, on a source csrc/rocm lacks.
-    def get_nvshmem_include_dirs():
-        paths = os.environ.get("NVSHMEM_INCLUDE_PATH")
-        if paths is not None:
-            return [pathlib.Path(p) for p in paths.split(os.pathsep) if p]
-
-        import nvidia.nvshmem
-
-        path = pathlib.Path(nvidia.nvshmem.__path__[0]) / "include"
-        return [path]
-
-    def get_nvshmem_lib_dirs():
-        paths = os.environ.get("NVSHMEM_LIBRARY_PATH")
-        if paths is not None:
-            return [pathlib.Path(p) for p in paths.split(os.pathsep) if p]
-
-        import nvidia.nvshmem
-
-        path = pathlib.Path(nvidia.nvshmem.__path__[0]) / "lib"
-        return [path]
-
-
-if IS_CUDA:
     FLASHINFER_CUBIN_DIR: pathlib.Path = _get_cubin_dir()
     FLASHINFER_AOT_DIR: pathlib.Path = _get_aot_dir()
+    # use pathlib
     FLASHINFER_WORKSPACE_DIR: pathlib.Path = _get_workspace_dir_name()
     FLASHINFER_JIT_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "cached_ops"
     FLASHINFER_GEN_SRC_DIR: pathlib.Path = FLASHINFER_WORKSPACE_DIR / "generated"
@@ -181,6 +184,11 @@ if IS_CUDA:
         _package_root / "data" / "cutlass" / "tools" / "util" / "include",
     ]
     SPDLOG_INCLUDE_DIR: pathlib.Path = _package_root / "data" / "spdlog" / "include"
+    CCCL_INCLUDE_DIRS: list[pathlib.Path] = [
+        _package_root / "data" / "cccl" / "cub",
+        _package_root / "data" / "cccl" / "libcudacxx" / "include",
+        _package_root / "data" / "cccl" / "thrust",
+    ]
 elif IS_HIP:
     from ..get_include_paths import get_csrc_dir, get_include
     from .rocm.env import get_aot_dir as _get_aot_dir_hip

@@ -218,20 +218,25 @@ def generate_ninja_build_for_op(
             ]
         )
 
+    # Absolute outputs, matching upstream's generator: `build()` runs ninja with
+    # -C on the per-op build dir, so a path relative to the JIT root would nest.
+    output_dir = jit_env.FLASHINFER_JIT_DIR / name
+
     objects = []
     for source in sources:
         is_hip = source.suffix == ".cu"
         object_suffix = ".cuda.o" if is_hip else ".o"
         cmd = "hip_compile" if is_hip else "compile"
         obj_name = source.with_suffix(object_suffix).name
-        obj = f"$name/{obj_name}"
+        obj = str((output_dir / obj_name).resolve())
         objects.append(obj)
         lines.append(f"build {obj}: {cmd} {source.resolve()}")
 
     lines.append("")
     link_rule = "link"
-    lines.append(f"build $name/$name.so: {link_rule} " + " ".join(objects))
-    lines.append("default $name/$name.so")
+    output_so = str((output_dir / f"{name}.so").resolve())
+    lines.append(f"build {output_so}: {link_rule} " + " ".join(objects))
+    lines.append(f"default {output_so}")
     lines.append("")
 
     return "\n".join(lines)

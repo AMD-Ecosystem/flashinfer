@@ -48,6 +48,9 @@ def _load_module():
         "flashinfer.jit.env": types.SimpleNamespace(
             FLASHINFER_INCLUDE_DIR=Path("/stub/include"),
             FLASHINFER_CSRC_DIR=Path("/stub/csrc/rocm"),
+            # Read since the generator moved to absolute output paths for
+            # v0.6.18, which runs ninja with -C build_dir rather than the root.
+            FLASHINFER_JIT_DIR=Path("/stub/jit"),
         ),
     }
     saved = {k: sys.modules.get(k) for k in stubs}

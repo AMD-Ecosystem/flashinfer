@@ -21,6 +21,7 @@
 #include <cuda_fp8.h>
 #include <cuda_runtime.h>
 
+#include <atomic>
 #include <cstdint>
 #include <iostream>
 #include <type_traits>
@@ -55,6 +56,19 @@
     }                                   \
   }
 #endif
+
+#define FLASHINFER_CUDA_CHECK(func)                                                         \
+  do {                                                                                      \
+    cudaError_t e = (func);                                                                 \
+    FLASHINFER_CHECK(e == cudaSuccess, "CUDA Error: ", cudaGetErrorString(e), " (", int(e), \
+                     ") at ", __FILE__, ":", __LINE__, " in ", STR(func));                  \
+  } while (0)
+
+#define FLASHINFER_CHECK_ALIGNMENT(ptr, size_bytes)                            \
+  FLASHINFER_CHECK(reinterpret_cast<uintptr_t>(ptr) % (size_bytes) == 0, #ptr, \
+                   " must be aligned to ", (size_bytes), " bytes, got address ", (uintptr_t)(ptr))
+
+#define FLASHINFER_CHECK_TMA_ALIGNED(ptr) FLASHINFER_CHECK_ALIGNMENT(ptr, 128)
 
 #define DISPATCH_USE_FP16_QK_REDUCTION(use_fp16_qk_reduction, USE_FP16_QK_REDUCTION, ...) \
   if (use_fp16_qk_reduction) {                                                            \
@@ -108,6 +122,11 @@
       __VA_ARGS__                                          \
       break;                                               \
     }                                                      \
+    case 32: {                                             \
+      constexpr uint32_t CTA_TILE_Q = 32;                  \
+      __VA_ARGS__                                          \
+      break;                                               \
+    }                                                      \
     case 16: {                                             \
       constexpr uint32_t CTA_TILE_Q = 16;                  \
       __VA_ARGS__                                          \
@@ -132,6 +151,9 @@
     __VA_ARGS__                                              \
   } else if (group_size == 4) {                              \
     constexpr size_t GROUP_SIZE = 4;                         \
+    __VA_ARGS__                                              \
+  } else if (group_size == 6) {                              \
+    constexpr size_t GROUP_SIZE = 6;                         \
     __VA_ARGS__                                              \
   } else if (group_size == 8) {                              \
     constexpr size_t GROUP_SIZE = 8;                         \
@@ -317,13 +339,18 @@
 namespace flashinfer {
 
 template <typename T1, typename T2>
-__forceinline__ __device__ __host__ T1 ceil_div(const T1 x, const T2 y) {
+__forceinline__ __device__ __host__ constexpr T1 ceil_div(const T1 x, const T2 y) noexcept {
   return (x + y - 1) / y;
 }
 
 template <typename T1, typename T2>
-__forceinline__ __device__ __host__ T1 round_up(const T1 x, const T2 y) {
+__forceinline__ __device__ __host__ constexpr T1 round_up(const T1 x, const T2 y) noexcept {
   return ceil_div(x, y) * y;
+}
+
+template <typename T1, typename T2>
+__forceinline__ __device__ __host__ constexpr T1 round_down(const T1 x, const T2 y) noexcept {
+  return (x / y) * y;
 }
 
 inline std::pair<int, int> GetCudaComputeCapability() {
@@ -333,6 +360,38 @@ inline std::pair<int, int> GetCudaComputeCapability() {
   cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device_id);
   cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device_id);
   return std::make_pair(major, minor);
+}
+
+// Largest thread-block cluster the current device can launch for `kernel`
+// (1 when clusters are unsupported, e.g. pre-SM90). Query once and
+// cache per call site; assumes each process handles a single GPU.
+inline int GetMaxClusterSize(const void* kernel, int block_dim) {
+  cudaLaunchConfig_t config = {};
+  config.gridDim = 8;
+  config.blockDim = block_dim;
+  int cluster_size = 0;
+  cudaError_t status = cudaOccupancyMaxPotentialClusterSize(&cluster_size, kernel, &config);
+  if (status != cudaSuccess || cluster_size < 1) {
+    (void)cudaGetLastError();
+    return 1;
+  }
+  return cluster_size;
+}
+
+// This function is thread-safe and cached the sm_count.
+// But it will only check the current CUDA device, thus assuming each process handles single GPU.
+inline int GetCudaMultiProcessorCount() {
+  static std::atomic<int> sm_count{0};
+  int cached = sm_count.load(std::memory_order_relaxed);
+  if (cached == 0) {
+    int device_id;
+    cudaGetDevice(&device_id);
+    cudaDeviceProp device_prop;
+    cudaGetDeviceProperties(&device_prop, device_id);
+    cached = device_prop.multiProcessorCount;
+    sm_count.store(cached, std::memory_order_relaxed);
+  }
+  return cached;
 }
 
 template <typename T>
@@ -346,7 +405,27 @@ inline void DebugPrintCUDAArray(T* device_ptr, size_t size, std::string prefix =
   std::cout << std::endl;
 }
 
-inline uint32_t FA2DetermineCtaTileQ(int64_t avg_packed_qo_len, uint32_t head_dim) {
+inline uint32_t FA2DetermineCtaTileQ(int64_t avg_packed_qo_len, uint32_t head_dim,
+                                     uint32_t head_dim_qk = 0, uint32_t kv_dtype_bytes = 2) {
+  // head_dim is the VO dim at the batch-prefill call sites; head_dim_qk (when
+  // nonzero) lets asymmetric (QK != VO) configurations report the dim that
+  // actually drives shared-memory cost. kv_dtype_bytes is sizeof(DTypeKV) when
+  // the caller knows it; the default 2 is the conservative worst case.
+  const uint32_t qk = head_dim_qk ? head_dim_qk : head_dim;
+  if (head_dim >= 512) {
+    // True VO-split (VO >= 512): the split halves o_frag register pressure, so
+    // CTA_TILE_Q=32 is feasible for long-q; CTA16 for decode / short-q.
+    if (avg_packed_qo_len <= 32) {
+      return 16;  // decode / short-q (incl. speculative decode): lean CTA16
+    }
+    return 32;  // Long-q prefill use CTA_TILE_Q=32
+  }
+  if (qk >= 512) {
+    // Asymmetric large-QK but VO <= 256: VO-split does NOT engage (NUM_MMA_D_VO
+    // == 16), so o_frag is sized by the full NUM_MMA_D_VO_TILE=16. CTA_TILE_Q>16
+    // (NUM_MMA_Q>=2) overflows the 256-register o_frag wall -> only CTA16 is valid.
+    return 16;
+  }
   if (avg_packed_qo_len > 64 && head_dim < 256) {
     return 128;
   } else {
@@ -357,7 +436,46 @@ inline uint32_t FA2DetermineCtaTileQ(int64_t avg_packed_qo_len, uint32_t head_di
         // avg_packed_qo_len <= 64
         return 64;
       } else {
-        // avg_packed_qo_len <= 16
+        // avg_packed_qo_len <= 16: prefer the 1x4 warp layout (cta_tile_q=16),
+        // but only if one NUM_MMA_KV step fits shared memory. The estimate
+        // mirrors the kernel dispatcher's minimum requirement -- one Q tile
+        // (assumed 2-byte Q) plus a single NUM_MMA_KV step of K+V in the 1x4
+        // layout (16 rows x 4 KV warps x kv_dtype_bytes) -- checked against
+        // cudaDevAttrMaxSharedMemoryPerBlockOptin, the same limit the
+        // dispatcher's "even the smallest KV tile exceeds shared memory" guard
+        // bounds max_smem_per_threadblock with. It is an approximation: FP4
+        // scale-factor bytes and FP8 repack staging are not counted (both are
+        // zero or small at CTA_TILE_Q=16).
+        // This fallback is reachable today: neither plan() nor the JIT path
+        // validates head dims, so within this branch (vo <= 256 -- vo in
+        // (256, 512) fails the NUM_MMA_D_VO tiling static_assert and vo >= 512
+        // / qk >= 512 return above) head_dim_qk may be any multiple of 16 up
+        // to 496 under pos_encoding_mode NONE. E.g. (qk, vo) = (448, 256) at
+        // 2-byte KV needs 16*448*2 + (448+256)*16*4*2 = 104448 bytes, which
+        // exceeds the 101376-byte opt-in limit of 99KB parts (SM86/89/120/121)
+        // -- the probe fires and the cta_tile_q=64 fallback (4x1 layout, 4x
+        // smaller KV step, like the Turing branch below) keeps the
+        // configuration dispatchable instead of failing outright. The
+        // kv_dtype_bytes accuracy likewise changes tile selection for such
+        // configurations: at (448, 256) the true 1-byte cost is
+        // 16*448*2 + (448+256)*16*4*1 = 59392 bytes, so callers that supply
+        // kv_dtype_bytes=1 get cta_tile_q=16 where the 2-byte assumption
+        // returned 64. Both behaviors are pinned by
+        // test_batch_prefill_paged_cta_tile_q_smem_probe_qk448_vo256 in
+        // tests/attention/test_batch_prefill_kernels.py. Callers that cannot
+        // supply kv_dtype_bytes keep the conservative 2-byte default, which
+        // overestimates 1-byte (FP8/FP4) KV by 2x and can demote a working
+        // configuration to cta_tile_q=64 (a performance change, not a
+        // correctness one).
+        int dev_id = 0, max_smem_per_block_optin = 0;
+        cudaGetDevice(&dev_id);
+        cudaDeviceGetAttribute(&max_smem_per_block_optin, cudaDevAttrMaxSharedMemoryPerBlockOptin,
+                               dev_id);
+        const uint32_t q_tile_smem = 16 * qk * 2;
+        const uint32_t kv_step_smem_1x4 = (qk + head_dim) * 16 * 4 * kv_dtype_bytes;
+        if (q_tile_smem + kv_step_smem_1x4 > (uint32_t)max_smem_per_block_optin) {
+          return 64;
+        }
         return 16;
       }
     } else {
@@ -396,6 +514,75 @@ inline int UpPowerOfTwo(int x) {
  */
 __device__ __forceinline__ uint32_t sub_if_greater_or_zero(uint32_t x, uint32_t y) {
   return (x > y) ? x - y : 0U;
+}
+
+// ======================= PTX Memory Utility Functions =======================
+// Non-atomic global memory access with cache streaming hint (cs)
+// These are useful for streaming memory access patterns where data is used once
+
+/*!
+ * \brief Get the lane ID within a warp (0-31)
+ */
+__forceinline__ __device__ int get_lane_id() {
+  int lane_id;
+  asm("mov.u32 %0, %%laneid;" : "=r"(lane_id));
+  return lane_id;
+}
+
+/*!
+ * \brief Non-atomic global load for short (2 bytes) with cache streaming hint
+ */
+__forceinline__ __device__ short ld_na_global_s16(const short* addr) {
+  short val;
+  asm volatile("ld.global.cs.b16 %0, [%1];" : "=h"(val) : "l"(addr));
+  return val;
+}
+
+/*!
+ * \brief Non-atomic global store for short (2 bytes) with cache streaming hint
+ */
+__forceinline__ __device__ void st_na_global_s16(short* addr, short val) {
+  asm volatile("st.global.cs.b16 [%0], %1;" ::"l"(addr), "h"(val));
+}
+
+/*!
+ * \brief Non-atomic global load for int (4 bytes) with cache streaming hint
+ */
+__forceinline__ __device__ int ld_na_global_v1(const int* addr) {
+  int val;
+  asm volatile("ld.global.cs.b32 %0, [%1];" : "=r"(val) : "l"(addr));
+  return val;
+}
+
+/*!
+ * \brief Non-atomic global load for int2 (8 bytes) with cache streaming hint
+ */
+__forceinline__ __device__ int2 ld_na_global_v2(const int2* addr) {
+  int2 val;
+  asm volatile("ld.global.cs.v2.b32 {%0, %1}, [%2];" : "=r"(val.x), "=r"(val.y) : "l"(addr));
+  return val;
+}
+
+/*!
+ * \brief Non-atomic global store for int (4 bytes) with cache streaming hint
+ */
+__forceinline__ __device__ void st_na_global_v1(int* addr, int val) {
+  asm volatile("st.global.cs.b32 [%0], %1;" ::"l"(addr), "r"(val));
+}
+
+/*!
+ * \brief Non-atomic global store for int2 (8 bytes) with cache streaming hint
+ */
+__forceinline__ __device__ void st_na_global_v2(int2* addr, int2 val) {
+  asm volatile("st.global.cs.v2.b32 [%0], {%1, %2};" ::"l"(addr), "r"(val.x), "r"(val.y));
+}
+
+/*!
+ * \brief Prefetch data to L2 cache
+ */
+template <typename T>
+__forceinline__ __device__ void prefetch_L2(const T* addr) {
+  asm volatile("prefetch.global.L2 [%0];" ::"l"(addr));
 }
 
 __device__ __forceinline__ void swap(uint32_t& a, uint32_t& b) {

@@ -25,6 +25,28 @@ typedef hipStream_t cudaStream_t;
 
 using namespace flashinfer;
 
+// v0.6.18 replaced the scalar philox pair with optional per-request tensors and
+// added a `valid` output. The ROCm kernels have neither, so both are absorbed
+// here rather than in the kernels.
+
+// One scalar seed covers the whole batch; a per-request tensor has no kernel to
+// route to, so reject it instead of silently sampling every row from seed_val.
+inline void reject_per_request_seed(const std::optional<at::Tensor>& maybe_seed_arr,
+                                    const std::optional<at::Tensor>& maybe_offset_arr) {
+  TORCH_CHECK(!maybe_seed_arr.has_value() && !maybe_offset_arr.has_value(),
+              "per-request seed/offset tensors are not supported on ROCm; "
+              "pass int seed/offset instead");
+}
+
+// The ROCm kernels carry the last-valid-index fallback but not upstream's reject
+// flag, so every row yields a sample and `valid` is uniformly true.
+inline void mark_all_valid(at::Tensor valid, unsigned int batch_size) {
+  CHECK_INPUT(valid);
+  CHECK_DIM(1, valid);
+  CHECK_EQ(valid.size(0), static_cast<int64_t>(batch_size));
+  valid.fill_(true);
+}
+
 void softmax(at::Tensor workspace_buffer, at::Tensor logits, at::Tensor output,
              std::optional<at::Tensor> maybe_temperature_arr, double temperature_val,
              bool enable_pdl) {
@@ -52,12 +74,15 @@ void softmax(at::Tensor workspace_buffer, at::Tensor logits, at::Tensor output,
 
 void sampling_from_logits(at::Tensor logits, at::Tensor output,
                           std::optional<at::Tensor> maybe_indices, bool deterministic,
-                          int64_t philox_seed, int64_t philox_offset) {
+                          std::optional<at::Tensor> maybe_seed_arr, int64_t philox_seed,
+                          std::optional<at::Tensor> maybe_offset_arr, int64_t philox_offset) {
   CHECK_INPUT(logits);
   auto device = logits.device();
   CHECK_DIM(2, logits);  // logits: (batch_size, vocab_size)
   unsigned int batch_size = output.size(0);
   unsigned int vocab_size = logits.size(1);
+
+  reject_per_request_seed(maybe_seed_arr, maybe_offset_arr);
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
@@ -70,14 +95,18 @@ void sampling_from_logits(at::Tensor logits, at::Tensor output,
                                         std::string(hipGetErrorString(status)));
 }
 
-void sampling_from_probs(at::Tensor probs, at::Tensor output,
+void sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor valid,
                          std::optional<at::Tensor> maybe_indices, bool deterministic,
-                         int64_t philox_seed, int64_t philox_offset) {
+                         std::optional<at::Tensor> maybe_seed_arr, int64_t philox_seed,
+                         std::optional<at::Tensor> maybe_offset_arr, int64_t philox_offset) {
   CHECK_INPUT(probs);
   auto device = probs.device();
   CHECK_DIM(2, probs);  // probs: (batch_size, vocab_size)
   unsigned int batch_size = output.size(0);
   unsigned int vocab_size = probs.size(1);
+
+  reject_per_request_seed(maybe_seed_arr, maybe_offset_arr);
+  mark_all_valid(valid, batch_size);
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
@@ -90,16 +119,21 @@ void sampling_from_probs(at::Tensor probs, at::Tensor output,
               "SamplingFromProbs failed with error code " + std::string(hipGetErrorString(status)));
 }
 
-void top_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
+void top_p_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor valid,
                                std::optional<at::Tensor> maybe_indices,
                                std::optional<at::Tensor> maybe_top_p_arr, double top_p_val,
-                               bool deterministic, int64_t philox_seed, int64_t philox_offset) {
+                               bool deterministic, std::optional<at::Tensor> maybe_seed_arr,
+                               int64_t philox_seed, std::optional<at::Tensor> maybe_offset_arr,
+                               int64_t philox_offset) {
   CHECK_INPUT(probs);
   auto device = probs.device();
   CHECK_DIM(2, probs);  // probs: (batch_size, vocab_size)
   unsigned int batch_size = output.size(0);
   unsigned int vocab_size = probs.size(1);
   bool has_top_p_arr = maybe_top_p_arr.has_value();
+
+  reject_per_request_seed(maybe_seed_arr, maybe_offset_arr);
+  mark_all_valid(valid, batch_size);
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
@@ -113,10 +147,12 @@ void top_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
                                         std::string(hipGetErrorString(status)));
 }
 
-void top_k_sampling_from_probs(at::Tensor probs, at::Tensor output,
+void top_k_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor valid,
                                std::optional<at::Tensor> maybe_indices,
                                std::optional<at::Tensor> maybe_top_k_arr, int64_t top_k_val,
-                               bool deterministic, int64_t philox_seed, int64_t philox_offset) {
+                               bool deterministic, std::optional<at::Tensor> maybe_seed_arr,
+                               int64_t philox_seed, std::optional<at::Tensor> maybe_offset_arr,
+                               int64_t philox_offset) {
   CHECK_INPUT(probs);
   CHECK_INPUT(output);
   auto device = probs.device();
@@ -126,6 +162,9 @@ void top_k_sampling_from_probs(at::Tensor probs, at::Tensor output,
   unsigned int batch_size = output.size(0);
   unsigned int vocab_size = probs.size(1);
   bool has_top_k_arr = maybe_top_k_arr.has_value();
+
+  reject_per_request_seed(maybe_seed_arr, maybe_offset_arr);
+  mark_all_valid(valid, batch_size);
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
@@ -139,10 +178,12 @@ void top_k_sampling_from_probs(at::Tensor probs, at::Tensor output,
                                         std::string(hipGetErrorString(status)));
 }
 
-void min_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
+void min_p_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor valid,
                                std::optional<at::Tensor> maybe_indices,
                                std::optional<at::Tensor> maybe_min_p_arr, double min_p_val,
-                               bool deterministic, int64_t philox_seed, int64_t philox_offset) {
+                               bool deterministic, std::optional<at::Tensor> maybe_seed_arr,
+                               int64_t philox_seed, std::optional<at::Tensor> maybe_offset_arr,
+                               int64_t philox_offset) {
   CHECK_INPUT(probs);
   CHECK_INPUT(output);
   auto device = probs.device();
@@ -152,6 +193,9 @@ void min_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
   unsigned int batch_size = output.size(0);
   unsigned int vocab_size = probs.size(1);
   bool has_min_p_arr = maybe_min_p_arr.has_value();
+
+  reject_per_request_seed(maybe_seed_arr, maybe_offset_arr);
+  mark_all_valid(valid, batch_size);
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
@@ -166,11 +210,13 @@ void min_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
                                         std::string(hipGetErrorString(status)));
 }
 
-void top_k_top_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
+void top_k_top_p_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor valid,
                                      std::optional<at::Tensor> maybe_indices,
                                      std::optional<at::Tensor> maybe_top_k_arr, double top_k_val,
                                      std::optional<at::Tensor> maybe_top_p_arr, double top_p_val,
-                                     bool deterministic, int64_t philox_seed,
+                                     bool deterministic, std::optional<at::Tensor> maybe_seed_arr,
+                                     int64_t philox_seed,
+                                     std::optional<at::Tensor> maybe_offset_arr,
                                      int64_t philox_offset) {
   CHECK_INPUT(probs);
   CHECK_INPUT(output);
@@ -182,6 +228,9 @@ void top_k_top_p_sampling_from_probs(at::Tensor probs, at::Tensor output,
   unsigned int vocab_size = probs.size(1);
   bool has_top_k_arr = maybe_top_k_arr.has_value();
   bool has_top_p_arr = maybe_top_p_arr.has_value();
+
+  reject_per_request_seed(maybe_seed_arr, maybe_offset_arr);
+  mark_all_valid(valid, batch_size);
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
@@ -201,7 +250,8 @@ void chain_speculative_sampling(at::Tensor draft_probs, at::Tensor draft_token_i
                                 at::Tensor target_probs, at::Tensor output_token_ids,
                                 at::Tensor output_accepted_token_num,
                                 at::Tensor output_emitted_draft_token_num, bool deterministic,
-                                int64_t philox_seed, int64_t philox_offset) {
+                                std::optional<at::Tensor> maybe_seed_arr, int64_t philox_seed,
+                                std::optional<at::Tensor> maybe_offset_arr, int64_t philox_offset) {
   CHECK_INPUT(draft_probs);
   CHECK_INPUT(draft_token_ids);
   CHECK_INPUT(target_probs);
@@ -220,6 +270,8 @@ void chain_speculative_sampling(at::Tensor draft_probs, at::Tensor draft_token_i
   CHECK_EQ(vocab_size, target_probs.size(2));
   CHECK_EQ(batch_size, output_accepted_token_num.size(0));
   CHECK_EQ(batch_size, output_emitted_draft_token_num.size(0));
+
+  reject_per_request_seed(maybe_seed_arr, maybe_offset_arr);
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();

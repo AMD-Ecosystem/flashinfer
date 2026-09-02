@@ -640,8 +640,8 @@ __launch_bounds__(128 * 3)
         uint32_t* __restrict__ const semaphores =
             nullptr,  // [nbReq][nbKHeads][divUp(specDecParams.qSeqLen, inputTokensPerCta)]
         void* __restrict__ const scratch = nullptr) {
-  float const qScaleValue = qScalePtr != nullptr ? *qScalePtr : qScale;
-  float const kvCacheScaleValue = kvScalePtr != nullptr ? *kvScalePtr : kvCacheScale;
+  float const qScaleValue = qScalePtr != nullptr ? qScalePtr[0] : qScale;
+  float const kvCacheScaleValue = kvScalePtr != nullptr ? kvScalePtr[0] : kvCacheScale;
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 900 && defined(__CUDA_ARCH_FEAT_SM90_ALL) && \
     (IS_SUPPORTED_F16_CASE || CACHE_ELEM_ENUM == 2) && BEAM_WIDTH == 1
   uint32_t const idxReq = blockIdx.z / nbKHeads;
@@ -1880,11 +1880,12 @@ __device__ inline RegColWiseVec loadGmemColWiseVecWithDup(ShmQWiseVec const& gme
   for (uint32_t i = 0; i < exactDiv(ShmQWiseVec::size, gmma::instNBase); i++) {
     static_assert(nbThrdsPerInstNBase * RegColWiseVec::size ==
                   exactDiv(ShmQWiseVec::size, GmmaAccCoreMat::cols));
-    uint32_t const clampedIdx = mha::min(i * nbThrdsPerInstNBase + idx, bound);
-    uint32_t const baseOffset = clampedIdx * GmmaAccCoreMat::cols;
+    uint32_t const baseOffset = (i * nbThrdsPerInstNBase + idx) * GmmaAccCoreMat::cols;
 #pragma unroll
     for (uint32_t j = 0; j < GmmaAccCoreMat::cols; j++) {
-      ret[i][j] = gmemVec[baseOffset + j];
+      // Clamp per element: `bound` is the max valid element index and the gmem vector holds only
+      // bound+1 floats (< ShmQWiseVec::size). Padding lanes duplicate the last valid element.
+      ret[i][j] = gmemVec[mha::min(baseOffset + j, bound)];
     }
   }
   return ret;

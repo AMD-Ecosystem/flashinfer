@@ -16,6 +16,7 @@
 #ifndef FLASHINFER_NORM_CUH_
 #define FLASHINFER_NORM_CUH_
 
+#include <cstdint>
 #include <numeric>
 
 #include "flashinfer/trtllm/common/cudaTypeUtils.cuh"
@@ -31,6 +32,32 @@ namespace flashinfer {
 namespace norm {
 
 using namespace tensorrt_llm::common;
+
+template <typename T>
+struct QuantTypeStaticVals;
+
+template <>
+struct QuantTypeStaticVals<int8_t> {
+  static constexpr float MAX_VAL = 127.f;
+  static constexpr float MIN_SCALING_FACTOR = 0.f;
+  static constexpr float MIN_SCALING_FACTOR_RCP = FLT_MAX;
+};
+
+// Same values as TRT-LLM quantTypeUtils.cuh; MIN_SCALING_FACTOR bound follows
+// https://github.com/pytorch/FBGEMM/blob/main/fbgemm_gpu/experimental/gen_ai/src/quantize/quantize.cu
+template <>
+struct QuantTypeStaticVals<__nv_fp8_e4m3> {
+  static constexpr float MAX_VAL = 448.f;
+  static constexpr float MIN_SCALING_FACTOR = 1.0f / (448.f * 512.f);
+  static constexpr float MIN_SCALING_FACTOR_RCP = 448.f * 512.f;
+};
+
+template <>
+struct QuantTypeStaticVals<__nv_fp8_e5m2> {
+  static constexpr float MAX_VAL = 57344.f;
+  static constexpr float MIN_SCALING_FACTOR = 1.0f / (57344.f * 512.f);
+  static constexpr float MIN_SCALING_FACTOR_RCP = 57344.f * 512.f;
+};
 
 template <uint32_t VEC_SIZE, typename T>
 __global__ void RMSNormKernel(T* __restrict__ input, T* __restrict__ weight, T* __restrict__ output,
@@ -144,6 +171,122 @@ cudaError_t RMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uint32_
   return cudaSuccess;
 }
 
+template <uint32_t VEC_SIZE, typename T, typename O>
+__global__ void RMSNormQuantKernel(T* __restrict__ input, T* __restrict__ weight,
+                                   O* __restrict__ output, const uint32_t d,
+                                   const uint32_t stride_input, const uint32_t stride_output,
+                                   float weight_bias, float* scale, float eps) {
+  const uint32_t bx = blockIdx.x;
+  const uint32_t tx = threadIdx.x, ty = threadIdx.y;
+  constexpr uint32_t warp_size = 32;
+  const uint32_t num_warps = blockDim.y;
+  // NOTE(Zihao): it's guaranteed that num_warps should be smaller than 32
+  const uint32_t thread_id = tx + ty * warp_size;
+  const uint32_t num_threads = num_warps * warp_size;
+  const uint32_t rounds = ceil_div(d, VEC_SIZE * num_threads);
+  const float scale_inv = 1.0f / scale[0];
+  extern __shared__ float smem[];
+
+  float sum_sq = 0.f;
+
+#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+  asm volatile("griddepcontrol.wait;");
+#endif
+
+  for (uint32_t i = 0; i < rounds; i++) {
+    vec_t<T, VEC_SIZE> input_vec;
+    input_vec.fill(0.f);
+    if ((i * num_threads + thread_id) * VEC_SIZE < d) {
+      input_vec.load(input + bx * stride_input + i * num_threads * VEC_SIZE + thread_id * VEC_SIZE);
+    }
+#pragma unroll
+    for (uint32_t j = 0; j < VEC_SIZE; j++) {
+      sum_sq += float(input_vec[j]) * float(input_vec[j]);
+    }
+  }
+
+  // first, warp reduce sum
+#pragma unroll
+  for (uint32_t offset = warp_size / 2; offset > 0; offset /= 2) {
+    sum_sq += math::shfl_xor_sync(sum_sq, offset);
+  }
+
+  smem[ty] = sum_sq;
+  __syncthreads();
+  // then, cross warp reduce sum using only the first warp
+  if (ty == 0) {
+    sum_sq = (tx < num_warps) ? smem[tx] : 0.f;
+#pragma unroll
+    for (uint32_t offset = warp_size / 2; offset > 0; offset /= 2) {
+      sum_sq += math::shfl_xor_sync(sum_sq, offset);
+    }
+    smem[0] = sum_sq;
+  }
+  __syncthreads();
+
+  float rms_rcp = math::rsqrt(smem[0] / float(d) + eps);
+  constexpr float max_val = QuantTypeStaticVals<O>::MAX_VAL;
+
+  for (uint32_t i = 0; i < rounds; i++) {
+    vec_t<T, VEC_SIZE> input_vec;
+    vec_t<T, VEC_SIZE> weight_vec;
+    vec_t<float, VEC_SIZE> output_vec;
+    input_vec.fill(0.f);
+    weight_vec.fill(0.f);
+    if ((i * num_threads + thread_id) * VEC_SIZE < d) {
+      input_vec.load(input + bx * stride_input + i * num_threads * VEC_SIZE + thread_id * VEC_SIZE);
+      weight_vec.load(weight + i * num_threads * VEC_SIZE + thread_id * VEC_SIZE);
+    }
+#pragma unroll
+    for (uint32_t j = 0; j < VEC_SIZE; j++) {
+      output_vec[j] =
+          float(input_vec[j]) * rms_rcp * (weight_bias + float(weight_vec[j])) * scale_inv;
+      output_vec[j] = fmaxf(-max_val, fminf(output_vec[j], max_val));
+    }
+    if ((i * num_threads + thread_id) * VEC_SIZE < d) {
+      output_vec.cast_store(output + bx * stride_output + i * num_threads * VEC_SIZE +
+                            thread_id * VEC_SIZE);
+    }
+  }
+#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+  asm volatile("griddepcontrol.launch_dependents;");
+#endif
+}
+
+template <typename T, typename O>
+cudaError_t RMSNormQuant(T* input, T* weight, O* output, uint32_t batch_size, uint32_t d,
+                         uint32_t stride_input, uint32_t stride_output, float* scale,
+                         float eps = 1e-5, bool enable_pdl = false, cudaStream_t stream = 0) {
+  const uint32_t vec_size = std::gcd(16 / sizeof(T), d);
+
+  const uint32_t block_size = std::min<uint32_t>(1024, d / vec_size);
+  const uint32_t num_warps = ceil_div(block_size, 32);
+  dim3 nblks(batch_size);
+  dim3 nthrs(32, num_warps);
+  const uint32_t smem_size = num_warps * sizeof(float);
+  float weight_bias = 0.f;
+
+  cudaLaunchConfig_t config;
+  config.gridDim = nblks;
+  config.blockDim = nthrs;
+  config.dynamicSmemBytes = smem_size;
+  config.stream = stream;
+  cudaLaunchAttribute attrs[1];
+  attrs[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+  attrs[0].val.programmaticStreamSerializationAllowed = enable_pdl;
+  config.numAttrs = 1;
+  config.attrs = attrs;
+
+  DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
+    auto kernel = RMSNormQuantKernel<VEC_SIZE, T, O>;
+    FLASHINFER_CUDA_CALL(
+        cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FLASHINFER_CUDA_CALL(cudaLaunchKernelEx(&config, kernel, input, weight, output, d, stride_input,
+                                            stride_output, weight_bias, scale, eps));
+  });
+  return cudaSuccess;
+}
+
 template <uint32_t VEC_SIZE, typename T>
 __global__ void QKRMSNormKernel(T* __restrict__ input, T* __restrict__ weight,
                                 T* __restrict__ output, const uint32_t d, const uint32_t batch_size,
@@ -253,7 +396,8 @@ cudaError_t QKRMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uint3
     FLASHINFER_CUDA_CALL(cudaGetDevice(&dev_id));
     FLASHINFER_CUDA_CALL(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, dev_id));
 
-    dim3 nblks(num_blocks_per_sm * num_sms);
+    const int needed_blocks = ceil_div(batch_size * num_heads, num_warps);
+    dim3 nblks(std::min(num_blocks_per_sm * num_sms, needed_blocks));
     dim3 nthrs(32, num_warps);
     config.gridDim = nblks;
     config.blockDim = nthrs;
@@ -396,6 +540,141 @@ cudaError_t FusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batch_siz
   return cudaSuccess;
 }
 
+template <uint32_t VEC_SIZE, typename T, typename O>
+__global__ void FusedAddRMSNormQuantKernel(T* __restrict__ input, T* __restrict__ residual,
+                                           T* __restrict__ weight, O* __restrict__ output,
+                                           const uint32_t d, const uint32_t stride_input,
+                                           const uint32_t stride_residual,
+                                           const uint32_t stride_output, float weight_bias,
+                                           float* scale, float eps) {
+  const uint32_t bx = blockIdx.x;
+  const uint32_t tx = threadIdx.x, ty = threadIdx.y;
+  constexpr uint32_t warp_size = 32;
+  const uint32_t num_warps = blockDim.y;
+  const uint32_t thread_id = tx + ty * warp_size;
+  const uint32_t num_threads = num_warps * warp_size;
+  const uint32_t rounds = ceil_div(d, VEC_SIZE * num_threads);
+  const float scale_inv = 1.0f / scale[0];
+  extern __shared__ float smem[];
+  float* smem_x = smem + ceil_div(num_warps, 4) * 4;
+
+  float sum_sq = 0.f;
+#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+  asm volatile("griddepcontrol.wait;");
+#endif
+
+  for (uint32_t i = 0; i < rounds; i++) {
+    vec_t<T, VEC_SIZE> input_vec;
+    input_vec.fill(0.f);
+    vec_t<T, VEC_SIZE> residual_vec;
+    residual_vec.fill(0.f);
+    vec_t<float, VEC_SIZE> x_vec;
+    x_vec.fill(0.f);
+    if ((i * num_threads + thread_id) * VEC_SIZE < d) {
+      input_vec.load(input + bx * stride_input + i * num_threads * VEC_SIZE + thread_id * VEC_SIZE);
+      residual_vec.load(residual + bx * stride_residual + i * num_threads * VEC_SIZE +
+                        thread_id * VEC_SIZE);
+    }
+#pragma unroll
+    for (uint32_t j = 0; j < VEC_SIZE; j++) {
+      float x = float(input_vec[j]);
+      x += float(residual_vec[j]);
+      sum_sq += x * x;
+      residual_vec[j] = (T)x;
+      x_vec[j] = x;
+    }
+    if ((i * num_threads + thread_id) * VEC_SIZE < d) {
+      residual_vec.store(residual + bx * stride_residual + i * num_threads * VEC_SIZE +
+                         thread_id * VEC_SIZE);
+      x_vec.store(smem_x + i * num_threads * VEC_SIZE + thread_id * VEC_SIZE);
+    }
+  }
+
+  // first, warp reduce sum
+#pragma unroll
+  for (uint32_t offset = warp_size / 2; offset > 0; offset /= 2) {
+    sum_sq += math::shfl_xor_sync(sum_sq, offset);
+  }
+
+  smem[ty] = sum_sq;
+  __syncthreads();
+  // then, cross warp reduce sum using only the first warp
+  if (ty == 0) {
+    sum_sq = (tx < num_warps) ? smem[tx] : 0.f;
+#pragma unroll
+    for (uint32_t offset = warp_size / 2; offset > 0; offset /= 2) {
+      sum_sq += math::shfl_xor_sync(sum_sq, offset);
+    }
+    smem[0] = sum_sq;
+  }
+  __syncthreads();
+
+  float rms_rcp = math::rsqrt(smem[0] / float(d) + eps);
+  constexpr float max_val = QuantTypeStaticVals<O>::MAX_VAL;
+
+  for (uint32_t i = 0; i < rounds; i++) {
+    vec_t<float, VEC_SIZE> output_vec;
+    vec_t<T, VEC_SIZE> weight_vec;
+    vec_t<float, VEC_SIZE> x_vec;
+    output_vec.fill(0.f);
+    weight_vec.fill(0.f);
+    x_vec.fill(0.f);
+    if ((i * num_threads + thread_id) * VEC_SIZE < d) {
+      weight_vec.load(weight + i * num_threads * VEC_SIZE + thread_id * VEC_SIZE);
+      x_vec.load(smem_x + i * num_threads * VEC_SIZE + thread_id * VEC_SIZE);
+    }
+#pragma unroll
+    for (uint32_t j = 0; j < VEC_SIZE; j++) {
+      output_vec[j] = x_vec[j] * rms_rcp * (weight_bias + float(weight_vec[j])) * scale_inv;
+      output_vec[j] = fmaxf(-max_val, fminf(output_vec[j], max_val));
+    }
+    if ((i * num_threads + thread_id) * VEC_SIZE < d) {
+      output_vec.cast_store(output + bx * stride_output + i * num_threads * VEC_SIZE +
+                            thread_id * VEC_SIZE);
+    }
+  }
+#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+  asm volatile("griddepcontrol.launch_dependents;");
+#endif
+}
+
+template <typename T, typename O>
+cudaError_t FusedAddRMSNormQuant(T* input, T* residual, T* weight, O* output, uint32_t batch_size,
+                                 uint32_t d, uint32_t stride_input, uint32_t stride_residual,
+                                 uint32_t stride_output, float* scale, float eps = 1e-5,
+                                 bool enable_pdl = false, cudaStream_t stream = 0) {
+  const uint32_t vec_size = std::gcd(16 / sizeof(T), d);
+
+  const uint32_t block_size = std::min<uint32_t>(1024, d / vec_size);
+  const uint32_t num_warps = ceil_div(block_size, 32);
+  dim3 nblks(batch_size);
+  dim3 nthrs(32, num_warps);
+  const uint32_t smem_size = (ceil_div(num_warps, 4) * 4 + d) * sizeof(float);
+  float weight_bias = 0.f;
+
+  cudaLaunchConfig_t config;
+  config.gridDim = nblks;
+  config.blockDim = nthrs;
+  config.dynamicSmemBytes = smem_size;
+  config.stream = stream;
+  cudaLaunchAttribute attrs[1];
+  attrs[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+  attrs[0].val.programmaticStreamSerializationAllowed = enable_pdl;
+  config.numAttrs = 1;
+  config.attrs = attrs;
+
+  DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
+    auto kernel = FusedAddRMSNormQuantKernel<VEC_SIZE, T, O>;
+    FLASHINFER_CUDA_CALL(
+        cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FLASHINFER_CUDA_CALL(cudaLaunchKernelEx(&config, kernel, input, residual, weight, output, d,
+                                            stride_input, stride_residual, stride_output,
+                                            weight_bias, scale, eps));
+  });
+
+  return cudaSuccess;
+}
+
 template <typename T>
 cudaError_t GemmaRMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uint32_t d,
                          uint32_t stride_input, uint32_t stride_output, float eps = 1e-5,
@@ -468,16 +747,6 @@ cudaError_t GemmaFusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batc
 
   return cudaSuccess;
 }
-
-template <typename T>
-struct QuantTypeStaticVals;
-
-template <>
-struct QuantTypeStaticVals<int8_t> {
-  static constexpr float MAX_VAL = 127.f;
-  static constexpr float MIN_SCALING_FACTOR = 0.f;
-  static constexpr float MIN_SCALING_FACTOR_RCP = FLT_MAX;
-};
 
 template <typename Tf, typename T>
 __inline__ __device__ Tf compute_layernorm(Tf val, float s_mean, float s_variance, T const* gemma,
@@ -576,8 +845,10 @@ __global__ void generalLayerNorm(T const* input, Tw const* gemma, Tw const* beta
   bool const with_per_tensor_scaling = scale_orig_quant_per_tensor != nullptr;
   bool const with_per_token_sum = sum_per_token != nullptr;
 
-  const float_packed_t scale_orig_quant =
-      cuda_cast<float_packed_t>(with_per_tensor_scaling ? *scale_orig_quant_per_tensor : 0.0f);
+  // The reciprocal makes the per-tensor path follow the flashinfer convention
+  // out = normed / scale, matching RMSNormQuant.
+  const float_packed_t scale_orig_quant = cuda_cast<float_packed_t>(
+      with_per_tensor_scaling ? 1.0f / (*scale_orig_quant_per_tensor) : 0.0f);
   T_scalar amax = 1e-6f;
   local_sum = 0.f;
 
@@ -701,7 +972,6 @@ cudaError_t LayerNorm(T* input, Tw* gemma, Tw* beta, T* out, uint32_t tokens, ui
                             (std::is_same<T, half>::value || std::is_same<T, __nv_bfloat16>::value);
 
   // Enable min_scaling factor if it is fp8 row-wise per-token quantization
-  // TODO(kaixih): add support for fp8 quantization if needed
   bool has_fp8_min_scaling = false;
   float* clamp_ptr = nullptr;
   float* scale = nullptr;
@@ -725,6 +995,49 @@ cudaError_t LayerNorm(T* input, Tw* gemma, Tw* beta, T* out, uint32_t tokens, ui
   }
   return cudaSuccess;
 }
+
+#ifdef ENABLE_FP8
+template <typename T, typename Tw, typename QuantT>
+cudaError_t LayerNormQuant(T* input, Tw* gemma, Tw* beta, QuantT* out_quant, float* scale,
+                           uint32_t tokens, uint32_t hidden_dim, float eps = 1e-5,
+                           cudaStream_t stream = 0) {
+  dim3 grid(tokens);
+  dim3 block(min(hidden_dim, 1024));
+  // Make sure block.x is multiple of 32 for warp shuffle to work
+  block.x = 32 * ((block.x + 31) / 32);
+
+  constexpr size_t vec_size = 2;
+  const size_t shmem_size = hidden_dim * sizeof(T);
+  bool const use_vec_type = (hidden_dim % vec_size == 0) &&
+                            (std::is_same<T, half>::value || std::is_same<T, __nv_bfloat16>::value);
+
+  // Per-tensor scaling path: the non-quantized output is never written and the
+  // fp8 cast saturates, so no extra clamp is needed.
+  T* normed_output = nullptr;
+  bool has_fp8_min_scaling = false;
+  float* clamp_ptr = nullptr;
+  float* dynamic_scale = nullptr;
+  float* sum_per_token = nullptr;
+  bool use_diff_of_squares = false;
+
+  if (use_vec_type) {
+    using Tp = typename packed_as<T, vec_size>::type;
+    using Twp = typename packed_as<Tw, vec_size>::type;
+    // QuantT stays scalar here; the kernel re-packs it via
+    // packed_as<QuantT, num_elems<Tp>::value> to match the vectorized T.
+    dispatch_layernorm_type(
+        reinterpret_cast<Tp const*>(input), reinterpret_cast<Twp const*>(gemma),
+        reinterpret_cast<Twp const*>(beta), reinterpret_cast<Tp*>(normed_output), eps, tokens,
+        hidden_dim, clamp_ptr, scale, dynamic_scale, sum_per_token, out_quant, has_fp8_min_scaling,
+        grid, block, shmem_size, stream, use_diff_of_squares);
+  } else {
+    dispatch_layernorm_type(input, gemma, beta, normed_output, eps, tokens, hidden_dim, clamp_ptr,
+                            scale, dynamic_scale, sum_per_token, out_quant, has_fp8_min_scaling,
+                            grid, block, shmem_size, stream, use_diff_of_squares);
+  }
+  return cudaGetLastError();
+}
+#endif  // ENABLE_FP8
 
 }  // namespace norm
 

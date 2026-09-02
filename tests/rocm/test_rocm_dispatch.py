@@ -61,8 +61,8 @@ def test_gate_installs_on_demand_and_widens_in_place(restore_gate):
             if getattr(f, "_is_flashinfer_cuda_only_finder", False)
         ]
 
-    # Not asserted as pre-installed: nothing on the HIP path imports
-    # flashinfer.comm, so the gate may legitimately not be up yet.
+    # Widening an already-installed finder, not installing a second one:
+    # flashinfer/rocm/api.py puts the gate up during `import flashinfer`.
     gate_cuda_only_modules({"flashinfer.comm._not_a_real_module"})
     assert len(finders()) == 1
     with pytest.raises(ImportError, match="CUDA-only"):
@@ -76,7 +76,12 @@ def test_gate_installs_on_demand_and_widens_in_place(restore_gate):
 
 
 def test_gate_tolerates_a_foreign_marker(restore_gate):
-    """A marker-bearing object we cannot widen must not break gating."""
+    """A marker-bearing object we cannot widen must not break gating.
+
+    The real finder is lifted out first: flashinfer/rocm/api.py installs it
+    during `import flashinfer`, so leaving it in place would widen that one and
+    never reach the install branch this test is about.
+    """
     import flashinfer  # noqa: F401
 
     class Impostor:
@@ -85,10 +90,40 @@ def test_gate_tolerates_a_foreign_marker(restore_gate):
         def find_spec(self, *args, **kwargs):
             return None
 
+    marked = lambda f: getattr(f, "_is_flashinfer_cuda_only_finder", False)
+    real = [f for f in sys.meta_path if marked(f)]
+    sys.meta_path[:] = [f for f in sys.meta_path if not marked(f)]
     sys.meta_path.insert(0, Impostor())
     try:
         gate_cuda_only_modules({"flashinfer.comm._foreign_marker_probe"})
         with pytest.raises(ImportError, match="CUDA-only"):
             importlib.import_module("flashinfer.comm._foreign_marker_probe")
     finally:
-        sys.meta_path[:] = [f for f in sys.meta_path if not isinstance(f, Impostor)]
+        # Drop the Impostor and the finder this test installed, then put the
+        # process-wide one back -- a leftover second finder would break the
+        # len(finders()) == 1 assertion in the sibling test.
+        sys.meta_path[:] = [
+            f for f in sys.meta_path if not marked(f) and not isinstance(f, Impostor)
+        ]
+        sys.meta_path[:0] = real
+
+
+def test_the_finder_goes_ahead_of_pathfinder(restore_gate):
+    """Gating a module that really exists, which is the only case position matters.
+
+    Every other gate test names a module PathFinder cannot resolve either, so it
+    passes whether the finder is inserted at 0 or appended at the end -- and
+    appending puts it behind PathFinder, where a real module imports normally
+    and the gate silently stops working.
+    """
+    import flashinfer  # noqa: F401
+
+    victim = "flashinfer.quantization.packbits"
+    saved = sys.modules.pop(victim, None)
+    try:
+        gate_cuda_only_modules({victim})
+        with pytest.raises(ImportError, match="CUDA-only"):
+            importlib.import_module(victim)
+    finally:
+        if saved is not None:
+            sys.modules[victim] = saved

@@ -16,6 +16,8 @@
 
 #include <cuda.h>
 
+#include <algorithm>
+#include <sstream>
 #include <string>
 
 #include "flashinfer/exception.h"
@@ -33,43 +35,93 @@ static thread_local gemm::gemm::GemmInterface::ModuleCache globalTrtllmGenGemmMo
 
 namespace flashinfer {
 
+namespace {
+
+// The trtllm-gen cubin manifest is a downloaded artifact, so which architectures
+// it actually covers is not knowable at compile time. Encode only the
+// cubin-arch -> SM-version compatibility rules here and let `config.mSm` decide
+// what is available. Unknown cubin families are rejected so that a newly shipped
+// one fails loudly instead of being mis-dispatched onto hardware that cannot run
+// it (see #4107).
+bool isArchCompatible(int smVersion, gemm::trtllm::gen::CudaArch cubinArch) {
+  using CudaArch = gemm::trtllm::gen::CudaArch;
+  switch (cubinArch) {
+    case CudaArch::Sm100a:
+      return smVersion == 100;
+    case CudaArch::Sm100f:
+      return smVersion == 100 || smVersion == 103;
+    case CudaArch::Sm103a:
+      return smVersion == 103;
+#ifdef TLLM_RUBIN_FEATURES
+    // CudaArch::Sm107a only exists in the Rubin cubin pin's generated headers,
+    // which is also the only build that defines TLLM_RUBIN_FEATURES. sm107 is
+    // unreachable in the non-Rubin module: get_trtllm_gemm_module() picks the
+    // Rubin variant by device compute capability before this runs.
+    case CudaArch::Sm107a:
+      return smVersion == 107;
+#endif
+    default:
+      return false;
+  }
+}
+
+}  // namespace
+
 struct TrtllmGenGemmRunnerOptions {
   gemm::trtllm::gen::Dtype eltType;
   gemm::trtllm::gen::Dtype outputType;
   bool transposeMmaOutput{false};
   gemm::trtllm::gen::SfLayout sfLayoutB;
+  gemm::gemm::MatrixLayout layoutA{gemm::gemm::MatrixLayout::MajorK};
 };
 
 int64_t select_kernel_fp8(int32_t M, int32_t N, int32_t K,
                           const gemm::gemm::GemmInterface& interface) {
-  static constexpr const char* KERNEL_NAME_HIGH_N_K_RATIO =
-      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x8x128u2_s6_et64x8_m64x8x32_cga1x1x1_16dp256b_rM_TN_"
-      "transOut_"
-      "noShflA_dsFp8_schedP2x2x1x3_sm100f";
+  static constexpr const char* KERNEL_NAME_HIGH_N_K_RATIO_SM100F =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x8x128u2_s6_et64x8_m64x8x32_c1x1x1_rM_TN_"
+      "transOut_noShfl_dsFp8_schPd2x2x1x3_sm100f";
+  static constexpr const char* KERNEL_NAME_LOW_N_K_RATIO_SM100F =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x32x128u2_s6_et64x32_m64x32x32_c1x1x1_rM_TN_"
+      "transOut_noShfl_dsFp8_schedS_sm100f";
+  static constexpr const char* KERNEL_NAME_LARGE_N_SM100F =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x32x128u2_s6_et64x32_m64x32x32_c1x1x1_rM_TN_"
+      "transOut_noShfl_dsFp8_schPd2x2x1x3_sm100f";
+  static constexpr const char* KERNEL_NAME_DEFAULT_SM100F =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x16x128u2_s6_et64x16_m64x16x32_c1x1x1_rM_TN_"
+      "transOut_noShfl_dsFp8_schedS_sm100f";
 
-  static constexpr const char* KERNEL_NAME_LOW_N_K_RATIO =
-      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x32x128u2_s6_et64x32_m64x32x32_cga1x1x1_16dp256b_rM_TN_"
-      "transOut_noShflA_dsFp8_schedS_sm100f";
+  static constexpr const char* KERNEL_NAME_HIGH_N_K_RATIO_SM107A =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x8x128u2_s6_et64x8_m64x8x32_c1x1x1_rM_TN_"
+      "transOut_noShfl_dsFp8_schPd2x2x1x3_sm107a";
+  static constexpr const char* KERNEL_NAME_LOW_N_K_RATIO_SM107A =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x32x128u2_s6_et64x32_m64x32x32_c1x1x1_rM_TN_"
+      "transOut_noShfl_dsFp8_schedS_sm107a";
+  static constexpr const char* KERNEL_NAME_LARGE_N_SM107A =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x32x128u2_s6_et64x32_m64x32x32_c1x1x1_rM_TN_"
+      "transOut_noShfl_dsFp8_schPd2x2x1x3_sm107a";
+  static constexpr const char* KERNEL_NAME_DEFAULT_SM107A =
+      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x16x128u2_s6_et64x16_m64x16x32_c1x1x1_rM_TN_"
+      "transOut_noShfl_dsFp8_schedS_sm107a";
 
-  static constexpr const char* KERNEL_NAME_LARGE_N =
-      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x32x128u2_s6_et64x32_m64x32x32_cga1x1x1_16dp256b_rM_TN_"
-      "transOut_noShflA_dsFp8_schedP2x2x1x3_sm100f";
-
-  static constexpr const char* KERNEL_NAME_DEFAULT =
-      "gemm_Bfloat16_E4m3E4m3_Fp32_t128x16x128u2_s6_et64x16_m64x16x32_cga1x1x1_16dp256b_rM_TN_"
-      "transOut_noShflA_dsFp8_schedS_sm100f";
+  bool const is_sm107 = getSMVersion() == 107;
+  const char* const kHighNK =
+      is_sm107 ? KERNEL_NAME_HIGH_N_K_RATIO_SM107A : KERNEL_NAME_HIGH_N_K_RATIO_SM100F;
+  const char* const kLowNK =
+      is_sm107 ? KERNEL_NAME_LOW_N_K_RATIO_SM107A : KERNEL_NAME_LOW_N_K_RATIO_SM100F;
+  const char* const kLargeN = is_sm107 ? KERNEL_NAME_LARGE_N_SM107A : KERNEL_NAME_LARGE_N_SM100F;
+  const char* const kDefault = is_sm107 ? KERNEL_NAME_DEFAULT_SM107A : KERNEL_NAME_DEFAULT_SM100F;
 
   double const n_k_ratio = static_cast<double>(N) / static_cast<double>(K);
 
   std::string kernel_name;
   if (n_k_ratio >= 32) {
-    kernel_name = KERNEL_NAME_HIGH_N_K_RATIO;
+    kernel_name = kHighNK;
   } else if (n_k_ratio <= 2.0) {
-    kernel_name = KERNEL_NAME_LOW_N_K_RATIO;
+    kernel_name = kLowNK;
   } else if (N >= 20000) {
-    kernel_name = KERNEL_NAME_LARGE_N;
+    kernel_name = kLargeN;
   } else {
-    kernel_name = KERNEL_NAME_DEFAULT;
+    kernel_name = kDefault;
   }
 
   auto const& configs = interface.getGemmConfigs();
@@ -92,20 +144,53 @@ class TrtllmGenGemmRunner {
     auto const configs = gemm.getGemmConfigs();
 
     mPassingConfigIndices.clear();
+    int const sv = getSMVersion();
 
     for (size_t i = 0; i < gemm.getNumGemmConfigs(); ++i) {
       auto const options = configs[i].mOptions;
 
       if (options.mDtypeA == mOptions.eltType && options.mDtypeC == mOptions.outputType &&
           options.mTransposeMmaOutput == mOptions.transposeMmaOutput &&
-          options.mSfLayoutB == mOptions.sfLayoutB) {
+          options.mSfLayoutB == mOptions.sfLayoutB &&
+          options.mLayoutA == mOptions.layoutA) {  // FIXME(siyuanf): expose matrix layout to user
+        if (!isArchCompatible(sv, configs[i].mSm)) continue;
         mPassingConfigIndices.push_back(i);
       }
     }
 
-    FLASHINFER_CHECK(
-        mPassingConfigIndices.size() > 0,
-        "No valid tactic found for the given options (precision, transpose, sf layout)");
+    if (mPassingConfigIndices.empty()) {
+      // Distinguish "this GPU has no cubins at all" from "no cubin matches these GEMM
+      // options". The former is the common failure on unsupported hardware, and the
+      // option dump below would send users looking in entirely the wrong place.
+      bool anyArchCompatible = false;
+      for (size_t i = 0; i < gemm.getNumGemmConfigs(); ++i) {
+        if (isArchCompatible(sv, configs[i].mSm)) {
+          anyArchCompatible = true;
+          break;
+        }
+      }
+      if (!anyArchCompatible) {
+        std::ostringstream arch_msg;
+        arch_msg << "The trtllm-gen GEMM cubin manifest contains no kernels runnable on sm" << sv
+                 << "; this backend currently ships cubins for sm100, sm103 and sm107.";
+        FLASHINFER_ERROR(arch_msg.str());
+      }
+    }
+
+    FLASHINFER_CHECK(mPassingConfigIndices.size() > 0,
+                     "No valid tactic found for the given options",
+                     "mDtypeA: ", gemm::trtllm::gen::dtypeToString(mOptions.eltType),
+                     "mDtypeC: ", gemm::trtllm::gen::dtypeToString(mOptions.outputType),
+                     "mTransposeMmaOutput: ", mOptions.transposeMmaOutput,
+                     "mSfLayoutB: ", gemm::trtllm::gen::sfLayoutToString(mOptions.sfLayoutB));
+  }
+
+  void checkPassingConfigIndex(int64_t tactic) const {
+    auto it = std::find(mPassingConfigIndices.begin(), mPassingConfigIndices.end(), tactic);
+    TVM_FFI_ICHECK(it != mPassingConfigIndices.end())
+        << "Tactic " << tactic
+        << " is not in this runner's compatible config set (device architecture or GEMM options "
+           "mismatch)";
   }
 
   int64_t getWorkspaceSizeInBytes(int64_t m, int64_t n, int64_t k, int64_t tactic) {
@@ -113,12 +198,16 @@ class TrtllmGenGemmRunner {
     auto const configs = gemm.getGemmConfigs();
     FLASHINFER_CHECK(tactic >= 0 && tactic < gemm.getNumGemmConfigs(),
                      "Invalid tactic in getWorkspaceSizeInBytes");
+    checkPassingConfigIndex(tactic);
     auto const config = configs[tactic];
 
     gemm::gemm::GemmData gemmData;
     gemmData.mProblemDimensions.mM = mOptions.transposeMmaOutput ? n : m;
     gemmData.mProblemDimensions.mN = mOptions.transposeMmaOutput ? m : n;
     gemmData.mProblemDimensions.mK = k;
+    gemmData.mProblemDimensions.mValidM = gemmData.mProblemDimensions.mM;
+    gemmData.mProblemDimensions.mValidN = gemmData.mProblemDimensions.mN;
+    gemmData.mProblemDimensions.mValidK = gemmData.mProblemDimensions.mK;
     gemmData.mProblemDimensions.mRank = 0;
     gemmData.mProblemDimensions.mWorldSize = 1;
 
@@ -131,6 +220,7 @@ class TrtllmGenGemmRunner {
     auto gemm = gemm::gemm::GemmInterface();
     auto const configs = gemm.getGemmConfigs();
     TVM_FFI_ICHECK(tactic >= 0 && tactic < gemm.getNumGemmConfigs()) << "Invalid tactic id in run";
+    checkPassingConfigIndex(tactic);
     auto const& config = configs[tactic];
     TVM_FFI_ICHECK(config.mOptions.mSfLayoutB == mOptions.sfLayoutB) << "Invalid sf layout in run";
 
@@ -139,8 +229,15 @@ class TrtllmGenGemmRunner {
     gemmData.mProblemDimensions.mM = mOptions.transposeMmaOutput ? n : m;
     gemmData.mProblemDimensions.mN = mOptions.transposeMmaOutput ? m : n;
     gemmData.mProblemDimensions.mK = k;
+    gemmData.mProblemDimensions.mValidM = gemmData.mProblemDimensions.mM;
+    gemmData.mProblemDimensions.mValidN = gemmData.mProblemDimensions.mN;
+    gemmData.mProblemDimensions.mValidK = gemmData.mProblemDimensions.mK;
     gemmData.mProblemDimensions.mRank = 0;
     gemmData.mProblemDimensions.mWorldSize = 1;
+
+    gemmData.mProblemDimensions.mValidM = gemmData.mProblemDimensions.mM;
+    gemmData.mProblemDimensions.mValidN = gemmData.mProblemDimensions.mN;
+    gemmData.mProblemDimensions.mValidK = gemmData.mProblemDimensions.mK;
 
     // Inputs
     gemmData.mInputBuffers.mPtrA = mOptions.transposeMmaOutput ? b : a;
@@ -187,8 +284,15 @@ class TrtllmGenGemmRunner {
     gemmData.mProblemDimensions.mM = mOptions.transposeMmaOutput ? n : m;
     gemmData.mProblemDimensions.mN = mOptions.transposeMmaOutput ? m : n;
     gemmData.mProblemDimensions.mK = k;
+    gemmData.mProblemDimensions.mValidM = gemmData.mProblemDimensions.mM;
+    gemmData.mProblemDimensions.mValidN = gemmData.mProblemDimensions.mN;
+    gemmData.mProblemDimensions.mValidK = gemmData.mProblemDimensions.mK;
     gemmData.mProblemDimensions.mRank = 0;
     gemmData.mProblemDimensions.mWorldSize = 1;
+
+    gemmData.mProblemDimensions.mValidM = gemmData.mProblemDimensions.mM;
+    gemmData.mProblemDimensions.mValidN = gemmData.mProblemDimensions.mN;
+    gemmData.mProblemDimensions.mValidK = gemmData.mProblemDimensions.mK;
 
     std::vector<int64_t> sortedIndices = mPassingConfigIndices;
     std::sort(sortedIndices.begin(), sortedIndices.end(), [&configs](int64_t idx0, int64_t idx1) {
@@ -238,14 +342,12 @@ class TrtllmGenGemmRunner {
   int64_t selectHeuristic(int64_t m, int64_t n, int64_t k) const {
     if (mOptions.eltType == gemm::trtllm::gen::Dtype::E4m3) {
       return select_kernel_fp8(m, n, k, gemm::gemm::GemmInterface());
-    } else if (mOptions.eltType == gemm::trtllm::gen::Dtype::E2m1) {
+    } else {
       auto sortedIndices = getValidTactics(m, n, k);
       TVM_FFI_ICHECK(!sortedIndices.empty()) << "No valid tactic found";
 
       // the getValidTactics is sorted by priority, so the first one is the best one
       return sortedIndices[0];
-    } else {
-      TVM_FFI_ICHECK(false) << "Unsupported eltType";
     }
   }
 
@@ -257,9 +359,12 @@ class TrtllmGenGemmRunner {
 using tvm::ffi::Array;
 using tvm::ffi::Optional;
 
-void trtllm_gemm(TensorView workspace_buffer, TensorView a, TensorView b, TensorView a_scale,
-                 TensorView b_scale, Optional<TensorView> globalScale, TensorView out,
-                 bool use_8x4_sf_layout, int64_t tactic) {
+void trtllm_gemm(int64_t input_dtype_, int64_t output_dtype_, TensorView workspace_buffer,
+                 TensorView a, TensorView b, TensorView a_scale, TensorView b_scale,
+                 Optional<TensorView> globalScale, TensorView out, bool use_8x4_sf_layout,
+                 int64_t tactic) {
+  auto input_dtype = static_cast<gemm::trtllm::gen::Dtype>(input_dtype_);
+  auto output_dtype = static_cast<gemm::trtllm::gen::Dtype>(output_dtype_);
   CHECK_DEVICE(a, b);
   CHECK_DEVICE(a, out);
   CHECK_INPUT(a);
@@ -290,11 +395,12 @@ void trtllm_gemm(TensorView workspace_buffer, TensorView a, TensorView b, Tensor
   TVM_FFI_ICHECK(out.size(0) == m && out.size(1) == n) << "Output tensor has wrong dimensions";
 
   auto runner = flashinfer::TrtllmGenGemmRunner(flashinfer::TrtllmGenGemmRunnerOptions{
-      .eltType = is_fp8 ? gemm::trtllm::gen::Dtype::E4m3 : gemm::trtllm::gen::Dtype::E2m1,
-      .outputType = gemm::trtllm::gen::Dtype::Bfloat16,
+      .eltType = input_dtype,
+      .outputType = output_dtype,
       .transposeMmaOutput = true,
       .sfLayoutB = use_8x4_sf_layout ? gemm::trtllm::gen::SfLayout::R8c4
                                      : gemm::trtllm::gen::SfLayout::R128c4,
+      .layoutA = gemm::gemm::MatrixLayout::MajorK,  // currently only support major k layout
   });
 
   if (tactic == -1) {
@@ -320,27 +426,23 @@ void trtllm_gemm(TensorView workspace_buffer, TensorView a, TensorView b, Tensor
   }
 }
 
-enum class Dtype : int64_t {
-  E2m1 = 0,
-  E4m3 = 1,
-  Bfloat16 = 2,
-};
-
-Array<int64_t> trtllm_gemm_tactics(int64_t m, int64_t n, int64_t k, int64_t input_dtype,
-                                   int64_t output_dtype, bool use_8x4_sf_layout) {
-  TVM_FFI_ICHECK(input_dtype == static_cast<int64_t>(Dtype::E4m3) ||
-                 input_dtype == static_cast<int64_t>(Dtype::E2m1))
-      << "Unsupported input dtype";
-  TVM_FFI_ICHECK_EQ(output_dtype, static_cast<int64_t>(Dtype::Bfloat16))
-      << "Unsupported output dtype";
+Array<int64_t> trtllm_gemm_tactics(int64_t m, int64_t n, int64_t k, int64_t input_dtype_,
+                                   int64_t output_dtype_, bool use_8x4_sf_layout) {
+  auto input_dtype = static_cast<gemm::trtllm::gen::Dtype>(input_dtype_);
+  auto output_dtype = static_cast<gemm::trtllm::gen::Dtype>(output_dtype_);
+  TVM_FFI_CHECK(input_dtype == gemm::trtllm::gen::Dtype::E4m3 ||
+                    input_dtype == gemm::trtllm::gen::Dtype::MxE4m3 ||
+                    input_dtype == gemm::trtllm::gen::Dtype::E2m1,
+                "Unsupported input dtype");
+  TVM_FFI_CHECK(output_dtype == gemm::trtllm::gen::Dtype::Bfloat16, "Unsupported output dtype");
 
   auto runner = flashinfer::TrtllmGenGemmRunner(flashinfer::TrtllmGenGemmRunnerOptions{
-      .eltType = input_dtype == static_cast<int64_t>(Dtype::E4m3) ? gemm::trtllm::gen::Dtype::E4m3
-                                                                  : gemm::trtllm::gen::Dtype::E2m1,
-      .outputType = gemm::trtllm::gen::Dtype::Bfloat16,
+      .eltType = input_dtype,
+      .outputType = output_dtype,
       .transposeMmaOutput = true,
       .sfLayoutB = use_8x4_sf_layout ? gemm::trtllm::gen::SfLayout::R8c4
                                      : gemm::trtllm::gen::SfLayout::R128c4,
+      .layoutA = gemm::gemm::MatrixLayout::MajorK,  // currently only support major k layout
   });
 
   return runner.getValidTactics(m, n, k);

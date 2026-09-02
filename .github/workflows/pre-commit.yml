@@ -15,5 +15,9 @@ jobs:
     - uses: actions/checkout@v4.2.2
     - uses: actions/setup-python@v5
       with:
-        python-version: '3.11'
+        python-version-file: '.python-version'
+    # Upstream's `Validate CUDA configuration` step is dropped. Its line-based
+    # TOML reader cannot parse this file's multi-line `dev = [`, and past that it
+    # requires CUDA extras (nvidia-cutlass-dsl[cu13]) a ROCm wheel cannot carry --
+    # unsatisfiable here, not merely noisy. Same removal in release.yml.
     - uses: pre-commit/action@v3.0.1

@@ -28,10 +28,14 @@ SHADOW_MODULES: Dict[str, str] = {
 
 # Submodules with no ROCm implementation. cuda_ipc and trtllm_ar bind to
 # libcudart at import time; vllm_ar, nvshmem and nvshmem_allreduce import but
-# fail when the JIT fires; mnnvl needs pynvml.
+# fail when the JIT fires; mnnvl needs pynvml. mixed_comm is where v0.6.18
+# folded the NVSHMEM build: it renders .cu templates into FLASHINFER_GEN_SRC_DIR
+# before reaching `import nvidia.nvshmem`, so without the gate a ROCm caller
+# writes CUDA sources on its way to the failure.
 CUDA_ONLY_MODULES = frozenset(
     {
         "flashinfer.comm.cuda_ipc",
+        "flashinfer.comm.mixed_comm",
         "flashinfer.comm.mnnvl",
         "flashinfer.comm.nvshmem",
         "flashinfer.comm.nvshmem_allreduce",
@@ -39,6 +43,13 @@ CUDA_ONLY_MODULES = frozenset(
         "flashinfer.comm.trtllm_ar",
         "flashinfer.comm.trtllm_mnnvl_ar",
         "flashinfer.comm.vllm_ar",
+        # v0.6.18 made quantization a package; these two reach CUDA-only jit
+        # exports at import. Gating them turns an obscure sm121a_nvcc_flags
+        # ImportError into the uniform CUDA-only one, stubs included.
+        "flashinfer.quantization.fp4_quantization",
+        "flashinfer.quantization.fp8_quantization",
+        "flashinfer.fp4_quantization",
+        "flashinfer.fp8_quantization",
     }
 )
 

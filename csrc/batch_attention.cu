@@ -48,7 +48,7 @@ Array<int64_t> BatchPagedAttentionPlan(TensorView float_workspace_buffer,
 
   HolisticPlanInfo<2> plan_info;
 
-  cudaSetDevice(float_workspace_buffer.device().device_id);
+  ffi::CUDADeviceGuard device_guard(float_workspace_buffer.device().device_id);
   const cudaStream_t stream = get_stream(float_workspace_buffer.device());
 
   cudaError_t status = TwoStageHolisticPlan<IdType>(
@@ -102,7 +102,7 @@ void BatchPagedAttentionRun(TensorView float_workspace_buffer, TensorView int_wo
     v_stride_n = v_cache.stride(2);
   }
 
-  cudaSetDevice(q.device().device_id);
+  ffi::CUDADeviceGuard device_guard(q.device().device_id);
   const cudaStream_t stream = get_stream(q.device());
 
   DISPATCH_context(
@@ -167,6 +167,12 @@ void BatchPagedAttentionRun(TensorView float_workspace_buffer, TensorView int_wo
           params[i].v_stride_page = v_stride_page;
           params[i].v_stride_h = v_stride_h;
           params[i].v_stride_n = v_stride_n;
+          params[i].k_sf_stride_page = 0;
+          params[i].k_sf_stride_h = 0;
+          params[i].k_sf_stride_n = 0;
+          params[i].v_sf_stride_page = 0;
+          params[i].v_sf_stride_h = 0;
+          params[i].v_sf_stride_n = 0;
 
           params[i].sm_scale = sm_scale;
           params[i].v_scale = v_scale;

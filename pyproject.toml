@@ -6,7 +6,7 @@
 name = "amd-flashinfer"
 dynamic = ["version"]
 description = "Fast Attention Algorithms for LLM Inference on ROCm"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<4.0"
 readme = "README.md"
 license = "Apache-2.0"
 # Adding licenses/*.txt here makes `python -m build` write License-File
@@ -78,6 +78,13 @@ backend-path = ["."]
 # Anchored, not "flashinfer*": that glob also matched the sibling
 # flashinfer-cubin/ and flashinfer-jit-cache/ project roots and shipped them.
 include = ["flashinfer", "flashinfer.*"]
+# v0.6.18 added generators carrying the NVIDIA TensorRT Source Code License,
+# which forbids redistribution. `find` defaults to namespaces = true, so the
+# directory ships as a namespace package despite having no __init__.py -- this
+# exclude is what drops it, and exclude-package-data would not (the files are
+# modules, not data). Nothing on HIP imports them: flashinfer.jit.attention
+# reaches .modules only inside its IS_CUDA arm.
+exclude = ["flashinfer.jit.attention.fmha_v2*"]
 
 [tool.setuptools.package-data]
 # scikit-build-core's `wheel.packages = ["flashinfer"]` swept these in
@@ -122,6 +129,25 @@ follow_imports = "skip"
 ignore_errors = false
 strict_optional = false
 
+
+[tool.ruff]
+# Verbatim from upstream v0.6.18: generated and vendored kernels that
+# ruff-format would otherwise rewrite. Dropping it makes `pre-commit run -a`
+# reformat 16 upstream files, each one a permanent merge conflict.
+extend-exclude = [
+    "flashinfer/cute_dsl/attention/fmha/fmha.py",
+    "flashinfer/cute_dsl/attention/fmha/fmha_blockscaled.py",
+    "flashinfer/cute_dsl/attention/fmha/helpers",
+    "flashinfer/moe_ep/kernel_src/cutedsl_megamoe/src",
+    "flashinfer/topk_varlen/kernels/gvr_topk_decode.py",
+    "flashinfer/topk_varlen/kernels/gvr_topk_decode_lb.py",
+    "flashinfer/topk_varlen/kernels/block_scan.py",
+    "flashinfer/moe_ep/kernel_src/sm90/pull_style_cutedsl_megakernel/src",
+    "flashinfer/gemm/kernels/dense_blockscaled_gemm_sm107.py",
+    "flashinfer/fused_moe/cute_dsl/rubin/blockscaled_contiguous_gather_grouped_gemm_swiglu_fusion.py",
+    "flashinfer/fused_moe/cute_dsl/rubin/blockscaled_contiguous_grouped_gemm_finalize_fusion.py",
+]
+force-exclude = true
 
 [tool.ruff.lint]
 select = [
@@ -188,9 +214,7 @@ testpaths = [
     "tests/attention/test_decode_prefill_lse.py",
     "tests/attention/test_non_contiguous_decode.py",
     "tests/attention/test_non_contiguous_prefill.py",
-    "tests/attention/test_page.py",
     "tests/utils/test_activation.py",
-    "tests/utils/test_block_sparse_indices_to_vector_sparse_offsets.py",
     "tests/utils/test_quantization.py",
 ]
 python_classes = ["Test*"]

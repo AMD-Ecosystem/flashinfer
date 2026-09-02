@@ -69,7 +69,8 @@ def _trees():
 
 
 # Headers the wheel ships, as paths under include/. Everything else in that tree
-# is upstream CUDA that nothing on ROCm compiles: 214 headers in, 47 out.
+# is upstream CUDA that nothing on ROCm compiles: 287 headers in, 47 out. Note
+# MANIFEST.in grafts include/ wholesale, so the sdist carries all 287.
 # fp16.h is the one upstream header a ROCm source still reaches for
 # (rocm/attention/prefill.cuh). Editable installs are not filtered -- they
 # symlink the whole tree, so a developer keeps the upstream headers to read.

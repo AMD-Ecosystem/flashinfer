@@ -200,7 +200,10 @@ def test_hip_gqa_group_sizes_match_the_kernel_dispatch():
 
     import flashinfer
 
-    header = Path(flashinfer.get_include()) / "flashinfer" / "utils.cuh"
+    # The forked ROCm header, not upstream's utils.cuh: the HIP decode kernel
+    # compiles against this one, and v0.6.18 gave upstream's a group_size == 6
+    # arm that the fork does not have.
+    header = Path(flashinfer.get_include()) / "flashinfer" / "rocm" / "dispatch.cuh"
     if not header.is_file():
         pytest.skip(f"kernel header not present at {header}")
     body = header.read_text()

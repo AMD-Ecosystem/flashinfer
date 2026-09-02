@@ -26,9 +26,13 @@ def main():
             print("v0.0.0-0-g0000000")
             sys.exit(1)
 
-        # Find the closest ancestor tag
-        closest_tag = None
-        min_distance = float("inf")
+        # Closest ancestor tag, tracked separately for tags that carry a local
+        # version (`v0.5.3+amd.2`) and those that do not. Merging an upstream
+        # release makes its bare tag an ancestor and usually the *closer* one,
+        # and a bare tag produces a version indistinguishable from upstream's
+        # own wheel -- no `+amd`, and no error to say so. Fork tags therefore
+        # win outright; plain tags are the fallback for a tree that has none.
+        best = {True: (None, float("inf")), False: (None, float("inf"))}
 
         for tag in result.stdout.strip().split("\n"):
             try:
@@ -48,14 +52,16 @@ def main():
                 )
                 distance = int(distance_result.stdout.strip())
 
-                # Track the closest tag
-                if distance <= min_distance:
-                    min_distance = distance
-                    closest_tag = tag
+                # Track the closest tag within its own bucket
+                bucket = "+" in tag
+                if distance <= best[bucket][1]:
+                    best[bucket] = (tag, distance)
 
             except subprocess.CalledProcessError:
                 # Not an ancestor, try next tag
                 continue
+
+        closest_tag, min_distance = best[True] if best[True][0] else best[False]
 
         if closest_tag is None:
             # No suitable tag found

@@ -1,3 +1,4 @@
+import abc
 import dataclasses
 import functools
 import logging
@@ -5,7 +6,7 @@ import os
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Union, Hashable
+from typing import Any, Dict, List, Optional, Sequence, Union, Hashable
 
 from filelock import FileLock
 
@@ -15,15 +16,21 @@ from .utils import write_if_different
 
 if IS_CUDA:
     import tvm_ffi
+
     from ..compilation_context import CompilationContext
-    from .cpp_ext import generate_ninja_build_for_op, run_ninja
+    from .cpp_ext import (
+        generate_ninja_build_for_op,
+        get_nvcc_parallelism_flags,
+        run_ninja,
+    )
 elif IS_HIP:
     from ..rocm.compilation_context import CompilationContext  # type: ignore[assignment]
     from .rocm.cpp_ext import generate_ninja_build_for_op, run_ninja  # type: ignore[no-redef]
     from .rocm.core import check_rocm_arch as check_rocm_arch
 
 os.makedirs(jit_env.FLASHINFER_WORKSPACE_DIR, exist_ok=True)
-os.makedirs(jit_env.FLASHINFER_CSRC_DIR, exist_ok=True)
+# Note: Do NOT create FLASHINFER_CSRC_DIR here - it's the package directory
+# which may be read-only after installation
 
 
 class MissingJITCacheError(RuntimeError):
@@ -129,12 +136,17 @@ sm89_nvcc_flags = [
     "-gencode=arch=compute_89,code=sm_89",
     "-DFLASHINFER_ENABLE_FP8_E8M0",
 ]
-sm90a_nvcc_flags = ["-gencode=arch=compute_90a,code=sm_90a"] + common_nvcc_flags
+sm90a_nvcc_flags = [
+    "-gencode=arch=compute_90a,code=sm_90a",
+    "-DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
+] + common_nvcc_flags
 sm100a_nvcc_flags = ["-gencode=arch=compute_100a,code=sm_100a"] + common_nvcc_flags
 sm103a_nvcc_flags = ["-gencode=arch=compute_103a,code=sm_103a"] + common_nvcc_flags
 sm100f_nvcc_flags = ["-gencode=arch=compute_100f,code=sm_100f"] + common_nvcc_flags
+sm107a_nvcc_flags = ["-gencode=arch=compute_107a,code=sm_107a"] + common_nvcc_flags
 sm110a_nvcc_flags = ["-gencode=arch=compute_110a,code=sm_110a"] + common_nvcc_flags
 sm120a_nvcc_flags = ["-gencode=arch=compute_120a,code=sm_120a"] + common_nvcc_flags
+sm120f_nvcc_flags = ["-gencode=arch=compute_120f,code=sm_120f"] + common_nvcc_flags
 sm121a_nvcc_flags = ["-gencode=arch=compute_121a,code=sm_121a"] + common_nvcc_flags
 
 current_compilation_context = CompilationContext()
@@ -183,14 +195,21 @@ class JitSpecRegistry:
 
         spec = self._specs[name]
         library_path = spec.get_library_path() if spec.is_compiled else None
+        if isinstance(spec, JitSpecNvcc):
+            sources = spec.sources
+            needs_device_linking = spec.needs_device_linking
+        else:
+            # other backends have no source list.
+            sources = []
+            needs_device_linking = False
 
         return JitSpecStatus(
             name=spec.name,
             created_at=self._creation_times[name],
             is_compiled=spec.is_compiled,
             library_path=library_path,
-            sources=spec.sources,
-            needs_device_linking=spec.needs_device_linking,
+            sources=sources,
+            needs_device_linking=needs_device_linking,
         )
 
     def get_all_statuses(self) -> List[JitSpecStatus]:
@@ -216,8 +235,106 @@ class JitSpecRegistry:
 jit_spec_registry = JitSpecRegistry()
 
 
+class JitSpec(abc.ABC):
+    """Abstract base for JIT-compiled kernel modules.
+
+    Concrete subclasses implement one compilation toolchain each
+    (``JitSpecNvcc`` for nvcc/ninja modules, ``JitSpecCuteDsl`` for CuTe-DSL
+    kernels; future DSLs follow the same shape). The shared lifecycle policy
+    lives in the concrete `build_and_load` template method: cached-
+    artifact fast path, cross-process locking with a double-check, and
+    ``FLASHINFER_DISABLE_JIT`` enforcement.
+
+    Subclass contract:
+
+    - `try_load` returns the cached artifact only when it is present
+      AND known-valid; it may conservatively return ``None`` even when
+      artifacts exist (e.g. nvcc delegates JIT-path freshness to ninja, so
+      only the AOT artifact is returned here).
+    - `build` produces or refreshes on-disk artifacts. It must be
+      idempotent and may be internally incremental. It runs under the
+      ``lock_path`` lock when invoked via `build_and_load`, so it must
+      not re-acquire that lock.
+    - `load` loads the artifact that `build` produced. It may
+      return an object retained in memory by `build` instead of
+      re-reading from disk.
+    """
+
+    name: str
+
+    @property
+    @abc.abstractmethod
+    def lock_path(self) -> Path: ...
+
+    @property
+    @abc.abstractmethod
+    def is_compiled(self) -> bool:
+        """Whether a valid on-disk artifact exists for this spec."""
+        ...
+
+    @abc.abstractmethod
+    def get_library_path(self) -> Path:
+        """Path of the primary on-disk artifact (.so / .o)."""
+        ...
+
+    @abc.abstractmethod
+    def try_load(self) -> Optional[Any]:
+        """Return the cached artifact, or None when absent or not known-valid.
+
+        Exception contract: must NOT raise for artifact-level problems
+        (missing, stale, corrupt, unloadable) — log and return None so
+        build_and_load() falls through to build(). An exception escaping
+        try_load() is a programming error and propagates.
+        """
+        ...
+
+    @abc.abstractmethod
+    def build(self) -> None:
+        """Produce or refresh on-disk artifacts.
+
+        Exception contract: must raise when no usable kernel can result
+        (compilation failure, JIT disabled for direct callers). If the
+        kernel compiles but writing it to disk fails, build() may log and
+        continue instead of raising, as long as load() can still return
+        the compiled kernel (e.g. kept in memory).
+        """
+        ...
+
+    @abc.abstractmethod
+    def load(self) -> Any:
+        """Load the artifact that build() produced; raises on failure.
+
+        Called by build_and_load() only after a successful build(), so a
+        failure here is a genuine error, not a cache miss.
+        """
+        ...
+
+    def build_and_load(self) -> Any:
+        cached = self.try_load()
+        if cached is not None:
+            return cached
+
+        with FileLock(self.lock_path, thread_local=False):
+            # Another process may have built the artifact while we waited.
+            cached = self.try_load()
+            if cached is not None:
+                return cached
+
+            if os.environ.get("FLASHINFER_DISABLE_JIT"):
+                raise MissingJITCacheError(
+                    "JIT compilation is disabled via FLASHINFER_DISABLE_JIT "
+                    "environment variable, but the required module is not "
+                    "found in the JIT cache. Please add the missing module "
+                    "to the JIT cache build configuration.",
+                    spec=self,
+                )
+
+            self.build()
+            return self.load()
+
+
 @dataclasses.dataclass
-class JitSpec:
+class JitSpecNvcc(JitSpec):
     name: str
     sources: List[Path]
     extra_cflags: Optional[List[str]]
@@ -232,6 +349,10 @@ class JitSpec:
         return jit_env.FLASHINFER_JIT_DIR / self.name / "build.ninja"
 
     @property
+    def build_dir(self) -> Path:
+        return jit_env.FLASHINFER_JIT_DIR / self.name
+
+    @property
     def jit_library_path(self) -> Path:
         return jit_env.FLASHINFER_JIT_DIR / self.name / f"{self.name}.so"
 
@@ -242,7 +363,7 @@ class JitSpec:
 
     def get_object_paths(self) -> List[Path]:
         object_paths = []
-        jit_dir = self.jit_library_path.parent
+        jit_dir = self.build_dir
         for source in self.sources:
             is_cuda = source.suffix == ".cu"
             object_suffix = ".cuda.o" if is_cuda else ".o"
@@ -268,7 +389,7 @@ class JitSpec:
 
     def write_ninja(self) -> None:
         ninja_path = self.ninja_path
-        ninja_path.parent.mkdir(parents=True, exist_ok=True)
+        self.build_dir.mkdir(parents=True, exist_ok=True)
         content = generate_ninja_build_for_op(
             name=self.name,
             sources=self.sources,
@@ -284,7 +405,23 @@ class JitSpec:
     def is_ninja_generated(self) -> bool:
         return self.ninja_path.exists()
 
-    def build(self, verbose: bool, need_lock: bool = True) -> None:
+    def try_load(self) -> Optional[Any]:
+        # Only the AOT artifact is known-valid without building.
+        # The freshness of the JIT-path .so is owned by ninja's dependency scan,
+        # so a cache miss here routes build_and_load() through build(),
+        # where ninja no-ops if everything is up to date.
+        if self.is_aot:
+            try:
+                return self.load(self.aot_path)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load AOT artifact {self.aot_path}: {e}. "
+                    "Falling back to JIT build."
+                )
+                return None
+        return None
+
+    def build(self, verbose: Optional[bool] = None, need_lock: bool = False) -> None:
         if os.environ.get("FLASHINFER_DISABLE_JIT"):
             raise MissingJITCacheError(
                 "JIT compilation is disabled via FLASHINFER_DISABLE_JIT environment variable, "
@@ -292,42 +429,107 @@ class JitSpec:
                 "Please add the missing module to the JIT cache build configuration.",
                 spec=self,
             )
+        if verbose is None:
+            verbose = os.environ.get("FLASHINFER_JIT_VERBOSE", "0") == "1"
         lock = (
             FileLock(self.lock_path, thread_local=False) if need_lock else nullcontext()
         )
         with lock:
-            # Write ninja file if it doesn't exist (deferred case)
-            if not self.is_ninja_generated:
-                self.write_ninja()
-            run_ninja(jit_env.FLASHINFER_JIT_DIR, self.ninja_path, verbose)
+            self.write_ninja()
+            run_ninja(self.build_dir, self.ninja_path, verbose)
 
-    def load(self, so_path: Path, class_name: str = None):
+    def load(self, so_path: Optional[Path] = None):
+        so_path = so_path or self.jit_library_path
         if IS_HIP:
-            load_class = class_name is not None
+            # torch's own loader, not tvm_ffi: the HIP sources register through
+            # TORCH_LIBRARY, so the ops land on torch.ops.<name>.
             import torch
 
-            loader = torch.classes if load_class else torch.ops
-            loader.load_library(so_path)
-            if load_class:
-                cls = torch._C._get_custom_class_python_wrapper(self.name, class_name)
-                return cls
-            return getattr(loader, self.name)
-        else:
-            return tvm_ffi.load_module(str(so_path))
+            torch.ops.load_library(so_path)
+            return getattr(torch.ops, self.name)
+        return tvm_ffi.load_module(str(so_path))
 
-    def build_and_load(self, class_name: str = None):
-        if self.is_aot:
-            return self.load(self.aot_path, class_name)
+    def get_compile_commands(self) -> List[dict]:
+        """
+        Generate compile_commands.json entries for this JitSpec.
 
-        # Guard both build and load with the same lock to avoid race condition
-        # where another process is building the library and removes the .so file.
-        with FileLock(self.lock_path, thread_local=False):
-            so_path = self.jit_library_path
-            verbose = os.environ.get("FLASHINFER_JIT_VERBOSE", "0") == "1"
-            self.build(verbose, need_lock=False)
-            result = self.load(so_path, class_name)
+        Returns:
+            A list of dictionaries, each representing a compile command entry
+            for a source file in this JitSpec.
+        """
+        from .cpp_ext import (
+            get_cuda_path,
+            build_common_cflags,
+            build_cflags,
+            build_cuda_cflags,
+        )
 
-        return result
+        cuda_home = get_cuda_path()
+
+        # Build flags
+        common_cflags = build_common_cflags(cuda_home, self.extra_include_dirs)
+        cflags = build_cflags(common_cflags, self.extra_cflags)
+        cuda_cflags = build_cuda_cflags(common_cflags, self.extra_cuda_cflags)
+
+        # Replace $common_cflags and $cuda_home placeholders
+        def expand_flags(
+            flags: List[str], common_cflags_expanded: List[str]
+        ) -> List[str]:
+            expanded = []
+            for flag in flags:
+                if flag == "$common_cflags":
+                    expanded.extend(common_cflags_expanded)
+                elif "$cuda_home" in flag:
+                    expanded.append(flag.replace("$cuda_home", cuda_home))
+                else:
+                    expanded.append(flag)
+            return expanded
+
+        # Expand common_cflags first (it has $cuda_home placeholders)
+        common_cflags_expanded = [
+            flag.replace("$cuda_home", cuda_home) for flag in common_cflags
+        ]
+        cflags_expanded = expand_flags(cflags, common_cflags_expanded)
+        cuda_cflags_expanded = expand_flags(cuda_cflags, common_cflags_expanded)
+
+        # Get compilers
+        cxx = os.environ.get("CXX", "c++")
+        nvcc = os.environ.get("FLASHINFER_NVCC", f"{cuda_home}/bin/nvcc")
+
+        # Build directory
+        build_dir = str(self.build_dir.resolve())
+
+        # Generate entries for each source file
+        compile_commands = []
+        for source in self.sources:
+            is_cuda = source.suffix == ".cu"
+
+            if is_cuda:
+                compiler = nvcc
+                flags = cuda_cflags_expanded
+                object_suffix = ".cuda.o"
+            else:
+                compiler = cxx
+                flags = cflags_expanded
+                object_suffix = ".o"
+
+            obj_name = source.with_suffix(object_suffix).name
+            output_file = os.path.join(build_dir, obj_name)
+
+            # Build the command string
+            command_parts = [compiler, "-c", str(source.resolve())]
+            command_parts += flags
+            command_parts += ["-o", output_file]
+
+            compile_commands.append(
+                {
+                    "directory": build_dir,
+                    "command": " ".join(command_parts),
+                    "file": str(source.resolve()),
+                }
+            )
+
+        return compile_commands
 
 
 def gen_jit_spec(
@@ -346,35 +548,50 @@ def gen_jit_spec(
         verbose_env = os.environ.get("FLASHINFER_JIT_VERBOSE", "0")
         debug = (debug_env if debug_env is not None else verbose_env) == "1"
 
-        cflags = ["-std=c++17", "-Wno-switch-bool"]
+        # Only add default C++ standard if not specified in extra flags
+        cflags_has_std = extra_cflags is not None and any(
+            f.startswith("-std=") for f in extra_cflags
+        )
+        cuda_cflags_has_std = extra_cuda_cflags is not None and any(
+            f.startswith("-std=") for f in extra_cuda_cflags
+        )
+
+        cflags = ["-Wno-switch-bool"]
+        if not cflags_has_std:
+            cflags.insert(0, "-std=c++17")
+
         cuda_cflags = [
-            "-std=c++17",
-            f"--threads={os.environ.get('FLASHINFER_NVCC_THREADS', '1')}",
+            *get_nvcc_parallelism_flags(),
             "-use_fast_math",
+            "-Xfatbin=-compress-all",  # Ensure all device binaries are compressed
+            "--compress-mode=size",
             "-DFLASHINFER_ENABLE_F16",
             "-DFLASHINFER_ENABLE_BF16",
             "-DFLASHINFER_ENABLE_FP8_E4M3",
             "-DFLASHINFER_ENABLE_FP8_E5M2",
         ]
+        if not cuda_cflags_has_std:
+            cuda_cflags.insert(0, "-std=c++17")
+
         if debug:
             cflags += ["-O0", "-g"]
             cuda_cflags += [
                 "-g",
                 "-O0",
-                "-G",
+                "--device-debug",
                 "-lineinfo",
                 "--ptxas-options=-v",
                 "-DCUTLASS_DEBUG_TRACE_LEVEL=2",
             ]
         else:
+            # non debug mode
             cuda_cflags += ["-DNDEBUG", "-O3"]
-            cflags += ["-O3"]
+            cflags += ["-DNDEBUG", "-O3"]
 
-        # useful for ncu
+        # useful for ncu source correlation
         if os.environ.get("FLASHINFER_JIT_LINEINFO", "0") == "1":
             cuda_cflags += ["-lineinfo"]
-
-    elif IS_HIP:
+    else:
         from .rocm.core import build_flags
 
         check_rocm_arch()
@@ -384,13 +601,10 @@ def gen_jit_spec(
         cflags += extra_cflags
     if extra_cuda_cflags is not None:
         cuda_cflags += extra_cuda_cflags
-    if extra_include_paths is not None:
-        extra_include_paths = [Path(x) for x in extra_include_paths]
-    sources_paths: List[Path] = [Path(x) for x in sources]
 
-    spec = JitSpec(
+    spec = JitSpecNvcc(
         name=name,
-        sources=sources_paths,
+        sources=[Path(x) for x in sources],
         extra_cflags=cflags,
         extra_cuda_cflags=cuda_cflags,
         extra_ldflags=extra_ldflags,
@@ -423,12 +637,16 @@ def build_jit_specs(
 ) -> None:
     lines: List[str] = []
     for spec in specs:
+        if not isinstance(spec, JitSpecNvcc):
+            raise TypeError(
+                f"build_jit_specs only supports nvcc modules, got "
+                f"{type(spec).__name__} for {spec.name}"
+            )
         if skip_prebuilt and spec.aot_path.exists():
             continue
         lines.append(f"subninja {spec.ninja_path}")
-        if not spec.is_ninja_generated:
-            with FileLock(spec.lock_path, thread_local=False):
-                spec.write_ninja()
+        with FileLock(spec.lock_path, thread_local=False):
+            spec.write_ninja()
     if not lines:
         return
 

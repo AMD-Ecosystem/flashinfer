@@ -22,11 +22,13 @@ from flashinfer.comm.mapping import Mapping
 from flashinfer.comm.mnnvl import MnnvlMemory, MpiComm
 from flashinfer.comm.trtllm_alltoall import MnnvlMoe, MoEAlltoallInfo
 
+from .conftest import mnnvl_available
+
 pynvml.nvmlInit()
 
 
 @pytest.mark.skipif(
-    not MnnvlMemory.supports_mnnvl(),
+    not mnnvl_available(),
     reason="Mnnvl memory is not supported on this platform",
 )
 class TestMnnvlMemory:
@@ -60,7 +62,7 @@ class TestMnnvlMemory:
         return (size + align_size - 1) // align_size * align_size
 
     @pytest.mark.skipif(
-        not MnnvlMemory.supports_mnnvl(),
+        not mnnvl_available(),
         reason="Mnnvl memory is not supported on this platform",
     )
     def test_mnnvl_memory(self):
@@ -118,11 +120,11 @@ class TestMnnvlMemory:
         del tensor1
 
     @pytest.mark.skipif(
-        not MnnvlMemory.supports_mnnvl(),
+        not mnnvl_available(),
         reason="Mnnvl memory is not supported on this platform",
     )
     def test_moe_alltoall_multi_rank_single_gpu(self):
-        torch.cuda.set_device(self.rank)
+        torch.cuda.set_device(self.local_rank)
         max_world_size = 8
         assert self.world_size <= max_world_size, (
             f"should run with world_size at most {max_world_size}"

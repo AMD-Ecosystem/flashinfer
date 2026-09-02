@@ -13,6 +13,13 @@
 # See https://github.com/pre-commit/pre-commit
 # Note the pre-commit hooks shoule only be used for formatting, but not for linting.
 # For linting consider using CI.
+
+# The kernel_src */src trees are upstream kernel drops that are re-synced
+# periodically (sm100/cutedsl_megamoe, sm90/pull_style_cutedsl_megakernel);
+# excluded from all hooks so formatting/lint churn doesn't block syncs.
+# The shim/ layers next to them are ours and stay checked.
+exclude: ^flashinfer/moe_ep/kernel_src/(cutedsl_megamoe|sm90/pull_style_cutedsl_megakernel)/src/
+
 repos:
   # Standard hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -52,7 +59,7 @@ repos:
           # structural type checking on code that can be analyzed.
           args: ["--config-file", "pyproject.toml", "--ignore-missing-imports", "--exclude", "flashinfer-cubin/"]
           files: ^flashinfer/
-          exclude: ^(flashinfer-cubin/|3rdparty/|build/)
+          exclude: ^(flashinfer-cubin/|flashinfer/attention/prims_ts/kernels/|3rdparty/|build/|flashinfer/cute_dsl/attention/fmha/(fmha\.py|fmha_blockscaled\.py|helpers/)|flashinfer/gemm/kernels/dense_blockscaled_gemm_sm107\.py|flashinfer/fused_moe/cute_dsl/rubin/(blockscaled_contiguous_gather_grouped_gemm_swiglu_fusion\.py|blockscaled_contiguous_grouped_gemm_finalize_fusion\.py))
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
@@ -64,11 +71,25 @@ repos:
       - id: ruff-format
         types_or: [ python, pyi ]
 
+  # Fork-owned markdown only. Upstream does not run markdownlint, so pointing it
+  # at the whole tree rewrites documents the port does not own -- v0.6.18 brought
+  # in 24 such files -- and every rewrite is a permanent merge conflict.
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.45.0
     hooks:
       - id: markdownlint
         args: ["--fix"]
+        files: |
+          (?x)^(
+            README\.md
+            |CONTRIBUTING\.md
+            |CLAUDE\.md
+            |benchmarks/README\.md
+            |docs/rocm/.*\.md
+            |amd-flashinfer-jit-cache/README\.md
+            |\.claude/skills/(add-rocm-kernel|benchmark-kernel|code-coverage
+              |coding-guidelines|debug-rocm-crash|plan-review|pr-workflow)/SKILL\.md
+          )$
 
   # REUSE compliance check for specific directories only
   - repo: local

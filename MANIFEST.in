@@ -36,6 +36,12 @@ recursive-include licenses *.txt
 # development and CI machinery has to be pruned explicitly or it ships in the
 # release tarball. This list carries over the exclusions that
 # [tool.scikit-build.sdist].exclude used to provide.
+# Not Apache-2.0: these carry the NVIDIA TensorRT Source Code License, which
+# forbids redistribution. They arrived with v0.6.18 and no ROCm build reads them.
+prune csrc/fmha_v2
+prune flashinfer/jit/attention/fmha_v2
+exclude csrc/cudnn_sdpa_utils.h
+
 prune tests
 prune docs
 prune benchmarks

@@ -113,6 +113,30 @@ def should_skip_build() {
   return false
 }
 
+def should_skip_duplicate_build() {
+  // Skip branch builds if this is a PR from an origin branch
+  // This prevents duplicate builds: one for the branch, one for the PR
+  if (!env.CHANGE_ID && env.BRANCH_NAME != 'main') {
+    // This is a branch build (not a PR build, not main)
+    // Check if there's an open PR for this branch
+    try {
+      def prList = sh(
+        script: "git ls-remote origin 'refs/pull/*/head' | grep \$(git rev-parse HEAD) || true",
+        returnStdout: true
+      ).trim()
+
+      if (prList) {
+        echo "Skipping branch build - this branch has an open PR. PR build will run instead."
+        return true
+      }
+    } catch (Exception e) {
+      echo "Could not check for open PRs: ${e.toString()}"
+      // Continue with build if check fails
+    }
+  }
+  return false
+}
+
 def cancel_previous_build() {
   // cancel previous build if it is not on main.
   if (env.BRANCH_NAME != 'main') {
@@ -275,6 +299,12 @@ def shard_run_unittest_GPU(node_type, shard_id, cuda_version) {
 }
 
 stage('Unittest') {
+  if (should_skip_duplicate_build()) {
+    echo "Skipping duplicate build - PR build will run instead"
+    Utils.markStageSkippedForConditional('Unittest')
+    return
+  }
+
   if (should_skip_build()) {
     echo "Skipping tests - only documentation/config files changed"
     Utils.markStageSkippedForConditional('Unittest')
@@ -284,24 +314,6 @@ stage('Unittest') {
   cancel_previous_build()
   parallel(
     failFast: true,
-    // CUDA 12.6 AOT Tests
-    'AOT-Build-Import-x86-64-cu126': {
-      run_with_spot_retry('CPU-LARGE-SPOT', 'CPU-LARGE', 'AOT-Build-Import-x86-64-cu126',
-        { node_type -> run_unittest_CPU_JIT_CACHE_PACKAGE_BUILD_IMPORT(node_type, 'cu126') })
-    },
-    'AOT-Build-Import-aarch64-cu126': {
-      run_with_spot_retry('ARM-LARGE-SPOT', 'ARM-LARGE', 'AOT-Build-Import-aarch64-cu126',
-        { node_type -> run_unittest_CPU_JIT_CACHE_PACKAGE_BUILD_IMPORT(node_type, 'cu126') })
-    },
-    // CUDA 12.8 AOT Tests
-    'AOT-Build-Import-x86-64-cu128': {
-      run_with_spot_retry('CPU-LARGE-SPOT', 'CPU-LARGE', 'AOT-Build-Import-x86-64-cu128',
-        { node_type -> run_unittest_CPU_JIT_CACHE_PACKAGE_BUILD_IMPORT(node_type, 'cu128') })
-    },
-    'AOT-Build-Import-aarch64-cu128': {
-      run_with_spot_retry('ARM-LARGE-SPOT', 'ARM-LARGE', 'AOT-Build-Import-aarch64-cu128',
-        { node_type -> run_unittest_CPU_JIT_CACHE_PACKAGE_BUILD_IMPORT(node_type, 'cu128') })
-    },
     // CUDA 12.9 AOT Tests
     'AOT-Build-Import-x86-64-cu129': {
       run_with_spot_retry('CPU-LARGE-SPOT', 'CPU-LARGE', 'AOT-Build-Import-x86-64-cu129',

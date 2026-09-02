@@ -300,6 +300,10 @@ class FlashInferRotaryEmbedding(RotaryEmbedding):
         (64, 64, 32, 8000, False, torch.bfloat16, "cuda", 32, 32, 1, 1),
         (64, 64, 32, 8000, False, torch.bfloat16, "cuda", 32, 32, 1, 1),
         (256, 128, 4096, 9231, False, torch.bfloat16, "cuda", 3, 231, 4, 2),
+        (192, 128, 4096, 9231, True, torch.bfloat16, "cuda", 3, 231, 3, 2),
+        (80, 64, 1024, 10000, False, torch.bfloat16, "cuda", 4, 64, 2, 2),
+        (112, 64, 2048, 12000, True, torch.bfloat16, "cuda", 5, 77, 2, 1),
+        (160, 96, 8192, 10000, False, torch.bfloat16, "cuda", 2, 128, 6, 3),
     ],
 )
 def test_rope_cos_sin_cache(
@@ -381,6 +385,7 @@ def test_rope_cos_sin_cache(
 @pytest.mark.parametrize("input_dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("quant_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
 @pytest.mark.parametrize("enable_pdl", [True, False])
+@pytest.mark.parametrize("backend", ["cuda", "cutile"])
 def test_generalized_rope_quantize(
     attention_type,
     num_qo_heads,
@@ -391,8 +396,31 @@ def test_generalized_rope_quantize(
     input_dtype,
     quant_dtype,
     enable_pdl,
+    backend,
 ):
     """Test generalized rope + quantization for MLA, GQA, and MHA architectures."""
+    if backend == "cutile":
+        from flashinfer.cutile.cutile_common import is_cuda_tile_available
+
+        if not is_cuda_tile_available():
+            pytest.skip("cuda.tile not available")
+        # The cuTile fused rope+quant kernel is MLA-scoped: it addresses the key
+        # tensor as 2D [tokens, rope_dim] (single shared latent K head), matching
+        # the DeepSeek/MLA use case it targets. GQA/MHA pass a 3D
+        # [tokens, kv_heads, rope_dim] key, which the kernel cannot index.
+        if attention_type != "mla":
+            pytest.skip(
+                "cuTile rope_quantize supports MLA-style 2D key tensors only "
+                "(single shared K head); GQA/MHA multi-head K is not supported."
+            )
+        # cuTile backend currently validates only e4m3fn output and ignores PDL;
+        # gate to its supported subset to avoid redundant / unsupported cases.
+        if quant_dtype != torch.float8_e4m3fn:
+            pytest.skip("cuTile rope_quantize backend supports float8_e4m3fn only.")
+        if enable_pdl:
+            pytest.skip(
+                "cuTile rope_quantize backend ignores PDL; covered with enable_pdl=False."
+            )
     device = "cuda:0"
     # Fixed seed for reproducibility across tests
     torch.manual_seed(0)
@@ -466,6 +494,7 @@ def test_generalized_rope_quantize(
         quant_scale_q=1.0,
         quant_scale_kv=1.0,
         enable_pdl=enable_pdl,
+        backend=backend,
     )
 
     # Verify results
@@ -512,6 +541,7 @@ def test_generalized_rope_quantize(
 @pytest.mark.parametrize("enable_pdl", [True, False])
 @pytest.mark.parametrize("kv_layout", ["NHD", "HND"])
 @pytest.mark.parametrize("page_size", [16, 32])
+@pytest.mark.parametrize("rope_idtype", [torch.int32, torch.int64])
 def test_generalized_rope_quantize_append_kv_cache(
     attention_type,
     num_qo_heads,
@@ -524,6 +554,7 @@ def test_generalized_rope_quantize_append_kv_cache(
     enable_pdl,
     kv_layout,
     page_size,
+    rope_idtype,
 ):
     device = "cuda:0"
     # Fixed seed for reproducibility
@@ -585,7 +616,7 @@ def test_generalized_rope_quantize_append_kv_cache(
     rope_ref = FlashInferRotaryEmbedding(
         head_dim, rope_dim, max_seq_len, 10000, False, input_dtype, device
     )
-    pos_ids = torch.arange(num_tokens, device=device, dtype=torch.int32)
+    pos_ids = torch.arange(num_tokens, device=device, dtype=rope_idtype)
 
     # Build paged metadata
     kv_append_length = torch.tensor(
@@ -829,6 +860,7 @@ def test_generalized_rope_quantize_append_kv_cache(
 @pytest.mark.parametrize("enable_pdl", [True, False])
 @pytest.mark.parametrize("kv_layout", ["NHD", "HND"])
 @pytest.mark.parametrize("page_size", [16, 32])
+@pytest.mark.parametrize("rope_idtype", [torch.int32, torch.int64])
 def test_rope_quantize_fp8_append_paged_kv_cache_decode(
     attention_type,
     num_qo_heads,
@@ -842,6 +874,7 @@ def test_rope_quantize_fp8_append_paged_kv_cache_decode(
     enable_pdl,
     kv_layout,
     page_size,
+    rope_idtype,
 ):
     """Test append to non-empty cache (decode/continuation scenario)."""
     device = "cuda:0"
@@ -934,7 +967,7 @@ def test_rope_quantize_fp8_append_paged_kv_cache_decode(
         head_dim, rope_dim, max_seq_len, 10000, False, input_dtype, device
     )
     pos_ids_existing = torch.arange(
-        num_existing_tokens, device=device, dtype=torch.int32
+        num_existing_tokens, device=device, dtype=rope_idtype
     )
 
     # Build metadata for existing tokens (single request for simplicity)
@@ -1127,7 +1160,7 @@ def test_rope_quantize_fp8_append_paged_kv_cache_decode(
         num_existing_tokens,
         num_existing_tokens + num_new_tokens,
         device=device,
-        dtype=torch.int32,
+        dtype=rope_idtype,
     )
 
     # Build metadata for new tokens (continue appending to first request)
@@ -1372,6 +1405,267 @@ def test_rope_quantize_fp8_append_paged_kv_cache_decode(
                 )
 
 
+@pytest.mark.parametrize(
+    "attention_type,num_qo_heads,num_kv_heads,rope_dim,no_rope_dim",
+    [
+        ("gqa", 64, 8, 128, 0),
+        ("mla", 128, 1, 64, 512),
+    ],
+)
+@pytest.mark.parametrize("kv_layout", ["NHD", "HND"])
+@pytest.mark.parametrize("page_size", [16])
+def test_rope_quantize_fp8_append_paged_kv_cache_padding(
+    attention_type,
+    num_qo_heads,
+    num_kv_heads,
+    rope_dim,
+    no_rope_dim,
+    kv_layout,
+    page_size,
+):
+    """Test that CUDA graph padding tokens (batch_indices=-1) do not corrupt
+    the KV cache.
+
+    Simulates a decode batch with 3 real requests padded to 5 (as happens
+    with FULL CUDA graphs). get_batch_indices_positions fills padding entries
+    with batch_indices=-1. The fused kernel must skip those entries so that
+    previously-written KV cache data is preserved.
+    """
+    device = "cuda:0"
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
+
+    head_dim = rope_dim + no_rope_dim
+    input_dtype = torch.bfloat16
+    quant_dtype = torch.float8_e4m3fn
+
+    num_real_reqs = 3
+    num_padded_reqs = 5
+    num_real_tokens = num_real_reqs  # 1 decode token per request
+    num_padded_tokens = num_padded_reqs
+    real_seq_lens = [30, 50, 70]
+
+    max_seq_len = 256
+    rope_ref = FlashInferRotaryEmbedding(
+        head_dim, rope_dim, max_seq_len, 10000, False, input_dtype, device
+    )
+
+    # --- Build paged KV metadata ---
+    pages_per_req = [(s + page_size - 1) // page_size for s in real_seq_lens]
+    total_real_pages = sum(pages_per_req)
+    max_pages = total_real_pages + 10
+
+    kv_indptr_list = [0]
+    for p in pages_per_req:
+        kv_indptr_list.append(kv_indptr_list[-1] + p)
+    for _ in range(num_padded_reqs - num_real_reqs):
+        kv_indptr_list.append(kv_indptr_list[-1])
+
+    kv_indptr = torch.tensor(kv_indptr_list, dtype=torch.int32, device=device)
+    kv_indices = torch.arange(max_pages, dtype=torch.int32, device=device)
+
+    seq_lens = torch.zeros(num_padded_reqs, dtype=torch.int32, device=device)
+    for i, s in enumerate(real_seq_lens):
+        seq_lens[i] = s
+
+    # qo_indptr: [0,1,2,3,3,3] — 3 real tokens, 2 padded (0 tokens each)
+    qo_indptr = torch.zeros(num_padded_reqs + 1, dtype=torch.int32, device=device)
+    for i in range(num_real_reqs):
+        qo_indptr[i + 1] = qo_indptr[i] + 1
+    for i in range(num_real_reqs, num_padded_reqs):
+        qo_indptr[i + 1] = qo_indptr[i]
+
+    # --- Allocate KV cache and pre-fill with "prior prefill" data ---
+    if attention_type == "mla":
+        ckv_cache = torch.randn(
+            max_pages,
+            page_size,
+            no_rope_dim,
+            dtype=input_dtype,
+            device=device,
+        ).to(quant_dtype)
+        kpe_cache = torch.randn(
+            max_pages,
+            page_size,
+            rope_dim,
+            dtype=input_dtype,
+            device=device,
+        ).to(quant_dtype)
+        ckv_cache_snapshot = ckv_cache.clone()
+        kpe_cache_snapshot = kpe_cache.clone()
+        paged_kv_cache = (ckv_cache, kpe_cache)
+    else:
+        if kv_layout == "NHD":
+            cache_shape = (max_pages, page_size, num_kv_heads, head_dim)
+        else:
+            cache_shape = (max_pages, num_kv_heads, page_size, head_dim)
+        k_cache = torch.randn(*cache_shape, dtype=input_dtype, device=device).to(
+            quant_dtype
+        )
+        v_cache = torch.randn(*cache_shape, dtype=input_dtype, device=device).to(
+            quant_dtype
+        )
+        k_cache_snapshot = k_cache.clone()
+        v_cache_snapshot = v_cache.clone()
+        paged_kv_cache = (k_cache, v_cache)
+
+    # --- Build model tensors (padded size) ---
+    if attention_type == "mla":
+        q_rope = torch.randn(
+            num_padded_tokens,
+            num_qo_heads,
+            rope_dim,
+            dtype=input_dtype,
+            device=device,
+        )
+        q_nope = (
+            torch.randn(
+                num_padded_tokens,
+                num_qo_heads,
+                no_rope_dim,
+                dtype=input_dtype,
+                device=device,
+            )
+            if no_rope_dim > 0
+            else None
+        )
+        k_rope = torch.randn(
+            num_padded_tokens, rope_dim, dtype=input_dtype, device=device
+        )
+        k_nope = (
+            torch.randn(
+                num_padded_tokens, no_rope_dim, dtype=input_dtype, device=device
+            )
+            if no_rope_dim > 0
+            else None
+        )
+        v_in = None
+    else:
+        q_rope = torch.randn(
+            num_padded_tokens,
+            num_qo_heads,
+            rope_dim,
+            dtype=input_dtype,
+            device=device,
+        )
+        q_nope = None
+        k_rope = torch.randn(
+            num_padded_tokens,
+            num_kv_heads,
+            rope_dim,
+            dtype=input_dtype,
+            device=device,
+        )
+        k_nope = None
+        v_in = torch.randn(
+            num_padded_tokens,
+            num_kv_heads,
+            head_dim,
+            dtype=input_dtype,
+            device=device,
+        )
+
+    pos_ids = torch.zeros(num_padded_tokens, dtype=torch.int32, device=device)
+    for i in range(num_real_reqs):
+        pos_ids[i] = real_seq_lens[i] - 1
+
+    # --- Run get_batch_indices_positions (should fill padding with -1) ---
+    batch_indices = torch.empty(num_padded_tokens, dtype=torch.int32, device=device)
+    paged_positions = torch.empty(num_padded_tokens, dtype=torch.int32, device=device)
+    # Pre-fill with stale data to simulate persistent CUDA graph buffers
+    batch_indices.fill_(0)
+    paged_positions.fill_(0)
+
+    flashinfer.get_batch_indices_positions(
+        qo_indptr,
+        seq_lens,
+        num_padded_tokens,
+        batch_indices,
+        paged_positions,
+    )
+
+    # Verify padding entries are filled with -1
+    assert batch_indices[num_real_tokens:].eq(-1).all(), (
+        f"Expected batch_indices[{num_real_tokens}:] == -1, "
+        f"got {batch_indices[num_real_tokens:]}"
+    )
+
+    # --- Run the fused kernel ---
+    flashinfer.rope.rope_quantize_fp8_append_paged_kv_cache(
+        q_rope=q_rope,
+        k_rope=k_rope,
+        q_nope=q_nope,
+        k_nope=k_nope,
+        v=v_in,
+        cos_sin_cache=rope_ref.cos_sin_cache,
+        pos_ids=pos_ids,
+        paged_kv_cache=paged_kv_cache,
+        kv_indices=kv_indices,
+        kv_indptr=kv_indptr,
+        batch_indices=batch_indices,
+        positions=paged_positions,
+        page_size=page_size,
+        kv_layout=kv_layout,
+        quantize_dtype=quant_dtype,
+        quant_scale_q=1.0,
+        quant_scale_kv=1.0,
+        is_neox=False,
+    )
+
+    # --- Verify: prefill data at non-decode positions is preserved ---
+    # The decode writes to position seq_lens[i]-1 for each real request.
+    # All other prefill positions must remain unchanged.
+    for req_idx in range(num_real_reqs):
+        sl = real_seq_lens[req_idx]
+        for pos in [0, sl // 2]:  # check position 0 and a mid-position
+            page_offset = pos // page_size
+            entry_offset = pos % page_size
+            page_iter = kv_indptr[req_idx].item() + page_offset
+            page_idx = kv_indices[page_iter].item()
+
+            if attention_type == "mla":
+                torch.testing.assert_close(
+                    ckv_cache[page_idx, entry_offset].float(),
+                    ckv_cache_snapshot[page_idx, entry_offset].float(),
+                    rtol=0,
+                    atol=0,
+                    msg=f"Req {req_idx} pos {pos}: CKV cache corrupted by padding",
+                )
+                torch.testing.assert_close(
+                    kpe_cache[page_idx, entry_offset].float(),
+                    kpe_cache_snapshot[page_idx, entry_offset].float(),
+                    rtol=0,
+                    atol=0,
+                    msg=f"Req {req_idx} pos {pos}: KPE cache corrupted by padding",
+                )
+            else:
+                if kv_layout == "NHD":
+                    k_entry = k_cache[page_idx, entry_offset]
+                    k_snap = k_cache_snapshot[page_idx, entry_offset]
+                    v_entry = v_cache[page_idx, entry_offset]
+                    v_snap = v_cache_snapshot[page_idx, entry_offset]
+                else:
+                    k_entry = k_cache[page_idx, :, entry_offset]
+                    k_snap = k_cache_snapshot[page_idx, :, entry_offset]
+                    v_entry = v_cache[page_idx, :, entry_offset]
+                    v_snap = v_cache_snapshot[page_idx, :, entry_offset]
+                torch.testing.assert_close(
+                    k_entry.float(),
+                    k_snap.float(),
+                    rtol=0,
+                    atol=0,
+                    msg=f"Req {req_idx} pos {pos}: K cache corrupted by padding",
+                )
+                torch.testing.assert_close(
+                    v_entry.float(),
+                    v_snap.float(),
+                    rtol=0,
+                    atol=0,
+                    msg=f"Req {req_idx} pos {pos}: V cache corrupted by padding",
+                )
+
+
 @pytest.mark.parametrize("num_tokens", [1, 19, 128, 199, 899, 2047])
 @pytest.mark.parametrize("input_dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("quant_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
@@ -1434,6 +1728,56 @@ def test_mla_rope_quantize(
     torch.testing.assert_close(
         k_out_f8_ref.float(), k_out.float(), atol=1e-2, rtol=2e-1
     )
+
+
+@pytest.mark.parametrize("unsupported", ["neox", "multi_head_key", "bad_backend"])
+def test_rope_quantize_fp8_cutile_rejects_unsupported(unsupported):
+    """The cuTile dispatch guards must raise, not fall through to CUDA or the kernel.
+
+    The parametrized test above only *skips* NeoX / GQA / MHA for the cuTile
+    backend, so without this the documented contract is never exercised.
+    """
+    from flashinfer.cutile.cutile_common import is_cuda_tile_available
+
+    if not is_cuda_tile_available():
+        pytest.skip("cuda.tile not available")
+
+    device, dt = "cuda:0", torch.bfloat16
+    num_tokens, rope_dim, no_rope_dim, num_qo_heads = 4, 64, 512, 8
+    kv_heads = 2
+
+    q_rope = torch.randn(num_tokens, num_qo_heads, rope_dim, dtype=dt, device=device)
+    q_nope = torch.randn(num_tokens, num_qo_heads, no_rope_dim, dtype=dt, device=device)
+    # 2D key = the supported MLA layout; 3D key = the rejected GQA/MHA layout.
+    k_rope_2d = torch.randn(num_tokens, rope_dim, dtype=dt, device=device)
+    k_nope_2d = torch.randn(num_tokens, no_rope_dim, dtype=dt, device=device)
+    k_rope_3d = torch.randn(num_tokens, kv_heads, rope_dim, dtype=dt, device=device)
+    k_nope_3d = torch.randn(num_tokens, kv_heads, no_rope_dim, dtype=dt, device=device)
+    cos_sin_cache = torch.randn(
+        num_tokens, rope_dim, dtype=torch.float32, device=device
+    )
+    pos_ids = torch.arange(num_tokens, dtype=torch.int32, device=device)
+
+    k_rope = k_rope_3d if unsupported == "multi_head_key" else k_rope_2d
+    k_nope = k_nope_3d if unsupported == "multi_head_key" else k_nope_2d
+
+    kwargs = dict(
+        q_rope=q_rope,
+        k_rope=k_rope,
+        q_nope=q_nope,
+        k_nope=k_nope,
+        cos_sin_cache=cos_sin_cache,
+        pos_ids=pos_ids,
+        quant_scale_q=1.0,
+        quant_scale_kv=1.0,
+        is_neox=(unsupported == "neox"),
+        backend="cuitle" if unsupported == "bad_backend" else "cutile",
+    )
+    # A misspelled backend must be rejected outright rather than silently
+    # running the CUDA path.
+    expected = ValueError if unsupported == "bad_backend" else NotImplementedError
+    with pytest.raises(expected):
+        flashinfer.rope.rope_quantize_fp8(**kwargs)
 
 
 if __name__ == "__main__":

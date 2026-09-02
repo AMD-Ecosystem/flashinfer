@@ -36,7 +36,7 @@ from ..jit import (
     get_single_prefill_uri,
 )
 from ..page import get_seq_lens
-from ..quantization import packbits, segment_packbits
+from ..quantization.packbits import packbits, segment_packbits
 from ..utils import (
     MaskMode,
     PosEncodingMode,

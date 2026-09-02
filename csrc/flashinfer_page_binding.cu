@@ -22,17 +22,27 @@ void append_paged_kv_cache(TensorView append_key, TensorView append_value, Tenso
                            TensorView kv_indices, TensorView kv_indptr, TensorView kv_last_page_len,
                            int64_t layout);
 
+void nvfp4_quantize_append_paged_kv_cache(TensorView append_key, TensorView append_value,
+                                          TensorView batch_indices, TensorView positions,
+                                          TensorView paged_k_cache, TensorView paged_v_cache,
+                                          TensorView k_scale_cache, TensorView v_scale_cache,
+                                          TensorView kv_indices, TensorView kv_indptr,
+                                          TensorView kv_last_page_len, double k_scale,
+                                          double v_scale, int64_t layout);
+
+void nvfp4_quantize_append_paged_kv_cache_with_slot_mapping(
+    TensorView append_key, TensorView append_value, TensorView slot_mapping,
+    TensorView paged_k_cache, TensorView paged_v_cache, TensorView k_scale_cache,
+    TensorView v_scale_cache, TensorView k_scale, TensorView v_scale, int64_t layout);
+
 void append_paged_mla_kv_cache(TensorView append_ckv, TensorView append_kpe,
                                TensorView batch_indices, TensorView positions, TensorView ckv_cache,
                                TensorView kpe_cache, TensorView kv_indices, TensorView kv_indptr,
                                TensorView kv_last_page_len);
 
-void block_sparse_indices_to_vector_sparse_offsets(
-    TensorView block_sparse_indices, TensorView block_sparse_indptr,
-    TensorView vector_sparse_offsets, TensorView vector_sparse_indptr, TensorView kv_len_arr,
-    int64_t stride_block, int64_t stride_n, int64_t batch_size, int64_t block_size);
-
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(append_paged_kv_cache, append_paged_kv_cache);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(nvfp4_quantize_append_paged_kv_cache,
+                              nvfp4_quantize_append_paged_kv_cache);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(nvfp4_quantize_append_paged_kv_cache_with_slot_mapping,
+                              nvfp4_quantize_append_paged_kv_cache_with_slot_mapping);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(append_paged_mla_kv_cache, append_paged_mla_kv_cache);
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(block_sparse_indices_to_vector_sparse_offsets,
-                              block_sparse_indices_to_vector_sparse_offsets);

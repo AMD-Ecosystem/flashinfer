@@ -19,7 +19,14 @@ from types import SimpleNamespace
 from typing import Optional, Union
 import torch
 
-from .jit.xqa import gen_xqa_module, gen_xqa_module_mla
+from .api_logging import flashinfer_api
+from .trace.templates.page import xqa_mla_trace, xqa_trace
+from .jit.xqa import (
+    gen_xqa_module,
+    gen_xqa_module_mla,
+    ragged_q_changes_build,
+    swap_ab_eligible,
+)
 from .jit.utils import filename_safe_dtype_map
 from .utils import (
     get_device_sm_count,
@@ -30,7 +37,6 @@ from .utils import (
 )
 
 
-@functools.cache
 def get_xqa_module(
     input_dtype: torch.dtype,
     kv_cache_dtype: torch.dtype,
@@ -39,8 +45,13 @@ def get_xqa_module(
     head_group_ratio: int,
     use_sliding_window: bool,
     output_dtype: torch.dtype,
+    q_seq_len: int,
+    use_ragged_q: bool = False,
 ):
-    module = gen_xqa_module(
+    # Ragged Q must reuse the uniform module unless it changes the compile
+    # flags; a second cache entry would re-register the same torch op.
+    use_ragged_q = use_ragged_q and ragged_q_changes_build(q_seq_len, head_group_ratio)
+    return _get_xqa_module_cached(
         input_dtype,
         kv_cache_dtype,
         page_size,
@@ -48,10 +59,40 @@ def get_xqa_module(
         head_group_ratio,
         use_sliding_window,
         output_dtype,
-    ).build_and_load()
+        q_seq_len,
+        use_ragged_q,
+    )
+
+
+@functools.cache
+def _get_xqa_module_cached(
+    input_dtype: torch.dtype,
+    kv_cache_dtype: torch.dtype,
+    page_size: int,
+    head_dim: int,
+    head_group_ratio: int,
+    use_sliding_window: bool,
+    output_dtype: torch.dtype,
+    q_seq_len: int,
+    use_ragged_q: bool,
+):
+    spec = gen_xqa_module(
+        input_dtype,
+        kv_cache_dtype,
+        page_size,
+        head_dim,
+        head_group_ratio,
+        use_sliding_window,
+        output_dtype,
+        q_seq_len,
+        use_ragged_q,
+    )
+    # Reuse the JIT module URI so the two names can never drift apart.
+    op_name = f"flashinfer::{spec.name}"
+    module = spec.build_and_load()
 
     @register_custom_op(
-        f"flashinfer::xqa_input_{filename_safe_dtype_map[input_dtype]}_kv_cache_{filename_safe_dtype_map[kv_cache_dtype]}_output_{filename_safe_dtype_map[output_dtype]}_page_size_{page_size}_head_dim_{head_dim}_head_group_ratio_{head_group_ratio}_use_sliding_window_{use_sliding_window}",
+        op_name,
         mutates_args=("output", "workspace_buffer"),
     )
     def xqa(
@@ -66,6 +107,8 @@ def get_xqa_module(
         sinks: Optional[torch.Tensor],
         k_cache: torch.Tensor,
         v_cache: torch.Tensor,
+        k_sf_cache: Optional[torch.Tensor],
+        v_sf_cache: Optional[torch.Tensor],
         page_table: torch.Tensor,
         max_seq_len: int,
         seq_lens: torch.Tensor,
@@ -74,6 +117,9 @@ def get_xqa_module(
         semaphores: torch.Tensor,
         workspace_buffer: torch.Tensor,
         enable_pdl: bool,
+        q_seq_len: int,
+        q_cu_seq_lens: Optional[torch.Tensor],
+        mask: Optional[torch.Tensor],
     ) -> None:
         module.xqa_wrapper(
             run_sm90_fp8_mha,
@@ -88,20 +134,23 @@ def get_xqa_module(
             sinks,
             k_cache,
             v_cache,
+            k_sf_cache,
+            v_sf_cache,
             page_table,
             max_seq_len,
             seq_lens,
             batch_size,
             1.0 if isinstance(kv_scale, torch.Tensor) else kv_scale,
             None if isinstance(kv_scale, float) else kv_scale,
+            q_seq_len,
+            q_cu_seq_lens,
+            mask,
             semaphores,
             workspace_buffer,
             enable_pdl,
         )
 
-    @register_fake_op(
-        f"flashinfer::xqa_input_{filename_safe_dtype_map[input_dtype]}_kv_cache_{filename_safe_dtype_map[kv_cache_dtype]}_output_{filename_safe_dtype_map[output_dtype]}_page_size_{page_size}_head_dim_{head_dim}_head_group_ratio_{head_group_ratio}_use_sliding_window_{use_sliding_window}"
-    )
+    @register_fake_op(op_name)
     def _fake_xqa(
         run_sm90_fp8_mha: bool,
         sm_count: int,
@@ -114,6 +163,8 @@ def get_xqa_module(
         sinks: Optional[torch.Tensor],
         k_cache: torch.Tensor,
         v_cache: torch.Tensor,
+        k_sf_cache: Optional[torch.Tensor],
+        v_sf_cache: Optional[torch.Tensor],
         page_table: torch.Tensor,
         max_seq_len: int,
         seq_lens: torch.Tensor,
@@ -122,6 +173,9 @@ def get_xqa_module(
         semaphores: torch.Tensor,
         workspace_buffer: torch.Tensor,
         enable_pdl: bool,
+        q_seq_len: int,
+        q_cu_seq_lens: Optional[torch.Tensor],
+        mask: Optional[torch.Tensor],
     ) -> None:
         pass
 
@@ -130,6 +184,7 @@ def get_xqa_module(
     )
 
 
+@flashinfer_api(trace=xqa_trace)
 def xqa(
     q: torch.Tensor,
     k_cache: torch.Tensor,
@@ -149,24 +204,37 @@ def xqa(
     sm_count: Optional[int] = None,
     enable_pdl: Optional[bool] = None,
     rcp_out_scale: float = 1.0,
+    q_seq_len: int = 1,
+    mask: Optional[torch.Tensor] = None,
+    *,
+    q_cu_seq_lens: Optional[torch.Tensor] = None,
+    k_sf_cache: Optional[torch.Tensor] = None,
+    v_sf_cache: Optional[torch.Tensor] = None,
 ) -> None:
     r"""Apply attention with paged KV cache using XQA kernel.
     Parameters
     ----------
     q : torch.Tensor
-        Query tensor with shape ``[batch_size, beam_width, num_q_heads, head_dim]``.
+        Query tensor with shape ``[batch_size, beam_width, num_q_heads, head_dim]`` if not using speculative decoding,
+        or ``[batch_size, beam_width, q_seq_len, num_q_heads, head_dim]`` if using speculative decoding. ``q_seq_len`` is the number of speculative decoding tokens.
         Data type should be torch.float16 or torch.bfloat16.
         Now only beam_width 1 is supported.
     k_cache: torch.Tensor
         Paged K cache tensor with shape ``[num_pages, page_size, num_kv_heads, head_dim]`` if :attr:`kv_layout` is ``NHD``,
         or ``[num_pages, num_kv_heads, page_size, head_dim]`` if :attr:`kv_layout` is ``HND``.
         Data type should match query tensor or be torch.float8_e4m3fn, in which case xqa will run fp8 calculation.
-        Should be the same data type as v_cache.
+        Should be the same data type as v_cache. When using NVFP4 KV, the data type is torch.uint8, and the last dimension should be `head_dim / 2`.
     v_cache: torch.Tensor
         Paged V cache tensor with shape ``[num_pages, page_size, num_kv_heads, head_dim]`` if :attr:`kv_layout` is ``NHD``,
         or ``[num_pages, num_kv_heads, page_size, head_dim]`` if :attr:`kv_layout` is ``HND``.
         Data type should match query tensor or be torch.float8_e4m3fn, in which case xqa will run fp8 calculation.
-        Should be the same data type as k_cache.
+        Should be the same data type as k_cache. When using NVFP4 KV, the data type is torch.uint8, and the last dimension should be `head_dim / 2`.
+    k_sf_cache: Optional[torch.Tensor]
+        Optional scale factor cache tensor for the K cache. Use when NVFP4 KV is used. Expected shape is ``[num_pages, page_size, num_kv_heads, head_dim / 16]`` if :attr:`kv_layout` is ``NHD``,
+        or ``[num_pages, num_kv_heads, page_size, head_dim / 16]`` if :attr:`kv_layout` is ``HND``. Should be the same data type as v_sf_cache. Data type should be torch.uint8.
+    v_sf_cache: Optional[torch.Tensor]
+        Optional scale factor cache tensor for the V cache. Use when NVFP4 KV is used. Expected shape is ``[num_pages, page_size, num_kv_heads, head_dim / 16]`` if :attr:`kv_layout` is ``NHD``,
+        or ``[num_pages, num_kv_heads, page_size, head_dim / 16]`` if :attr:`kv_layout` is ``HND``. Should be the same data type as k_sf_cache. Data type should be torch.uint8.
     page_table : torch.Tensor
         Page table tensor with shape ``batch_size, nb_pages_per_seq``.
         Data type should be torch.int32.
@@ -175,7 +243,7 @@ def xqa(
         Sequence lengths tensor with shape ``[batch_size, beam_width]``.
         Data type should be torch.uint32.
     output : torch.Tensor
-        Output tensor with shape ``[batch_size, beam_width, num_q_heads, head_dim]``.
+        Output tensor with shape that matches the query tensor.
         Data type should match query tensor or kv tensor. This tensor will be modified in-place.
     workspace_buffer : torch.Tensor
         Workspace buffer for temporary computations.
@@ -197,6 +265,10 @@ def xqa(
         Scale factor for KV cache.
     sliding_win_size : int, default=0
         Sliding window size for attention. If 0, no sliding window is used.
+        With speculative decoding (``q_seq_len > 1``), the window is applied
+        per draft row, assuming draft tokens occupy consecutive positions at
+        the end of the sequence (linear chains, causal or full masks);
+        tree-structured drafts are not supported with sliding window.
     kv_layout : str, default="NHD"
         The layout of the KV cache. Can be either ``NHD`` or ``HND``.
     sm_count : Optional[int], default=None
@@ -207,12 +279,36 @@ def xqa(
         If None, will be set to True if hardware supports it.
     rcp_out_scale : float, default=1.0
         Reciprocal of output scale factor.
+    q_seq_len : int, default=1
+        Query sequence length. When > 1, enables speculative decoding mode.
+        With ragged Q (``q_cu_seq_lens`` set), this is the maximum draft
+        length across the batch.
+    mask : Optional[torch.Tensor], default=None
+        Draft-block attention mask for speculative decoding mode (when
+        ``q_seq_len > 1``). Shape: ``[batch_size, q_seq_len,
+        mask_size_per_row]`` where ``mask_size_per_row = ((q_seq_len + 31) //
+        32) * 2``, or ``[total_q_tokens, mask_size_per_row]`` with ragged Q,
+        where each request's rows cover its own draft length.
+        Data type should be torch.uint16 (bit-packed format, aligned to 32 bits).
+    q_cu_seq_lens : Optional[torch.Tensor], default=None
+        Cumulative draft lengths ``[batch_size + 1]`` (torch.int32 or
+        torch.uint32, on device) enabling ragged Q: requests may have
+        different draft lengths, including 0 for a request with no draft
+        tokens this step. When set, ``q`` and ``output`` are packed as
+        ``[total_q_tokens, num_q_heads, head_dim]``, ``q_seq_len`` must be
+        the maximum draft length, and ``mask`` rows are packed by the same
+        cumulative offsets.
 
     Note
     ----
+    On SM90 with fp8 KV cache, speculative decode runs on the generic kernel
+    instead of the Hopper fp8 kernel when any of these holds: ragged Q,
+    attention sinks, a positive ``sliding_win_size`` (even one larger than
+    every sequence), or ``q_seq_len * (num_q_heads // num_kv_heads) <= 32``.
+
     The function automatically infers several parameters from tensor shapes:
-    - batch_size from q.shape[0]
-    - num_q_heads from q.shape[2]
+    - batch_size from q.shape[0] (or seq_lens.shape[0] with ragged Q)
+    - num_q_heads from q.shape[-2]
     - head_dim from q.shape[-1]
     - input_dtype from q.dtype
     - kv_cache_dtype from k.dtype
@@ -225,9 +321,38 @@ def xqa(
 
     enable_pdl = enable_pdl if enable_pdl is not None else device_support_pdl(q.device)
 
+    use_ragged_q = q_cu_seq_lens is not None
+    if use_ragged_q:
+        assert q_seq_len > 1, "q_cu_seq_lens requires q_seq_len > 1 (the max draft len)"
+        assert q.dim() == 3, (
+            "With q_cu_seq_lens, q must be packed as "
+            f"[total_q_tokens, num_q_heads, head_dim], got {q.dim()}D"
+        )
+        assert q_cu_seq_lens.dtype in (torch.int32, torch.uint32), (
+            "q_cu_seq_lens must be int32 or uint32"
+        )
+        assert q_cu_seq_lens.is_cuda, (
+            "q_cu_seq_lens must be a device tensor; the kernel dereferences its "
+            "pointer on the GPU"
+        )
+        assert q_cu_seq_lens.device == q.device, (
+            f"q_cu_seq_lens must be on {q.device}, got {q_cu_seq_lens.device}"
+        )
+        assert q_cu_seq_lens.dim() == 1 and q_cu_seq_lens.is_contiguous(), (
+            "q_cu_seq_lens must be a contiguous 1-D tensor"
+        )
+        assert q_cu_seq_lens.numel() == seq_lens.shape[0] + 1, (
+            f"q_cu_seq_lens must have batch_size + 1 = {seq_lens.shape[0] + 1} "
+            f"entries, got {q_cu_seq_lens.numel()}"
+        )
+        assert output.shape == q.shape, "Output must match packed ragged q shape"
+        # Not checked (needs a device sync): entries non-decreasing, each
+        # length <= q_seq_len, last entry == q.shape[0]. Violations return
+        # garbage rows rather than raising.
+
     # Infer parameters from tensors
-    batch_size = q.shape[0]
-    num_q_heads = q.shape[2]
+    batch_size = seq_lens.shape[0] if use_ragged_q else q.shape[0]
+    num_q_heads = q.shape[-2]
     head_dim = q.shape[-1]
 
     # Calculate head_group_ratio
@@ -254,17 +379,28 @@ def xqa(
         # For HND: [..., H, N, D] -> NHD: [..., N, H, D]
         k_cache = k_cache.transpose(-3, -2)
         v_cache = v_cache.transpose(-3, -2)
-
+        if k_sf_cache is not None:
+            k_sf_cache = k_sf_cache.transpose(-3, -2)
+        if v_sf_cache is not None:
+            v_sf_cache = v_sf_cache.transpose(-3, -2)
     if (
         k_cache.dtype == torch.float8_e4m3fn
         and get_compute_capability(torch.device(device="cuda"))[0] == 9
+        and head_dim <= 256  # SM90 kernel does not support head_dim > 256
     ):
         run_sm90_fp8_mha = True
     else:
         run_sm90_fp8_mha = False
 
+    if k_cache.dtype == torch.uint8:
+        assert get_compute_capability(torch.device(device="cuda"))[0] in [12], (
+            "XQA NVFP4 KV is only supported on SM12x GPUs"
+        )
+        assert k_sf_cache is not None, "K SF cache is required when NVFP4 KV is used"
+        assert v_sf_cache is not None, "V SF cache is required when NVFP4 KV is used"
+
     if get_compute_capability(torch.device(device="cuda"))[0] not in [9, 10, 12]:
-        raise RuntimeError("XQA is only supported on SM90, SM100, SM120 GPUs")
+        raise RuntimeError("XQA is only supported on SM90, SM100, SM120/SM121 GPUs")
 
     xqa_module = get_xqa_module(
         q.dtype,
@@ -274,7 +410,24 @@ def xqa(
         head_group_ratio,
         use_sliding_window,
         output.dtype,
+        q_seq_len,
+        use_ragged_q,
     )
+
+    if q_seq_len > 1:
+        assert mask is not None, "Mask is required for speculative decoding"
+        if sinks is not None:
+            run_sm90_fp8_mha = False  # TODO: mha_sm90.cu has precision issue if sinks and speculative decoding are used simultaneously
+        if (
+            use_ragged_q
+            or use_sliding_window
+            or swap_ab_eligible(q_seq_len, head_group_ratio)
+        ):
+            # mha_sm90.cu rejects ragged Q and gets full draft masks wrong,
+            # both under sliding windows and in SWAP_AB. Causal masks can't
+            # be exempted without inspecting the device-side mask.
+            run_sm90_fp8_mha = False
+
     xqa_module.xqa(
         run_sm90_fp8_mha,
         sm_count,
@@ -287,6 +440,8 @@ def xqa(
         sinks,
         k_cache,
         v_cache,
+        k_sf_cache,
+        v_sf_cache,
         page_table,
         max_seq_len,
         seq_lens,
@@ -295,6 +450,9 @@ def xqa(
         semaphores,
         workspace_buffer,
         enable_pdl,
+        q_seq_len,
+        q_cu_seq_lens,
+        mask,
     )
 
 
@@ -381,6 +539,7 @@ def get_xqa_module_mla(
     )
 
 
+@flashinfer_api(trace=xqa_mla_trace)
 def xqa_mla(
     q: torch.Tensor,
     k_cache: torch.Tensor,
@@ -455,9 +614,15 @@ def xqa_mla(
     # Infer parameters from tensors
     batch_size = q.shape[0]
     head_dim = q.shape[-1]
+    num_q_heads = q.shape[-2]
 
-    # Calculate head_group_ratio
-    head_group_ratio = 128
+    # Calculate head_group_ratio (MLA has 1 KV head, so ratio = num_q_heads)
+    head_group_ratio = num_q_heads
+    if head_group_ratio != 128:
+        raise ValueError(
+            f"XQA MLA only supports 128 query heads (head_group_ratio=128), "
+            f"got {num_q_heads} query heads"
+        )
 
     # Calculate max_seq_len from page_table and page_size
     num_pages_per_seq = page_table.shape[-1]
@@ -466,7 +631,7 @@ def xqa_mla(
     assert k_cache.dtype == v_cache.dtype, "K and V cache must have the same dtype"
 
     if get_compute_capability(torch.device(device="cuda"))[0] not in [12]:
-        raise RuntimeError("XQA MLA is only supported on SM120 GPUs")
+        raise RuntimeError("XQA MLA is only supported on SM120/SM121 GPUs")
 
     xqa_module = get_xqa_module_mla(
         q.dtype,
