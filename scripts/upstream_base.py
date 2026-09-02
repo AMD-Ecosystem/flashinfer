@@ -20,6 +20,7 @@ from typing import Callable, NamedTuple, Optional, Tuple
 FILENAME = "upstream-base"
 
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
+_REF_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
 
 # (repo, *args, check=) -> CompletedProcess. Each caller passes its own runner:
 # amd_coverage adds `safe.directory`, the canary does not.
@@ -58,9 +59,15 @@ def parse(text: str, source: str) -> UpstreamBase:
             )
         ref, sha = parts
         if not _SHA_RE.fullmatch(sha):
-            # Also keeps a leading '-' from reaching git as an option.
             raise UpstreamBaseError(
                 f"{source}: {sha!r} is not a 40-character lowercase hex sha"
+            )
+        if not _REF_RE.fullmatch(ref):
+            # Both fields reach git as arguments, and a leading '-' is parsed
+            # there as an option -- which then reads as "ref not present".
+            raise UpstreamBaseError(
+                f"{source}: {ref!r} is not a plain ref name "
+                "([A-Za-z0-9] then letters, digits, '.', '_', '-', '/')"
             )
         return UpstreamBase(ref, sha)
     raise UpstreamBaseError(f"{source}: no '<ref> <sha>' line")
@@ -100,7 +107,7 @@ def _require_present(run: Runner, repo: str, recorded: UpstreamBase) -> None:
         raise MissingBaseObject(
             f"recorded base {recorded.sha[:12]} ({recorded.ref}) is not in this "
             f"clone. It is reachable from no branch by design, so fetch the tag "
-            f"that carries it:\n  git fetch --depth=1 origin tag upstream-base/{recorded.ref}"
+            f"that carries it:\n  git fetch origin tag upstream-base/{recorded.ref}"
         )
     named = run(
         repo,

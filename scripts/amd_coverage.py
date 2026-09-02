@@ -196,7 +196,12 @@ def _resolve_base_detail(repo: str, upstream_ref: Optional[str]) -> Tuple[str, s
     the *previous* fork point -- 2468 files misclassified as owned instead of 290.
     """
     recorded = upstream_base.read_worktree(repo)
-    ref = upstream_ref or (recorded.ref if recorded else _upstream_release(repo))
+    if upstream_ref is None and recorded is not None:
+        # By sha, not by name: `origin` carries no plain upstream release tag
+        # past v0.5.3, and CI fetches tags from origin only, so requiring
+        # `v0.6.18` to resolve fails on every clone without an upstream remote.
+        return _select(repo, recorded.sha, recorded)
+    ref = upstream_ref or _upstream_release(repo)
     probe = _run(
         repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False
     )
@@ -212,12 +217,22 @@ def _resolve_base_detail(repo: str, upstream_ref: Optional[str]) -> Tuple[str, s
             f"you passed it to --upstream-ref; fetch whatever provides it:\n"
             f"  git fetch <remote> {ref}"
             if upstream_ref
-            else "`origin` carries the upstream release tags, so no second "
-            f"remote is needed:\n  git fetch origin tag {ref}"
+            # origin carries no plain upstream release tag past v0.5.3, so this
+            # path really does need the upstream remote.
+            else "it was derived from this fork's own release tag; the plain "
+            "upstream tag lives on the fork parent:\n"
+            "  git remote add upstream https://github.com/flashinfer-ai/flashinfer.git\n"
+            f"  git fetch upstream tag {ref}"
         )
         raise ToolError(f"unknown ref '{ref}'. {how}" + _unshallow_hint(repo))
+    return _select(repo, ref, recorded)
+
+
+def _select(
+    repo: str, theirs: str, recorded: Optional[upstream_base.UpstreamBase]
+) -> Tuple[str, str]:
     try:
-        return upstream_base.select(_run, repo, "HEAD", ref, recorded)
+        return upstream_base.select(_run, repo, "HEAD", theirs, recorded)
     except upstream_base.MissingBaseObject as exc:
         # Not _unshallow_hint: an explicit base needs the object present, not
         # reachable, so "fetching tags will not help" would contradict the fix.

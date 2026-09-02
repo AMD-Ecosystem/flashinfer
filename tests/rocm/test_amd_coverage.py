@@ -256,6 +256,18 @@ class TestUpstreamBase:
         assert ac._resolve_base(str(repo), None) == target
         assert ac._resolve_base_detail(str(repo), None)[1] == "recorded"
 
+    def test_the_named_upstream_tag_need_not_exist_locally(self, repo):
+        """`origin` carries no plain upstream release tag past v0.5.3.
+
+        CI fetches tags from origin only, so requiring `v0.6.18` to resolve
+        fails on every clone without an upstream remote -- which is what took
+        the conformance job red once v0.6.18+amd.1 was cut.
+        """
+        target = self._squashed(repo)
+        _git(repo, "tag", "-d", "v0.6.0")
+
+        assert ac._resolve_base(str(repo), None) == target
+
     def test_without_the_file_it_falls_back_and_says_so(self, repo):
         self._tagged(repo, "v0.5.3+amd.1")
 
@@ -921,14 +933,19 @@ class TestReportInputs:
 
 
 class TestBaseRefHint:
-    def test_derived_ref_hint_names_origin_tags(self, repo):
-        """The amd tag is reachable but upstream's own tag was never fetched."""
+    def test_derived_ref_hint_names_the_upstream_remote(self, repo):
+        """The amd tag is reachable but upstream's own tag was never fetched.
+
+        The hint has to name `upstream`, not `origin`: this fork carries no plain
+        upstream release tag past v0.5.3, so `git fetch origin tag v0.6.18` is a
+        loop that cannot terminate.
+        """
         _write(repo, "flashinfer/a.py", "a = 1\n")
         _git(repo, "add", "-A")
         _git(repo, "commit", "-qm", "port work")
         _git(repo, "tag", "v0.5.3+amd.2")  # no bare v0.5.3 in this clone
 
-        with pytest.raises(ac.ToolError, match=r"git fetch origin tag v0\.5\.3"):
+        with pytest.raises(ac.ToolError, match=r"git fetch upstream tag v0\.5\.3"):
             ac._resolve_base(str(repo), None)
 
     def test_explicit_branch_ref_is_not_told_to_fetch_a_tag(self, repo):

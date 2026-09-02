@@ -251,3 +251,14 @@ class TestShallowCloneAdviceDoesNotContradictItself:
         with pytest.raises(ub.UpstreamBaseError) as excinfo:
             ub.select(_run, str(forked.path), "HEAD", "v1.0", recorded)
         assert not isinstance(excinfo.value, ub.MissingBaseObject)
+
+
+class TestRefValidation:
+    @pytest.mark.parametrize("ref", ["-v1.0", "--upload-pack=x", "/leading", ".hidden"])
+    def test_a_ref_git_would_read_as_an_option_is_rejected(self, ref):
+        with pytest.raises(ub.UpstreamBaseError, match="not a plain ref name"):
+            ub.parse(f"{ref} {'a' * 40}\n", "src")
+
+    @pytest.mark.parametrize("ref", ["v0.6.18", "release/1.2", "v1_0", "abc123"])
+    def test_ordinary_ref_names_are_accepted(self, ref):
+        assert ub.parse(f"{ref} {'a' * 40}\n", "src").ref == ref

@@ -75,6 +75,7 @@ jobs:
       - name: Repo-maintenance scripts (no GPU, no torch)
         run: |
           pytest -rs --noconftest \
+            tests/rocm/test_upstream_base.py \
             tests/rocm/test_upstream_canary.py \
             tests/rocm/test_git_describe.py \
             tests/rocm/test_gen_arch_support_matrix.py \
@@ -89,10 +90,22 @@ jobs:
       # with a bare "unknown object".
       - name: Upstream base is present
         run: |
-          read -r ref sha < <(grep -v '^[[:space:]]*#' upstream-base | grep -v '^[[:space:]]*$' | head -1)
+          # The tool's own parser, not a second one in shell: `read -r ref sha`
+          # glues a malformed third field onto $sha instead of rejecting it.
+          read -r ref sha < <(python -c "
+          import importlib.util, pathlib
+          spec = importlib.util.spec_from_file_location('ub', 'scripts/upstream_base.py')
+          ub = importlib.util.module_from_spec(spec); spec.loader.exec_module(ub)
+          r = ub.read_worktree('.')
+          assert r is not None, 'upstream-base is missing'
+          print(r.ref, r.sha)
+          ")
           echo "fork is based on upstream $ref ($sha)"
+          # No --depth: a shallow fetch into a full clone writes .git/shallow and
+          # truncates history, which then makes every base error self-diagnose as
+          # "this clone is shallow". Measured: 5 commits became 3.
           git rev-parse --verify --quiet "$sha^{commit}" >/dev/null \
-            || git fetch --depth=1 origin "refs/tags/upstream-base/$ref:refs/tags/upstream-base/$ref"
+            || git fetch origin "refs/tags/upstream-base/$ref:refs/tags/upstream-base/$ref"
           git rev-parse --verify --quiet "$sha^{commit}" >/dev/null
 
       - name: Coverage tool runs at all

@@ -293,10 +293,14 @@ That makes `git merge v0.6.19` from `amd-integration` wrong: it resolves against
 that stale base. Produce the merge from the recorded base instead:
 
 ```bash
-BASE=$(awk '!/^#/ && NF {print $2; exit}' upstream-base)
+BASE=$(python3 -c "import sys; sys.path.insert(0, 'scripts'); import upstream_base as u; print(u.read_worktree('.').sha)")
 git switch -c sync/upstream-v0.6.19
 git merge-recursive "$BASE" -- HEAD v0.6.19   # explicit base; populates the index
 ```
+
+Read it with the tool's own parser, not an `awk` one-liner: a malformed record
+has to fail here the same way it fails in `amd_coverage.py`, not resolve to
+something plausible.
 
 Then resolve, commit, and in the same PR update `upstream-base` to
 `v0.6.19 <sha>`. After it merges, push the matching lightweight tag so the base
@@ -305,6 +309,11 @@ commit stays fetchable — it is reachable from no branch:
 ```bash
 git push origin "$(git rev-parse v0.6.19^{commit})":refs/tags/upstream-base/v0.6.19
 ```
+
+That tag is the only thing that has to reach `origin`. The tools resolve the
+base by **sha**, so the plain `v0.6.19` tag never needs pushing here — which is
+just as well, since `origin` carries no plain upstream release tag past
+`v0.5.3`.
 
 # Adding a Kernel
 
