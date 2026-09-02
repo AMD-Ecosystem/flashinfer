@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 os.environ["FLASHINFER_DISABLE_VERSION_CHECK"] = "1"
 
 _HERE = Path(__file__).parent
+_JIT_CACHE_DIR = _HERE / "amd_flashinfer_jit_cache" / "jit_cache"
 # setuptools_scm's per-distribution override, name-normalized and upper-cased.
 _PRETEND_VERSION = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_AMD_FLASHINFER_JIT_CACHE"
 
@@ -38,8 +39,8 @@ _PRETEND_VERSION = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_AMD_FLASHINFER_JIT_CACHE"
 def _target_arch_list() -> str:
     """The architectures this build compiles for, e.g. ``"gfx942,gfx950"``.
 
-    The same expression ``aot.py`` records in ``aot_manifest.json``, so the
-    version and the kernels cannot disagree about what they target.
+    Needs torch, like the compile itself, so build isolation is not an option
+    here -- see the ``--no-isolation`` in README.md.
     """
     from flashinfer.rocm.compilation_context import CompilationContext
 
@@ -67,40 +68,46 @@ def _scm_version() -> str:
     )
 
 
-def _pin_arch_tagged_version() -> str:
-    """Append the target architecture to the local version segment.
+def _pin_arch_tagged_version() -> tuple[str, str]:
+    """``(version, architectures)``, with the architectures named in the version.
 
     ``0.6.18+amd.1`` -> ``0.6.18+amd.1.gfx942``. Nothing else in a wheel's name
     carries the architecture, so without this the gfx942 and gfx950 builds are
-    the same filename and one silently replaces the other on an index.
+    the same filename and one silently replaces the other on an index. Set
+    ``FLASHINFER_ROCM_ARCH_LIST`` to choose; there is deliberately no separate
+    version override, which could only ever contradict what gets compiled.
     """
-    if _PRETEND_VERSION in os.environ:
-        return os.environ[_PRETEND_VERSION]
-
+    archs = _target_arch_list()
     base = _scm_version()
     # A local version segment is dot-separated; a comma is not representable.
-    arch = _target_arch_list().replace(",", ".")
     joiner = "." if "+" in base else "+"
-    version = f"{base}{joiner}{arch}"
+    version = f"{base}{joiner}{archs.replace(',', '.')}"
     os.environ[_PRETEND_VERSION] = version
-    return version
+    return version, archs
 
 
-def _check_version_matches_kernels(version: str) -> None:
+def _check_kernels_match(archs: str) -> None:
     """Fail rather than ship a wheel labelled for kernels it does not contain.
 
-    ``validate_flashinfer_rocm_arch`` drops architectures the toolchain cannot
-    build and only warns, so the compiled set can be narrower than the request.
+    The version is composed before the build and the manifest written during it,
+    from two independent resolutions. With FLASHINFER_ROCM_ARCH_LIST unset those
+    probe rocminfo under a timeout, so agreement is not structural.
     """
     from flashinfer.jit.rocm.env import AOT_MANIFEST_NAME
 
-    manifest = _HERE / "amd_flashinfer_jit_cache" / "jit_cache" / AOT_MANIFEST_NAME
-    built = json.loads(manifest.read_text())["rocm_arch_list"].replace(",", ".")
-    if not version.endswith(f".{built}") and not version.endswith(f"+{built}"):
+    manifest = _JIT_CACHE_DIR / AOT_MANIFEST_NAME
+    try:
+        built = json.loads(manifest.read_text())["rocm_arch_list"]
+    except (OSError, ValueError, KeyError) as exc:
         raise RuntimeError(
-            f"version {version} does not name the architectures actually built "
-            f"({built}). Set FLASHINFER_ROCM_ARCH_LIST to what this toolchain "
-            "can compile, or unset it to let the resolver choose."
+            f"cannot confirm the version names the kernels it ships: {manifest} "
+            f"is missing or unusable ({exc})"
+        ) from exc
+
+    if set(built.split(",")) != set(archs.split(",")):
+        raise RuntimeError(
+            f"the version names {archs} but the build produced {built}. Set "
+            "FLASHINFER_ROCM_ARCH_LIST to what this toolchain can compile."
         )
 
 
@@ -128,7 +135,7 @@ def _compile_jit_cache(output_dir: Path, verbose: bool = True):
 def _build_aot_modules():
     """Build AOT HIP modules."""
     # First, ensure AOT modules are compiled
-    aot_package_dir = Path(__file__).parent / "amd_flashinfer_jit_cache" / "jit_cache"
+    aot_package_dir = _JIT_CACHE_DIR
     aot_package_dir.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -193,13 +200,13 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     """Build wheel with custom AOT module compilation."""
     print("Building amd-flashinfer-jit-cache wheel...")
 
-    # Before the build: pip may have taken the version from
-    # prepare_metadata_for_build_wheel already, and the two must agree.
-    version = _pin_arch_tagged_version()
+    # Recomputed, not carried over from prepare_metadata_for_build_wheel: pip
+    # runs each hook in its own subprocess, so no environment reaches this one.
+    version, archs = _pin_arch_tagged_version()
     print(f"Version: {version}")
 
     _prepare_build()
-    _check_version_matches_kernels(version)
+    _check_kernels_match(archs)
 
     with _MonkeyPatchBdistWheel():
         return _orig.build_wheel(wheel_directory, config_settings, metadata_directory)
@@ -209,9 +216,9 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
     """Build editable install with custom AOT module compilation."""
     print("Building amd-flashinfer-jit-cache in editable mode...")
 
-    version = _pin_arch_tagged_version()
+    _, archs = _pin_arch_tagged_version()
     _prepare_build()
-    _check_version_matches_kernels(version)
+    _check_kernels_match(archs)
 
     # Now build the editable install using setuptools
     _orig_build_editable = getattr(_orig, "build_editable", None)

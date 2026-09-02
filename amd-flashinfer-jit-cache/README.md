@@ -60,9 +60,10 @@ The build process will:
 3. Package compiled `.so` files into the wheel
 
 Both wheels can be built on one host and land side by side in `dist/`;
-cross-compiling does not need the target GPU. The build fails if the toolchain
-drops a requested architecture, rather than labelling the wheel for kernels it
-does not contain.
+cross-compiling does not need the target GPU. With `FLASHINFER_ROCM_ARCH_LIST`
+unset the target is probed from the running GPU instead, and the build refuses
+to finish if the version and the compiled kernels end up naming different
+architectures.
 
 ## Environment Variables
 
