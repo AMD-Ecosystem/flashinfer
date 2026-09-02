@@ -37,6 +37,7 @@ def _load_tool():
 
 parity = _load_tool()
 
+
 class TestRejectHelper:
     def test_default_is_a_no_op(self):
         reject_cuda_only("x", None, None)

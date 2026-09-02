@@ -1908,8 +1908,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
         enable_pdl : bool
             Whether to enable Programmatic Dependent Launch (PDL). See https://docs.nvidia.com/cuda/cuda-c-programming-guide/#programmatic-dependent-launch-and-synchronization
             Only supported for >= sm90, and currently only for FA2 and CUDA core decode.
-        q_len_per_req : int
-            The number of query tokens per request, if not provided, will be set to ``1``.
+        q_len_per_req : Optional[int]
+            The number of query tokens per request. ROCm accepts ``None`` and
+            ``1``, both meaning one token; anything larger raises.
         Returns
         -------
         Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
