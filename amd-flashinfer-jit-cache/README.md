@@ -48,7 +48,9 @@ To build this package from source:
 
 ```bash
 cd amd-flashinfer-jit-cache
-FLASHINFER_ROCM_ARCH_LIST=gfx942 python -m build --wheel --no-isolation
+for arch in gfx942 gfx950; do
+  FLASHINFER_ROCM_ARCH_LIST=$arch python -m build --wheel --no-isolation
+done
 ```
 
 The build process will:
@@ -57,8 +59,10 @@ The build process will:
 2. Compile kernels for `FLASHINFER_ROCM_ARCH_LIST`, and append it to the version
 3. Package compiled `.so` files into the wheel
 
-The build fails if the toolchain drops a requested architecture, rather than
-labelling the wheel for kernels it does not contain.
+Both wheels can be built on one host and land side by side in `dist/`;
+cross-compiling does not need the target GPU. The build fails if the toolchain
+drops a requested architecture, rather than labelling the wheel for kernels it
+does not contain.
 
 ## Environment Variables
 
