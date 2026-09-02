@@ -282,6 +282,30 @@ database. (It does leave unreferenced loose objects behind, so a long-lived CI
 checkout wants a periodic `git gc`.) A conflicting result is the normal steady
 state; what matters is that your change does not lengthen the list.
 
+## Syncing to a new upstream release
+
+The fork's base is **recorded in `upstream-base`, not inferred from ancestry**.
+Sync PRs are squash-merged like every other PR, so there is no merge parent for
+`git merge-base` to find — anchoring on our own tip walks back to the *previous*
+fork point and misreports the whole delta.
+
+That makes `git merge v0.6.19` from `amd-integration` wrong: it resolves against
+that stale base. Produce the merge from the recorded base instead:
+
+```bash
+BASE=$(awk '!/^#/ && NF {print $2; exit}' upstream-base)
+git switch -c sync/upstream-v0.6.19
+git merge-recursive "$BASE" -- HEAD v0.6.19   # explicit base; populates the index
+```
+
+Then resolve, commit, and in the same PR update `upstream-base` to
+`v0.6.19 <sha>`. After it merges, push the matching lightweight tag so the base
+commit stays fetchable — it is reachable from no branch:
+
+```bash
+git push origin "$(git rev-parse v0.6.19^{commit})":refs/tags/upstream-base/v0.6.19
+```
+
 # Adding a Kernel
 
 1. **Kernel implementation** — framework-agnostic header(s) in
