@@ -16,11 +16,13 @@ limitations under the License.
 
 import functools
 import math
+import warnings
 from types import SimpleNamespace
-from typing import Any, List, Literal, Optional, Tuple, Union, overload
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 import torch
 
+from .api_compat import reject_cuda_only
 from ..jit import (
     gen_batch_decode_aiter_module,
     gen_batch_decode_module,
@@ -61,6 +63,65 @@ from ..utils import (
     register_custom_op,
     register_fake_op,
 )
+
+
+# Copied from flashinfer/decode.py rather than imported: that module pulls
+# gen_batch_decode_mla_module / setup_cubin_loader / gen_trtllm_gen_fmha_module
+# from .jit, none of which the HIP branch exports, so it cannot be imported
+# here. scripts/rocm_api_parity.py diffs the copy against the original.
+_BATCH_DECODE_PLAN_LEGACY_POS_ARGS = (
+    "pos_encoding_mode",
+    "window_left",
+    "logits_soft_cap",
+    "q_data_type",
+    "kv_data_type",
+    "o_data_type",
+    "data_type",
+    "sm_scale",
+    "rope_scale",
+    "rope_theta",
+    "non_blocking",
+    "block_tables",
+    "seq_lens",
+    "fixed_split_size",
+    "disable_split_kv",
+    "q_len_per_req",
+)
+
+
+def _merge_deprecated_plan_kwargs(
+    api_name: str,
+    deprecated_positional_args: Tuple[Any, ...],
+    legacy_positional_names: Tuple[str, ...],
+    kwargs: Dict[str, Any],
+) -> Dict[str, Any]:
+    if len(deprecated_positional_args) > len(legacy_positional_names):
+        raise TypeError(
+            f"{api_name}.plan() accepts at most {len(legacy_positional_names)} "
+            "deprecated optional positional arguments after page_size; got "
+            f"{len(deprecated_positional_args)}"
+        )
+
+    merged_kwargs = dict(kwargs)
+    for name, value in zip(
+        legacy_positional_names, deprecated_positional_args, strict=False
+    ):
+        if name in merged_kwargs:
+            raise TypeError(
+                f"{api_name}.plan() got multiple values for argument {name!r}"
+            )
+        merged_kwargs[name] = value
+    return merged_kwargs
+
+
+def _warn_deprecated_plan_positional_args(api_name: str) -> None:
+    warnings.warn(
+        f"Passing optional arguments to {api_name}.plan() positionally is "
+        "deprecated; pass them as keyword arguments instead. Scheduled for "
+        "removal in a future release.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 @functools.cache
@@ -1099,7 +1160,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
             pin_memory=True,
         )
 
-    def plan(
+    def workspace_size(
         self,
         indptr: torch.Tensor,
         indices: torch.Tensor,
@@ -1113,17 +1174,46 @@ class BatchDecodeWithPagedKVCacheWrapper:
         logits_soft_cap: Optional[float] = None,
         q_data_type: Optional[Union[str, torch.dtype]] = "float16",
         kv_data_type: Optional[Union[str, torch.dtype]] = None,
+        o_data_type: Optional[Union[str, torch.dtype]] = None,
         data_type: Optional[Union[str, torch.dtype]] = None,
         sm_scale: Optional[float] = None,
         rope_scale: Optional[float] = None,
         rope_theta: Optional[float] = None,
-        non_blocking: bool = True,
         block_tables: Optional[torch.Tensor] = None,
         seq_lens: Optional[torch.Tensor] = None,
         fixed_split_size: Optional[int] = None,
         disable_split_kv: bool = False,
+        q_len_per_req: int = 1,
+    ) -> Tuple[int, int]:
+        r"""Not available on ROCm.
+
+        Upstream queries the CUDA scheduler for the workspace a given problem
+        needs before the caller allocates it. Neither ROCm backend exposes such
+        a query, so size the buffers as :meth:`__init__` documents.
+        """
+        raise NotImplementedError(
+            "workspace_size() is not available on ROCm: neither the FA2 nor the "
+            "AITER decode backend exposes a required-size query. Allocate the "
+            "workspace buffers as documented on the constructor instead."
+        )
+
+    def plan(
+        self,
+        indptr: torch.Tensor,
+        indices: torch.Tensor,
+        last_page_len: torch.Tensor,
+        num_qo_heads: int,
+        num_kv_heads: int,
+        head_dim: int,
+        page_size: int,
+        *deprecated_positional_args: Any,
+        **kwargs: Any,
     ) -> None:
         r"""Plan batch decode for given problem specification.
+
+        Optional arguments after ``page_size`` are accepted positionally for
+        backward compatibility, but that calling convention is deprecated. Pass
+        them by keyword instead.
 
         Parameters
         ----------
@@ -1169,10 +1259,18 @@ class BatchDecodeWithPagedKVCacheWrapper:
             A uint32 1D tensor indicating the kv sequence length of each prompt. shape: ``[batch_size]``.
         block_tables: Optional[torch.Tensor]
             A uint32 2D tensor indicating the block table of each prompt. shape: ``[batch_size, max_num_blocks_per_seq]``.
-        fixed_split_size: Optional[int]
-            Not used on ROCm/HIP (accepted for API compatibility with CUDA).
-        disable_split_kv: bool
-            Not used on ROCm/HIP (accepted for API compatibility with CUDA).
+        o_data_type : Optional[Union[str, torch.dtype]]
+            The output data type. ROCm writes the output in ``q_data_type``, so
+            anything else raises. Defaults to ``None`` (follow ``q_data_type``).
+        window_right : int
+            CUDA-only (cute-dsl backend); raises when not ``0``.
+        fixed_split_size : Optional[int]
+            CUDA-only split-KV scheduler knob; raises when set. The ROCm plan
+            binding has no slot for it, so it cannot be honoured.
+        disable_split_kv : bool
+            CUDA-only split-KV scheduler knob; raises when ``True``.
+        q_len_per_req : int
+            Multi-token decode. ROCm supports ``1``; more raises.
 
         Note
         ----
@@ -1186,6 +1284,91 @@ class BatchDecodeWithPagedKVCacheWrapper:
 
         The :meth:`plan` method cannot be used in Cuda Graph or in ``torch.compile``.
         """
+        if not deprecated_positional_args:
+            return self._plan_impl(
+                indptr,
+                indices,
+                last_page_len,
+                num_qo_heads,
+                num_kv_heads,
+                head_dim,
+                page_size,
+                **kwargs,
+            )
+
+        plan_kwargs = _merge_deprecated_plan_kwargs(
+            "BatchDecodeWithPagedKVCacheWrapper",
+            deprecated_positional_args,
+            _BATCH_DECODE_PLAN_LEGACY_POS_ARGS,
+            kwargs,
+        )
+        _warn_deprecated_plan_positional_args("BatchDecodeWithPagedKVCacheWrapper")
+        return self._plan_impl(
+            indptr,
+            indices,
+            last_page_len,
+            num_qo_heads,
+            num_kv_heads,
+            head_dim,
+            page_size,
+            **plan_kwargs,
+        )
+
+    def _plan_impl(
+        self,
+        indptr: torch.Tensor,
+        indices: torch.Tensor,
+        last_page_len: torch.Tensor,
+        num_qo_heads: int,
+        num_kv_heads: int,
+        head_dim: int,
+        page_size: int,
+        *,
+        pos_encoding_mode: str = "NONE",
+        window_left: int = -1,
+        window_right: int = 0,
+        logits_soft_cap: Optional[float] = None,
+        q_data_type: Optional[Union[str, torch.dtype]] = "float16",
+        kv_data_type: Optional[Union[str, torch.dtype]] = None,
+        o_data_type: Optional[Union[str, torch.dtype]] = None,
+        data_type: Optional[Union[str, torch.dtype]] = None,
+        sm_scale: Optional[float] = None,
+        rope_scale: Optional[float] = None,
+        rope_theta: Optional[float] = None,
+        non_blocking: bool = True,
+        block_tables: Optional[torch.Tensor] = None,
+        seq_lens: Optional[torch.Tensor] = None,
+        fixed_split_size: Optional[int] = None,
+        disable_split_kv: bool = False,
+        q_len_per_req: int = 1,
+    ) -> None:
+        r"""Implementation behind :meth:`plan`; see it for the parameters."""
+        reject_cuda_only("window_right", window_right, 0)
+        # Resolved and checked here, before the cudagraph branch below writes any
+        # persistent buffer: a rejected plan has to leave the wrapper replayable
+        # as it was. ROCm decode writes the output in the query dtype, so that is
+        # the only o_data_type it can satisfy.
+        _resolved_q_data_type = canonicalize_torch_dtype(
+            data_type if q_data_type is None else q_data_type
+        )
+        _resolved_o_data_type = canonicalize_torch_dtype(
+            _resolved_q_data_type if o_data_type is None else o_data_type
+        )
+        if _resolved_o_data_type != _resolved_q_data_type:
+            raise NotImplementedError(
+                f"o_data_type={_resolved_o_data_type} differs from q_data_type="
+                f"{_resolved_q_data_type}; ROCm decode writes the output in the "
+                "query dtype and cannot convert."
+            )
+        reject_cuda_only("fixed_split_size", fixed_split_size, None)
+        reject_cuda_only("disable_split_kv", disable_split_kv, False)
+        if q_len_per_req != 1:
+            raise NotImplementedError(
+                "q_len_per_req > 1 (multi-token decode) is not supported on "
+                f"ROCm; got {q_len_per_req}. Use the prefill wrapper for "
+                "multi-token queries."
+            )
+
         self._workspace_size = (
             self._float_workspace_buffer.numel()
             * self._float_workspace_buffer.element_size()
@@ -1275,6 +1458,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
 
         self._cached_q_data_type = q_data_type
         self._cached_kv_data_type = kv_data_type
+        self._cached_o_data_type = _resolved_o_data_type
         self._batch_size = batch_size
         self._num_qo_heads = num_qo_heads
         self._num_kv_heads = num_kv_heads
@@ -1644,6 +1828,10 @@ class BatchDecodeWithPagedKVCacheWrapper:
         return_lse: Literal[False] = False,
         enable_pdl: Optional[bool] = None,
         window_left: Optional[int] = None,
+        sinks: Optional[torch.Tensor] = None,
+        q_len_per_req: Optional[int] = None,
+        skip_softmax_threshold_scale_factor: Optional[float] = None,
+        kv_cache_sf: Optional[torch.Tensor] = None,
     ) -> torch.Tensor: ...
 
     @overload
@@ -1660,6 +1848,10 @@ class BatchDecodeWithPagedKVCacheWrapper:
         return_lse: Literal[True] = True,
         enable_pdl: Optional[bool] = None,
         window_left: Optional[int] = None,
+        sinks: Optional[torch.Tensor] = None,
+        q_len_per_req: Optional[int] = None,
+        skip_softmax_threshold_scale_factor: Optional[float] = None,
+        kv_cache_sf: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]: ...
 
     def run(
@@ -1676,7 +1868,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
         enable_pdl: Optional[bool] = None,
         window_left: Optional[int] = None,
         sinks: Optional[torch.Tensor] = None,
-        q_len_per_req: Optional[int] = 1,
+        q_len_per_req: Optional[int] = None,
+        skip_softmax_threshold_scale_factor: Optional[float] = None,
+        kv_cache_sf: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         r"""Compute batch decode attention between query and paged kv cache.
 
@@ -1714,8 +1908,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
         enable_pdl : bool
             Whether to enable Programmatic Dependent Launch (PDL). See https://docs.nvidia.com/cuda/cuda-c-programming-guide/#programmatic-dependent-launch-and-synchronization
             Only supported for >= sm90, and currently only for FA2 and CUDA core decode.
-        q_len_per_req : int
-            The number of query tokens per request, if not provided, will be set to ``1``.
+        q_len_per_req : Optional[int]
+            The number of query tokens per request. ROCm accepts ``None`` and
+            ``1``, both meaning one token; anything larger raises.
         Returns
         -------
         Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
@@ -1725,6 +1920,18 @@ class BatchDecodeWithPagedKVCacheWrapper:
             * attention output, shape: ``[batch_size, num_qo_heads, head_dim]``
             * logsumexp of attention scores, shape: ``[batch_size, num_qo_heads]``.
         """
+        reject_cuda_only(
+            "skip_softmax_threshold_scale_factor",
+            skip_softmax_threshold_scale_factor,
+            None,
+        )
+        reject_cuda_only("kv_cache_sf", kv_cache_sf, None)
+        if q_len_per_req not in (None, 1):
+            raise NotImplementedError(
+                "q_len_per_req > 1 (multi-token decode) is not supported on "
+                f"ROCm; got {q_len_per_req}."
+            )
+
         if enable_pdl is None:
             enable_pdl = self._pdl_supported
         if enable_pdl:

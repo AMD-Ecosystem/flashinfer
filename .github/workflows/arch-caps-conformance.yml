@@ -67,7 +67,9 @@ jobs:
         run: pytest -rs --noconftest tests/rocm/test_amd_coverage.py
 
       # The repo-maintenance scripts. Git and filesystem only, so this is the
-      # only lane that runs them -- tests/rocm/ is otherwise GPU-gated.
+      # only lane that runs them -- tests/rocm/ is otherwise GPU-gated. The API
+      # parity guard belongs here for exactly that reason: it exists to gate an
+      # upstream sync, and a sync PR reaches no GPU lane.
       # The matrix suite doubles as the README staleness check for anyone who
       # committed with pre-commit disabled.
       # -rs because test_build_backend.py importorskips `build`; without it a
@@ -76,6 +78,7 @@ jobs:
         run: |
           pytest -rs --noconftest \
             tests/rocm/test_upstream_canary.py \
+            tests/rocm/test_api_parity.py \
             tests/rocm/test_git_describe.py \
             tests/rocm/test_gen_arch_support_matrix.py \
             tests/rocm/test_build_backend.py
