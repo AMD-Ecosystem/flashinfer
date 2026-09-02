@@ -318,24 +318,32 @@ store, not reachable from anything.
 
 A squash-merged sync leaves upstream's commits unreachable from
 `amd-integration`, so GitHub's fork banner counts back to the original fork
-point — 1192 commits behind instead of 114. No tooling depends on that
-reachability, but the banner is the first thing anyone reads.
+point — 1192 commits behind instead of 114. The base-resolving tools do not read
+that reachability, but the banner is the first thing anyone sees.
 
 ```bash
+git switch -c record-v0619-ancestry
 git merge -s ours v0.6.19 -m "chore: record v0.6.19 as an ancestor of the fork"
 ```
 
-`-s ours` leaves our tree byte-identical; the commit exists only for the second
-parent. Two things make or break it:
+The branch matters: after the sync PR merges you are on `amd-integration`, which
+must never be a PR head. `-s ours` leaves our tree byte-identical — the commit
+exists only for the second parent. Three things make or break it:
 
 - **Merge that PR with a merge commit. Squashing it flattens the second parent
-  and silently discards the ancestry** — which is the whole point of the PR.
-- Push the plain `v0.6.19` tag to `origin` as well, so the parent stays
-  identifiable by name. `origin` carries `v0.5.3` and `v0.6.18` for this reason.
+  and silently discards the ancestry** — the whole point of the PR.
+- `required_linear_history` rejects a merge commit, and ruleset `8494465` lists a
+  single bypass actor, so only that account can land this one. Everyone else
+  will find the button blocked with no recourse.
+- Push the plain `v0.6.19` tag to `origin` too, so the parent stays identifiable
+  by name. `origin` carries `v0.5.3` and `v0.6.18` for this reason.
 
-`required_linear_history` on `amd-integration` rejects the merge commit, so it
-takes the `pull_request` bypass. That is the standing trade: one merge commit
-per upstream release buys an honest banner, and every other PR still squashes.
+Reachability is not free: it inflates any `git rev-list <tag>..HEAD` walk that
+counts every parent. `git_describe_rocm.py` therefore measures `.devN` along
+`--first-parent` — see `test_an_absorbed_upstream_branch_does_not_inflate_the_distance`
+for why counting the merged side breaks version ordering outright. The canary's
+`ours` commit count does rise by the release branch's length; that one is
+cosmetic.
 
 # Adding a Kernel
 

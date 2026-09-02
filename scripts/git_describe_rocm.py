@@ -43,9 +43,12 @@ def main():
                     capture_output=True,
                 )
 
-                # Get distance from this tag
+                # Distance along our own mainline. Counting every parent makes
+                # an absorbed upstream release land in .devN, and PEP 440
+                # compares that segment lexically: .dev1129 sorts *below*
+                # .dev2, so a newer build loses to the one before it.
                 distance_result = subprocess.run(
-                    ["git", "rev-list", f"{tag}..HEAD", "--count"],
+                    ["git", "rev-list", "--first-parent", f"{tag}..HEAD", "--count"],
                     capture_output=True,
                     text=True,
                     check=True,
