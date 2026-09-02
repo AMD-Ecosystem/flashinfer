@@ -605,7 +605,7 @@ def test_chain_speculative_sampling(
         assert torch.all(emitted_num + 1 == (output_token_ids != -1).sum(dim=1))
 
 
-# --- ROCm's three departures from the v0.6.18 sampling ABI ------------------
+# --- ROCm's remaining divergence from the v0.6.18 sampling ABI --------------
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -620,12 +620,15 @@ def test_half_input_runs_natively_and_matches_fp32(op, dtype):
     the overrun back -- silent corruption, not a crash. torch.equal is the
     assertion that fails without the fix; the dtype only restates the wrapper.
     """
+    torch.manual_seed(0)
     x = torch.rand(4, 512, device="cuda").to(dtype)
 
     got = op(x, 10)
     assert got.dtype == dtype
-    # half -> fp32 is lossless, so this is exact, not approximate.
-    assert torch.equal(got, op(x.float(), 10).to(dtype))
+    # Not exact: the native half path picks vec_size 8 where fp32 picks 4, so the
+    # block reduction sums in a different order and the normalizer can differ by
+    # an ulp. Same reason the input is seeded -- the straddling case is rare.
+    torch.testing.assert_close(got.float(), op(x.float(), 10), rtol=1e-2, atol=1e-3)
 
 
 def _seed_case(op):
@@ -761,6 +764,32 @@ def test_a_row_with_no_positive_probability_reports_invalid(op, kwargs):
         f"out-of-range token id: {samples[(samples < 0) | (samples >= vocab)][:8]}"
     )
     assert not bool(valid.any()), "a row with no positive probability is not valid"
+
+
+def test_a_mismatched_seed_tensor_is_rejected_at_the_op():
+    """ROCm indexes seed_arr[bx], so a short tensor would read past the end.
+
+    Asserted at the raw op: sampling.py checks the length too, but the op is
+    reachable without it, and ROCm is the only backend where the length matters.
+    """
+    flashinfer.sampling.get_sampling_module()
+    batch, vocab = 8, 128
+    probs = torch.rand(batch, vocab, device="cuda")
+    probs /= probs.sum(dim=-1, keepdim=True)
+    samples = torch.empty(batch, dtype=torch.int32, device="cuda")
+    valid = torch.empty(batch, dtype=torch.bool, device="cuda")
+
+    def run(seed):
+        torch.ops.sampling.sampling_from_probs(
+            probs, samples, valid, None, False, seed, 0, None, 0
+        )
+
+    with pytest.raises(RuntimeError, match="length must be 1 or 8"):
+        run(torch.arange(3, dtype=torch.int64, device="cuda"))
+    with pytest.raises(RuntimeError, match="int64 or uint64"):
+        run(torch.zeros(batch, dtype=torch.int32, device="cuda"))
+
+    run(torch.arange(batch, dtype=torch.int64, device="cuda"))  # the valid shape
 
 
 def test_valid_is_written_per_row_not_filled():

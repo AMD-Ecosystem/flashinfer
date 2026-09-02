@@ -25,29 +25,42 @@ typedef hipStream_t cudaStream_t;
 
 using namespace flashinfer;
 
-// v0.6.18 replaced the scalar philox pair with optional per-request tensors and
-// added a `valid` output. The ROCm kernels have neither, so both are absorbed
-// here rather than in the kernels.
-
-// sampling.py validates length in {1, batch_size} and dtype in {int64, uint64};
+// v0.6.18 replaced the scalar philox pair with optional seed/offset tensors and
+// added a `valid` output. Both are handled in the kernels now; this file only
+// marshals them.
+//
 // stride 0 broadcasts the length-1 case. data_ptr<int64_t>() would TORCH_CHECK
 // on a uint64 tensor, so the cast is unchecked, as upstream's is.
+inline uint32_t philox_stride(const at::Tensor& t, const char* name, unsigned int batch_size,
+                              const at::Tensor& reference) {
+  CHECK_INPUT(t);
+  CHECK_DIM(1, t);
+  TORCH_CHECK(t.scalar_type() == at::kLong || t.scalar_type() == at::kUInt64, name,
+              " tensor must be int64 or uint64, got ", t.scalar_type());
+  TORCH_CHECK(t.device() == reference.device(), name, " tensor must be on ", reference.device());
+  // Checked here, not only in sampling.py: ROCm is the only backend that indexes
+  // this per row, so a short tensor reads past the end rather than being ignored,
+  // and the raw torch op is reachable without the wrapper.
+  TORCH_CHECK(t.size(0) == 1 || t.size(0) == static_cast<int64_t>(batch_size), name,
+              " tensor length must be 1 or ", batch_size, ", got ", t.size(0));
+  return t.size(0) == 1 ? 0u : 1u;
+}
+
 inline sampling::PhiloxArgs make_philox(const std::optional<at::Tensor>& maybe_seed_arr,
                                         int64_t seed_val,
                                         const std::optional<at::Tensor>& maybe_offset_arr,
-                                        int64_t offset_val) {
+                                        int64_t offset_val, unsigned int batch_size,
+                                        const at::Tensor& reference) {
   sampling::PhiloxArgs philox{};
   philox.seed_val = static_cast<uint64_t>(seed_val);
   philox.offset_val = static_cast<uint64_t>(offset_val);
   if (maybe_seed_arr.has_value()) {
-    CHECK_INPUT(maybe_seed_arr.value());
+    philox.seed_stride = philox_stride(*maybe_seed_arr, "seed", batch_size, reference);
     philox.seed_arr = static_cast<uint64_t*>(maybe_seed_arr->data_ptr());
-    philox.seed_stride = maybe_seed_arr->size(0) == 1 ? 0u : 1u;
   }
   if (maybe_offset_arr.has_value()) {
-    CHECK_INPUT(maybe_offset_arr.value());
+    philox.offset_stride = philox_stride(*maybe_offset_arr, "offset", batch_size, reference);
     philox.offset_arr = static_cast<uint64_t*>(maybe_offset_arr->data_ptr());
-    philox.offset_stride = maybe_offset_arr->size(0) == 1 ? 0u : 1u;
   }
   return philox;
 }
@@ -102,7 +115,8 @@ void sampling_from_logits(at::Tensor logits, at::Tensor output,
       static_cast<float*>(logits.data_ptr()), static_cast<int*>(output.data_ptr()),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       batch_size, vocab_size, deterministic,
-      make_philox(maybe_seed_arr, philox_seed, maybe_offset_arr, philox_offset), stream);
+      make_philox(maybe_seed_arr, philox_seed, maybe_offset_arr, philox_offset, batch_size, output),
+      stream);
   TORCH_CHECK(status == hipSuccess, "SamplingFromLogits failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
@@ -126,7 +140,8 @@ void sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor valid,
       valid.data_ptr<bool>(),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       batch_size, vocab_size, deterministic,
-      make_philox(maybe_seed_arr, philox_seed, maybe_offset_arr, philox_offset), stream);
+      make_philox(maybe_seed_arr, philox_seed, maybe_offset_arr, philox_offset, batch_size, output),
+      stream);
   TORCH_CHECK(status == hipSuccess,
               "SamplingFromProbs failed with error code " + std::string(hipGetErrorString(status)));
 }
@@ -154,7 +169,8 @@ void top_p_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor v
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       has_top_p_arr ? static_cast<float*>(maybe_top_p_arr->data_ptr()) : nullptr, batch_size,
       top_p_val, vocab_size, deterministic,
-      make_philox(maybe_seed_arr, philox_seed, maybe_offset_arr, philox_offset), stream);
+      make_philox(maybe_seed_arr, philox_seed, maybe_offset_arr, philox_offset, batch_size, output),
+      stream);
   TORCH_CHECK(status == hipSuccess, "TopPSamplingFromProbs failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
@@ -185,7 +201,8 @@ void top_k_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor v
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       has_top_k_arr ? static_cast<float*>(maybe_top_k_arr->data_ptr()) : nullptr, batch_size,
       top_k_val, vocab_size, deterministic,
-      make_philox(maybe_seed_arr, philox_seed, maybe_offset_arr, philox_offset), stream);
+      make_philox(maybe_seed_arr, philox_seed, maybe_offset_arr, philox_offset, batch_size, output),
+      stream);
   TORCH_CHECK(status == hipSuccess, "TopKSamplingFromProbs failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
@@ -216,7 +233,8 @@ void min_p_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor v
       static_cast<int*>(output.data_ptr()), valid.data_ptr<bool>(),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       batch_size, min_p_val, vocab_size, deterministic,
-      make_philox(maybe_seed_arr, philox_seed, maybe_offset_arr, philox_offset), stream);
+      make_philox(maybe_seed_arr, philox_seed, maybe_offset_arr, philox_offset, batch_size, output),
+      stream);
   TORCH_CHECK(status == hipSuccess, "MinPSamplingFromProb failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
@@ -251,7 +269,8 @@ void top_k_top_p_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Te
       static_cast<int*>(output.data_ptr()), valid.data_ptr<bool>(),
       maybe_indices.has_value() ? static_cast<int*>(maybe_indices->data_ptr()) : nullptr,
       batch_size, top_k_val, top_p_val, vocab_size, deterministic,
-      make_philox(maybe_seed_arr, philox_seed, maybe_offset_arr, philox_offset), stream);
+      make_philox(maybe_seed_arr, philox_seed, maybe_offset_arr, philox_offset, batch_size, output),
+      stream);
   TORCH_CHECK(status == hipSuccess, "TopKTopPSamplingFromProbs failed with error code " +
                                         std::string(hipGetErrorString(status)));
 }
@@ -289,7 +308,9 @@ void chain_speculative_sampling(at::Tensor draft_probs, at::Tensor draft_token_i
       static_cast<int*>(output_accepted_token_num.data_ptr()),
       static_cast<int*>(output_emitted_draft_token_num.data_ptr()), batch_size,
       num_speculate_tokens, vocab_size, deterministic,
-      make_philox(maybe_seed_arr, philox_seed, maybe_offset_arr, philox_offset), stream);
+      make_philox(maybe_seed_arr, philox_seed, maybe_offset_arr, philox_offset, batch_size,
+                  output_token_ids),
+      stream);
 
   TORCH_CHECK(status == hipSuccess, "ChainSpeculativeSampling failed with error code " +
                                         std::string(hipGetErrorString(status)));
