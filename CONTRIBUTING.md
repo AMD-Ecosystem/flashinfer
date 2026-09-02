@@ -310,10 +310,32 @@ commit stays fetchable — it is reachable from no branch:
 git push origin "$(git rev-parse v0.6.19^{commit})":refs/tags/upstream-base/v0.6.19
 ```
 
-That tag is the only thing that has to reach `origin`. The tools resolve the
-base by **sha**, so the plain `v0.6.19` tag never needs pushing here — which is
-just as well, since `origin` carries no plain upstream release tag past
-`v0.5.3`.
+That tag is the only thing the *tools* need on `origin`: they resolve the base
+by **sha**, and `upstream_base._require_present` wants the commit in the object
+store, not reachable from anything.
+
+### Then record the ancestry, in its own PR
+
+A squash-merged sync leaves upstream's commits unreachable from
+`amd-integration`, so GitHub's fork banner counts back to the original fork
+point — 1192 commits behind instead of 114. No tooling depends on that
+reachability, but the banner is the first thing anyone reads.
+
+```bash
+git merge -s ours v0.6.19 -m "chore: record v0.6.19 as an ancestor of the fork"
+```
+
+`-s ours` leaves our tree byte-identical; the commit exists only for the second
+parent. Two things make or break it:
+
+- **Merge that PR with a merge commit. Squashing it flattens the second parent
+  and silently discards the ancestry** — which is the whole point of the PR.
+- Push the plain `v0.6.19` tag to `origin` as well, so the parent stays
+  identifiable by name. `origin` carries `v0.5.3` and `v0.6.18` for this reason.
+
+`required_linear_history` on `amd-integration` rejects the merge commit, so it
+takes the `pull_request` bypass. That is the standing trade: one merge commit
+per upstream release buys an honest banner, and every other PR still squashes.
 
 # Adding a Kernel
 
