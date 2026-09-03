@@ -133,3 +133,37 @@ def test_the_guard_stays_importable_without_torch():
     )
     done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
+
+
+def test_rocm_api_all_matches_the_re_exported_imports():
+    """`__all__` is what `from .rocm.api import *` publishes as `flashinfer.*`.
+
+    Parsed rather than imported so this stays in the torch-free lane. A
+    re-export is either the ``X as X`` idiom or an annotated module-level
+    binding; a plain ``import X`` is a setup helper and must not be published.
+    """
+    import ast
+
+    source = (_REPO_ROOT / "flashinfer" / "rocm" / "api.py").read_text()
+    tree = ast.parse(source)
+
+    re_exported = []
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            re_exported += [a.name for a in node.names if a.asname == a.name]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            re_exported.append(node.target.id)
+    declared = next(
+        ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets)
+    )
+
+    assert declared == re_exported, (
+        "flashinfer/rocm/api.py __all__ is out of step with its exports.\n"
+        f"  declared: {declared}\n"
+        f"  exported: {re_exported}\n"
+        f"  missing={sorted(set(re_exported) - set(declared))} "
+        f"stale={sorted(set(declared) - set(re_exported))}"
+    )

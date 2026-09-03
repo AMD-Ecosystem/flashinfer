@@ -143,6 +143,7 @@ RUN pip install --no-cache-dir \
         pytest pytest-cov pytest-xdist pytest-rerunfailures \
         pybind11 \
         ruff \
+        einops \
         filelock && \
     pip install --no-cache-dir "amd-aiter==${AITER_VERSION}" --extra-index-url "${AITER_INDEX}" && \
     python3 -c "import importlib.metadata as m; print('amd-aiter', m.version('amd-aiter'))" && \

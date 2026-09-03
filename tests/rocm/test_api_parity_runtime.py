@@ -270,3 +270,77 @@ class TestDeprecatedPositionalPlan:
         args = _MINIMAL_PLAN_ARGS["BatchDecodeWithPagedKVCacheWrapper"]
         with pytest.raises(TypeError, match="pos_encoding_mode"):
             wrapper.plan(*args, "NONE", pos_encoding_mode="NONE")
+
+
+class TestUpstreamPlanShim:
+    """`sparse.py` reaches the shared prefill binding directly with 20 arguments.
+
+    The ROCm binding takes 15, so the shim has to bind the rest or the call
+    fails with "expected at most 15 argument(s) but received 20".
+    """
+
+    @staticmethod
+    def _shim():
+        from flashinfer.rocm.prefill import _plan_with_upstream_signature
+
+        seen = []
+        plan = _plan_with_upstream_signature(lambda *a: seen.append(a) or "planned")
+        return plan, seen
+
+    def test_upstream_shape_forwards_only_the_first_fifteen(self):
+        plan, seen = self._shim()
+        args = list(range(15))
+        assert plan(*args, -1, -1, False, 0, 0) == "planned"
+        assert seen == [tuple(args)]
+
+    def test_the_rocm_shape_still_works(self):
+        plan, seen = self._shim()
+        args = list(range(15))
+        assert plan(*args) == "planned"
+        assert seen == [tuple(args)]
+
+    @pytest.mark.parametrize(
+        "name,value",
+        [
+            ("fixed_split_size", 128),
+            ("disable_split_kv", True),
+            ("num_colocated_ctas", 4),
+            ("uniform_q_len", 8),
+        ],
+    )
+    def test_cuda_only_scheduler_knobs_raise_by_keyword(self, name, value):
+        plan, _ = self._shim()
+        with pytest.raises(NotImplementedError, match=name):
+            plan(*range(15), **{name: value})
+
+    def test_window_left_is_accepted_and_dropped(self):
+        """ROCm has no plan-time slot for it; run() applies the mask instead."""
+        plan, seen = self._shim()
+        assert plan(*range(15), 64) == "planned"
+        assert seen == [tuple(range(15))]
+
+
+class TestTopLevelExports:
+    def test_the_sparse_wrappers_are_exported(self):
+        for name in (
+            "BlockSparseAttentionWrapper",
+            "VariableBlockSparseAttentionWrapper",
+            "convert_bsr_mask_layout",
+        ):
+            assert hasattr(flashinfer, name), f"flashinfer.{name} missing on ROCm"
+
+    def test_the_git_dunders_carry_the_real_hash(self):
+        """`isinstance(str)` would also pass on the permanent "unknown" fallback."""
+        from flashinfer import _version
+
+        expected = (_version.__commit_id__ or "unknown").removeprefix("g")
+        assert flashinfer.__git_commit__ == expected
+        assert flashinfer.__git_version__ == expected
+        if _version.__commit_id__:
+            assert flashinfer.__git_commit__ != "unknown"
+
+    @pytest.mark.parametrize(
+        "name", ["check_torch_rocm_compatibility", "gate_cuda_only_modules"]
+    )
+    def test_internals_do_not_leak_into_the_namespace(self, name):
+        assert not hasattr(flashinfer, name), f"flashinfer.{name} leaked via import *"

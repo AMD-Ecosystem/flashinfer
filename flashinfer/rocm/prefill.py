@@ -302,6 +302,61 @@ def _aiter_noop_plan(*args, **kwargs):
     return []
 
 
+def _plan_with_upstream_signature(plan_func):
+    """Adapt the 15-argument ROCm ``plan`` binding to upstream's 20-argument call.
+
+    Upstream modules reach the shared binding directly (``sparse.py``), so the
+    trailing CUDA-only arguments have to bind somewhere.
+    """
+
+    def plan(
+        float_workspace_buffer,
+        int_workspace_buffer,
+        page_locked_int_workspace_buffer,
+        qo_indptr,
+        kv_indptr,
+        kv_len_arr,
+        total_num_rows,
+        batch_size,
+        num_qo_heads,
+        num_kv_heads,
+        page_size,
+        enable_cuda_graph,
+        head_dim_qk,
+        head_dim_vo,
+        causal,
+        window_left=-1,
+        fixed_split_size=-1,
+        disable_split_kv=False,
+        num_colocated_ctas=0,
+        uniform_q_len=0,
+    ):
+        # window_left has no slot in the ROCm plan; the mask is applied in run().
+        reject_cuda_only("fixed_split_size", fixed_split_size, -1)
+        reject_cuda_only("disable_split_kv", disable_split_kv, False)
+        reject_cuda_only("num_colocated_ctas", num_colocated_ctas, 0)
+        reject_cuda_only("uniform_q_len", uniform_q_len, 0)
+        return plan_func(
+            float_workspace_buffer,
+            int_workspace_buffer,
+            page_locked_int_workspace_buffer,
+            qo_indptr,
+            kv_indptr,
+            kv_len_arr,
+            total_num_rows,
+            batch_size,
+            num_qo_heads,
+            num_kv_heads,
+            page_size,
+            enable_cuda_graph,
+            head_dim_qk,
+            head_dim_vo,
+            causal,
+        )
+
+    return plan
+
+
 @functools.cache
 def _aiter_ops_importable() -> bool:
     try:
@@ -942,7 +997,7 @@ def get_batch_prefill_module(backend, *args):
 
     uri = get_batch_prefill_uri(backend, *args)
     module = gen_batch_prefill_module(backend, *args).build_and_load()
-    plan_func = module.plan.default
+    plan_func = _plan_with_upstream_signature(module.plan.default)
     ragged_run_func = module.ragged_run.default
     paged_run_func = module.paged_run.default
 
@@ -1192,7 +1247,7 @@ def get_batch_prefill_module(backend, *args):
 
 @functools.cache
 def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
-    plan_func = jit_module.plan.default
+    plan_func = _plan_with_upstream_signature(jit_module.plan.default)
     ragged_run_func = jit_module.ragged_run.default
     paged_run_func = jit_module.paged_run.default
 
