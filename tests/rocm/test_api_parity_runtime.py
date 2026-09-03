@@ -318,3 +318,23 @@ class TestUpstreamPlanShim:
         plan, seen = self._shim()
         assert plan(*range(15), 64) == "planned"
         assert seen == [tuple(range(15))]
+
+
+class TestTopLevelExports:
+    def test_the_sparse_wrappers_are_exported(self):
+        for name in (
+            "BlockSparseAttentionWrapper",
+            "VariableBlockSparseAttentionWrapper",
+            "convert_bsr_mask_layout",
+        ):
+            assert hasattr(flashinfer, name), f"flashinfer.{name} missing on ROCm"
+
+    def test_the_git_dunders_are_bound(self):
+        assert isinstance(flashinfer.__git_commit__, str)
+        assert isinstance(flashinfer.__git_version__, str)
+
+    @pytest.mark.parametrize(
+        "name", ["check_torch_rocm_compatibility", "gate_cuda_only_modules"]
+    )
+    def test_internals_do_not_leak_into_the_namespace(self, name):
+        assert not hasattr(flashinfer, name), f"flashinfer.{name} leaked via import *"

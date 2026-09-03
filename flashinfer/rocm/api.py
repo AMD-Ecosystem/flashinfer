@@ -10,6 +10,8 @@ conflict on every sync.
 """
 
 from .._version import __version__ as __version__
+from ..version import __git_commit__ as __git_commit__
+from ..version import __git_version__ as __git_version__  # backward compat
 from . import gate_cuda_only_modules
 from .hip_utils import check_torch_rocm_compatibility
 
@@ -110,5 +112,78 @@ from ..cascade import merge_states as merge_states
 from ..pod import PODWithPagedKVCacheWrapper as PODWithPagedKVCacheWrapper
 from ..pod import BatchPODWithPagedKVCacheWrapper as BatchPODWithPagedKVCacheWrapper
 
+# Same ordering constraint as cascade: sparse.py imports flashinfer.decode and
+# flashinfer.prefill, which must already resolve to the ROCm twins.
+from ..sparse import BlockSparseAttentionWrapper as BlockSparseAttentionWrapper
+from ..sparse import (
+    VariableBlockSparseAttentionWrapper as VariableBlockSparseAttentionWrapper,
+)
+from ..sparse import convert_bsr_mask_layout as convert_bsr_mask_layout
+
 from ..utils import next_positive_power_of_2 as next_positive_power_of_2
 from .torch_compile import use_torch_custom_ops_enabled as use_torch_custom_ops_enabled
+
+# Explicit, or `from .rocm.api import *` also re-exports the two setup helpers
+# called above. tests/rocm/test_api_parity.py keeps this in step with the imports.
+__all__ = [
+    "__version__",
+    "__git_commit__",
+    "__git_version__",
+    "jit",
+    "gelu_and_mul",
+    "gelu_tanh_and_mul",
+    "silu_and_mul",
+    "aiter_fused_moe",
+    "moe_fp8_dtype",
+    "quantize_moe_weight",
+    "shuffle_moe_weight",
+    "get_csrc_dir",
+    "get_include",
+    "fused_add_rmsnorm",
+    "gemma_fused_add_rmsnorm",
+    "gemma_rmsnorm",
+    "layernorm",
+    "rmsnorm",
+    "append_paged_kv_cache",
+    "append_paged_mla_kv_cache",
+    "get_batch_indices_positions",
+    "get_seq_lens",
+    "single_prefill_with_kv_cache_return_lse",
+    "packbits",
+    "segment_packbits",
+    "apply_llama31_rope",
+    "apply_llama31_rope_inplace",
+    "apply_llama31_rope_pos_ids",
+    "apply_llama31_rope_pos_ids_inplace",
+    "apply_rope",
+    "apply_rope_inplace",
+    "apply_rope_pos_ids",
+    "apply_rope_pos_ids_inplace",
+    "apply_rope_with_cos_sin_cache",
+    "apply_rope_with_cos_sin_cache_inplace",
+    "chain_speculative_sampling",
+    "min_p_sampling_from_probs",
+    "sampling_from_logits",
+    "sampling_from_probs",
+    "softmax",
+    "top_k_mask_logits",
+    "top_k_renorm_probs",
+    "top_k_sampling_from_probs",
+    "top_k_top_p_sampling_from_logits",
+    "top_k_top_p_sampling_from_probs",
+    "top_p_renorm_probs",
+    "top_p_sampling_from_probs",
+    "BatchDecodeWithSharedPrefixPagedKVCacheWrapper",
+    "BatchPrefillWithSharedPrefixPagedKVCacheWrapper",
+    "MultiLevelCascadeAttentionWrapper",
+    "merge_state",
+    "merge_state_in_place",
+    "merge_states",
+    "PODWithPagedKVCacheWrapper",
+    "BatchPODWithPagedKVCacheWrapper",
+    "BlockSparseAttentionWrapper",
+    "VariableBlockSparseAttentionWrapper",
+    "convert_bsr_mask_layout",
+    "next_positive_power_of_2",
+    "use_torch_custom_ops_enabled",
+]
