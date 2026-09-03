@@ -605,7 +605,7 @@ def test_chain_speculative_sampling(
         assert torch.all(emitted_num + 1 == (output_token_ids != -1).sum(dim=1))
 
 
-# --- ROCm's three departures from the v0.6.18 sampling ABI ------------------
+# --- ROCm's remaining divergence from the v0.6.18 sampling ABI --------------
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -613,19 +613,54 @@ def test_chain_speculative_sampling(
     "op",
     [flashinfer.sampling.top_k_renorm_probs, flashinfer.sampling.top_k_mask_logits],
 )
-def test_half_input_is_upcast_not_read_at_a_float_stride(op, dtype):
-    """v0.6.18 admits fp16/bf16 here and stopped casting; ROCm's kernels are fp32.
+def test_half_input_runs_natively_and_matches_fp32(op, dtype):
+    """v0.6.18 admits fp16/bf16 here; the kernels now instantiate at that dtype.
 
     Unhandled, the kernel walks 4 bytes per element of a 2-byte buffer and writes
     the overrun back -- silent corruption, not a crash. torch.equal is the
     assertion that fails without the fix; the dtype only restates the wrapper.
     """
+    torch.manual_seed(0)
     x = torch.rand(4, 512, device="cuda").to(dtype)
 
     got = op(x, 10)
     assert got.dtype == dtype
-    # half -> fp32 is lossless, so this is exact, not approximate.
-    assert torch.equal(got, op(x.float(), 10).to(dtype))
+    # Not exact: the native half path picks vec_size 8 where fp32 picks 4, so the
+    # block reduction sums in a different order and the normalizer can differ by
+    # an ulp. Same reason the input is seeded -- the straddling case is rare.
+    torch.testing.assert_close(got.float(), op(x.float(), 10), rtol=1e-2, atol=1e-3)
+
+
+def _seed_case(op):
+    """A 4-row input plus the kwargs `op` needs, seeded for reproducibility."""
+    torch.manual_seed(0)
+    x = torch.rand(4, 128, device="cuda")
+    if "probs" in op:
+        x /= x.sum(dim=-1, keepdim=True)
+    args = {"top_p": 0.9, "top_k": 10, "min_p": 0.1}
+    return x, {k: v for k, v in args.items() if k in op}
+
+
+def test_top_p_renorm_rejects_half_because_python_casts_first():
+    """sampling.py casts before calling, so the op is fp32-only by contract.
+
+    Asserted at the op, not the wrapper: the wrapper would hide a half tensor
+    reaching a kernel that no longer upcasts it.
+    """
+    flashinfer.sampling.get_sampling_module()
+    probs = torch.rand(4, 128, dtype=torch.float16, device="cuda")
+    probs /= probs.sum(dim=-1, keepdim=True)
+    out = torch.empty_like(probs)
+
+    with pytest.raises(RuntimeError, match="fp32 on ROCm"):
+        torch.ops.sampling.top_p_renorm_probs(
+            probs,
+            out,
+            None,
+            0.9,
+            False,
+            torch.empty(1, dtype=torch.int32, device="cuda"),
+        )
 
 
 @pytest.mark.parametrize(
@@ -639,23 +674,213 @@ def test_half_input_is_upcast_not_read_at_a_float_stride(op, dtype):
         "top_k_top_p_sampling_from_probs",
     ],
 )
-def test_a_tensor_seed_is_rejected_rather_than_collapsed(op):
-    """One scalar seed covers the batch, so a per-request tensor must not be ignored.
+def test_a_length_one_seed_tensor_matches_the_scalar_seed(op):
+    """A device-resident seed is upstream's way to avoid a host sync."""
+    x, kwargs = _seed_case(op)
+    fn = getattr(flashinfer.sampling, op)
 
-    Every entry point, because a collapsed seed is invisible in the output -- the
-    samples are still valid tokens, just all drawn from one stream.
+    scalar = fn(x, **kwargs, seed=7, offset=0)
+    tensor = fn(
+        x,
+        **kwargs,
+        seed=torch.tensor([7], dtype=torch.int64, device="cuda"),
+        offset=torch.zeros(1, dtype=torch.int64, device="cuda"),
+    )
+    assert torch.equal(scalar, tensor)
+
+
+@pytest.mark.parametrize(
+    "op",
+    [
+        "sampling_from_logits",
+        "sampling_from_probs",
+        "top_p_sampling_from_probs",
+        "top_k_sampling_from_probs",
+        "min_p_sampling_from_probs",
+        "top_k_top_p_sampling_from_probs",
+    ],
+)
+def test_a_per_row_seed_tensor_is_honoured_not_collapsed(op):
+    """ROCm reads seed_arr[bx]; CUDA reads seed_arr[0] whatever the length.
+
+    A deliberate divergence, so this is the test that pins it. Each row must
+    match the scalar-seeded call for its own seed -- which also rules out the
+    collapse, since row i would otherwise carry row 0's draw.
     """
-    x = torch.rand(4, 128, device="cuda")
+    x, kwargs = _seed_case(op)
+    fn = getattr(flashinfer.sampling, op)
+    seeds = torch.tensor([11, 22, 33, 44], dtype=torch.int64, device="cuda")
+
+    got = fn(x, **kwargs, seed=seeds, offset=torch.zeros_like(seeds))
+    for row, seed in enumerate(seeds.tolist()):
+        want = fn(x, **kwargs, seed=seed, offset=0)
+        assert got[row] == want[row], f"row {row} was not seeded from {seed}"
+
+
+@pytest.mark.parametrize(
+    "op",
+    ["sampling_from_probs", "top_k_sampling_from_probs"],
+)
+def test_a_uniform_per_row_seed_tensor_matches_the_scalar(op):
+    """Length batch_size but every entry equal: [0] and [bx] agree here.
+
+    Separates "honours the stride" from "reads the tensor at all".
+    """
+    x, kwargs = _seed_case(op)
+    fn = getattr(flashinfer.sampling, op)
+    seeds = torch.full((4,), 7, dtype=torch.int64, device="cuda")
+
+    assert torch.equal(
+        fn(x, **kwargs, seed=seeds, offset=torch.zeros_like(seeds)),
+        fn(x, **kwargs, seed=7, offset=0),
+    )
+
+
+@pytest.mark.parametrize(
+    "op, kwargs",
+    [
+        ("sampling_from_probs", {}),
+        ("top_p_sampling_from_probs", {"top_p": 0.9}),
+        ("top_k_sampling_from_probs", {"top_k": 10}),
+        ("top_k_top_p_sampling_from_probs", {"top_k": 10, "top_p": 0.9}),
+    ],
+)
+def test_a_row_with_no_positive_probability_reports_invalid(op, kwargs):
+    """No element satisfies the predicate, so no index is ever marked valid.
+
+    `last_valid_id` is never initialised on ROCm, so the fallback reads whatever
+    the previous block left in LDS -- asserting on a sentinel would test the
+    wrong thing. The batch is wide enough to recycle LDS across blocks; a single
+    block can read a plausible in-range value and hide the bug.
+    """
+    batch, vocab = 256, 512
+    probs = torch.zeros(batch, vocab, device="cuda")
+
+    samples, valid = getattr(flashinfer.sampling, op)(
+        probs, **kwargs, return_valid=True
+    )
+
+    assert torch.all((samples >= 0) & (samples < vocab)), (
+        f"out-of-range token id: {samples[(samples < 0) | (samples >= vocab)][:8]}"
+    )
+    assert not bool(valid.any()), "a row with no positive probability is not valid"
+
+
+@pytest.mark.parametrize("id_dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize(
+    "op, kwargs",
+    [
+        ("sampling_from_logits", {}),
+        ("sampling_from_probs", {}),
+        ("top_p_sampling_from_probs", {"top_p": 0.9}),
+        ("top_k_sampling_from_probs", {"top_k": 10}),
+        ("min_p_sampling_from_probs", {"min_p": 0.1}),
+        ("top_k_top_p_sampling_from_probs", {"top_k": 10, "top_p": 0.9}),
+    ],
+)
+def test_indices_dtype_is_dispatched_not_assumed(op, kwargs, id_dtype):
+    """sampling.py sizes `samples` as indices.dtype, so int64 is a normal call.
+
+    ROCm cast output/indices to int* regardless, so an int64 buffer read back two
+    int32s as one id -- e.g. 468151435296 for a 128-wide vocab. Upstream
+    dispatches on output.dtype(); this asserts ROCm now does too.
+    """
+    torch.manual_seed(0)
+    vocab = 128
+    x = torch.rand(4, vocab, device="cuda")
     if "probs" in op:
         x /= x.sum(dim=-1, keepdim=True)
-    seed = torch.arange(4, dtype=torch.int64, device="cuda")
-    args = {"top_p": 0.9, "top_k": 10, "min_p": 0.1}
-    kwargs = {k: v for k, v in args.items() if k in op}
+    indices = torch.arange(4, dtype=id_dtype, device="cuda")
 
-    with pytest.raises(RuntimeError, match="not supported on ROCm"):
-        getattr(flashinfer.sampling, op)(
-            x, **kwargs, seed=seed, offset=torch.zeros_like(seed)
+    got = getattr(flashinfer.sampling, op)(x, **kwargs, indices=indices)
+
+    assert got.dtype == id_dtype
+    assert torch.all((got >= 0) & (got < vocab)), f"out-of-range ids: {got.tolist()}"
+
+
+@pytest.mark.parametrize("id_dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize(
+    "op, key",
+    [
+        ("top_k_sampling_from_probs", "top_k"),
+        ("top_k_top_p_sampling_from_probs", "top_k"),
+    ],
+)
+def test_a_per_row_top_k_is_read_as_int32_whatever_the_id_dtype(op, key, id_dtype):
+    """top_k_arr is int32 from sampling.py's .int(), independent of indices dtype.
+
+    Typing it IdType* made an int64 call read the int32 buffer at the wrong
+    stride, so row i got row i/2's k. Asserted against the scalar-k call, which
+    shares no code path with the per-row one.
+    """
+    torch.manual_seed(0)
+    vocab = 128
+    probs = torch.rand(4, vocab, device="cuda")
+    probs /= probs.sum(dim=-1, keepdim=True)
+    indices = torch.arange(4, dtype=id_dtype, device="cuda")
+    fn = getattr(flashinfer.sampling, op)
+    extra = {"top_p": 0.9} if "top_p" in op else {}
+
+    # The k values must differ per row. `k` is narrowed to uint32_t, so an int64
+    # read of an int32 buffer takes the low half -- which is the *first* of the
+    # two elements it straddles. A uniform array therefore reads correctly by
+    # accident, and only distinct values expose the stride.
+    ks = torch.tensor([1, 2, 3, 4], dtype=torch.int32, device="cuda")
+    per_row = fn(probs, **{key: ks}, **extra, indices=indices, seed=7, offset=0)
+
+    for row, k in enumerate(ks.tolist()):
+        want = fn(probs, **{key: k}, **extra, indices=indices, seed=7, offset=0)
+        assert per_row[row] == want[row], f"row {row} was not sampled with k={k}"
+
+
+def test_a_mismatched_seed_tensor_is_rejected_at_the_op():
+    """ROCm indexes seed_arr[bx], so a short tensor would read past the end.
+
+    Asserted at the raw op: sampling.py checks the length too, but the op is
+    reachable without it, and ROCm is the only backend where the length matters.
+    """
+    flashinfer.sampling.get_sampling_module()
+    batch, vocab = 8, 128
+    probs = torch.rand(batch, vocab, device="cuda")
+    probs /= probs.sum(dim=-1, keepdim=True)
+    samples = torch.empty(batch, dtype=torch.int32, device="cuda")
+    valid = torch.empty(batch, dtype=torch.bool, device="cuda")
+
+    def run(seed):
+        torch.ops.sampling.sampling_from_probs(
+            probs, samples, valid, None, False, seed, 0, None, 0
         )
+
+    with pytest.raises(RuntimeError, match="length must be 1 or 8"):
+        run(torch.arange(3, dtype=torch.int64, device="cuda"))
+    with pytest.raises(RuntimeError, match="int64 or uint64"):
+        run(torch.zeros(batch, dtype=torch.int32, device="cuda"))
+
+    run(torch.arange(batch, dtype=torch.int64, device="cuda"))  # the valid shape
+
+
+def test_valid_is_written_per_row_not_filled():
+    """`valid` used to be fill_(true) before the kernel ran; now the kernel writes it.
+
+    Half the rows have no positive probability, so a fill -- in either direction
+    -- fails. Pre-filling the opposite of the expected answer is what makes the
+    write observable.
+    """
+    batch, vocab = 64, 256
+    probs = torch.rand(batch, vocab, device="cuda")
+    probs /= probs.sum(dim=-1, keepdim=True)
+    probs[1::2] = 0.0
+
+    flashinfer.sampling.get_sampling_module()
+    samples = torch.empty(batch, dtype=torch.int32, device="cuda")
+    valid = torch.zeros(batch, dtype=torch.bool, device="cuda")
+    torch.ops.sampling.sampling_from_probs(
+        probs, samples, valid, None, False, None, 0, None, 0
+    )
+
+    assert bool(valid[0::2].all()), "rows that can be sampled must report valid"
+    assert not bool(valid[1::2].any()), "all-zero rows must report invalid"
+    assert torch.all((samples >= 0) & (samples < vocab))
 
 
 def test_every_row_reports_valid():
