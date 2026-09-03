@@ -125,6 +125,8 @@ void sampling_from_logits(at::Tensor logits, at::Tensor output,
   unsigned int batch_size = output.size(0);
   unsigned int vocab_size = logits.size(1);
 
+  check_id_out(output, maybe_indices, logits);
+
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();
   hipError_t status = hipSuccess;
@@ -235,7 +237,7 @@ void top_k_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Tensor v
         static_cast<float*>(probs.data_ptr()), static_cast<IdType*>(output.data_ptr()),
         valid.data_ptr<bool>(),
         maybe_indices.has_value() ? static_cast<IdType*>(maybe_indices->data_ptr()) : nullptr,
-        has_top_k_arr ? static_cast<float*>(maybe_top_k_arr->data_ptr()) : nullptr, batch_size,
+        has_top_k_arr ? static_cast<int32_t*>(maybe_top_k_arr->data_ptr()) : nullptr, batch_size,
         top_k_val, vocab_size, deterministic,
         make_philox(maybe_seed_arr, philox_seed, maybe_offset_arr, philox_offset, batch_size,
                     output),
@@ -312,7 +314,7 @@ void top_k_top_p_sampling_from_probs(at::Tensor probs, at::Tensor output, at::Te
   DISPATCH_PYTORCH_IDTYPE_TO_CTYPE(output.scalar_type(), IdType, [&] {
     status = sampling::TopKTopPSamplingFromProb<float, IdType>(
         static_cast<float*>(probs.data_ptr()),
-        has_top_k_arr ? static_cast<IdType*>(maybe_top_k_arr->data_ptr()) : nullptr,
+        has_top_k_arr ? static_cast<int32_t*>(maybe_top_k_arr->data_ptr()) : nullptr,
         has_top_p_arr ? static_cast<float*>(maybe_top_p_arr->data_ptr()) : nullptr,
         static_cast<IdType*>(output.data_ptr()), valid.data_ptr<bool>(),
         maybe_indices.has_value() ? static_cast<IdType*>(maybe_indices->data_ptr()) : nullptr,
@@ -350,6 +352,17 @@ void chain_speculative_sampling(at::Tensor draft_probs, at::Tensor draft_token_i
   CHECK_EQ(vocab_size, target_probs.size(2));
   CHECK_EQ(batch_size, output_accepted_token_num.size(0));
   CHECK_EQ(batch_size, output_emitted_draft_token_num.size(0));
+
+  // Four id tensors are cast off output_token_ids' dtype, so they must agree.
+  CHECK_INPUT(output_token_ids);
+  for (const at::Tensor& t :
+       {draft_token_ids, output_accepted_token_num, output_emitted_draft_token_num}) {
+    CHECK_INPUT(t);
+    TORCH_CHECK(t.scalar_type() == output_token_ids.scalar_type(),
+                "all id tensors must share output_token_ids' dtype, got ", t.scalar_type(), " and ",
+                output_token_ids.scalar_type());
+    TORCH_CHECK(t.device() == device, "all id tensors must be on ", device);
+  }
 
   const at::cuda::OptionalHIPGuardMasqueradingAsCUDA device_guard(device);
   auto stream = at::cuda::getCurrentHIPStream();

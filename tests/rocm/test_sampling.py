@@ -798,6 +798,41 @@ def test_indices_dtype_is_dispatched_not_assumed(op, kwargs, id_dtype):
     assert torch.all((got >= 0) & (got < vocab)), f"out-of-range ids: {got.tolist()}"
 
 
+@pytest.mark.parametrize("id_dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize(
+    "op, key",
+    [
+        ("top_k_sampling_from_probs", "top_k"),
+        ("top_k_top_p_sampling_from_probs", "top_k"),
+    ],
+)
+def test_a_per_row_top_k_is_read_as_int32_whatever_the_id_dtype(op, key, id_dtype):
+    """top_k_arr is int32 from sampling.py's .int(), independent of indices dtype.
+
+    Typing it IdType* made an int64 call read the int32 buffer at the wrong
+    stride, so row i got row i/2's k. Asserted against the scalar-k call, which
+    shares no code path with the per-row one.
+    """
+    torch.manual_seed(0)
+    vocab = 128
+    probs = torch.rand(4, vocab, device="cuda")
+    probs /= probs.sum(dim=-1, keepdim=True)
+    indices = torch.arange(4, dtype=id_dtype, device="cuda")
+    fn = getattr(flashinfer.sampling, op)
+    extra = {"top_p": 0.9} if "top_p" in op else {}
+
+    # The k values must differ per row. `k` is narrowed to uint32_t, so an int64
+    # read of an int32 buffer takes the low half -- which is the *first* of the
+    # two elements it straddles. A uniform array therefore reads correctly by
+    # accident, and only distinct values expose the stride.
+    ks = torch.tensor([1, 2, 3, 4], dtype=torch.int32, device="cuda")
+    per_row = fn(probs, **{key: ks}, **extra, indices=indices, seed=7, offset=0)
+
+    for row, k in enumerate(ks.tolist()):
+        want = fn(probs, **{key: k}, **extra, indices=indices, seed=7, offset=0)
+        assert per_row[row] == want[row], f"row {row} was not sampled with k={k}"
+
+
 def test_a_mismatched_seed_tensor_is_rejected_at_the_op():
     """ROCm indexes seed_arr[bx], so a short tensor would read past the end.
 

@@ -860,7 +860,7 @@ template <uint32_t BLOCK_THREADS, BlockScanAlgorithm SCAN_ALGORITHM,
           BlockReduceAlgorithm REDUCE_ALGORITHM, uint32_t VEC_SIZE, bool DETERMINISTIC,
           typename DType, typename IdType>
 __global__ void TopKSamplingFromProbKernel(DType* probs, IdType* output, bool* valid,
-                                           IdType* indices, IdType* top_k_arr, uint32_t top_k_val,
+                                           IdType* indices, int32_t* top_k_arr, uint32_t top_k_val,
                                            uint32_t d, PhiloxArgs philox) {
   const uint32_t batch_size = gridDim.x;
   const uint32_t bx = blockIdx.x, tx = threadIdx.x;
@@ -1196,7 +1196,7 @@ __global__ void MinPSamplingFromProbKernel(DType* probs, float* min_p_arr, IdTyp
 template <uint32_t BLOCK_THREADS, BlockScanAlgorithm SCAN_ALGORITHM,
           BlockReduceAlgorithm REDUCE_ALGORITHM, uint32_t VEC_SIZE, bool DETERMINISTIC,
           typename DType, typename IdType>
-__global__ void TopKTopPSamplingFromProbKernel(DType* probs, IdType* top_k_arr, float* top_p_arr,
+__global__ void TopKTopPSamplingFromProbKernel(DType* probs, int32_t* top_k_arr, float* top_p_arr,
                                                IdType* output, bool* valid, IdType* indices,
                                                IdType top_k_val, float top_p_val, uint32_t d,
                                                PhiloxArgs philox) {
@@ -1458,8 +1458,9 @@ hipError_t SamplingFromProb(T* probs, IdType* output, bool* valid, IdType* indic
 
 template <typename T, typename IdType>
 hipError_t TopKSamplingFromProb(T* probs, IdType* output, bool* valid, IdType* indices,
-                                T* top_k_arr, uint32_t batch_size, uint32_t top_k_val, uint32_t d,
-                                bool deterministic, PhiloxArgs philox, hipStream_t stream = 0) {
+                                int32_t* top_k_arr, uint32_t batch_size, uint32_t top_k_val,
+                                uint32_t d, bool deterministic, PhiloxArgs philox,
+                                hipStream_t stream = 0) {
   const uint32_t vec_size = std::gcd(16 / sizeof(T), d);
 
   auto compute_capacity = GetCudaComputeCapability();
@@ -1532,7 +1533,7 @@ hipError_t MinPSamplingFromProb(T* probs, T* min_p_arr, IdType* output, bool* va
 }
 
 template <typename T, typename IdType>
-hipError_t TopKTopPSamplingFromProb(T* probs, IdType* top_k_arr, T* top_p_arr, IdType* output,
+hipError_t TopKTopPSamplingFromProb(T* probs, int32_t* top_k_arr, T* top_p_arr, IdType* output,
                                     bool* valid, IdType* indices, uint32_t batch_size,
                                     IdType top_k_val, T top_p_val, uint32_t d, bool deterministic,
                                     PhiloxArgs philox, hipStream_t stream = 0) {
