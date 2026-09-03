@@ -11,62 +11,50 @@ only path.
 
 The port is in active development and is aimed at developers embedding
 FlashInfer kernels into their own training or serving stack. See
-[CHANGELOG.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CHANGELOG.md) for the release history.
+[Releases](https://github.com/AMD-Ecosystem/flashinfer/releases) for the release history.
 
 **Versioning.** Release tags are `<upstream_version>+amd.<n>`, tying each
-FlashInfer+ROCm release to the upstream tag it is based on — `0.5.3+amd.1`
-is the first AMD release based on upstream `v0.5.3`.
+FlashInfer+ROCm release to the upstream tag it is based on — `0.6.18+amd.1`
+is the first AMD release based on upstream `v0.6.18`.
 
 ## Quick start
 
-### Docker
-
-AMD validates and publishes FlashInfer images on Docker Hub. The latest
-validated tag:
-
-| Docker image | ROCm | FlashInfer | PyTorch | Ubuntu | Python | GPU |
-| ------------ | ---- | ---------- | ------- | ------ | ------ | --- |
-| `rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1` | 7.2.0 | v0.5.3 | 2.9.1 | 24.04 | 3.12 | MI355X, MI325X, MI300X |
-
-Older ROCm / PyTorch / FlashInfer combinations are at
-<https://hub.docker.com/r/rocm/flashinfer/tags>.
+There is no published wheel or image for this release — build from the
+repository. The development image carries a matched ROCm, PyTorch, Python
+and AITER set, so it is the shortest path to a working environment:
 
 ```bash
-docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
-  --group-add video --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
-  --ipc=host --name=flashinfer-rocm \
-  rocm/flashinfer:flashinfer-0.5.3.amd1_rocm7.2_ubuntu24.04_py3.12_pytorch2.9.1
+docker build -t flashinfer-dev:rocm10.0 -f docker/Dockerfile.rocm .
 ```
 
-Then, inside the container:
+Then, inside the container, an editable install:
 
 ```bash
+python -m pip install --no-build-isolation -ve .
 python -c "import flashinfer; print(flashinfer.__version__)"
 ```
 
-The container's micromamba environment activates on shell start, so no
-manual `micromamba activate` is required.
+[CONTRIBUTING.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md) has the full recipe: the
+`docker run` flags the GPU devices need, the wheel build, and the
+ahead-of-time kernel build.
 
-### pip
+**Bringing your own environment?** Torch must come from `repo.radeon.com`,
+via `-f` and **not** `--index-url` — that repo is a flat wheel listing
+rather than a PEP 503 index, so `--index-url` fails with "No matching
+distribution found". pip still prefers the ROCm wheel over a same-version
+PyPI wheel because its `+rocm<X.Y>` local version ranks higher:
 
 ```bash
-pip install amd-flashinfer --index-url https://pypi.amd.com/simple/
 pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
-```
-
-**Torch must come from `repo.radeon.com`, via `-f` and not `--index-url`.**
-That repo is a flat wheel listing rather than a PEP 503 index, so
-`--index-url` fails with "No matching distribution found". pip still
-prefers the ROCm wheel over a same-version PyPI wheel because its
-`+rocm<X.Y>` local version ranks higher. Confirm you got one:
-
-```bash
 python -c "import torch; assert torch.version.hip, 'not a ROCm build'"
 ```
 
 Kernels are JIT-compiled on first use, which takes a few minutes. The
 optional [`amd-flashinfer-jit-cache`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/amd-flashinfer-jit-cache/README.md)
-package ships them prebuilt for gfx942.
+package ships them prebuilt — one wheel per architecture, gfx942 and
+gfx950, with the architecture in the version's local segment
+(`0.6.18+amd.1.gfx942`). Pin it in full; an unqualified requirement
+resolves to whichever architecture sorts highest, which need not be yours.
 
 ## Basic usage
 
@@ -100,18 +88,21 @@ python examples/single_prefill_example.py
 | GPUs | gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI350X, MI355X) |
 | ROCm | 7.0.2, 7.1.1, 7.2, 7.14, 10.0 |
 | PyTorch+ROCm | 2.8.0, 2.9.1, 2.12.0 |
-| Python | 3.10+ (both the published images and the devcontainer use 3.12) |
+| Python | 3.10+ (the development image uses 3.12, which is what the AITER pin requires) |
 
-Other versions may work but are untested. Replace `7.2` in the torch
-install command with the ROCm version you need; see
+The combination this release is developed and tested against is the
+development image's: **ROCm 10.0, PyTorch 2.12.0, Python 3.12,
+Ubuntu 24.04, `amd-aiter` 0.1.20** (`docker/Dockerfile.rocm`). The other
+rows are known to build but are not covered by every run. Replace `7.2` in
+the torch install command with the ROCm version you need; see
 <https://repo.radeon.com/rocm/manylinux/> for what is available.
 
 ROCm 7.14 and 10.0 are the exceptions: `repo.radeon.com` publishes no
 `rocm-rel-` directory for either, so there is no pip recipe. Take torch from
 the `rocm/pytorch:rocm10.0_ubuntu24.04_py3.12_pytorch_release_2.12.0` image
-instead, as the devcontainer does. Stay on torch 2.12: 2.13 removes a `c10`
-symbol that every published `amd-aiter` build's prebuilt prefill kernels need,
-so AITER prefill fails to load there.
+instead, as `docker/Dockerfile.rocm` does. Stay on torch 2.12: 2.13 removes a
+`c10` symbol that every published `amd-aiter` build's prebuilt prefill kernels
+need, so AITER prefill fails to load there.
 
 ## Support matrix
 
@@ -134,8 +125,16 @@ HIP-only, and `aiter_fused_moe` is AITER-only. On gfx950 with ROCm 7.2.x,
 `batch_prefill` never resolves to AITER — see the footnote under the
 table.
 
-**The full routing rules, per-op constraints, and AITER install
-instructions are in [`docs/rocm/backends.md`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md).**
+Beyond the routed ops, this release also carries block-sparse attention
+(`BlockSparseAttentionWrapper` and the variable-block variant), POD
+attention (`PODWithPagedKVCacheWrapper`, `BatchPODWithPagedKVCacheWrapper`),
+cascade attention, the sampling and logits-processor pipelines, and fp8
+fused MoE via `aiter_fused_moe`. Batch decode can reach AITER under CUDA-graph
+capture once you declare a `max_seq_len` capacity on the wrapper.
+
+**The full routing rules, per-op constraints, AITER install instructions,
+and the list of upstream modules that are not available on ROCm are in
+[`docs/rocm/backends.md`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md).**
 Read it before relying on an AITER path — several attention kwargs are
 silently ignored there rather than rejected.
 
@@ -151,7 +150,7 @@ decisions the library makes. Do not edit it by hand; run
 | :--- | :--- | :---: | :---: | :--- |
 | `batch_decode` | `aiter` | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Under graph capture `auto` needs a declared `max_seq_len`, else it stays on fa2. |
 | `single_prefill` | `aiter` | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. |
-| `batch_prefill` | `aiter` | ✅ | ⚠️[^kb1] | Paged and ragged, with sliding window. Page sizes 128/256/1024 are native on amd-aiter >= 0.1.10; others take a flat gather. |
+| `batch_prefill` | `aiter` | ✅ | ⚠️[^kb1] | Paged and ragged, with sliding window. Page sizes 128/256/1024 are served natively; others take a flat gather. |
 | `mla` | `aiter` | ✅ | ✅ | DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here. |
 | `rope` | `aiter` | ✅ | ✅ | `apply_rope_with_cos_sin_cache` and its inplace variant, linked at the C++ level. Opt-in. |
 | `append_paged_kv_cache` | `aiter` | ✅ | ✅ | fp16/bf16 + NHD. Bit-exact with the in-tree kernel but slower, so `auto` picks `native`. |
@@ -194,7 +193,7 @@ from the batch-decode, sliding-window, and logits-cap files, and
 `mha_varlen_fwd` miscomputes `logits_soft_cap` for causal prefill with
 `head_dim=128` (through amd-aiter 0.1.21). The affected lengths differ by
 architecture — from `kv_len >= 512` on gfx942, but at *every* length on gfx950 —
-so the threshold lives in `flashinfer/arch_caps.py` rather than in the call
+so the threshold lives in `flashinfer/rocm/arch_caps.py` rather than in the call
 sites. Single and ragged prefill always dispatch through that kernel, so
 `backend="auto"` serves those calls with `fa2` and `backend="aiter"` raises
 rather than returning wrong numbers.
@@ -213,7 +212,20 @@ Requires PyTorch ≥ 2.4 and adds a small per-call dispatch overhead.
 Without it, `torch.compile` raises a clear error if it traces into a
 FlashInfer op rather than silently producing a wrong graph.
 
-<!--
+## Running the tests
+
+```bash
+pytest -n auto --reruns 2 -m "not slow"
+```
+
+**`-n auto` is derived from the GPU count, not the CPU count** — half the
+physical supported cards, minimum one, so a single-GPU host runs a single
+worker. Each worker is pinned to one card. Pass an explicit `-n N` to
+override; the project's hook takes precedence over
+`PYTEST_XDIST_AUTO_NUM_WORKERS`, so that variable has no effect here.
+[CONTRIBUTING.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md) covers the `slow` marker and the
+rerun policy.
+
 ## Benchmarking
 
 The unified runner drives every ROCm attention path from one testlist:
@@ -221,15 +233,15 @@ The unified runner drives every ROCm attention path from one testlist:
 ```bash
 cd benchmarks
 python flashinfer_benchmark.py --testlist rocm/testlist_rocm.txt \
-    --output_path run-$(date +%F).csv
+    --refcheck --output_path run-$(date +%F).csv
 ```
 
 Each line requests both `fa2` and `auto`, so `--refcheck` compares them
 side by side. **Read the `backend_resolved` column** — `auto` is a
 request, not a result, and `backend_fallback_reason` says why AITER was
 declined. Per-op drivers live in
-[`benchmarks/rocm/`](https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/benchmarks/rocm).
--->
+[`benchmarks/rocm/`](https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/benchmarks/rocm), and
+[`benchmarks/README.md`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/benchmarks/README.md) documents the output columns.
 
 ## Environment variables
 
@@ -245,12 +257,18 @@ Read at runtime or import time:
 | `FLASHINFER_DISABLE_JIT` | unset | Set to **any non-empty value** — including `0` — to skip JIT compilation. Useful with an AOT-built install, to fail loudly on a missing kernel rather than trigger a build. |
 | `FLASHINFER_DISABLE_VERSION_CHECK` | unset | Any non-empty value skips the JIT-cache package version check. |
 | `FLASHINFER_LOGGING_LEVEL` | `INFO` | Logger verbosity (`DEBUG`, `INFO`, `WARNING`, …). Affects AITER fallback warnings and JIT build messages. |
+| `FLASHINFER_DISABLE_AOT_ARCH_CHECK` | unset | Skip the check that the prebuilt kernels' architecture matches the running GPU. Without it, a mismatch is ignored with a warning and everything JIT-compiles. |
 | `ROCM_PATH` / `ROCM_HOME` | `/opt/rocm` | Where `flashinfer.rocm.hip_utils` looks for ROCm. Override only for non-standard layouts. |
+| `AITER_JIT_DIR` | AITER's own | Where the C++ shim `dlopen`s AITER's built `.so` files, overriding the path compiled in at build time. |
+| `GPU_ARCHS` | autodetected | AITER's own JIT architecture. Only filled when unset, so an operator-supplied value wins. |
 
-Build-time variables — `FLASHINFER_ROCM_ARCH_LIST`, `FLASHINFER_JIT_VERBOSE`,
-`FLASHINFER_EXTRA_LDFLAGS`, `MAX_JOBS` — are documented in
-[CLAUDE.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CLAUDE.md). Note `FLASHINFER_JIT_DEBUG` is a **no-op on
-ROCm/HIP**; CLAUDE.md explains how to get a debug build instead.
+Build-time variables — `FLASHINFER_ROCM_ARCH_LIST`, `PYTORCH_ROCM_ARCH`,
+`FLASHINFER_JIT_VERBOSE`, `FLASHINFER_EXTRA_LDFLAGS`,
+`FLASHINFER_EXTRA_CFLAGS`, `FLASHINFER_EXTRA_CUDAFLAGS`,
+`FLASHINFER_OWN_HEADERS_NON_SYSTEM`, `MAX_JOBS` — are documented in
+[CONTRIBUTING.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md). Note `FLASHINFER_JIT_DEBUG` is a
+**no-op on ROCm/HIP**; CONTRIBUTING.md explains how to get a debug build
+instead.
 
 ## Runtime helpers
 

@@ -7,10 +7,33 @@ backend can do, what makes `backend="auto"` decline AITER, and the per-op
 constraints that are easy to trip over.
 
 * [Choosing a backend](#choosing-a-backend)
+* [Not available on ROCm](#not-available-on-rocm)
 * [Installing AITER](#installing-aiter)
 * [How `backend="auto"` resolves](#how-backendauto-resolves)
 * [Known limitations](#known-limitations)
 * [Per-op notes](#per-op-notes)
+
+## Not available on ROCm
+
+Some upstream modules wrap NVIDIA-only libraries or kernels. Importing one
+raises `ImportError` naming the module, rather than exposing a stub that
+fails later:
+
+| Module | Why |
+| :--- | :--- |
+| `flashinfer.gemm`, `flashinfer.grouped_mm`, `flashinfer.trtllm_low_latency_gemm` | CUTLASS / TensorRT-LLM GEMM kernels |
+| `flashinfer.cudnn`, `flashinfer.attention` | cuDNN attention |
+| `flashinfer.fp4_quantization`, `flashinfer.fp8_quantization`, and the same two under `flashinfer.quantization` | NVFP4 / trtllm-gen quantization |
+| `flashinfer.fused_moe` | The upstream CUTLASS MoE. **ROCm has MoE** — use `flashinfer.aiter_fused_moe`, below |
+| `flashinfer.dsv3_ops` | DeepSeek-V3 fusions built on the above |
+| `flashinfer.comm.*` (`cuda_ipc`, `mnnvl`, `nvshmem*`, `trtllm_*`, `vllm_ar`, `mixed_comm`) | NVLink / NVSHMEM transports |
+
+`importlib.util.find_spec` still reports these as present — the files ship,
+the import is what is gated. Feature-detect with `hasattr(flashinfer, ...)`
+or a `try: import ... except ImportError`, not `find_spec`.
+
+`flashinfer.quantization`'s `packbits` and `segment_packbits` are unaffected
+and have in-tree HIP kernels.
 
 ## Choosing a backend
 
@@ -55,8 +78,8 @@ the RMSNorm entry points, so an older one cannot resolve them. Below the floor
 That rules out `pypi.amd.com/rocm-7.1.1/simple`, which carries only
 `0.1.10` and only cp310/cp312 wheels. The CI image
 (`docker/Dockerfile.rocm_ci`) still installs `0.1.10` and so runs without
-the AITER backends; the devcontainer bundles the wheel above, on CPython
-3.12, and needs no separate install.
+the AITER backends; the development image (`docker/Dockerfile.rocm`)
+bundles the wheel above, on CPython 3.12, and needs no separate install.
 
 Every 0.1.20 wheel is cp312 only, and none is built against ROCm 10.0 —
 they share one source revision (build id `3135022`) retargeted to
@@ -243,8 +266,8 @@ above the threshold: the Gemma variant has no `backend=` argument, and
 
 ### Batch prefill: page size and the flat-gather path
 
-AITER's CK FMHA kernels natively serve page sizes `{16, 1024}`, or
-`{128, 256, 1024}` on `amd-aiter >= 0.1.10`. Other sizes still work but go
+AITER's CK FMHA kernels natively serve page sizes `{128, 256, 1024}` at
+every release at or above the supported floor. Other sizes still work but go
 through an extra GPU gather that flattens the paged KV cache before the
 AITER call — inside the timed region, which matters when benchmarking.
 
@@ -284,8 +307,14 @@ the capacity rather than attending to its full context.
 `run(..., return_lse=True)` raises on this backend under capture — PA v1
 emits no LSE and the FA2 shadow plan it borrows is not capture-safe.
 
+Multi-token decode (`q_len_per_req > 1`) raises `NotImplementedError` on
+ROCm regardless of backend, as does an output dtype that differs from the
+query dtype.
+
 ### MLA
 
+* `use_cuda_graph=True` and `run(..., return_lse=True)` both raise
+  `NotImplementedError` — neither is supported on the AITER MLA path.
 * `q_data_type` must be `float16` or `bfloat16`, and must equal
   `kv_data_type`.
 * `page_size` is not restricted by the code, but only `page_size=1` is
@@ -313,7 +342,12 @@ w2s = shuffle_moe_weight(w2)
 out = aiter_fused_moe(hidden_states, w1s, w2s, topk_ids, topk_weights)
 ```
 
-* `hidden_states` and the weights must be `bfloat16` or `float16`.
+* `hidden_states` and the weights must be `bfloat16` or `float16`, or fp8
+  with both `w1_scale` and `w2_scale` supplied (neither alone). **The fp8
+  encoding is architecture-dependent** — `float8_e4m3fnuz` on gfx942,
+  `float8_e4m3fn` on gfx950. Ask `moe_fp8_dtype()` rather than hard-coding
+  one; the wrong encoding is silently wrong, not an error. fp8 additionally
+  needs `model_dim % 128 == 0`.
 * `activation` is `"silu"` or `"gelu"`. `block_m` is the CK tile height —
   32, 64, or 128, or `"auto"` (the default), which picks from the expected
   tokens *per expert*, not the total token count.

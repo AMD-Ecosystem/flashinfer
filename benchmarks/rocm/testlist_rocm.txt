@@ -18,10 +18,10 @@
 #
 # Choices worth knowing before editing:
 #
-#   --page_size 128 for paged prefill, not 16. 128 is AITER-native for
-#     amd-aiter >= 0.1.10; other sizes take a flat-gather path that copies the
-#     whole KV cache inside the timed region, so the row becomes a memcpy
-#     benchmark. Decode has no gather path and uses the serving-default 16.
+#   --page_size 128 for paged prefill, not 16. 128 is AITER-native; other
+#     sizes take a flat-gather path that copies the whole KV cache inside the
+#     timed region, so the row becomes a memcpy benchmark. Decode has no
+#     gather path and uses the serving-default 16.
 #
 #   --refcheck WITHOUT --allow_output_mismatch. fa2 and auto run side by side
 #     anyway, so the correctness check is free, and a fast-but-wrong number is

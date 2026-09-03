@@ -365,7 +365,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
                 known_bad=(_ROCM72_CAUSAL_PREFILL,),
             ),
         ),
-        note="Paged and ragged, with sliding window. Page sizes 128/256/1024 are native on amd-aiter >= 0.1.10; others take a flat gather.",
+        note="Paged and ragged, with sliding window. Page sizes 128/256/1024 are served natively; others take a flat gather.",
         fallback="fa2",
     ),
     # No alternative backend -- hence no fallback=.

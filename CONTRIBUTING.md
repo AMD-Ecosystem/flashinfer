@@ -76,6 +76,25 @@ python -m flashinfer.rocm.aot --help
 Pair an AOT-built install with `FLASHINFER_DISABLE_JIT=1` to fail loudly
 on a missing kernel instead of silently triggering a build.
 
+**Prebuilt-kernel wheel.** `amd-flashinfer-jit-cache` packages the AOT
+output, one wheel per architecture. Cross-compiling needs no target GPU,
+so both build on one host:
+
+```bash
+cd amd-flashinfer-jit-cache
+for arch in gfx942 gfx950; do
+  FLASHINFER_ROCM_ARCH_LIST=$arch python -m build --wheel --no-isolation
+done
+```
+
+`--no-isolation` is required — resolving the target architecture imports
+torch. The architecture rides in the version's local segment
+(`0.6.18+amd.1.gfx942`) because a wheel tag cannot carry it, and the build
+fails if the version and the compiled kernels disagree. See
+[amd-flashinfer-jit-cache/README.md](amd-flashinfer-jit-cache/README.md).
+Note `scripts/build_flashinfer_jit_cache_whl.sh` is upstream's **CUDA**
+script and does not apply here.
+
 # Running Tests
 
 ```bash
@@ -114,7 +133,10 @@ physical AMD cards** (4 workers on a CPX-mode 8-card host) and assigns each
 a card via `HIP_VISIBLE_DEVICES`, which is what scopes the subprocesses a
 test spawns. One worker per card was tried first
 and produced sporadic failures across rope, single_prefill, and logits_cap
-under concurrent load. Pass an explicit `-n N` to override the halving.
+under concurrent load. On a single-card host the halving floors at one
+worker. Pass an explicit `-n N` to override; `PYTEST_XDIST_AUTO_NUM_WORKERS`
+does **not** work, because our `firstresult` hook is called before xdist's
+default implementation ever reads it.
 
 **Reruns.** `--reruns 2` absorbs the residual ~0.01% of transient HIP
 runtime crashes — HSA exceptions, HIPBLAS handle-pool exhaustion,
@@ -140,7 +162,7 @@ and backs off — needed under heavy concurrent xdist load.
 
 # Measuring Coverage of the Port
 
-`scripts/amd_coverage.py` reports line coverage for the code this fork added or changed, rather than for the whole inherited upstream tree. Ownership is recomputed on every run from the diff against the upstream release the port is based on — read off this fork's own tag, so `v0.5.3+amd.2` scores against upstream `v0.5.3`. There is no list to refresh, and a module added yesterday is picked up today. `origin` carries upstream's release tags, so no second remote is needed; override the base with `--upstream-ref` if you need a different one.
+`scripts/amd_coverage.py` reports line coverage for the code this fork added or changed, rather than for the whole inherited upstream tree. Ownership is recomputed on every run from the diff against the upstream release the port is based on — read off this fork's own tag, so `v0.6.18+amd.1` scores against upstream `v0.6.18`. There is no list to refresh, and a module added yesterday is picked up today. `origin` carries upstream's release tags, so no second remote is needed; override the base with `--upstream-ref` if you need a different one.
 
 ```bash
 git fetch --tags origin                                   # the base is computed, not stored
@@ -363,6 +385,20 @@ A step-by-step Claude Code skill (`add-rocm-kernel`) walks through this
 with concrete examples.
 
 # Build / JIT Gotchas
+
+**Build-time environment variables.** These affect compilation only; the
+runtime ones are tabulated in [README.md](README.md#environment-variables).
+
+| Variable | Purpose |
+| :--- | :--- |
+| `FLASHINFER_ROCM_ARCH_LIST` | Target architectures, `,`- or `;`-separated (`"gfx942,gfx950"`). Overrides autodetection. |
+| `PYTORCH_ROCM_ARCH` | When set, the requested architectures must be a subset of torch's, else the build errors. |
+| `FLASHINFER_JIT_VERBOSE` | Show the ninja and compiler output. |
+| `FLASHINFER_EXTRA_CFLAGS` | Extra host compile flags. |
+| `FLASHINFER_EXTRA_CUDAFLAGS` | Extra HIP device compile flags. |
+| `FLASHINFER_EXTRA_LDFLAGS` | Extra link flags. |
+| `FLASHINFER_OWN_HEADERS_NON_SYSTEM` | Include this fork's headers with `-I` rather than `-isystem`, so warnings apply to them. |
+| `MAX_JOBS` | ninja parallelism. |
 
 **JIT cache silently sticky.** `JitSpec.build()` only writes
 `build.ninja` when the file is missing, so changing env vars

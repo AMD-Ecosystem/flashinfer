@@ -4,7 +4,8 @@
 #
 # Start JupyterLab for amd_flashinfer_rocm_tutorial.ipynb (or any notebook in the repo).
 #
-# Usage (activate your ROCm/flashinfer env first, e.g. inside rocm/flashinfer Docker):
+# Usage (activate your ROCm/flashinfer env first, e.g. inside a container built
+# from docker/Dockerfile.rocm):
 #   cd /path/to/flashinfer
 #   ./examples/run_jupyter_server.sh
 #
