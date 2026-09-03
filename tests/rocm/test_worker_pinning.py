@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the xdist worker/GPU mapping in tests/conftest.py.
+"""Tests for the xdist worker/GPU mapping in the repo-root conftest.py.
 
 GPU-free. The branch worth protecting is the one a well-provisioned runner
 never takes: more workers than physical cards, where handing a worker its own
@@ -22,12 +22,12 @@ import pathlib
 
 import pytest
 
-_CONFTEST = pathlib.Path(__file__).parents[1] / "conftest.py"
+_CONFTEST = pathlib.Path(__file__).parents[2] / "conftest.py"
 
 
 @pytest.fixture
 def root_conftest(monkeypatch):
-    """A private copy of tests/conftest.py, loaded with its pinning inert.
+    """A private copy of the repo-root conftest.py, loaded with pinning inert.
 
     Clearing PYTEST_XDIST_WORKER first skips the module-level pinning block, so
     loading the module cannot rewrite this session's own HIP_VISIBLE_DEVICES.

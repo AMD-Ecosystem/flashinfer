@@ -48,15 +48,19 @@ try:
         reliably at a ~1.6x wall-time cost. Users who want every device
         used can pass an explicit -n N -- the hook is firstresult, so it
         also shadows xdist's PYTEST_XDIST_AUTO_NUM_WORKERS.
+
+        Degrades to what torch can see when rocminfo reports nothing, the
+        same fallback the pinning below uses. This hook runs for every root
+        invocation, so raising here would make a GPU-free checkout unable to
+        run even the tests that need no GPU.
         """
+        import torch
+
         from flashinfer.rocm.hip_utils import get_physical_card_device_indices
 
-        n_physical = len(get_physical_card_device_indices())
-        if n_physical == 0:
-            raise RuntimeError(
-                "pytest -n auto: no FlashInfer-supported AMD GPUs detected. "
-                "Check HIP_VISIBLE_DEVICES or ROCm installation."
-            )
+        n_physical = len(get_physical_card_device_indices()) or (
+            torch.cuda.device_count() if torch.cuda.is_available() else 0
+        )
         return max(1, n_physical // 2)
 
 except ImportError:

@@ -47,7 +47,7 @@ def _probe(fn, default=_UNKNOWN):
 def _devices() -> str:
     """Device indices this session runs on.
 
-    HIP_VISIBLE_DEVICES wins when set: tests/conftest.py assigns each xdist
+    HIP_VISIBLE_DEVICES wins when set: the root conftest.py assigns each xdist
     worker a card through it, so it -- not the full card list -- is the card
     this session is meant to be using.
     """

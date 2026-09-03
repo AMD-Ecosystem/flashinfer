@@ -25,9 +25,14 @@ and AITER set, so it is the shortest path to a working environment:
 
 ```bash
 docker build -t flashinfer-dev:rocm10.0 -f docker/Dockerfile.rocm .
+docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
+  --group-add video --group-add "$(getent group render | cut -d: -f3)" \
+  --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --shm-size=64G \
+  -v "$PWD":/workspace -w /workspace flashinfer-dev:rocm10.0
 ```
 
-Then, inside the container, an editable install:
+The image does not contain the source — `-v "$PWD":/workspace` is what puts
+it there. Then, inside the container, an editable install:
 
 ```bash
 python -m pip install --no-build-isolation -ve .
@@ -234,11 +239,11 @@ The unified runner drives every ROCm attention path from one testlist:
 ```bash
 cd benchmarks
 python flashinfer_benchmark.py --testlist rocm/testlist_rocm.txt \
-    --refcheck --output_path run-$(date +%F).csv
+    --output_path run-$(date +%F).csv
 ```
 
-Each line requests both `fa2` and `auto`, so `--refcheck` compares them
-side by side. **Read the `backend_resolved` column** — `auto` is a
+Each line requests both `fa2` and `auto` and carries its own `--refcheck`,
+so the two are compared side by side. **Read the `backend_resolved` column** — `auto` is a
 request, not a result, and `backend_fallback_reason` says why AITER was
 declined. Per-op drivers live in
 [`benchmarks/rocm/`](https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/benchmarks/rocm), and
@@ -258,10 +263,10 @@ Read at runtime or import time:
 | `FLASHINFER_DISABLE_JIT` | unset | Set to **any non-empty value** — including `0` — to skip JIT compilation. Useful with an AOT-built install, to fail loudly on a missing kernel rather than trigger a build. |
 | `FLASHINFER_DISABLE_VERSION_CHECK` | unset | Any non-empty value skips the JIT-cache package version check. |
 | `FLASHINFER_LOGGING_LEVEL` | `INFO` | Logger verbosity (`DEBUG`, `INFO`, `WARNING`, …). Affects AITER fallback warnings and JIT build messages. |
-| `FLASHINFER_DISABLE_AOT_ARCH_CHECK` | unset | Skip the check that the prebuilt kernels' architecture matches the running GPU. Without it, a mismatch is ignored with a warning and everything JIT-compiles. |
+| `FLASHINFER_DISABLE_AOT_ARCH_CHECK` | unset | Use the prebuilt kernels even when their architecture does not match the running GPU. By default a mismatch discards them, with a warning, and everything JIT-compiles instead. |
 | `ROCM_PATH` / `ROCM_HOME` | `/opt/rocm` | Where `flashinfer.rocm.hip_utils` looks for ROCm. Override only for non-standard layouts. |
 | `AITER_JIT_DIR` | AITER's own | Where the C++ shim `dlopen`s AITER's built `.so` files, overriding the path compiled in at build time. |
-| `GPU_ARCHS` | autodetected | AITER's own JIT architecture. Only filled when unset, so an operator-supplied value wins. |
+| `GPU_ARCHS` | autodetected | AITER's own JIT architecture. Respected when AITER is imported directly, but a shim build overwrites it from `FLASHINFER_ROCM_ARCH_LIST` and does not restore it. |
 
 Build-time variables — `FLASHINFER_ROCM_ARCH_LIST`, `PYTORCH_ROCM_ARCH`,
 `FLASHINFER_JIT_VERBOSE`, `FLASHINFER_EXTRA_LDFLAGS`,
