@@ -723,8 +723,8 @@ def check_torch_rocm_compatibility() -> None:
             "  1. Uninstall current PyTorch:\n"
             "     pip uninstall torch\n\n"
             "  2. Install PyTorch for ROCm:\n"
-            "     pip install torch==2.7.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/\n\n"
-            "See https://github.com/rocm/flashinfer for detailed installation instructions.\n"
+            "     pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/\n\n"
+            "See https://github.com/AMD-Ecosystem/flashinfer for detailed installation instructions.\n"
             + "="
             * 70
         )

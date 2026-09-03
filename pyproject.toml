@@ -44,10 +44,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/rocm/flashinfer"
-Repository = "https://github.com/rocm/flashinfer"
+Homepage = "https://github.com/AMD-Ecosystem/flashinfer"
+Repository = "https://github.com/AMD-Ecosystem/flashinfer"
 Documentation = "https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/3rd-party/flashinfer-install.html"
-"Bug Tracker" = "https://github.com/rocm/flashinfer/issues"
+"Bug Tracker" = "https://github.com/AMD-Ecosystem/flashinfer/issues"
 
 [project.optional-dependencies]
 dev = [

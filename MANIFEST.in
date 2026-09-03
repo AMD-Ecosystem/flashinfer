@@ -55,7 +55,6 @@ prune .devcontainer
 prune .claude
 prune profiler
 exclude Jenkinsfile
-exclude CHANGELOG.md
 global-exclude CLAUDE.md
 exclude .clang-format
 exclude .gitignore
