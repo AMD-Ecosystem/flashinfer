@@ -162,10 +162,11 @@ and backs off — needed under heavy concurrent xdist load.
 
 # Measuring Coverage of the Port
 
-`scripts/amd_coverage.py` reports line coverage for the code this fork added or changed, rather than for the whole inherited upstream tree. Ownership is recomputed on every run from the diff against the upstream release the port is based on — read off this fork's own tag, so `v0.6.18+amd.1` scores against upstream `v0.6.18`. There is no list to refresh, and a module added yesterday is picked up today. `origin` carries upstream's release tags, so no second remote is needed; override the base with `--upstream-ref` if you need a different one.
+`scripts/amd_coverage.py` reports line coverage for the code this fork added or changed, rather than for the whole inherited upstream tree. Ownership is recomputed on every run from the diff against the upstream release the port is based on. There is no list to refresh, and a module added yesterday is picked up today.
+
+The base comes from the **recorded** `upstream-base` file (`v0.6.18`, its sha written by #348) rather than from a tag lookup. A squash-merged sync leaves no merge parent, so `merge-base(HEAD, <tag>)` would walk back to the *previous* fork point and misclassify 2468 files as owned instead of 290. It is read by sha, not by name, because `origin` carries a plain upstream release tag only where one was needed. Only if that record is absent does the script fall back to deriving the tag from this fork's own `+amd.` tag, which then needs the fork parent as a second remote. Override either with `--upstream-ref`.
 
 ```bash
-git fetch --tags origin                                   # the base is computed, not stored
 pip install -e ".[dev]"                                   # brings pytest-cov
 python3 scripts/amd_coverage.py --run --show-files -- -n auto --reruns 2 -m "not slow"
 python3 scripts/amd_coverage.py                           # re-score an existing .coverage

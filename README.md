@@ -226,7 +226,9 @@ pytest -n auto --reruns 2 -m "not slow"
 
 **`-n auto` is derived from the GPU count, not the CPU count** — half the
 physical supported cards, minimum one, so a single-GPU host runs a single
-worker. Each worker is pinned to one card. Pass an explicit `-n N` to
+worker. Each worker sets `HIP_VISIBLE_DEVICES` to one card, which scopes the
+subprocesses a test spawns — not the worker itself, where HIP is already
+initialized by the time the value is set. Pass an explicit `-n N` to
 override; the project's hook takes precedence over
 `PYTEST_XDIST_AUTO_NUM_WORKERS`, so that variable has no effect here.
 [CONTRIBUTING.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md) covers the `slow` marker and the

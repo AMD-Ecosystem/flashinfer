@@ -342,13 +342,14 @@ w2s = shuffle_moe_weight(w2)
 out = aiter_fused_moe(hidden_states, w1s, w2s, topk_ids, topk_weights)
 ```
 
-* `hidden_states` and the weights must be `bfloat16` or `float16`, or fp8
-  with both `w1_scale` and `w2_scale` supplied (neither alone). **The fp8
-  encoding is architecture-dependent** — `float8_e4m3fnuz` on gfx942,
-  `float8_e4m3fn` on gfx950. Ask `moe_fp8_dtype()` rather than hard-coding
-  one; the shim raises `ValueError` on the wrong encoding, which is what
-  stops the hardware reinterpreting the bits. fp8 additionally needs
-  `model_dim % 128 == 0`.
+* `hidden_states` must be `bfloat16` or `float16` — fp8 activations are
+  rejected; the shim quantizes per token itself.
+* The **weights** may be fp8, matching `hidden_states` otherwise. fp8 needs
+  both `w1_scale` and `w2_scale` (neither alone) and `model_dim % 128 == 0`.
+  **The fp8 encoding is architecture-dependent** — `float8_e4m3fnuz` on
+  gfx942, `float8_e4m3fn` on gfx950. Ask `moe_fp8_dtype()` rather than
+  hard-coding one; the shim raises `ValueError` on the wrong encoding, which
+  is what stops the hardware reinterpreting the bits.
 * `activation` is `"silu"` or `"gelu"`. `block_m` is the CK tile height —
   32, 64, or 128, or `"auto"` (the default), which picks from the expected
   tokens *per expert*, not the total token count.

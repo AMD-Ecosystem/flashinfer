@@ -58,3 +58,35 @@ def test_no_supported_card_pins_nothing(root_conftest):
 def test_never_names_an_unsupported_card(root_conftest, supported):
     for worker_idx in range(16):
         assert root_conftest._worker_gpu_index(worker_idx, supported) in supported
+
+
+def test_hook_lives_in_the_root_conftest(root_conftest):
+    """Where the hook lives is the behaviour: xdist resolves '-n auto' from the
+    initial conftests, so a subdirectory one yields the CPU count instead."""
+    assert hasattr(root_conftest, "pytest_xdist_auto_num_workers")
+
+
+@pytest.mark.parametrize("cards, expected", [(8, 4), (4, 2), (2, 1), (1, 1)])
+def test_worker_count_halves_the_cards(root_conftest, monkeypatch, cards, expected):
+    """Half the physical cards, and never zero -- one card still runs."""
+    monkeypatch.setattr(
+        "flashinfer.rocm.hip_utils.get_physical_card_device_indices",
+        lambda: tuple(range(cards)),
+    )
+    assert root_conftest.pytest_xdist_auto_num_workers(config=None) == expected
+
+
+def test_worker_count_falls_back_to_torch(root_conftest, monkeypatch):
+    """rocminfo reporting nothing degrades to torch, as the pinning does --
+    it must not raise, or a GPU-free checkout cannot run GPU-free tests."""
+    import torch
+
+    monkeypatch.setattr(
+        "flashinfer.rocm.hip_utils.get_physical_card_device_indices", tuple
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 6)
+    assert root_conftest.pytest_xdist_auto_num_workers(config=None) == 3
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert root_conftest.pytest_xdist_auto_num_workers(config=None) == 1
