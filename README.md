@@ -49,8 +49,9 @@ pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
 python -c "import torch; assert torch.version.hip, 'not a ROCm build'"
 ```
 
-Kernels are JIT-compiled on first use, which takes a few minutes. The
-optional [`amd-flashinfer-jit-cache`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/amd-flashinfer-jit-cache/README.md)
+Kernels are JIT-compiled on first use — a minute or so for an in-tree HIP
+kernel, and up to 20+ minutes for a cold AITER variant. The optional
+[`amd-flashinfer-jit-cache`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/amd-flashinfer-jit-cache/README.md)
 package ships them prebuilt — one wheel per architecture, gfx942 and
 gfx950, with the architecture in the version's local segment
 (`0.6.18+amd.1.gfx942`). Pin it in full; an unqualified requirement
