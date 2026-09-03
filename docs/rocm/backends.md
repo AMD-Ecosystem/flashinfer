@@ -26,11 +26,16 @@ fails later:
 | `flashinfer.fp4_quantization`, `flashinfer.fp8_quantization`, and the same two under `flashinfer.quantization` | NVFP4 / trtllm-gen quantization |
 | `flashinfer.fused_moe` | The upstream CUTLASS MoE. **ROCm has MoE** — use `flashinfer.aiter_fused_moe`, below |
 | `flashinfer.dsv3_ops` | DeepSeek-V3 fusions built on the above |
-| `flashinfer.comm.*` (`cuda_ipc`, `mnnvl`, `nvshmem*`, `trtllm_*`, `vllm_ar`, `mixed_comm`) | NVLink / NVSHMEM transports |
+| `flashinfer.comm.*` — `cuda_ipc`, `mixed_comm`, `mnnvl`, `nvshmem`, `nvshmem_allreduce`, `trtllm_alltoall`, `trtllm_ar`, `trtllm_mnnvl_ar`, `vllm_ar` | NVLink / NVSHMEM transports |
 
 `importlib.util.find_spec` still reports these as present — the files ship,
 the import is what is gated. Feature-detect with `hasattr(flashinfer, ...)`
 or a `try: import ... except ImportError`, not `find_spec`.
+
+The list is exactly what is gated. A module that merely *imports* one of
+them — `flashinfer.comm.trtllm_moe_alltoall`, for instance — still fails,
+but transitively, so the error names the gated dependency rather than the
+module you asked for.
 
 `flashinfer.quantization`'s `packbits` and `segment_packbits` are unaffected
 and have in-tree HIP kernels.

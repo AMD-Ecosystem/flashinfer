@@ -241,7 +241,8 @@ rerun policy.
 
 ## Benchmarking
 
-The unified runner drives every ROCm attention path from one testlist:
+The unified runner drives batch decode and paged/ragged batch prefill from
+one testlist — the routed paths, not every op in the matrix above:
 
 ```bash
 cd benchmarks
@@ -250,9 +251,11 @@ python flashinfer_benchmark.py --testlist rocm/testlist_rocm.txt \
 ```
 
 Each line requests both `fa2` and `auto` and carries its own `--refcheck`,
-so the two are compared side by side. **Read the `backend_resolved` column** — `auto` is a
-request, not a result, and `backend_fallback_reason` says why AITER was
-declined. Per-op drivers live in
+so the two are compared side by side **where both survive capability
+filtering** — the Llama-3.1-405B rows lose `fa2` to its GQA group-size set
+and run unverified, so count the rows per config rather than assuming two.
+**Read the `backend_resolved` column** — `auto` is a request, not a result,
+and `backend_fallback_reason` says why AITER was declined. Per-op drivers live in
 [`benchmarks/rocm/`](https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/benchmarks/rocm), and
 [`benchmarks/README.md`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/benchmarks/README.md) documents the output columns.
 
