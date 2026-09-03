@@ -109,9 +109,11 @@ class TestCell:
     def test_declared_arch_marked_unsupported_is_unsupported(self):
         assert gen._cell(_unsupported(), {}) == gen.UNSUPPORTED
 
-    def test_evidence_promotes_declared_to_validated(self):
-        assert gen._cell(_support(evidence="MI300X, ROCm 7.2"), {}) == gen.VALIDATED
-        assert gen._cell(_support(), {}) == gen.DECLARED
+    def test_evidence_does_not_change_the_rendered_cell(self):
+        """`evidence` is provenance, not a support tier -- a reader cannot act
+        on whether someone pasted a measurement string."""
+        assert gen._cell(_support(evidence="MI300X, ROCm 7.2"), {}) == gen.SUPPORTED
+        assert gen._cell(_support(), {}) == gen.SUPPORTED
 
     def test_known_bad_wins_over_evidence_and_carries_its_footnotes(self):
         bad = caps.KnownBad(rocm_min="7.2")
@@ -167,8 +169,8 @@ class TestRender:
             caps.Capability(op="rope", backend="hip", archs={"gfx942": _support()})
         )
         out = gen.render(table)
-        assert f"{gen.BULLET} {gen.DECLARED}" in out
-        assert f"{gen.BULLET} {gen.VALIDATED}" not in out
+        assert f"{gen.BULLET} {gen.SUPPORTED}" in out
+        assert f"{gen.BULLET} {gen.UNSUPPORTED}" not in out
 
     def test_a_note_mentioning_a_symbol_does_not_add_a_legend_entry(self):
         """The legend is collected from status cells, not the rendered row."""
@@ -177,10 +179,10 @@ class TestRender:
                 op="rope",
                 backend="hip",
                 archs={"gfx942": _support()},
-                note=f"unlike {gen.VALIDATED} rows",
+                note=f"unlike {gen.UNSUPPORTED} rows",
             )
         )
-        assert f"{gen.BULLET} {gen.VALIDATED}" not in gen.render(table)
+        assert f"{gen.BULLET} {gen.UNSUPPORTED}" not in gen.render(table)
 
     def test_footnotes_are_numbered_in_table_order(self):
         first = caps.KnownBad(rocm_min="7.2", detail="broken on CDNA4")

@@ -48,14 +48,15 @@ python -c "import flashinfer; print(flashinfer.__version__)"
 `docker run` flags the GPU devices need, the wheel build, and the
 ahead-of-time kernel build.
 
-**Bringing your own environment?** Torch must come from `repo.radeon.com`,
-via `-f` and **not** `--index-url` — that repo is a flat wheel listing
-rather than a PEP 503 index, so `--index-url` fails with "No matching
-distribution found". pip still prefers the ROCm wheel over a same-version
-PyPI wheel because its `+rocm<X.Y>` local version ranks higher:
+**Bringing your own environment?** The image is the supported path, and the
+reason is torch: `repo.radeon.com` publishes no `rocm-rel-` directory for
+ROCm 10.0, so there is no pip command that installs the torch 2.12 build
+this release is tested against. The base image
+(`rocm/pytorch:rocm10.0_ubuntu24.04_py3.12_pytorch_release_2.12.0`) is
+where it comes from. Whatever you assemble, check you did not end up on a
+CPU-only wheel:
 
 ```bash
-pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
 python -c "import torch; assert torch.version.hip, 'not a ROCm build'"
 ```
 
@@ -94,26 +95,30 @@ python examples/single_prefill_example.py
 
 ## Supported hardware and toolchain
 
+**One configuration is supported: the one `docker/Dockerfile.rocm` builds
+and this release is tested on.**
+
 | | Supported |
 | :--- | :--- |
 | GPUs | gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI350X, MI355X) |
-| ROCm | 7.0.2, 7.1.1, 7.2, 7.14, 10.0 |
-| PyTorch+ROCm | 2.8.0, 2.9.1, 2.12.0 |
-| Python | 3.10+ (the development image uses 3.12, which is what the AITER pin requires) |
+| ROCm | 10.0 |
+| PyTorch+ROCm | 2.12.0 |
+| Python | 3.12 |
+| OS | Ubuntu 24.04 |
+| `amd-aiter` | 0.1.20 |
 
-The combination this release is developed and tested against is the
-development image's: **ROCm 10.0, PyTorch 2.12.0, Python 3.12,
-Ubuntu 24.04, `amd-aiter` 0.1.20** (`docker/Dockerfile.rocm`). The other
-rows are known to build but are not covered by every run. Replace `7.2` in
-the torch install command with the ROCm version you need; see
-<https://repo.radeon.com/rocm/manylinux/> for what is available.
+Nothing rejects another combination at install time, and older ROCm and
+torch releases have worked here before — but they are not tested, not
+covered by the matrix below, and not what a bug report will be reproduced
+against. Treat anything else as your own experiment.
 
-ROCm 7.14 and 10.0 are the exceptions: `repo.radeon.com` publishes no
-`rocm-rel-` directory for either, so there is no pip recipe. Take torch from
-the `rocm/pytorch:rocm10.0_ubuntu24.04_py3.12_pytorch_release_2.12.0` image
-instead, as `docker/Dockerfile.rocm` does. Stay on torch 2.12: 2.13 removes a
-`c10` symbol that every published `amd-aiter` build's prebuilt prefill kernels
-need, so AITER prefill fails to load there.
+The pins move together rather than independently. Every `amd-aiter` 0.1.20
+wheel is cp312 only, which fixes the interpreter; torch must stay at 2.12,
+since 2.13 removes a `c10` symbol those wheels' prebuilt prefill kernels
+need; and `repo.radeon.com` publishes no `rocm-rel-` directory for ROCm
+10.0, so there is no pip recipe for its torch at all — the base image is
+where it comes from. That is why the supported configuration is an image
+rather than a list of versions.
 
 ## Support matrix
 
@@ -170,26 +175,25 @@ decisions the library makes. Do not edit it by hand; run
 | `silu_and_mul` | `aiter` | ✅ | ✅ | `aiter::silu_and_mul`, linked at the C++ level. Opt-in; matches native in fp16, lower in bf16. |
 | `fused_moe` | `aiter` | ✅ | ✅ | `aiter_fused_moe`; bf16/fp16. Weights must be pre-shuffled with `shuffle_moe_weight` or results are silently wrong. |
 | `fused_moe_fp8` | `aiter` | ✅ | ✅ | `aiter_fused_moe` with fp8 weights in `moe_fp8_dtype()` plus both scales; activations are quantized per token in the shim. |
-| `single_decode` | `hip` | ◻️ | ◻️ | MHA / GQA / MQA. |
-| `batch_decode` | `hip` | ◻️ | ◻️ | MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ) and CUDA-graph capture. |
-| `single_prefill` | `hip` | ◻️ | ◻️ | MHA / GQA / MQA, including custom attention masks. |
-| `batch_prefill` | `hip` | ◻️ | ◻️ | Paged and ragged; MHA / GQA / MQA, including custom attention masks. |
-| `block_sparse` | `hip` | ◻️ | ◻️ | `BlockSparseAttentionWrapper` and the variable-block variant. Native HIP FA2 only -- `determine_attention_backend` never returns `aiter` here. |
-| `cascade` | `hip` | ◻️ | ◻️ | Two-level shared-prefix attention; a fused single-kernel variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`. |
-| `pod` | `hip` | ◻️ | ◻️ | `PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream. |
-| `rope` | `hip` | ◻️ | ◻️ | LLaMA and LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). |
-| `append_paged_kv_cache` | `hip` | ◻️ | ◻️ | fp8 KV-cache supported. Sustains 3.62 TB/s against AITER's 2.86 on gfx942, so `auto` picks this. |
-| `rmsnorm` | `hip` | ◻️ | ◻️ | What `auto` always picks: level with AITER on speed and more accurate. |
-| `fused_add_rmsnorm` | `hip` | ◻️ | ◻️ | What `auto` always picks: 1.6-1.8x faster than AITER on both arches. |
-| `layernorm` | `hip` | ◻️ | ◻️ | `layernorm` plus the Gemma RMSNorm variants. No AITER path. |
-| `sampling` | `hip` | ◻️ | ◻️ | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits. |
-| `logits_processor` | `hip` | ◻️ | ◻️ | Composable processor pipeline (cap, mask, temperature, ...). |
-| `silu_and_mul` | `hip` | ◻️ | ◻️ | SiLU and GELU with fused gating; the default for `auto`. |
-| `quantization` | `hip` | ◻️ | ◻️ | `packbits` and `segment_packbits`. |
+| `single_decode` | `hip` | ✅ | ✅ | MHA / GQA / MQA. |
+| `batch_decode` | `hip` | ✅ | ✅ | MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ) and CUDA-graph capture. |
+| `single_prefill` | `hip` | ✅ | ✅ | MHA / GQA / MQA, including custom attention masks. |
+| `batch_prefill` | `hip` | ✅ | ✅ | Paged and ragged; MHA / GQA / MQA, including custom attention masks. |
+| `block_sparse` | `hip` | ✅ | ✅ | `BlockSparseAttentionWrapper` and the variable-block variant. Native HIP FA2 only -- `determine_attention_backend` never returns `aiter` here. |
+| `cascade` | `hip` | ✅ | ✅ | Two-level shared-prefix attention; a fused single-kernel variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`. |
+| `pod` | `hip` | ✅ | ✅ | `PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream. |
+| `rope` | `hip` | ✅ | ✅ | LLaMA and LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). |
+| `append_paged_kv_cache` | `hip` | ✅ | ✅ | fp8 KV-cache supported. Sustains 3.62 TB/s against AITER's 2.86 on gfx942, so `auto` picks this. |
+| `rmsnorm` | `hip` | ✅ | ✅ | What `auto` always picks: level with AITER on speed and more accurate. |
+| `fused_add_rmsnorm` | `hip` | ✅ | ✅ | What `auto` always picks: 1.6-1.8x faster than AITER on both arches. |
+| `layernorm` | `hip` | ✅ | ✅ | `layernorm` plus the Gemma RMSNorm variants. No AITER path. |
+| `sampling` | `hip` | ✅ | ✅ | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits. |
+| `logits_processor` | `hip` | ✅ | ✅ | Composable processor pipeline (cap, mask, temperature, ...). |
+| `silu_and_mul` | `hip` | ✅ | ✅ | SiLU and GELU with fused gating; the default for `auto`. |
+| `quantization` | `hip` | ✅ | ✅ | `packbits` and `segment_packbits`. |
 
-* ✅ **validated** — this op has been exercised on this architecture.
-* ◻️ **supported** — the op runs here and the test suite covers it, but no run has been recorded against this specific op and architecture.
-* ⚠️ **broken on some toolchains** — usable, but not on every ROCm/AITER version; see the footnote.
+* ✅ **supported** — this op runs on this architecture and the test suite covers it.
+* ⚠️ **supported, except on some toolchains** — a specific ROCm/AITER version range miscompiles it, and routing declines it there. The footnote names the range.
 
 [^kb1]: `batch_prefill/aiter` on gfx950, ROCm [7.2, 7.3): ROCm 7.2.x miscompiles AITER's causal batch-prefill kernel on gfx950: causal=True with logits_soft_cap=0.0 returns wrong numbers (not an error), 97.6% of elements off. Use ROCm 7.1, or backend='fa2'. Override with `FLASHINFER_ARCH_ALLOW_KNOWN_BAD=1` if you have validated it yourself. <https://github.com/ROCm/aiter/blob/main/op_tests/test_batch_prefill.py>
 

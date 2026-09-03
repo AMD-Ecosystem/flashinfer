@@ -10,8 +10,24 @@ constraints that are easy to trip over.
 * [Not available on ROCm](#not-available-on-rocm)
 * [Installing AITER](#installing-aiter)
 * [How `backend="auto"` resolves](#how-backendauto-resolves)
+* [CUDA-only arguments](#cuda-only-arguments)
 * [Known limitations](#known-limitations)
 * [Per-op notes](#per-op-notes)
+* [Tests](#tests)
+
+## Choosing a backend
+
+Four backend strings are accepted by the ops that take a `backend=`
+argument. Which one names the in-tree kernel depends on the op:
+
+| `backend=` | Meaning |
+| :--- | :--- |
+| `"auto"` (default) | Pick per call — see [below](#how-backendauto-resolves) |
+| `"aiter"` | Require AITER; raise if the call is not compatible |
+| `"fa2"` | The in-tree HIP kernel, for the attention wrappers (single/batch prefill and decode) |
+| `"native"` | The in-tree HIP kernel, for everything else (`append_paged_kv_cache`, `rmsnorm`, `fused_add_rmsnorm`, `silu_and_mul`, `rope`) |
+
+`mla` accepts only `"auto"` and `"aiter"` — there is no in-tree MLA kernel.
 
 ## Not available on ROCm
 
@@ -39,20 +55,6 @@ module you asked for.
 
 `flashinfer.quantization`'s `packbits` and `segment_packbits` are unaffected
 and have in-tree HIP kernels.
-
-## Choosing a backend
-
-Four backend strings are accepted by the ops that take a `backend=`
-argument. Which one names the in-tree kernel depends on the op:
-
-| `backend=` | Meaning |
-| :--- | :--- |
-| `"auto"` (default) | Pick per call — see [below](#how-backendauto-resolves) |
-| `"aiter"` | Require AITER; raise if the call is not compatible |
-| `"fa2"` | The in-tree HIP kernel, for the attention wrappers (single/batch prefill and decode) |
-| `"native"` | The in-tree HIP kernel, for everything else (`append_paged_kv_cache`, `rmsnorm`, `fused_add_rmsnorm`, `silu_and_mul`, `rope`) |
-
-`mla` accepts only `"auto"` and `"aiter"` — there is no in-tree MLA kernel.
 
 ## Installing AITER
 

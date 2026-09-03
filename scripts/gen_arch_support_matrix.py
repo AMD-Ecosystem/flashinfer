@@ -59,26 +59,21 @@ ARCH_LABELS = {
 # which would leave the generated block failing its own --check on the next run.
 BULLET = "*"
 
-VALIDATED = "✅"
-DECLARED = "◻️"
+SUPPORTED = "✅"
 KNOWN_BAD = "⚠️"
 UNSUPPORTED = "❌"
 
 LEGEND = (
     (
-        VALIDATED,
-        "**validated** — this op has been exercised on this architecture.",
-    ),
-    (
-        DECLARED,
-        "**supported** — the op runs here and the test suite covers it, but no run has been "
-        "recorded against this specific op and architecture.",
+        SUPPORTED,
+        "**supported** — this op runs on this architecture and the test suite covers it.",
     ),
     (
         KNOWN_BAD,
-        "**broken on some toolchains** — usable, but not on every ROCm/AITER version; see the footnote.",
+        "**supported, except on some toolchains** — a specific ROCm/AITER version range "
+        "miscompiles it, and routing declines it there. The footnote names the range.",
     ),
-    (UNSUPPORTED, "**not available** on that architecture."),
+    (UNSUPPORTED, "**not available** on this architecture."),
 )
 
 # Note content that markdownlint would either reject with no autofix, or "fix"
@@ -161,7 +156,11 @@ def _cell(entry, footnote_ids: dict[int, int]) -> str:
     if entry.known_bad:
         refs = "".join(f"[^kb{footnote_ids[id(bad)]}]" for bad in entry.known_bad)
         return f"{KNOWN_BAD}{refs}"
-    return VALIDATED if entry.evidence else DECLARED
+    # Deliberately not split on `evidence`. That field records which stack a row
+    # was measured on, which is provenance for us; rendering it as a second tier
+    # told readers a row was less supported when it only meant nobody had pasted
+    # a string in. Both states mean the same thing to a caller: it works.
+    return SUPPORTED
 
 
 def _note(where: str, text: str) -> str:
