@@ -329,9 +329,15 @@ class TestTopLevelExports:
         ):
             assert hasattr(flashinfer, name), f"flashinfer.{name} missing on ROCm"
 
-    def test_the_git_dunders_are_bound(self):
-        assert isinstance(flashinfer.__git_commit__, str)
-        assert isinstance(flashinfer.__git_version__, str)
+    def test_the_git_dunders_carry_the_real_hash(self):
+        """`isinstance(str)` would also pass on the permanent "unknown" fallback."""
+        from flashinfer import _version
+
+        expected = (_version.__commit_id__ or "unknown").removeprefix("g")
+        assert flashinfer.__git_commit__ == expected
+        assert flashinfer.__git_version__ == expected
+        if _version.__commit_id__:
+            assert flashinfer.__git_commit__ != "unknown"
 
     @pytest.mark.parametrize(
         "name", ["check_torch_rocm_compatibility", "gate_cuda_only_modules"]

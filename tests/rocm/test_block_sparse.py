@@ -121,7 +121,9 @@ def test_a_sparse_block_mask_is_honoured_not_ignored():
 
 
 def test_variable_block_sizes_are_honoured():
-    import einops  # noqa: F401  -- imported inside VariableBlockSparse.run()
+    # VariableBlockSparseAttentionWrapper.run() imports einops; the CI image
+    # installs it, so a skip here means the environment, not the code.
+    pytest.importorskip("einops")
 
     torch.manual_seed(0)
     heads = 1

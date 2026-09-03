@@ -449,6 +449,12 @@ CAPABILITIES: Tuple[Capability, ...] = (
         note="Paged and ragged; MHA / GQA / MQA, including custom attention masks.",
     ),
     Capability(
+        "block_sparse",
+        "hip",
+        _archs(_HIP_942, _HIP_950),
+        note="`BlockSparseAttentionWrapper` and the variable-block variant. Native HIP FA2 only -- `determine_attention_backend` never returns `aiter` here.",
+    ),
+    Capability(
         "cascade",
         "hip",
         _archs(_HIP_942, _HIP_950),

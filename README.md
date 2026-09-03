@@ -164,6 +164,7 @@ decisions the library makes. Do not edit it by hand; run
 | `batch_decode` | `hip` | ◻️ | ◻️ | MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ) and CUDA-graph capture. |
 | `single_prefill` | `hip` | ◻️ | ◻️ | MHA / GQA / MQA, including custom attention masks. |
 | `batch_prefill` | `hip` | ◻️ | ◻️ | Paged and ragged; MHA / GQA / MQA, including custom attention masks. |
+| `block_sparse` | `hip` | ◻️ | ◻️ | `BlockSparseAttentionWrapper` and the variable-block variant. Native HIP FA2 only -- `determine_attention_backend` never returns `aiter` here. |
 | `cascade` | `hip` | ◻️ | ◻️ | Two-level shared-prefix attention; a fused single-kernel variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`. |
 | `pod` | `hip` | ◻️ | ◻️ | `PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream. |
 | `rope` | `hip` | ◻️ | ◻️ | LLaMA and LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). |

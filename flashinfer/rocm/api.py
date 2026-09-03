@@ -10,10 +10,15 @@ conflict on every sync.
 """
 
 from .._version import __version__ as __version__
-from ..version import __git_commit__ as __git_commit__
-from ..version import __git_version__ as __git_version__  # backward compat
+from .._version import __commit_id__ as _commit_id
 from . import gate_cuda_only_modules
 from .hip_utils import check_torch_rocm_compatibility
+
+# Not from ..version: that reads _build_meta.py, which build_backend_rocm.py
+# deliberately never writes, so it would report "unknown" on every ROCm build.
+# setuptools-scm spells the hash "g<short-sha>".
+__git_commit__: str = (_commit_id or "unknown").removeprefix("g")
+__git_version__: str = __git_commit__  # backward compat
 
 # Checks compatibility with installed torch
 check_torch_rocm_compatibility()
