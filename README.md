@@ -273,7 +273,7 @@ Read at runtime or import time:
 | `FLASHINFER_DISABLE_AOT_ARCH_CHECK` | unset | Use the prebuilt kernels even when their architecture does not match the running GPU. By default a mismatch discards them, with a warning, and everything JIT-compiles instead. |
 | `ROCM_PATH` / `ROCM_HOME` | `/opt/rocm` | Where `flashinfer.rocm.hip_utils` looks for ROCm. Override only for non-standard layouts. |
 | `AITER_JIT_DIR` | AITER's own | Where the C++ shim `dlopen`s AITER's built `.so` files, overriding the path compiled in at build time. |
-| `GPU_ARCHS` | autodetected | AITER's own JIT architecture. Respected when AITER is imported directly, but a shim build overwrites it from `FLASHINFER_ROCM_ARCH_LIST` and does not restore it. |
+| `GPU_ARCHS` | autodetected | AITER's own JIT architecture. An explicit value is preserved — a shim build overrides it from `FLASHINFER_ROCM_ARCH_LIST` for the build and restores yours afterwards. Left set to the derived architecture only when you had not set it. |
 
 Build-time variables — `FLASHINFER_ROCM_ARCH_LIST`, `PYTORCH_ROCM_ARCH`,
 `FLASHINFER_JIT_VERBOSE`, `FLASHINFER_EXTRA_LDFLAGS`,

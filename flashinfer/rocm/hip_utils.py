@@ -719,14 +719,11 @@ def check_torch_rocm_compatibility() -> None:
             "ERROR: PyTorch does NOT have ROCm support.\n\n"
             "You installed the CPU-only version from PyPI.\n"
             "amd-flashinfer requires PyTorch compiled with ROCm support.\n\n"
-            "Fix this by:\n"
-            "  1. Uninstall current PyTorch:\n"
-            "     pip uninstall torch\n\n"
-            "  2. Install PyTorch for ROCm:\n"
-            "     pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/\n\n"
-            "See https://github.com/AMD-Ecosystem/flashinfer for detailed installation instructions.\n"
-            + "="
-            * 70
+            "Fix this by uninstalling it (pip uninstall torch) and installing a\n"
+            "ROCm build. Which wheel, and where from, depends on your ROCm\n"
+            "release -- repo.radeon.com publishes no rocm-rel- directory for\n"
+            "some of them, including the 10.0 the development image uses.\n\n"
+            "See https://github.com/AMD-Ecosystem/flashinfer#quick-start\n" + "=" * 70
         )
 
     # ROCm version compatibility warning
@@ -745,11 +742,12 @@ def check_torch_rocm_compatibility() -> None:
                 f"  System ROCm version: {system_rocm}\n"
                 f"  PyTorch ROCm version: {torch_rocm_major_minor}\n\n"
                 f"This may cause runtime errors or crashes.\n\n"
-                f"To fix, reinstall PyTorch for ROCm {system_rocm_major_minor}.\n"
-                f"The supported-toolchain table in README.md says which torch\n"
-                f"pairs with it and where to get it -- repo.radeon.com publishes\n"
-                f"no rocm-rel- directory for every ROCm release, so there is no\n"
-                f"one command that is right for all of them.\n"
+                f"To fix, reinstall PyTorch built for ROCm "
+                f"{system_rocm_major_minor}. Which wheel, and where from,\n"
+                f"depends on that release -- repo.radeon.com publishes no\n"
+                f"rocm-rel- directory for some of them, so there is no one\n"
+                f"command that is right for all.\n\n"
+                f"See https://github.com/AMD-Ecosystem/flashinfer#quick-start\n"
                 f"{'=' * 70}",
                 RuntimeWarning,
                 stacklevel=2,
