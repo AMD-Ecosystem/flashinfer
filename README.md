@@ -24,7 +24,9 @@ repository. The development image carries a matched ROCm, PyTorch, Python
 and AITER set, so it is the shortest path to a working environment:
 
 ```bash
-docker build -t flashinfer-dev:rocm10.0 -f docker/Dockerfile.rocm .
+docker build -t flashinfer-dev:rocm10.0 -f docker/Dockerfile.rocm . \
+  --build-arg USERNAME=$USER --build-arg USER_UID=$(id -u) \
+  --build-arg USER_GID=$(id -g)
 docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
   --group-add video --group-add "$(getent group render | cut -d: -f3)" \
   --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --shm-size=64G \
@@ -32,7 +34,10 @@ docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
 ```
 
 The image does not contain the source — `-v "$PWD":/workspace` is what puts
-it there. Then, inside the container, an editable install:
+it there. The `--build-arg` trio matches the container user to yours; without
+it the image runs as UID 1003 and the editable install cannot write to your
+mounted tree. `render` must be the host's **numeric** GID, since the name
+resolves against the image's own group. Then, inside the container:
 
 ```bash
 python -m pip install --no-build-isolation -ve .

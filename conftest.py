@@ -50,17 +50,34 @@ try:
         also shadows xdist's PYTEST_XDIST_AUTO_NUM_WORKERS.
 
         Degrades to what torch can see when rocminfo reports nothing, the
-        same fallback the pinning below uses. This hook runs for every root
-        invocation, so raising here would make a GPU-free checkout unable to
-        run even the tests that need no GPU.
+        same fallback the pinning below uses -- raising here would stop a
+        GPU-free checkout running even the tests that need no GPU. That
+        fallback cannot tell a physical card from a CPX logical device, so
+        it warns: on a CPX host without rocminfo it would otherwise silently
+        pick one worker per XCD, the configuration the halving exists to
+        avoid. With no GPU at all it yields a single worker, so a GPU-free
+        selection runs serially unless you pass -n N.
         """
+        import warnings
+
         import torch
 
         from flashinfer.rocm.hip_utils import get_physical_card_device_indices
 
-        n_physical = len(get_physical_card_device_indices()) or (
-            torch.cuda.device_count() if torch.cuda.is_available() else 0
-        )
+        n_physical = len(get_physical_card_device_indices())
+        if n_physical == 0:
+            n_visible = torch.cuda.device_count() if torch.cuda.is_available() else 0
+            if n_visible:
+                warnings.warn(
+                    f"pytest -n auto: rocminfo reported no supported AMD GPU, so "
+                    f"the worker count falls back to the {n_visible} device(s) "
+                    f"torch sees. On a CPX host these are logical XCDs, not "
+                    f"cards, and one worker per XCD causes intermittent HSA "
+                    f"failures -- pass an explicit -n N if this host is CPX.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            n_physical = n_visible
         return max(1, n_physical // 2)
 
 except ImportError:

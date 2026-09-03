@@ -745,14 +745,11 @@ def check_torch_rocm_compatibility() -> None:
                 f"  System ROCm version: {system_rocm}\n"
                 f"  PyTorch ROCm version: {torch_rocm_major_minor}\n\n"
                 f"This may cause runtime errors or crashes.\n\n"
-                f"To fix, reinstall PyTorch for your ROCm version -- see the\n"
-                f"supported matrix in README.md for which torch pairs with it:\n"
-                f"  pip install torch==<version> -f "
-                f"https://repo.radeon.com/rocm/manylinux/rocm-rel-{system_rocm}/\n\n"
-                f"Or if using uv:\n"
-                f"  export FLASHINFER_ROCM_VERSION={system_rocm}\n"
-                f"  uv pip install torch==<version> -f "
-                f"https://repo.radeon.com/rocm/manylinux/rocm-rel-{system_rocm}/\n"
+                f"To fix, reinstall PyTorch for ROCm {system_rocm_major_minor}.\n"
+                f"The supported-toolchain table in README.md says which torch\n"
+                f"pairs with it and where to get it -- repo.radeon.com publishes\n"
+                f"no rocm-rel- directory for every ROCm release, so there is no\n"
+                f"one command that is right for all of them.\n"
                 f"{'=' * 70}",
                 RuntimeWarning,
                 stacklevel=2,

@@ -55,6 +55,7 @@ prune .devcontainer
 prune .claude
 prune profiler
 exclude Jenkinsfile
+exclude conftest.py
 global-exclude CLAUDE.md
 exclude .clang-format
 exclude .gitignore
