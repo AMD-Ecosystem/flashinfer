@@ -65,7 +65,7 @@ dev = [
 [build-system]
 # In-tree backend (see build_backend_rocm.py). Nothing is compiled at build time, so
 # torch/numpy are not required; `wheel` is not either since setuptools 70.1, and
-# listing it fails `python -m build --no-isolation` in docker/Dockerfile.rocm_ci.
+# listing it fails `python -m build --no-isolation`.
 requires = [
     "setuptools>=80",
     "setuptools-scm>=9.2",

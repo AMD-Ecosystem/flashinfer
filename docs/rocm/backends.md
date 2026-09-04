@@ -83,10 +83,10 @@ the RMSNorm entry points, so an older one cannot resolve them. Below the floor
 `auto` will not select AITER and an explicit `backend="aiter"` raises.
 
 That rules out `pypi.amd.com/rocm-7.1.1/simple`, which carries only
-`0.1.10` and only cp310/cp312 wheels. The CI image
-(`docker/Dockerfile.rocm_ci`) still installs `0.1.10` and so runs without
-the AITER backends; the development image (`docker/Dockerfile.rocm`)
-bundles the wheel above, on CPython 3.12, and needs no separate install.
+`0.1.10` and only cp310/cp312 wheels. The development image
+(`docker/Dockerfile.rocm`) bundles the wheel above, on CPython 3.12, and
+needs no separate install -- it is the one supported configuration, so in
+practice this section is only for someone assembling their own.
 
 Every 0.1.20 wheel is cp312 only, and none is built against ROCm 10.0 —
 they share one source revision (build id `3135022`) retargeted to

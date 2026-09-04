@@ -252,11 +252,14 @@ class Capability:
 #   gfx950  MI350X   27517 passed / 3585 skipped / 3 failed   (49a8cdd8)
 #   gfx942  MI300X   27520 passed / 3585 skipped / 0 failed   (49a8cdd8)
 #
-# both on torch 2.9.1+rocm7.2.0, HIP 7.2.26015, amd-aiter 0.1.10.
+# both on torch 2.9.1+rocm7.2.0, HIP 7.2.26015, amd-aiter 0.1.10. The gfx942
+# rows were re-run on the supported stack for the v0.6.18 release: the
+# AITER-backed op suites gave 8725 passed / 3581 skipped on ROCm 10.0 (HIP
+# 7.15.26333), torch 2.12.0, amd-aiter 0.1.20.
 # --------------------------------------------------------------------------
 
 _MEASURED_950 = "MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1"
-_MEASURED_942 = "MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1"
+_MEASURED_942 = "MI300X / rocm 10.0 / aiter 0.1.20 / torch 2.12.0"
 
 # Separate from the suite strings above, which predate the MLA tests.
 _MEASURED_950_MLA = (
@@ -298,7 +301,7 @@ _OK_950 = ArchSupport(Support.SUPPORTED, evidence=_MEASURED_950)
 # differs from the suite runs only by board is not attributable to anything.
 _OK_942_MOE = ArchSupport(
     Support.SUPPORTED,
-    evidence="fused_moe: MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1",
+    evidence="fused_moe: MI300X / rocm 10.0 / aiter 0.1.20 / torch 2.12.0",
 )
 _OK_950_MOE = ArchSupport(
     Support.SUPPORTED,
@@ -307,7 +310,7 @@ _OK_950_MOE = ArchSupport(
 _OK_942_FP8_MOE = ArchSupport(
     Support.SUPPORTED,
     evidence=(
-        "fused_moe fp8: MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-25"
+        "fused_moe fp8: MI300X / rocm 10.0 / aiter 0.1.20 / torch 2.12.0 / 2026-09-03"
     ),
 )
 _OK_950_FP8_MOE = ArchSupport(

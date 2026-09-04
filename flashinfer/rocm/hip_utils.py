@@ -719,11 +719,14 @@ def check_torch_rocm_compatibility() -> None:
             "ERROR: PyTorch does NOT have ROCm support.\n\n"
             "You installed the CPU-only version from PyPI.\n"
             "amd-flashinfer requires PyTorch compiled with ROCm support.\n\n"
-            "Fix this by uninstalling it (pip uninstall torch) and installing a\n"
-            "ROCm build. Which wheel, and where from, depends on your ROCm\n"
-            "release -- repo.radeon.com publishes no rocm-rel- directory for\n"
-            "some of them, including the 10.0 the development image uses.\n\n"
-            "See https://github.com/AMD-Ecosystem/flashinfer#quick-start\n" + "=" * 70
+            "Fix this by:\n"
+            "  1. pip uninstall torch\n"
+            "  2. pip install torch -f "
+            "https://repo.radeon.com/rocm/manylinux/rocm-rel-<your-rocm>/\n\n"
+            "Which torch version pairs with your ROCm release, and what to do\n"
+            "when repo.radeon.com publishes no rocm-rel- directory for it (as\n"
+            "for the 10.0 the development image uses), are in the Quick start:\n"
+            "https://github.com/AMD-Ecosystem/flashinfer#quick-start\n" + "=" * 70
         )
 
     # ROCm version compatibility warning
