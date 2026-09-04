@@ -188,8 +188,10 @@ class ArchSupport:
     """How one ``(op, backend)`` behaves on one architecture.
 
     ``evidence`` records *what was actually run* -- board, ROCm, AITER, torch --
-    rather than a bare "validated" flag. An empty string means the row is a
-    declaration nobody has measured, which is a fact worth being able to render.
+    rather than a bare "validated" flag. It is maintainer provenance only: the
+    README generator does not render it and does not branch on it, so an empty
+    string reads identically to a populated one in the published matrix. An
+    empty string just means nobody recorded a run for that pair.
     """
 
     support: Support

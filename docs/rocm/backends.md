@@ -352,7 +352,12 @@ out = aiter_fused_moe(hidden_states, w1s, w2s, topk_ids, topk_weights)
 * `hidden_states` must be `bfloat16` or `float16` — fp8 activations are
   rejected; the shim quantizes per token itself.
 * The **weights** may be fp8, matching `hidden_states` otherwise. fp8 needs
-  both `w1_scale` and `w2_scale` (neither alone) and `model_dim % 128 == 0`.
+  both `w1_scale` and `w2_scale` (neither alone) and two shape constraints,
+  not one: `model_dim % 128 == 0` (CK steps stage-1 K by 128 on every tile
+  and both architectures, so no `block_m` rescues it), **and** `inter_dim`
+  divisible by the stage-2 K tile, which depends on `block_m` and the
+  architecture. With `block_m="auto"` the shim tries the other legal tiles
+  before giving up; pin `block_m` and an indivisible `inter_dim` raises.
   **The fp8 encoding is architecture-dependent** — `float8_e4m3fnuz` on
   gfx942, `float8_e4m3fn` on gfx950. Ask `moe_fp8_dtype()` rather than
   hard-coding one; the shim raises `ValueError` on the wrong encoding, which
@@ -367,9 +372,10 @@ out = aiter_fused_moe(hidden_states, w1s, w2s, topk_ids, topk_weights)
   raise: shape and dtype are unchanged, so nothing can detect it, and the
   output is silently wrong.
 
-### HIP-only kernels
+### No AITER backend
 
-These have no AITER path at all:
+These take the in-tree HIP kernel. Cascade is listed first because it is the
+partial case — its own kernels are HIP, but what it calls is not:
 
 * **Cascade attention** — the *merge* kernels only. A fused single-kernel
   HIP variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`

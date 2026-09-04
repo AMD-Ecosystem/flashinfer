@@ -6,12 +6,15 @@
 """Render the per-architecture support matrix in README.md from the capability table.
 
 ``flashinfer/rocm/arch_caps.py`` is the single source of truth for which
-``(op, backend)`` pairs are usable on which GPU architecture, and -- through
-``evidence`` -- for which of those claims anyone has actually measured. The
-README used to restate that by hand as the string "gfx942/gfx950", which cannot
-express either an architecture-specific defect or the difference between a
-measured row and a declared one. It went stale the moment the two architectures
+``(op, backend)`` pairs are usable on which GPU architecture. The README used to
+restate that by hand as the string "gfx942/gfx950", which cannot express an
+architecture-specific defect; it went stale the moment the two architectures
 stopped behaving identically.
+
+``evidence`` is deliberately *not* rendered. It records which stack a row was
+measured on, which is provenance for maintainers; splitting the table on whether
+it was populated told readers a row was less supported when it only meant nobody
+had pasted a string in.
 
 Usage::
 

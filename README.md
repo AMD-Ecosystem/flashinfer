@@ -153,12 +153,15 @@ Read it before relying on an AITER path — several attention kwargs are
 silently ignored there rather than rejected.
 
 **Read the table as one row per (op, backend) pair, not one row per op.**
-An op with both backends appears twice — `batch_decode`, `single_prefill`
-and `batch_prefill` each have an `aiter` row *and* a `hip` row — so the
+Eight ops have both backends and so appear twice — `batch_decode`,
+`single_prefill`, `batch_prefill`, `rope`, `append_paged_kv_cache`,
+`rmsnorm`, `fused_add_rmsnorm`, `silu_and_mul` — which is why the
 `Backend` column also says whether `auto` takes that row when you pass no
-`backend=`. Only ops with a single row (`single_decode`, `block_sparse`,
-`pod`, `layernorm`, `sampling`, `logits_processor`, `quantization`) have
-one implementation.
+`backend=`. The rest appear once: `mla`, `fused_moe` and `fused_moe_fp8`
+are AITER-only, and `single_decode`, `block_sparse`, `pod`, `cascade`,
+`layernorm`, `sampling`, `logits_processor` and `quantization` are HIP-only
+— with `cascade` the exception, since only its merge kernels are HIP and
+each attention level routes on its own.
 
 The table is generated from
 [`flashinfer/rocm/arch_caps.py`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/flashinfer/rocm/arch_caps.py), which is what
