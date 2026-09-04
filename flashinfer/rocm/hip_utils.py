@@ -726,8 +726,8 @@ def check_torch_rocm_compatibility() -> None:
             "Pin the version. -f only *adds* to PyPI, so an unpinned install\n"
             "can pick a newer CPU-only wheel from there and land you back here.\n"
             "Which version pairs with your ROCm release, and what to do when\n"
-            "repo.radeon.com publishes no rocm-rel- directory for it (as for\n"
-            "the 10.0 the development image uses), are in the Quick start:\n"
+            "repo.radeon.com publishes no rocm-rel- directory for it (as with\n"
+            "ROCm 10.0 in the development image), are in the Quick start:\n"
             "https://github.com/AMD-Ecosystem/flashinfer#quick-start\n" + "=" * 70
         )
 
