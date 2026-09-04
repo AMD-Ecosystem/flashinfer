@@ -438,7 +438,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "cascade",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        auto_pick="per level, via the routed batch wrappers -- can be `aiter`",
+        auto_pick="merge only; levels are auto-routed and can be `aiter`",
         note='Two-level shared-prefix attention; a fused single-kernel variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`. The `hip` backend is the merge kernels only -- each level\'s attention runs through `BatchPrefillWithPagedKVCacheWrapper` at `backend="auto"`, so it can dispatch to AITER. The cascade wrappers expose no `backend=` to override that.',
     ),
     Capability(

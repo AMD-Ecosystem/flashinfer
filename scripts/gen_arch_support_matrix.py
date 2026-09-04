@@ -145,33 +145,38 @@ def _window(bad) -> str:
     return " and ".join(parts) or "all versions"
 
 
-def _auto_pick(cap, arch_caps) -> str:
-    """What `backend="auto"` resolves to for this op, per row.
+def _backend_cell(cap, arch_caps) -> str:
+    """The Backend column: which backend the row is, and whether `auto` takes it.
 
-    The table has one row per (op, backend) pair, so an op with both backends
-    appears twice -- and the `Backend` column then reads as though it were the
-    answer to "what runs?", which it is not. This column is that answer.
+    These were two columns and read badly split. Merged, because they answer one
+    question -- the backend alone was being read as "what runs", which it is not:
+    an op with both backends has two rows, and only the suffix says which one a
+    caller with no `backend=` argument actually gets.
 
-    Derived from `fallback`, which only the AITER rows carry: a row with one
-    names the backend `auto` drops to, so `auto` prefers AITER and the paired
-    HIP row is the fallback target. `fallback="fa2"` means AITER is preferred;
-    `fallback="native"` means the in-tree kernel is, and AITER is opt-in.
+    The suffix is derived from `fallback`, which only AITER rows carry. "fa2"
+    means `auto` prefers AITER and drops to the HIP row; "native" means the
+    in-tree kernel is the default and AITER is opt-in; empty means there is no
+    other backend to name.
     """
     if cap.auto_pick:
-        return cap.auto_pick
+        return f"`{cap.backend}` -- {cap.auto_pick}"
     if cap.backend == "aiter":
-        if cap.fallback == "fa2":
-            return "this, when compatible"
-        if cap.fallback == "native":
-            return "the `hip` row (opt-in)"
-        return "this (no HIP kernel)"
+        suffix = {
+            "fa2": "auto picks this when compatible",
+            "native": "opt-in",
+        }.get(cap.fallback, "only backend")
+        return f"`aiter` -- {suffix}"
     paired = next(
         (c for c in arch_caps.CAPABILITIES if c.op == cap.op and c.backend == "aiter"),
         None,
     )
     if paired is None:
-        return "this (only backend)"
-    return "this" if paired.fallback == "native" else "the `aiter` row first"
+        suffix = "only backend"
+    elif paired.fallback == "native":
+        suffix = "auto picks this"
+    else:
+        suffix = "fallback; auto tries `aiter` first"
+    return f"`hip` -- {suffix}"
 
 
 def _cell(entry, footnote_ids: dict[int, int]) -> str:
@@ -235,8 +240,8 @@ def render(arch_caps) -> str:
     lines = [
         BEGIN,
         "",
-        f"| Op | Backend | `auto` picks | {' | '.join(ARCH_LABELS.get(a, a) for a in archs)} | Notes |",
-        f"| :--- | :--- | :--- | {' | '.join(':---:' for _ in archs)} | :--- |",
+        f"| Op | Backend | {' | '.join(ARCH_LABELS.get(a, a) for a in archs)} | Notes |",
+        f"| :--- | :--- | {' | '.join(':---:' for _ in archs)} | :--- |",
     ]
     # Collected from the status cells, not the rendered row: a note mentioning
     # a symbol must not resurrect a legend entry no row is actually in.
@@ -246,7 +251,7 @@ def render(arch_caps) -> str:
         used.update(s for s, _ in LEGEND for c in cells if c.startswith(s))
         note = _note(f"{cap.op}/{cap.backend}", cap.note)
         lines.append(
-            f"| `{cap.op}` | `{cap.backend}` | {_auto_pick(cap, arch_caps)} | "
+            f"| `{cap.op}` | {_backend_cell(cap, arch_caps)} | "
             f"{' | '.join(cells)} | {note} |"
         )
 
