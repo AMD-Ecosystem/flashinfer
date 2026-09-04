@@ -184,6 +184,37 @@ class TestRender:
         )
         assert f"{gen.BULLET} {gen.UNSUPPORTED}" not in gen.render(table)
 
+    def test_auto_pick_column_answers_what_runs(self):
+        """The Backend column names the row; this column names what `auto`
+        resolves to. Conflating them is how a reader concludes batch_decode is
+        HIP-only because a `hip` row exists."""
+        aiter_row = caps.Capability(
+            op="batch_decode",
+            backend="aiter",
+            archs={"gfx942": _support()},
+            fallback="fa2",
+        )
+        hip_row = caps.Capability(
+            op="batch_decode", backend="hip", archs={"gfx942": _support()}
+        )
+        table = _table(aiter_row, hip_row)
+        assert gen._auto_pick(aiter_row, table) == "this, when compatible"
+        assert gen._auto_pick(hip_row, table) == "the `aiter` row first"
+
+    def test_auto_pick_override_wins(self):
+        """cascade needs it: the row is `hip`, but each level routes through an
+        auto-selected batch wrapper and can land on AITER."""
+        row = caps.Capability(
+            op="cascade",
+            backend="hip",
+            archs={"gfx942": _support()},
+            auto_pick="per level, via the routed batch wrappers",
+        )
+        assert (
+            gen._auto_pick(row, _table(row))
+            == "per level, via the routed batch wrappers"
+        )
+
     def test_no_footnotes_leaves_no_double_blank_line(self):
         """The whitespace pre-commit hook strips a doubled blank line, so an
         unconditional separator here makes --check unsatisfiable."""

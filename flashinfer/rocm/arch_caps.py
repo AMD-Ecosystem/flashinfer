@@ -227,6 +227,11 @@ class Capability:
     # Empty means no alternative exists -- ``mla`` accepts only 'auto'/'aiter',
     # so suggesting anything there would send the user into a ValueError.
     fallback: str = ""
+    # Overrides the "`auto` picks" column, which is otherwise derived from
+    # `fallback`. Needed where the row's backend is not the whole story:
+    # cascade's merge kernels are HIP, but each level's attention goes through
+    # an auto-routed batch wrapper and can land on AITER.
+    auto_pick: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "archs", MappingProxyType(dict(self.archs)))
@@ -433,7 +438,8 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "cascade",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="Two-level shared-prefix attention; a fused single-kernel variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`.",
+        auto_pick="per level, via the routed batch wrappers -- can be `aiter`",
+        note='Two-level shared-prefix attention; a fused single-kernel variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`. The `hip` backend is the merge kernels only -- each level\'s attention runs through `BatchPrefillWithPagedKVCacheWrapper` at `backend="auto"`, so it can dispatch to AITER. The cascade wrappers expose no `backend=` to override that.',
     ),
     Capability(
         "pod",

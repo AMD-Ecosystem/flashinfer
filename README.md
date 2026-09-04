@@ -152,7 +152,15 @@ and the list of upstream modules that are not available on ROCm are in
 Read it before relying on an AITER path — several attention kwargs are
 silently ignored there rather than rejected.
 
-The table below is generated from
+**Read the table as one row per (op, backend) pair, not one row per op.**
+An op with both backends appears twice — `batch_decode`, `single_prefill`
+and `batch_prefill` each have an `aiter` row *and* a `hip` row. The
+`Backend` column names what that row describes; the **`auto` picks** column
+is what actually runs when you pass nothing. Only ops with a single row
+(`single_decode`, `block_sparse`, `pod`, `layernorm`, `sampling`,
+`logits_processor`, `quantization`) have one implementation.
+
+The table is generated from
 [`flashinfer/rocm/arch_caps.py`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/flashinfer/rocm/arch_caps.py), which is what
 `backend="auto"` consults at runtime, so it cannot drift from the routing
 decisions the library makes. Do not edit it by hand; run
@@ -160,35 +168,35 @@ decisions the library makes. Do not edit it by hand; run
 
 <!-- BEGIN GENERATED: arch support matrix -- scripts/gen_arch_support_matrix.py -->
 
-| Op | Backend | gfx942 (CDNA3) | gfx950 (CDNA4) | Notes |
-| :--- | :--- | :---: | :---: | :--- |
-| `batch_decode` | `aiter` | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Under graph capture `auto` needs a declared `max_seq_len`, else it stays on fa2. |
-| `single_prefill` | `aiter` | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. |
-| `batch_prefill` | `aiter` | ✅ | ✅ | Paged and ragged, with sliding window. Page sizes 128/256/1024 are served natively; others take a flat gather. |
-| `mla` | `aiter` | ✅ | ✅ | DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here. |
-| `rope` | `aiter` | ✅ | ✅ | `apply_rope_with_cos_sin_cache` and its inplace variant, linked at the C++ level. Opt-in. |
-| `append_paged_kv_cache` | `aiter` | ✅ | ✅ | fp16/bf16 + NHD. Bit-exact with the in-tree kernel but slower, so `auto` picks `native`. |
-| `rmsnorm` | `aiter` | ✅ | ✅ | `aiter::rmsnorm`; 2-D fp16/bf16, hidden size even and <= 8192, weight dtype must match. Opt-in: level with native on speed and less accurate. |
-| `fused_add_rmsnorm` | `aiter` | ✅ | ✅ | `aiter::add_rmsnorm`; 2-D, hidden size even and <= 8192, weight dtype must match. Opt-in: 1.6-1.8x slower, since correctness needs two staging buffers. |
-| `silu_and_mul` | `aiter` | ✅ | ✅ | `aiter::silu_and_mul`, linked at the C++ level. Opt-in; matches native in fp16, lower in bf16. |
-| `fused_moe` | `aiter` | ✅ | ✅ | `aiter_fused_moe`; bf16/fp16. Weights must be pre-shuffled with `shuffle_moe_weight` or results are silently wrong. |
-| `fused_moe_fp8` | `aiter` | ✅ | ✅ | `aiter_fused_moe` with fp8 weights in `moe_fp8_dtype()` plus both scales; activations are quantized per token in the shim. |
-| `single_decode` | `hip` | ✅ | ✅ | MHA / GQA / MQA. |
-| `batch_decode` | `hip` | ✅ | ✅ | MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ) and CUDA-graph capture. |
-| `single_prefill` | `hip` | ✅ | ✅ | MHA / GQA / MQA, including custom attention masks. |
-| `batch_prefill` | `hip` | ✅ | ✅ | Paged and ragged; MHA / GQA / MQA, including custom attention masks. |
-| `block_sparse` | `hip` | ✅ | ✅ | `BlockSparseAttentionWrapper` and the variable-block variant. Native HIP FA2 only -- `determine_attention_backend` never returns `aiter` here. |
-| `cascade` | `hip` | ✅ | ✅ | Two-level shared-prefix attention; a fused single-kernel variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`. |
-| `pod` | `hip` | ✅ | ✅ | `PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream. |
-| `rope` | `hip` | ✅ | ✅ | LLaMA and LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). |
-| `append_paged_kv_cache` | `hip` | ✅ | ✅ | fp8 KV-cache supported. Sustains 3.62 TB/s against AITER's 2.86 on gfx942, so `auto` picks this. |
-| `rmsnorm` | `hip` | ✅ | ✅ | What `auto` always picks: level with AITER on speed and more accurate. |
-| `fused_add_rmsnorm` | `hip` | ✅ | ✅ | What `auto` always picks: 1.6-1.8x faster than AITER on both arches. |
-| `layernorm` | `hip` | ✅ | ✅ | `layernorm` plus the Gemma RMSNorm variants. No AITER path. |
-| `sampling` | `hip` | ✅ | ✅ | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits. |
-| `logits_processor` | `hip` | ✅ | ✅ | Composable processor pipeline (cap, mask, temperature, ...). |
-| `silu_and_mul` | `hip` | ✅ | ✅ | SiLU and GELU with fused gating; the default for `auto`. |
-| `quantization` | `hip` | ✅ | ✅ | `packbits` and `segment_packbits`. |
+| Op | Backend | `auto` picks | gfx942 (CDNA3) | gfx950 (CDNA4) | Notes |
+| :--- | :--- | :--- | :---: | :---: | :--- |
+| `batch_decode` | `aiter` | this, when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Under graph capture `auto` needs a declared `max_seq_len`, else it stays on fa2. |
+| `single_prefill` | `aiter` | this, when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. |
+| `batch_prefill` | `aiter` | this, when compatible | ✅ | ✅ | Paged and ragged, with sliding window. Page sizes 128/256/1024 are served natively; others take a flat gather. |
+| `mla` | `aiter` | this (no HIP kernel) | ✅ | ✅ | DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here. |
+| `rope` | `aiter` | the `hip` row (opt-in) | ✅ | ✅ | `apply_rope_with_cos_sin_cache` and its inplace variant, linked at the C++ level. Opt-in. |
+| `append_paged_kv_cache` | `aiter` | the `hip` row (opt-in) | ✅ | ✅ | fp16/bf16 + NHD. Bit-exact with the in-tree kernel but slower, so `auto` picks `native`. |
+| `rmsnorm` | `aiter` | the `hip` row (opt-in) | ✅ | ✅ | `aiter::rmsnorm`; 2-D fp16/bf16, hidden size even and <= 8192, weight dtype must match. Opt-in: level with native on speed and less accurate. |
+| `fused_add_rmsnorm` | `aiter` | the `hip` row (opt-in) | ✅ | ✅ | `aiter::add_rmsnorm`; 2-D, hidden size even and <= 8192, weight dtype must match. Opt-in: 1.6-1.8x slower, since correctness needs two staging buffers. |
+| `silu_and_mul` | `aiter` | the `hip` row (opt-in) | ✅ | ✅ | `aiter::silu_and_mul`, linked at the C++ level. Opt-in; matches native in fp16, lower in bf16. |
+| `fused_moe` | `aiter` | this (no HIP kernel) | ✅ | ✅ | `aiter_fused_moe`; bf16/fp16. Weights must be pre-shuffled with `shuffle_moe_weight` or results are silently wrong. |
+| `fused_moe_fp8` | `aiter` | this (no HIP kernel) | ✅ | ✅ | `aiter_fused_moe` with fp8 weights in `moe_fp8_dtype()` plus both scales; activations are quantized per token in the shim. |
+| `single_decode` | `hip` | this (only backend) | ✅ | ✅ | MHA / GQA / MQA. |
+| `batch_decode` | `hip` | the `aiter` row first | ✅ | ✅ | MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ) and CUDA-graph capture. |
+| `single_prefill` | `hip` | the `aiter` row first | ✅ | ✅ | MHA / GQA / MQA, including custom attention masks. |
+| `batch_prefill` | `hip` | the `aiter` row first | ✅ | ✅ | Paged and ragged; MHA / GQA / MQA, including custom attention masks. |
+| `block_sparse` | `hip` | this (only backend) | ✅ | ✅ | `BlockSparseAttentionWrapper` and the variable-block variant. Native HIP FA2 only -- `determine_attention_backend` never returns `aiter` here. |
+| `cascade` | `hip` | per level, via the routed batch wrappers -- can be `aiter` | ✅ | ✅ | Two-level shared-prefix attention; a fused single-kernel variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`. The `hip` backend is the merge kernels only -- each level's attention runs through `BatchPrefillWithPagedKVCacheWrapper` at `backend="auto"`, so it can dispatch to AITER. The cascade wrappers expose no `backend=` to override that. |
+| `pod` | `hip` | this (only backend) | ✅ | ✅ | `PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream. |
+| `rope` | `hip` | this | ✅ | ✅ | LLaMA and LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). |
+| `append_paged_kv_cache` | `hip` | this | ✅ | ✅ | fp8 KV-cache supported. Sustains 3.62 TB/s against AITER's 2.86 on gfx942, so `auto` picks this. |
+| `rmsnorm` | `hip` | this | ✅ | ✅ | What `auto` always picks: level with AITER on speed and more accurate. |
+| `fused_add_rmsnorm` | `hip` | this | ✅ | ✅ | What `auto` always picks: 1.6-1.8x faster than AITER on both arches. |
+| `layernorm` | `hip` | this (only backend) | ✅ | ✅ | `layernorm` plus the Gemma RMSNorm variants. No AITER path. |
+| `sampling` | `hip` | this (only backend) | ✅ | ✅ | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits. |
+| `logits_processor` | `hip` | this (only backend) | ✅ | ✅ | Composable processor pipeline (cap, mask, temperature, ...). |
+| `silu_and_mul` | `hip` | this | ✅ | ✅ | SiLU and GELU with fused gating; the default for `auto`. |
+| `quantization` | `hip` | this (only backend) | ✅ | ✅ | `packbits` and `segment_packbits`. |
 
 * ✅ **supported** — this op runs on this architecture and the test suite covers it.
 

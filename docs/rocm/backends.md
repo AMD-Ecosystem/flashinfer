@@ -371,9 +371,16 @@ out = aiter_fused_moe(hidden_states, w1s, w2s, topk_ids, topk_weights)
 
 These have no AITER path at all:
 
-* **Cascade attention** — two-level shared-prefix attention. A fused
-  single-kernel HIP variant is gated behind
-  `FLASHINFER_HIP_FUSED_CASCADE=1` (experimental).
+* **Cascade attention** — the *merge* kernels only. A fused single-kernel
+  HIP variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`
+  (experimental). **The attention underneath is not HIP-only**: every
+  cascade wrapper builds `BatchPrefillWithPagedKVCacheWrapper` (or
+  `BatchDecodeWithPagedKVCacheWrapper`) internally at `backend="auto"`, so
+  each level routes to AITER whenever a plain batch call of that shape
+  would. Measured — a two-level `MultiLevelCascadeAttentionWrapper.plan()`
+  at page_size 128 resolves both levels to `aiter`. None of the cascade
+  wrappers takes a `backend=` argument, so there is no supported way to
+  pin the levels to `fa2` short of the capability table declining AITER.
 * **POD attention** — `PODWithPagedKVCacheWrapper` and
   `BatchPODWithPagedKVCacheWrapper`. JIT-only, excluded from AOT builds,
   matching upstream CUDA.

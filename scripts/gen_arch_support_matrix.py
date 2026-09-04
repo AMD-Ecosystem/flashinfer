@@ -145,6 +145,35 @@ def _window(bad) -> str:
     return " and ".join(parts) or "all versions"
 
 
+def _auto_pick(cap, arch_caps) -> str:
+    """What `backend="auto"` resolves to for this op, per row.
+
+    The table has one row per (op, backend) pair, so an op with both backends
+    appears twice -- and the `Backend` column then reads as though it were the
+    answer to "what runs?", which it is not. This column is that answer.
+
+    Derived from `fallback`, which only the AITER rows carry: a row with one
+    names the backend `auto` drops to, so `auto` prefers AITER and the paired
+    HIP row is the fallback target. `fallback="fa2"` means AITER is preferred;
+    `fallback="native"` means the in-tree kernel is, and AITER is opt-in.
+    """
+    if cap.auto_pick:
+        return cap.auto_pick
+    if cap.backend == "aiter":
+        if cap.fallback == "fa2":
+            return "this, when compatible"
+        if cap.fallback == "native":
+            return "the `hip` row (opt-in)"
+        return "this (no HIP kernel)"
+    paired = next(
+        (c for c in arch_caps.CAPABILITIES if c.op == cap.op and c.backend == "aiter"),
+        None,
+    )
+    if paired is None:
+        return "this (only backend)"
+    return "this" if paired.fallback == "native" else "the `aiter` row first"
+
+
 def _cell(entry, footnote_ids: dict[int, int]) -> str:
     # `type(...)` reaches the Support enum itself. Reading the member off another
     # member (entry.support.SUPPORTED) resolves to the same object today, but
@@ -206,8 +235,8 @@ def render(arch_caps) -> str:
     lines = [
         BEGIN,
         "",
-        f"| Op | Backend | {' | '.join(ARCH_LABELS.get(a, a) for a in archs)} | Notes |",
-        f"| :--- | :--- | {' | '.join(':---:' for _ in archs)} | :--- |",
+        f"| Op | Backend | `auto` picks | {' | '.join(ARCH_LABELS.get(a, a) for a in archs)} | Notes |",
+        f"| :--- | :--- | :--- | {' | '.join(':---:' for _ in archs)} | :--- |",
     ]
     # Collected from the status cells, not the rendered row: a note mentioning
     # a symbol must not resurrect a legend entry no row is actually in.
@@ -216,7 +245,10 @@ def render(arch_caps) -> str:
         cells = [_cell(cap.archs.get(a), footnote_ids) for a in archs]
         used.update(s for s, _ in LEGEND for c in cells if c.startswith(s))
         note = _note(f"{cap.op}/{cap.backend}", cap.note)
-        lines.append(f"| `{cap.op}` | `{cap.backend}` | {' | '.join(cells)} | {note} |")
+        lines.append(
+            f"| `{cap.op}` | `{cap.backend}` | {_auto_pick(cap, arch_caps)} | "
+            f"{' | '.join(cells)} | {note} |"
+        )
 
     lines += ["", *(f"{BULLET} {s} {t}" for s, t in LEGEND if s in used)]
 
