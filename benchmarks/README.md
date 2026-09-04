@@ -277,10 +277,7 @@ them reports "not supported" rather than failing at import.
   `backend_resolved` records which one ran.
 
 `--backends aiter` is deliberately not offered. AITER is reached through `auto`,
-which reports what it resolved to, so an explicit name would add no coverage —
-and on gfx950 under ROCm 7.2.x `auto` resolves to fa2 for both prefill routines
-anyway, because `arch_caps` gates AITER off there for the causal-miscompile
-known-bad entry.
+which reports what it resolved to, so an explicit name would add no coverage.
 
 ### Running
 
@@ -324,6 +321,6 @@ and the per-op drivers in [`rocm/`](rocm/), which collect
 ### Comparing numbers
 
 Record the architecture and toolchain with every result — `gcnArchName`,
-`torch.version.hip`, and the `amd-aiter` version. A gfx942 / ROCm 7.2 number is
-not comparable to a gfx950 / ROCm 7.1 one, and the AITER prefill path in
-particular is gated differently between them.
+`torch.version.hip`, and the `amd-aiter` version. A number from one
+architecture is not comparable to another's, and routing can differ between
+them, so a run is only meaningful against the stack it was taken on.
