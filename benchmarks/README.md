@@ -305,10 +305,11 @@ A row with `backend_resolved=fa2` and an **empty** reason came from neither: it
 means `auto` was short-circuited because `use_tensor_cores` was set or CUDA-graph
 capture was enabled. The testlist avoids both, so treat it as worth investigating.
 
-`auto` rows are always timed eagerly. Under graph capture `auto` stays on fa2 by
-design — AITER's launch grid is fixed at the shapes seen during capture, so
-replaying at a longer sequence is silently wrong. Graph-mode AITER decode is the
-explicit capture-at-max path in
+`auto` rows are always timed eagerly. Under graph capture `auto` stays on fa2
+*unless* the wrapper was given a `max_seq_len` capacity: AITER's launch grid is
+fixed at capture, so without a declared capacity replaying at a longer sequence
+is silently wrong. Declare one and `auto` may select AITER, replaying for any
+`seq_len <= max_seq_len`. See
 [`rocm/bench_decode_graph.py`](rocm/bench_decode_graph.py).
 
 ### Two tiers

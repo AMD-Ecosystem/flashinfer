@@ -136,8 +136,10 @@ To override, pass `backend="aiter"`, or name the in-tree kernel:
 `backend="fa2"` for the attention wrappers, `backend="native"` for
 everything else.
 
-Two ops take no `backend=` argument: `single_decode_with_kv_cache` is
-HIP-only, and `aiter_fused_moe` is AITER-only.
+Some entry points take no `backend=` argument at all:
+`single_decode_with_kv_cache` (HIP-only), `aiter_fused_moe` (AITER-only),
+and the three cascade wrappers — whose per-level attention is still
+auto-routed, so it can reach AITER without being pinnable.
 
 Beyond the routed ops, this release also carries block-sparse attention
 (`BlockSparseAttentionWrapper` and the variable-block variant), POD
@@ -189,7 +191,7 @@ decisions the library makes. Do not edit it by hand; run
 | `single_prefill` | `hip` -- fallback; auto tries `aiter` first | ✅ | ✅ | MHA / GQA / MQA, including custom attention masks. |
 | `batch_prefill` | `hip` -- fallback; auto tries `aiter` first | ✅ | ✅ | Paged and ragged; MHA / GQA / MQA, including custom attention masks. |
 | `block_sparse` | `hip` -- only backend | ✅ | ✅ | `BlockSparseAttentionWrapper` and the variable-block variant. Native HIP FA2 only -- `determine_attention_backend` never returns `aiter` here. |
-| `cascade` | `hip` -- merge only; levels are auto-routed and can be `aiter` | ✅ | ✅ | Two-level shared-prefix attention; a fused single-kernel variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`. The `hip` backend is the merge kernels only -- each level's attention runs through `BatchPrefillWithPagedKVCacheWrapper` at `backend="auto"`, so it can dispatch to AITER. The cascade wrappers expose no `backend=` to override that. |
+| `cascade` | `hip` -- merge only; levels are auto-routed and can be `aiter` | ✅ | ✅ | Two-level shared-prefix attention; a fused single-kernel variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`. The `hip` backend is the merge kernels only -- the per-level attention runs through the ordinary batch-prefill, batch-decode and single-prefill entry points at `backend="auto"` (which one depends on the wrapper), so it routes like any other call and can reach AITER. No cascade wrapper exposes `backend=` to override that. |
 | `pod` | `hip` -- only backend | ✅ | ✅ | `PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream. |
 | `rope` | `hip` -- auto picks this | ✅ | ✅ | LLaMA and LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). |
 | `append_paged_kv_cache` | `hip` -- auto picks this | ✅ | ✅ | fp8 KV-cache supported. Sustains 3.62 TB/s against AITER's 2.86 on gfx942, so `auto` picks this. |
