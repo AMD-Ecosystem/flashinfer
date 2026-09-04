@@ -10,8 +10,13 @@ The `amd-flashinfer-jit-cache` package provides ahead-of-time (AOT) compiled ker
 
 **Neither wheel is published** — build both from the repository (see [Development](#development) below and the Quick start in the top-level [README](../README.md)), then install the pair:
 
+The two builds write to different directories — the main wheel to the
+repository root's `dist/`, this one to `amd-flashinfer-jit-cache/dist/` —
+so install from the repository root:
+
 ```bash
-pip install dist/amd_flashinfer-*.whl dist/amd_flashinfer_jit_cache-*.gfx942-*.whl
+pip install dist/amd_flashinfer-*.whl \
+            amd-flashinfer-jit-cache/dist/amd_flashinfer_jit_cache-*.gfx942-*.whl
 ```
 
 The architecture rides in the local version segment because a wheel tag cannot carry it, so if these are ever published, pin it in full (`amd-flashinfer-jit-cache==0.6.18+amd.1.gfx942`): an unqualified requirement resolves to whichever architecture sorts highest, which need not be yours.
