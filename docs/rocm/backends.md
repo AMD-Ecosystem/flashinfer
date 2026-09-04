@@ -120,11 +120,9 @@ and can take many minutes the first time.
 
 AITER ships prebuilt `mha_varlen_fwd_*.so` files and no `mha_fwd*` — only
 `mha_fwd_kernels.cu` source. Single prefill is the op that routes through the
-non-varlen `mha_fwd` template (batch=1 needs no seqstart plumbing, see PR
-
-# 246), so **every** one of its `(dtype, needs_mask, has_lse)` variants
-
-JIT-builds on first call. `needs_mask` is `causal or window_left >= 0`: AITER
+non-varlen `mha_fwd` template (batch=1 needs no seqstart plumbing, see
+[PR 246](https://github.com/AMD-Ecosystem/flashinfer/pull/246)), so **every**
+one of its `(dtype, needs_mask, has_lse)` variants JIT-builds on first call. `needs_mask` is `causal or window_left >= 0`: AITER
 splits that `.so` on whether anything is masked, not on causality.
 
 **Absence of `mha_fwd*.so` is expected, not a broken install.** AITER
