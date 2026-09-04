@@ -112,7 +112,7 @@ class TestCell:
     def test_evidence_does_not_change_the_rendered_cell(self):
         """`evidence` is provenance, not a support tier -- a reader cannot act
         on whether someone pasted a measurement string."""
-        assert gen._cell(_support(evidence="MI300X, ROCm 7.2"), {}) == gen.SUPPORTED
+        assert gen._cell(_support(evidence="MI300X, ROCm 10.0"), {}) == gen.SUPPORTED
         assert gen._cell(_support(), {}) == gen.SUPPORTED
 
     def test_known_bad_wins_over_evidence_and_carries_its_footnotes(self):

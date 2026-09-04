@@ -23,9 +23,8 @@ def _skip_if_prefill_gated(device):
     """Skip when the capability table gates AITER batch prefill on this toolchain.
 
     A test that asks for ``backend="aiter"`` explicitly gets an
-    ``ArchCapabilityError`` out of the wrapper constructor once the gate applies
-    -- currently gfx950 on ROCm 7.2.x, where the causal kernel is miscompiled.
-    That is the gate doing its job, so a test comparing AITER output against a
+    ``ArchCapabilityError`` out of the wrapper constructor once the capability
+    table gates that (op, backend, arch). That is the gate doing its job, so a test comparing AITER output against a
     reference has nothing left to prove and should stand down.
 
     Use this for tests that assert *numbers*. Tests that only assert plumbing can
@@ -716,10 +715,10 @@ def test_batch_prefill_auto_selects_aiter(page_size, causal, return_lse):
         causal=causal,
     )
 
-    # `auto` resolves to aiter only where the capability table allows it. On a
-    # gated toolchain -- ROCm 7.2.x on gfx950 miscompiles this kernel -- the
-    # correct behaviour is to steer away from AITER, so assert that instead and
-    # skip the numeric comparison, which would otherwise be fa2 against fa2.
+    # `auto` resolves to aiter only where the capability table allows it. Where
+    # it does not, the correct behaviour is to steer away from AITER, so assert
+    # that instead and skip the numeric comparison, which would otherwise be fa2
+    # against fa2. No row is gated today; this keeps working when one is.
     from flashinfer.rocm.arch_caps import capability_available, capability_reason
 
     if not capability_available(device, "batch_prefill", "aiter"):
@@ -1042,9 +1041,9 @@ def test_softcap_guard_survives_a_native_page_size_degrading(backend, monkeypatc
 
 def test_batch_prefill_aiter_strict_mode_raises(monkeypatch):
     """FLASHINFER_AITER_STRICT=1 must surface the AITER failure instead of degrading."""
-    # Asserts plumbing and compares no numbers, so the ROCm 7.2 gfx950 causal
-    # miscompile cannot affect the outcome. Opt past the capability gate rather
-    # than skip and lose the coverage on the one architecture we can run.
+    # Asserts plumbing and compares no numbers, so a miscompiled kernel cannot
+    # affect the outcome. Opt past the capability gate rather than skip and lose
+    # the coverage on the one architecture we can run.
     monkeypatch.setenv("FLASHINFER_ARCH_ALLOW_KNOWN_BAD", "1")
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():

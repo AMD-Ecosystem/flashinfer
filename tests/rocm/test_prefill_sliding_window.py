@@ -28,9 +28,9 @@ NUM_HEADS = 4
 def _skip_unless_aiter(backend: str, device: torch.device, op: str) -> None:
     """Stand down when AITER cannot serve ``op`` here.
 
-    The arch check alone is not enough: a gated toolchain (gfx950 on ROCm 7.2.x)
-    raises ArchCapabilityError from the wrapper constructor, which would error
-    these tests rather than skip them.
+    The arch check alone is not enough: a gated toolchain raises
+    ArchCapabilityError from the wrapper constructor, which would error these
+    tests rather than skip them.
     """
     if backend != "aiter":
         return

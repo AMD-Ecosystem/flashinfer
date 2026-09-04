@@ -87,9 +87,9 @@ def _raiser(exc):
 def _skip_if_op_gated(device, op):
     """Skip when the capability table already steers auto away from AITER.
 
-    With the gate active the selector returns fa2 before any probe runs, so
-    there is no demotion left to observe. Currently hits batch_prefill on
-    gfx950/ROCm 7.2.x; single_prefill and batch_decode are ungated.
+    With a gate active the selector returns fa2 before any probe runs, so there
+    is no demotion left to observe. No row is gated today, so this skip is
+    dormant -- it exists so the test stays correct when one is added.
     """
     if not capability_available(device, op, "aiter"):
         pytest.skip(f"capability table gates AITER {op} on this toolchain")
