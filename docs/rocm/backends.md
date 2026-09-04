@@ -7,10 +7,13 @@ backend can do, what makes `backend="auto"` decline AITER, and the per-op
 constraints that are easy to trip over.
 
 * [Choosing a backend](#choosing-a-backend)
+* [Not available on ROCm](#not-available-on-rocm)
 * [Installing AITER](#installing-aiter)
 * [How `backend="auto"` resolves](#how-backendauto-resolves)
+* [CUDA-only arguments](#cuda-only-arguments)
 * [Known limitations](#known-limitations)
 * [Per-op notes](#per-op-notes)
+* [Tests](#tests)
 
 ## Choosing a backend
 
@@ -25,6 +28,33 @@ argument. Which one names the in-tree kernel depends on the op:
 | `"native"` | The in-tree HIP kernel, for everything else (`append_paged_kv_cache`, `rmsnorm`, `fused_add_rmsnorm`, `silu_and_mul`, `rope`) |
 
 `mla` accepts only `"auto"` and `"aiter"` — there is no in-tree MLA kernel.
+
+## Not available on ROCm
+
+Some upstream modules wrap NVIDIA-only libraries or kernels. Importing one
+raises `ImportError` naming the module, rather than exposing a stub that
+fails later:
+
+| Module | Why |
+| :--- | :--- |
+| `flashinfer.gemm`, `flashinfer.grouped_mm`, `flashinfer.trtllm_low_latency_gemm` | CUTLASS / TensorRT-LLM GEMM kernels |
+| `flashinfer.cudnn`, `flashinfer.attention` | cuDNN attention |
+| `flashinfer.fp4_quantization`, `flashinfer.fp8_quantization`, and the same two under `flashinfer.quantization` | NVFP4 / trtllm-gen quantization |
+| `flashinfer.fused_moe` | The upstream CUTLASS MoE. **ROCm has MoE** — use `flashinfer.aiter_fused_moe`, below |
+| `flashinfer.dsv3_ops` | DeepSeek-V3 fusions built on the above |
+| `flashinfer.comm.*` — `cuda_ipc`, `mixed_comm`, `mnnvl`, `nvshmem`, `nvshmem_allreduce`, `trtllm_alltoall`, `trtllm_ar`, `trtllm_mnnvl_ar`, `vllm_ar` | NVLink / NVSHMEM transports |
+
+`importlib.util.find_spec` still reports these as present — the files ship,
+the import is what is gated. Feature-detect with `hasattr(flashinfer, ...)`
+or a `try: import ... except ImportError`, not `find_spec`.
+
+The list is exactly what is gated. A module that merely *imports* one of
+them — `flashinfer.comm.trtllm_moe_alltoall`, for instance — still fails,
+but transitively, so the error names the gated dependency rather than the
+module you asked for.
+
+`flashinfer.quantization`'s `packbits` and `segment_packbits` are unaffected
+and have in-tree HIP kernels.
 
 ## Installing AITER
 
@@ -52,17 +82,14 @@ release shifts field offsets instead of failing to load -- and 0.1.20 renamed
 the RMSNorm entry points, so an older one cannot resolve them. Below the floor
 `auto` will not select AITER and an explicit `backend="aiter"` raises.
 
-That rules out `pypi.amd.com/rocm-7.1.1/simple`, which carries only
-`0.1.10` and only cp310/cp312 wheels. The CI image
-(`docker/Dockerfile.rocm_ci`) still installs `0.1.10` and so runs without
-the AITER backends; the devcontainer bundles the wheel above, on CPython
-3.12, and needs no separate install.
+The development image (`docker/Dockerfile.rocm`) bundles that wheel, on
+CPython 3.12, and needs no separate install -- it is the one supported
+configuration, so in practice this section is only for someone assembling
+their own.
 
-Every 0.1.20 wheel is cp312 only, and none is built against ROCm 10.0 —
-they share one source revision (build id `3135022`) retargeted to
-`+rocm10.1.0a`, `+rocm7.14.0` and `+rocm7.2.3`. Only the first of those and
-`+rocm7.2.3` are reachable by version specifier; pip normalises the project
-name, so the sibling `amd_aiter/` directory needs a direct wheel URL.
+Every 0.1.20 wheel is cp312 only, which is what fixes the interpreter. None
+is built against ROCm 10.0 directly; the pin above is the nearest retarget
+of the same source revision (build id `3135022`).
 
 A source build tracks master, which is many releases ahead of the pin
 **with a different C ABI** — symbols the shim expects are renamed, hidden
@@ -91,22 +118,21 @@ and can take many minutes the first time.
 
 ### `mha_fwd` ships no prebuilt kernels at all
 
-The 0.1.10 wheel carries 58 prebuilt `mha_varlen_fwd_*.so` files and zero
-`mha_fwd*` — only `mha_fwd_kernels.cu` source. Single prefill is the op that
-routes through the non-varlen `mha_fwd` template (batch=1 needs no seqstart
-plumbing, see PR #246), so **every** one of its `(dtype, needs_mask, has_lse)`
-variants JIT-builds on first call. `needs_mask` is `causal or window_left >= 0`:
-AITER splits that `.so` on whether anything is masked, not on causality.
+AITER ships prebuilt `mha_varlen_fwd_*.so` files and no `mha_fwd*` — only
+`mha_fwd_kernels.cu` source. Single prefill is the op that routes through the
+non-varlen `mha_fwd` template (batch=1 needs no seqstart plumbing, see
+[PR 246](https://github.com/AMD-Ecosystem/flashinfer/pull/246)), so **every**
+one of its `(dtype, needs_mask, has_lse)` variants JIT-builds on first call. `needs_mask` is `causal or window_left >= 0`: AITER
+splits that `.so` on whether anything is masked, not on causality.
 
 **Absence of `mha_fwd*.so` is expected, not a broken install.** AITER
 prebuilds what vLLM and SGLang call, which is the varlen path; the
 non-varlen variant space is not in that set.
 
-Those 58 varlen files are not full coverage either, so this is a difference
-of degree rather than a unique case: batch prefill lazily builds the varlen
-variants that are missing — on 0.1.10, bf16 ships only `nmask_lse` and
-`mask_nlse`, so both remaining `nlogits` arms build on first use. Single
-prefill builds every variant; batch prefill builds the gaps.
+The shipped varlen set is not full coverage either, so this is a difference
+of degree rather than a unique case: batch prefill lazily builds whichever
+varlen variants are missing. Single prefill builds every variant; batch
+prefill builds the gaps.
 
 Two consequences worth planning for:
 
@@ -243,8 +269,8 @@ above the threshold: the Gemma variant has no `backend=` argument, and
 
 ### Batch prefill: page size and the flat-gather path
 
-AITER's CK FMHA kernels natively serve page sizes `{16, 1024}`, or
-`{128, 256, 1024}` on `amd-aiter >= 0.1.10`. Other sizes still work but go
+AITER's CK FMHA kernels natively serve page sizes `{128, 256, 1024}` at
+every release at or above the supported floor. Other sizes still work but go
 through an extra GPU gather that flattens the paged KV cache before the
 AITER call — inside the timed region, which matters when benchmarking.
 
@@ -284,8 +310,14 @@ the capacity rather than attending to its full context.
 `run(..., return_lse=True)` raises on this backend under capture — PA v1
 emits no LSE and the FA2 shadow plan it borrows is not capture-safe.
 
+Multi-token decode (`q_len_per_req > 1`) raises `NotImplementedError` on
+ROCm regardless of backend, as does an output dtype that differs from the
+query dtype.
+
 ### MLA
 
+* `use_cuda_graph=True` and `run(..., return_lse=True)` both raise
+  `NotImplementedError` — neither is supported on the AITER MLA path.
 * `q_data_type` must be `float16` or `bfloat16`, and must equal
   `kv_data_type`.
 * `page_size` is not restricted by the code, but only `page_size=1` is
@@ -313,7 +345,19 @@ w2s = shuffle_moe_weight(w2)
 out = aiter_fused_moe(hidden_states, w1s, w2s, topk_ids, topk_weights)
 ```
 
-* `hidden_states` and the weights must be `bfloat16` or `float16`.
+* `hidden_states` must be `bfloat16` or `float16` — fp8 activations are
+  rejected; the shim quantizes per token itself.
+* The **weights** may be fp8, matching `hidden_states` otherwise. fp8 needs
+  both `w1_scale` and `w2_scale` (neither alone) and two shape constraints,
+  not one: `model_dim % 128 == 0` (CK steps stage-1 K by 128 on every tile
+  and both architectures, so no `block_m` rescues it), **and** `inter_dim`
+  divisible by the stage-2 K tile, which depends on `block_m` and the
+  architecture. With `block_m="auto"` the shim tries the other legal tiles
+  before giving up; pin `block_m` and an indivisible `inter_dim` raises.
+  **The fp8 encoding is architecture-dependent** — `float8_e4m3fnuz` on
+  gfx942, `float8_e4m3fn` on gfx950. Ask `moe_fp8_dtype()` rather than
+  hard-coding one; the shim raises `ValueError` on the wrong encoding, which
+  is what stops the hardware reinterpreting the bits.
 * `activation` is `"silu"` or `"gelu"`. `block_m` is the CK tile height —
   32, 64, or 128, or `"auto"` (the default), which picks from the expected
   tokens *per expert*, not the total token count.
@@ -324,13 +368,27 @@ out = aiter_fused_moe(hidden_states, w1s, w2s, topk_ids, topk_weights)
   raise: shape and dtype are unchanged, so nothing can detect it, and the
   output is silently wrong.
 
-### HIP-only kernels
+### No AITER backend
 
-These have no AITER path at all:
+These take the in-tree HIP kernel. Cascade is listed first because it is the
+partial case — its own kernels are HIP, but what it calls is not:
 
-* **Cascade attention** — two-level shared-prefix attention. A fused
-  single-kernel HIP variant is gated behind
-  `FLASHINFER_HIP_FUSED_CASCADE=1` (experimental).
+* **Cascade attention** — the *merge* kernels only.
+  `FLASHINFER_HIP_FUSED_CASCADE=1` narrows to `MultiLevelCascadeAttentionWrapper`:
+  it passes each level's partial state into the next prefill call rather than
+  merging afterwards. A level that resolves to AITER still merges post-hoc --
+  the AITER kernel takes no partial state -- and the two shared-prefix wrappers
+  never consult the flag. Opt-in, both paths tested, read once at import. **The attention underneath is not HIP-only**: each of the
+  three wrappers builds an ordinary entry point internally at
+  `backend="auto"` — `BatchPrefillWithPagedKVCacheWrapper` for the
+  multi-level and shared-prefix-prefill wrappers,
+  `BatchDecodeWithPagedKVCacheWrapper` plus `single_prefill_with_kv_cache`
+  for the shared-prefix decode one — so each level routes to AITER whenever
+  a plain call of that shape would. Measured: a two-level
+  `MultiLevelCascadeAttentionWrapper.plan()` at page_size 128 resolves both
+  levels to `aiter`. None of the three takes a `backend=` argument, so
+  there is no supported way to pin the levels to `fa2` short of the
+  capability table declining AITER.
 * **POD attention** — `PODWithPagedKVCacheWrapper` and
   `BatchPODWithPagedKVCacheWrapper`. JIT-only, excluded from AOT builds,
   matching upstream CUDA.

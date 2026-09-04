@@ -6,12 +6,15 @@
 """Render the per-architecture support matrix in README.md from the capability table.
 
 ``flashinfer/rocm/arch_caps.py`` is the single source of truth for which
-``(op, backend)`` pairs are usable on which GPU architecture, and -- through
-``evidence`` -- for which of those claims anyone has actually measured. The
-README used to restate that by hand as the string "gfx942/gfx950", which cannot
-express either an architecture-specific defect or the difference between a
-measured row and a declared one. It went stale the moment the two architectures
+``(op, backend)`` pairs are usable on which GPU architecture. The README used to
+restate that by hand as the string "gfx942/gfx950", which cannot express an
+architecture-specific defect; it went stale the moment the two architectures
 stopped behaving identically.
+
+``evidence`` is deliberately *not* rendered. It records which stack a row was
+measured on, which is provenance for maintainers; splitting the table on whether
+it was populated told readers a row was less supported when it only meant nobody
+had pasted a string in.
 
 Usage::
 
@@ -59,26 +62,21 @@ ARCH_LABELS = {
 # which would leave the generated block failing its own --check on the next run.
 BULLET = "*"
 
-VALIDATED = "✅"
-DECLARED = "◻️"
+SUPPORTED = "✅"
 KNOWN_BAD = "⚠️"
 UNSUPPORTED = "❌"
 
 LEGEND = (
     (
-        VALIDATED,
-        "**validated** — this op has been exercised on this architecture.",
-    ),
-    (
-        DECLARED,
-        "**supported** — the op runs here and the test suite covers it, but no run has been "
-        "recorded against this specific op and architecture.",
+        SUPPORTED,
+        "**supported** — this op runs on this architecture and the test suite covers it.",
     ),
     (
         KNOWN_BAD,
-        "**broken on some toolchains** — usable, but not on every ROCm/AITER version; see the footnote.",
+        "**supported, except on some toolchains** — a specific ROCm/AITER version range "
+        "miscompiles it, and routing declines it there. The footnote names the range.",
     ),
-    (UNSUPPORTED, "**not available** on that architecture."),
+    (UNSUPPORTED, "**not available** on this architecture."),
 )
 
 # Note content that markdownlint would either reject with no autofix, or "fix"
@@ -150,6 +148,40 @@ def _window(bad) -> str:
     return " and ".join(parts) or "all versions"
 
 
+def _backend_cell(cap, arch_caps) -> str:
+    """The Backend column: which backend the row is, and whether `auto` takes it.
+
+    These were two columns and read badly split. Merged, because they answer one
+    question -- the backend alone was being read as "what runs", which it is not:
+    an op with both backends has two rows, and only the suffix says which one a
+    caller with no `backend=` argument actually gets.
+
+    The suffix is derived from `fallback`, which only AITER rows carry. "fa2"
+    means `auto` prefers AITER and drops to the HIP row; "native" means the
+    in-tree kernel is the default and AITER is opt-in; empty means there is no
+    other backend to name.
+    """
+    if cap.auto_pick:
+        return f"`{cap.backend}` -- {cap.auto_pick}"
+    if cap.backend == "aiter":
+        suffix = {
+            "fa2": "auto picks this when compatible",
+            "native": "opt-in",
+        }.get(cap.fallback, "only backend")
+        return f"`aiter` -- {suffix}"
+    paired = next(
+        (c for c in arch_caps.CAPABILITIES if c.op == cap.op and c.backend == "aiter"),
+        None,
+    )
+    if paired is None:
+        suffix = "only backend"
+    elif paired.fallback == "native":
+        suffix = "auto picks this"
+    else:
+        suffix = "fallback; auto tries `aiter` first"
+    return f"`hip` -- {suffix}"
+
+
 def _cell(entry, footnote_ids: dict[int, int]) -> str:
     # `type(...)` reaches the Support enum itself. Reading the member off another
     # member (entry.support.SUPPORTED) resolves to the same object today, but
@@ -161,7 +193,11 @@ def _cell(entry, footnote_ids: dict[int, int]) -> str:
     if entry.known_bad:
         refs = "".join(f"[^kb{footnote_ids[id(bad)]}]" for bad in entry.known_bad)
         return f"{KNOWN_BAD}{refs}"
-    return VALIDATED if entry.evidence else DECLARED
+    # Deliberately not split on `evidence`. That field records which stack a row
+    # was measured on, which is provenance for us; rendering it as a second tier
+    # told readers a row was less supported when it only meant nobody had pasted
+    # a string in. Both states mean the same thing to a caller: it works.
+    return SUPPORTED
 
 
 def _note(where: str, text: str) -> str:
@@ -217,9 +253,18 @@ def render(arch_caps) -> str:
         cells = [_cell(cap.archs.get(a), footnote_ids) for a in archs]
         used.update(s for s, _ in LEGEND for c in cells if c.startswith(s))
         note = _note(f"{cap.op}/{cap.backend}", cap.note)
-        lines.append(f"| `{cap.op}` | `{cap.backend}` | {' | '.join(cells)} | {note} |")
+        lines.append(
+            f"| `{cap.op}` | {_backend_cell(cap, arch_caps)} | "
+            f"{' | '.join(cells)} | {note} |"
+        )
 
-    lines += ["", *(f"{BULLET} {s} {t}" for s, t in LEGEND if s in used), ""]
+    lines += ["", *(f"{BULLET} {s} {t}" for s, t in LEGEND if s in used)]
+
+    # Only separate the footnotes when there are some. An unconditional blank
+    # line leaves two in a row when the table carries no KnownBad, which the
+    # whitespace pre-commit hook then strips -- so --check could never pass.
+    if footnotes:
+        lines.append("")
 
     for number, bad, where, arch in footnotes:
         detail = bad.detail.rstrip(".")

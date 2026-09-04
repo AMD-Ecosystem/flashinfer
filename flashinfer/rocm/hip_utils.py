@@ -720,13 +720,17 @@ def check_torch_rocm_compatibility() -> None:
             "You installed the CPU-only version from PyPI.\n"
             "amd-flashinfer requires PyTorch compiled with ROCm support.\n\n"
             "Fix this by:\n"
-            "  1. Uninstall current PyTorch:\n"
-            "     pip uninstall torch\n\n"
-            "  2. Install PyTorch for ROCm:\n"
-            "     pip install torch==2.7.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/\n\n"
-            "See https://github.com/rocm/flashinfer for detailed installation instructions.\n"
-            + "="
-            * 70
+            "  1. pip uninstall torch\n"
+            "  2. pip install torch==TORCH_VERSION -f "
+            "https://repo.radeon.com/rocm/manylinux/rocm-rel-ROCM_VERSION/\n"
+            "     (replace TORCH_VERSION and ROCM_VERSION; the angle-bracket\n"
+            "     form a shell would read as a redirection)\n\n"
+            "Pin the version. -f only *adds* to PyPI, so an unpinned install\n"
+            "can pick a newer CPU-only wheel from there and land you back here.\n"
+            "Which version pairs with your ROCm release, and what to do when\n"
+            "repo.radeon.com publishes no rocm-rel- directory for it (as with\n"
+            "ROCm 10.0 in the development image), are in the Quick start:\n"
+            "https://github.com/AMD-Ecosystem/flashinfer#quick-start\n" + "=" * 70
         )
 
     # ROCm version compatibility warning
@@ -745,13 +749,12 @@ def check_torch_rocm_compatibility() -> None:
                 f"  System ROCm version: {system_rocm}\n"
                 f"  PyTorch ROCm version: {torch_rocm_major_minor}\n\n"
                 f"This may cause runtime errors or crashes.\n\n"
-                f"To fix, reinstall PyTorch for your ROCm version:\n"
-                f"  pip install torch==2.7.1 -f "
-                f"https://repo.radeon.com/rocm/manylinux/rocm-rel-{system_rocm}/\n\n"
-                f"Or if using uv:\n"
-                f"  export FLASHINFER_ROCM_VERSION={system_rocm}\n"
-                f"  uv pip install torch==2.7.1 -f "
-                f"https://repo.radeon.com/rocm/manylinux/rocm-rel-{system_rocm}/\n"
+                f"To fix, reinstall PyTorch built for ROCm "
+                f"{system_rocm_major_minor}. Which wheel, and where from,\n"
+                f"depends on that release -- repo.radeon.com publishes no\n"
+                f"rocm-rel- directory for some of them, so there is no one\n"
+                f"command that is right for all.\n\n"
+                f"See https://github.com/AMD-Ecosystem/flashinfer#quick-start\n"
                 f"{'=' * 70}",
                 RuntimeWarning,
                 stacklevel=2,

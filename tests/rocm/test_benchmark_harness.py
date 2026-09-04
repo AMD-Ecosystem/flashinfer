@@ -169,8 +169,8 @@ def test_nhd_view_is_an_exact_zero_copy_permutation():
 def test_result_row_survives_a_comma_in_the_fallback_reason():
     """arch_caps' known-bad reason contains commas; a bare "," join splits it."""
     reason = (
-        "causal=True is miscompiled on ROCm 7.2.x (not an error), 97.6% of "
-        "elements off. Use ROCm 7.1, or backend='fa2'"
+        "causal=True is miscompiled on this toolchain (not an error), 97.6% of "
+        "elements off. Upgrade, or pass backend='fa2'"
     )
     header = ["routine", "backend_fallback_reason", "tflops"]
     values = ["BatchPrefill", reason, "5.4"]

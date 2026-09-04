@@ -118,7 +118,7 @@ def is_aiter_available(device: torch.device, op: str) -> bool:
         op: The capability-table op name, e.g. ``"rmsnorm"``. Required, and it
             changes the answer: support is per ``(op, arch)``, so one op can be
             gated on a toolchain where another is fine -- AITER batch prefill is
-            gated on gfx950 under ROCm 7.2.x while every other op stays open.
+            gated on one architecture and toolchain while every other op stays open.
             The name must match a row in :data:`flashinfer.rocm.arch_caps.CAPABILITIES`
             or the lookup treats it as undeclared and returns False.
     """

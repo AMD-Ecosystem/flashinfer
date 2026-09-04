@@ -17,10 +17,10 @@ authors = [
 ]
 
 # Runtime dependencies
-# NOTE: torch is intentionally NOT listed here because ROCm users must install
-# torch from AMD's ROCm repository, not from PyPI. For example,
-#   pip install torch==2.9.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/
-# See README.md for complete installation instructions.
+# NOTE: torch is intentionally NOT listed here. It is not pip-installable for the
+# supported stack -- repo.radeon.com publishes no rocm-rel- directory for ROCm
+# 10.0 -- so it comes from the base image that docker/Dockerfile.rocm builds on.
+# See the Quick start in README.md.
 dependencies = [
     "ninja",
     # Module-scope imports on the path `import flashinfer` always takes. Declared
@@ -44,10 +44,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/rocm/flashinfer"
-Repository = "https://github.com/rocm/flashinfer"
+Homepage = "https://github.com/AMD-Ecosystem/flashinfer"
+Repository = "https://github.com/AMD-Ecosystem/flashinfer"
 Documentation = "https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/3rd-party/flashinfer-install.html"
-"Bug Tracker" = "https://github.com/rocm/flashinfer/issues"
+"Bug Tracker" = "https://github.com/AMD-Ecosystem/flashinfer/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -65,7 +65,7 @@ dev = [
 [build-system]
 # In-tree backend (see build_backend_rocm.py). Nothing is compiled at build time, so
 # torch/numpy are not required; `wheel` is not either since setuptools 70.1, and
-# listing it fails `python -m build --no-isolation` in docker/Dockerfile.rocm_ci.
+# listing it fails `python -m build --no-isolation`.
 requires = [
     "setuptools>=80",
     "setuptools-scm>=9.2",

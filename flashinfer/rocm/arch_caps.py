@@ -106,7 +106,7 @@ class Support(Enum):
 
 
 def _version_tuple(text: str) -> Tuple[int, ...]:
-    """``"7.2.4"`` -> ``(7, 2, 4)``; non-numeric trailing parts are dropped."""
+    """``"10.0.4"`` -> ``(10, 0, 4)``; non-numeric trailing parts are dropped."""
     parts = []
     for chunk in text.split("."):
         digits = ""
@@ -123,16 +123,15 @@ def _version_tuple(text: str) -> Tuple[int, ...]:
 def _compare(left: str, right: str) -> int:
     """Three-way compare two version strings, zero-padding absent components.
 
-    ``"7.2"`` and ``"7.2.0"`` name the same release and must compare equal.
-    Comparing raw tuples would make ``(7, 2) < (7, 2, 0)``, so a window written
-    as ``rocm_min="7.2.0"`` would silently fail to gate a machine reporting
-    ``"7.2"`` -- a reachable state, not a hypothetical:
+    ``"10.0"`` and ``"10.0.0"`` name the same release and must compare equal.
+    Comparing raw tuples would make ``(10, 0) < (10, 0, 0)``, so a window
+    written as ``rocm_min="10.0.0"`` would silently fail to gate a machine
+    reporting ``"10.0"`` -- a reachable state, not a hypothetical:
     ``hip_utils.get_system_rocm_version_from_hipconfig`` matches
     ``\\d+\\.\\d+(?:\\.\\d+)?``, so the patch component is optional, and on
     TheRock builds it is the *only* detection method consulted.
 
-    The current table writes ``rocm_min="7.2"`` and is unaffected either way;
-    this keeps the next window from having to know about the quirk.
+    This keeps the next window from having to know about the quirk.
     """
     a, b = _version_tuple(left), _version_tuple(right)
     width = max(len(a), len(b))
@@ -145,11 +144,12 @@ def _compare(left: str, right: str) -> int:
 class KnownBad:
     """A toolchain window in which an otherwise-supported op is broken.
 
-    Support is not purely a property of ``(op, backend, arch)``: the one CDNA4
-    defect we have is a *compiler* bug, correct on ROCm 7.1 and wrong on 7.2.x
-    with everything else held constant. Bounds are literal version strings
-    rather than a predicate so the window is inspectable, renderable into docs,
-    and testable without a GPU.
+    Support is not purely a property of ``(op, backend, arch)``: a miscompile
+    can make one toolchain wrong with everything else held constant. Bounds are
+    literal version strings rather than a predicate so the window is
+    inspectable, renderable into docs, and testable without a GPU.
+
+    No row carries one today. The mechanism stays for the next defect.
 
     Bounds are half-open: ``rocm_min`` inclusive, ``rocm_max`` exclusive.
     """
@@ -188,8 +188,10 @@ class ArchSupport:
     """How one ``(op, backend)`` behaves on one architecture.
 
     ``evidence`` records *what was actually run* -- board, ROCm, AITER, torch --
-    rather than a bare "validated" flag. An empty string means the row is a
-    declaration nobody has measured, which is a fact worth being able to render.
+    rather than a bare "validated" flag. It is maintainer provenance only: the
+    README generator does not render it and does not branch on it, so an empty
+    string reads identically to a populated one in the published matrix. An
+    empty string just means nobody recorded a run for that pair.
     """
 
     support: Support
@@ -227,6 +229,11 @@ class Capability:
     # Empty means no alternative exists -- ``mla`` accepts only 'auto'/'aiter',
     # so suggesting anything there would send the user into a ValueError.
     fallback: str = ""
+    # Overrides the "`auto` picks" column, which is otherwise derived from
+    # `fallback`. Needed where the row's backend is not the whole story:
+    # cascade's merge kernels are HIP, but each level's attention goes through
+    # an auto-routed batch wrapper and can land on AITER.
+    auto_pick: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "archs", MappingProxyType(dict(self.archs)))
@@ -240,43 +247,22 @@ class Capability:
 # routing them through here changes no signatures.
 #
 # `evidence` is only filled in where a suite was actually run on that board. An
-# empty string means "declared, nobody measured it", which is a distinct and
-# useful thing for the docs to be able to say. The AITER rows carry evidence
-# from the runs below; the HIP rows deliberately do not yet.
+# empty string means "declared, nobody recorded a run". The AITER rows carry
+# evidence; the HIP rows deliberately do not yet.
 #
-#   gfx950  MI350X   27517 passed / 3585 skipped / 3 failed   (49a8cdd8)
-#   gfx942  MI300X   27520 passed / 3585 skipped / 0 failed   (49a8cdd8)
-#
-# both on torch 2.9.1+rocm7.2.0, HIP 7.2.26015, amd-aiter 0.1.10.
+# Both architectures are validated on the one supported configuration --
+# ROCm 10.0 (HIP 7.15.26333), torch 2.12.0, amd-aiter 0.1.20. The gfx942
+# AITER-backed op suites gave 8725 passed / 3581 skipped for the v0.6.18
+# release.
 # --------------------------------------------------------------------------
 
-_MEASURED_950 = "MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1"
-_MEASURED_942 = "MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1"
+_MEASURED_950 = "MI350X / rocm 10.0 / aiter 0.1.20 / torch 2.12.0"
+_MEASURED_942 = "MI300X / rocm 10.0 / aiter 0.1.20 / torch 2.12.0"
 
 # Separate from the suite strings above, which predate the MLA tests.
 _MEASURED_950_MLA = (
-    "mla: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 "
+    "mla: MI350X / rocm 10.0 / aiter 0.1.20 / torch 2.12.0 "
     "(decode + prefill, heads 16/128)"
-)
-
-# The one defect measured so far. Upstream calls it a compiler bug and gates
-# their own test skips on exactly (major, minor) == (7, 2) with gfx950
-# (aiter op_tests/test_batch_prefill.py::should_skip_rocm72_issue, still present
-# at v0.1.20 -- so no amd-aiter upgrade avoids it).
-#
-# Confirmed here rather than taken on trust, torch and aiter held constant:
-#   ROCm 7.2.0  max_abs_err vs fp32 reference 0.595268   3/12 tests fail
-#   ROCm 7.2.4  max_abs_err vs fp32 reference 0.595268   (bit-identical)
-#   ROCm 7.1    max_abs_err vs fp32 reference 0.000250   12/12 tests pass
-_ROCM72_CAUSAL_PREFILL = KnownBad(
-    rocm_min="7.2",
-    rocm_max="7.3",
-    detail=(
-        "ROCm 7.2.x miscompiles AITER's causal batch-prefill kernel on gfx950: "
-        "causal=True with logits_soft_cap=0.0 returns wrong numbers (not an "
-        "error), 97.6% of elements off. Use ROCm 7.1, or backend='fa2'"
-    ),
-    url="https://github.com/ROCm/aiter/blob/main/op_tests/test_batch_prefill.py",
 )
 
 
@@ -313,22 +299,22 @@ _OK_950 = ArchSupport(Support.SUPPORTED, evidence=_MEASURED_950)
 # differs from the suite runs only by board is not attributable to anything.
 _OK_942_MOE = ArchSupport(
     Support.SUPPORTED,
-    evidence="fused_moe: MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1",
+    evidence="fused_moe: MI300X / rocm 10.0 / aiter 0.1.20 / torch 2.12.0",
 )
 _OK_950_MOE = ArchSupport(
     Support.SUPPORTED,
-    evidence="fused_moe: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1",
+    evidence="fused_moe: MI350X / rocm 10.0 / aiter 0.1.20 / torch 2.12.0",
 )
 _OK_942_FP8_MOE = ArchSupport(
     Support.SUPPORTED,
     evidence=(
-        "fused_moe fp8: MI300X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-25"
+        "fused_moe fp8: MI300X / rocm 10.0 / aiter 0.1.20 / torch 2.12.0 / 2026-09-03"
     ),
 )
 _OK_950_FP8_MOE = ArchSupport(
     Support.SUPPORTED,
     evidence=(
-        "fused_moe fp8: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-25"
+        "fused_moe fp8: MI350X / rocm 10.0 / aiter 0.1.20 / torch 2.12.0 / 2026-09-03"
     ),
 )
 # HIP rows: declared, not yet individually attributed. The suites above cover
@@ -358,14 +344,9 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "aiter",
         _archs(
             _OK_942,
-            ArchSupport(
-                Support.SUPPORTED,
-                evidence=_MEASURED_950,
-                caveat=("causal=True is miscompiled on ROCm 7.2.x; correct on 7.1"),
-                known_bad=(_ROCM72_CAUSAL_PREFILL,),
-            ),
+            ArchSupport(Support.SUPPORTED, evidence=_MEASURED_950),
         ),
-        note="Paged and ragged, with sliding window. Page sizes 128/256/1024 are native on amd-aiter >= 0.1.10; others take a flat gather.",
+        note="Paged and ragged, with sliding window. Page sizes 128/256/1024 are served natively; others take a flat gather.",
         fallback="fa2",
     ),
     # No alternative backend -- hence no fallback=.
@@ -458,7 +439,8 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "cascade",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="Two-level shared-prefix attention; a fused single-kernel variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`.",
+        auto_pick="merge only; levels are auto-routed and can be `aiter`",
+        note='Two-level shared-prefix attention; `FLASHINFER_HIP_FUSED_CASCADE=1` threads partial state through the levels of `MultiLevelCascadeAttentionWrapper` only; AITER levels and both shared-prefix wrappers still merge post-hoc. The `hip` backend is the merge kernels only -- the per-level attention runs through the ordinary batch-prefill, batch-decode and single-prefill entry points at `backend="auto"` (which one depends on the wrapper), so it routes like any other call and can reach AITER. No cascade wrapper exposes `backend=` to override that.',
     ),
     Capability(
         "pod",

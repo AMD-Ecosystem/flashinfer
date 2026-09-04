@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the xdist worker/GPU mapping in tests/conftest.py.
+"""Tests for the xdist worker/GPU mapping in the repo-root conftest.py.
 
 GPU-free. The branch worth protecting is the one a well-provisioned runner
 never takes: more workers than physical cards, where handing a worker its own
@@ -22,12 +22,12 @@ import pathlib
 
 import pytest
 
-_CONFTEST = pathlib.Path(__file__).parents[1] / "conftest.py"
+_CONFTEST = pathlib.Path(__file__).parents[2] / "conftest.py"
 
 
 @pytest.fixture
 def root_conftest(monkeypatch):
-    """A private copy of tests/conftest.py, loaded with its pinning inert.
+    """A private copy of the repo-root conftest.py, loaded with pinning inert.
 
     Clearing PYTEST_XDIST_WORKER first skips the module-level pinning block, so
     loading the module cannot rewrite this session's own HIP_VISIBLE_DEVICES.
@@ -58,3 +58,44 @@ def test_no_supported_card_pins_nothing(root_conftest):
 def test_never_names_an_unsupported_card(root_conftest, supported):
     for worker_idx in range(16):
         assert root_conftest._worker_gpu_index(worker_idx, supported) in supported
+
+
+def test_hook_is_declared_optional(root_conftest):
+    """`-p no:xdist` and PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 leave the hookspec
+    undefined, and pluggy then aborts the whole session with
+    PluginValidationError. `optionalhook` is what makes it skip the impl
+    instead -- importing xdist only proves the package exists."""
+    opts = getattr(root_conftest.pytest_xdist_auto_num_workers, "pytest_impl", {})
+    assert opts.get("optionalhook") is True
+
+
+def test_hook_lives_in_the_root_conftest(root_conftest):
+    """Where the hook lives is the behaviour: xdist resolves '-n auto' from the
+    initial conftests, so a subdirectory one yields the CPU count instead."""
+    assert hasattr(root_conftest, "pytest_xdist_auto_num_workers")
+
+
+@pytest.mark.parametrize("cards, expected", [(8, 4), (4, 2), (2, 1), (1, 1)])
+def test_worker_count_halves_the_cards(root_conftest, monkeypatch, cards, expected):
+    """Half the physical cards, and never zero -- one card still runs."""
+    monkeypatch.setattr(
+        "flashinfer.rocm.hip_utils.get_physical_card_device_indices",
+        lambda: tuple(range(cards)),
+    )
+    assert root_conftest.pytest_xdist_auto_num_workers(config=None) == expected
+
+
+def test_worker_count_falls_back_to_torch(root_conftest, monkeypatch):
+    """rocminfo reporting nothing degrades to torch, as the pinning does --
+    it must not raise, or a GPU-free checkout cannot run GPU-free tests."""
+    import torch
+
+    monkeypatch.setattr(
+        "flashinfer.rocm.hip_utils.get_physical_card_device_indices", tuple
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 6)
+    assert root_conftest.pytest_xdist_auto_num_workers(config=None) == 3
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert root_conftest.pytest_xdist_auto_num_workers(config=None) == 1

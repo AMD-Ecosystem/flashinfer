@@ -6,40 +6,8 @@ from typing import Any, Dict, Set
 
 import pytest
 
-
-def _worker_gpu_index(worker_idx: int, supported):
-    """Card to pin an xdist worker to, or None if there is nothing to pin to.
-
-    Workers wrap around when they outnumber the cards. Using worker_idx itself
-    names a device that need not exist, and a child process inheriting that
-    HIP_VISIBLE_DEVICES sees no GPU at all.
-    """
-    return supported[worker_idx % len(supported)] if supported else None
-
-
-# Pin this worker to a card. PYTEST_XDIST_WORKER ("gw0", "gw1", ...) is injected
-# into each worker subprocess by pytest-xdist before any Python code runs.
-# get_physical_card_device_indices() spreads workers one per *supported* physical
-# card; the torch fallback below guarantees neither.
-#
-# This does not re-scope *this* process -- the flashinfer import below initializes
-# HIP first, so torch has already latched the full device list. What it scopes is
-# the child processes tests spawn, which is where a bad index is fatal.
-_xdist_worker = os.environ.get("PYTEST_XDIST_WORKER", "")
-if _xdist_worker.startswith("gw"):
-    import torch
-
-    from flashinfer.rocm.hip_utils import get_physical_card_device_indices
-
-    # rocminfo is how supported cards are identified; when it reports none --
-    # missing binary, or no supported GPU -- fall back to what torch can see
-    # rather than to worker indices that need not name anything.
-    _cards = get_physical_card_device_indices() or tuple(
-        range(torch.cuda.device_count())
-    )
-    _gpu_index = _worker_gpu_index(int(_xdist_worker[2:]), _cards)
-    if _gpu_index is not None:
-        os.environ["HIP_VISIBLE_DEVICES"] = str(_gpu_index)
+# The xdist worker count and per-worker GPU pinning live in the repo-root
+# conftest.py -- xdist resolves "-n auto" before a subdirectory conftest loads.
 
 import torch
 from torch.torch_version import TorchVersion
