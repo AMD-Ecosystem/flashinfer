@@ -373,9 +373,10 @@ out = aiter_fused_moe(hidden_states, w1s, w2s, topk_ids, topk_weights)
 These take the in-tree HIP kernel. Cascade is listed first because it is the
 partial case — its own kernels are HIP, but what it calls is not:
 
-* **Cascade attention** — the *merge* kernels only. A fused single-kernel
-  HIP variant is gated behind `FLASHINFER_HIP_FUSED_CASCADE=1`
-  (experimental). **The attention underneath is not HIP-only**: each of the
+* **Cascade attention** — the *merge* kernels only.
+  `FLASHINFER_HIP_FUSED_CASCADE=1` folds each level's merge into its prefill
+  kernel rather than merging afterwards; opt-in, both paths tested, and read
+  once at import. **The attention underneath is not HIP-only**: each of the
   three wrappers builds an ordinary entry point internally at
   `backend="auto"` — `BatchPrefillWithPagedKVCacheWrapper` for the
   multi-level and shared-prefix-prefill wrappers,
