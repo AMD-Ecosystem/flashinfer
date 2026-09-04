@@ -381,7 +381,7 @@ def _require_aiter_runtime(device: torch.device, op: str = "batch_prefill") -> N
     """Raise a clear error when AITER is requested on an unsupported GPU or without the package.
 
     ``op`` selects the capability row, so a gate that applies to batch prefill
-    (such as the ROCm 7.2 causal miscompile on gfx950) does not also block single
+    (such as an arch-specific causal miscompile) does not also block single
     prefill. ``ArchCapabilityError`` subclasses ``RuntimeError``, so the previous
     contract is unchanged for callers.
     """
@@ -484,7 +484,7 @@ def _auto_select_prefill_backend(
     Falls back to 'fa2' with a one-time warning for each distinct skip reason.
 
     ``op`` selects the capability row. It matters because the gates are not
-    uniform across ops: the ROCm 7.2 causal miscompile on gfx950 applies to batch
+    uniform across ops: an arch-specific causal miscompile can apply to batch
     prefill only, so checking a single shared "is AITER supported here" would
     either under- or over-block.
 
@@ -655,7 +655,7 @@ def _aiter_bootstrap_batch_ragged_prefill(
     user requests. AITER pre-ships only a subset of the
     (dtype, needs_mask, has_lse, has_logits_cap) family — which subset is not contractual
     and varies by amd-aiter build — so any combination may need a lazy build, including
-    no-logits ones. On amd-aiter 0.1.10, for example, bf16 ships only nmask_lse and
+    no-logits ones. Some releases ship only nmask_lse and
     mask_nlse, so both remaining nlogits arms are built here on first use.
 
     Used by both batch-prefill wrappers that reach this .so family: the ragged wrapper,

@@ -36,10 +36,6 @@
 #   DeepSeek-R1 (head_dim_qk 192 / head_dim_vo 128) is deliberately absent: AITER
 #     requires equal head dims, and the fa2 fallback fails to compile on gfx950
 #     (static_assert in permuted_smem.cuh). Neither backend can serve it.
-#
-# On gfx950 with ROCm 7.2.x every prefill row resolves to fa2: arch_caps gates
-# AITER batch prefill off for the causal-miscompile known-bad entry. That is
-# correct behaviour, and the reason column says so. Decode is unaffected.
 
 ## Batch decode -- page_size 16, bf16, GQA
 # Llama-3.1-8B (32 qo / 8 kv heads)

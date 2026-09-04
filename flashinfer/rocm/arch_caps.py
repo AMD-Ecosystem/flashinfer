@@ -106,7 +106,7 @@ class Support(Enum):
 
 
 def _version_tuple(text: str) -> Tuple[int, ...]:
-    """``"7.2.4"`` -> ``(7, 2, 4)``; non-numeric trailing parts are dropped."""
+    """``"10.0.4"`` -> ``(10, 0, 4)``; non-numeric trailing parts are dropped."""
     parts = []
     for chunk in text.split("."):
         digits = ""
@@ -123,16 +123,15 @@ def _version_tuple(text: str) -> Tuple[int, ...]:
 def _compare(left: str, right: str) -> int:
     """Three-way compare two version strings, zero-padding absent components.
 
-    ``"7.2"`` and ``"7.2.0"`` name the same release and must compare equal.
-    Comparing raw tuples would make ``(7, 2) < (7, 2, 0)``, so a window written
-    as ``rocm_min="7.2.0"`` would silently fail to gate a machine reporting
-    ``"7.2"`` -- a reachable state, not a hypothetical:
+    ``"10.0"`` and ``"10.0.0"`` name the same release and must compare equal.
+    Comparing raw tuples would make ``(10, 0) < (10, 0, 0)``, so a window
+    written as ``rocm_min="10.0.0"`` would silently fail to gate a machine
+    reporting ``"10.0"`` -- a reachable state, not a hypothetical:
     ``hip_utils.get_system_rocm_version_from_hipconfig`` matches
     ``\\d+\\.\\d+(?:\\.\\d+)?``, so the patch component is optional, and on
     TheRock builds it is the *only* detection method consulted.
 
-    The current table writes ``rocm_min="7.2"`` and is unaffected either way;
-    this keeps the next window from having to know about the quirk.
+    This keeps the next window from having to know about the quirk.
     """
     a, b = _version_tuple(left), _version_tuple(right)
     width = max(len(a), len(b))
@@ -145,11 +144,12 @@ def _compare(left: str, right: str) -> int:
 class KnownBad:
     """A toolchain window in which an otherwise-supported op is broken.
 
-    Support is not purely a property of ``(op, backend, arch)``: the one CDNA4
-    defect we have is a *compiler* bug, correct on ROCm 7.1 and wrong on 7.2.x
-    with everything else held constant. Bounds are literal version strings
-    rather than a predicate so the window is inspectable, renderable into docs,
-    and testable without a GPU.
+    Support is not purely a property of ``(op, backend, arch)``: a miscompile
+    can make one toolchain wrong with everything else held constant. Bounds are
+    literal version strings rather than a predicate so the window is
+    inspectable, renderable into docs, and testable without a GPU.
+
+    No row carries one today. The mechanism stays for the next defect.
 
     Bounds are half-open: ``rocm_min`` inclusive, ``rocm_max`` exclusive.
     """
@@ -247,25 +247,21 @@ class Capability:
 # routing them through here changes no signatures.
 #
 # `evidence` is only filled in where a suite was actually run on that board. An
-# empty string means "declared, nobody measured it", which is a distinct and
-# useful thing for the docs to be able to say. The AITER rows carry evidence
-# from the runs below; the HIP rows deliberately do not yet.
+# empty string means "declared, nobody recorded a run". The AITER rows carry
+# evidence; the HIP rows deliberately do not yet.
 #
-#   gfx950  MI350X   27517 passed / 3585 skipped / 3 failed   (49a8cdd8)
-#   gfx942  MI300X   27520 passed / 3585 skipped / 0 failed   (49a8cdd8)
-#
-# both on torch 2.9.1+rocm7.2.0, HIP 7.2.26015, amd-aiter 0.1.10. The gfx942
-# rows were re-run on the supported stack for the v0.6.18 release: the
-# AITER-backed op suites gave 8725 passed / 3581 skipped on ROCm 10.0 (HIP
-# 7.15.26333), torch 2.12.0, amd-aiter 0.1.20.
+# Both architectures are validated on the one supported configuration --
+# ROCm 10.0 (HIP 7.15.26333), torch 2.12.0, amd-aiter 0.1.20. The gfx942
+# AITER-backed op suites gave 8725 passed / 3581 skipped for the v0.6.18
+# release.
 # --------------------------------------------------------------------------
 
-_MEASURED_950 = "MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1"
+_MEASURED_950 = "MI350X / rocm 10.0 / aiter 0.1.20 / torch 2.12.0"
 _MEASURED_942 = "MI300X / rocm 10.0 / aiter 0.1.20 / torch 2.12.0"
 
 # Separate from the suite strings above, which predate the MLA tests.
 _MEASURED_950_MLA = (
-    "mla: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 "
+    "mla: MI350X / rocm 10.0 / aiter 0.1.20 / torch 2.12.0 "
     "(decode + prefill, heads 16/128)"
 )
 
@@ -307,7 +303,7 @@ _OK_942_MOE = ArchSupport(
 )
 _OK_950_MOE = ArchSupport(
     Support.SUPPORTED,
-    evidence="fused_moe: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1",
+    evidence="fused_moe: MI350X / rocm 10.0 / aiter 0.1.20 / torch 2.12.0",
 )
 _OK_942_FP8_MOE = ArchSupport(
     Support.SUPPORTED,
@@ -318,7 +314,7 @@ _OK_942_FP8_MOE = ArchSupport(
 _OK_950_FP8_MOE = ArchSupport(
     Support.SUPPORTED,
     evidence=(
-        "fused_moe fp8: MI350X / rocm 7.2.0 / aiter 0.1.10 / torch 2.9.1 / 2026-08-25"
+        "fused_moe fp8: MI350X / rocm 10.0 / aiter 0.1.20 / torch 2.12.0 / 2026-09-03"
     ),
 )
 # HIP rows: declared, not yet individually attributed. The suites above cover

@@ -82,17 +82,14 @@ release shifts field offsets instead of failing to load -- and 0.1.20 renamed
 the RMSNorm entry points, so an older one cannot resolve them. Below the floor
 `auto` will not select AITER and an explicit `backend="aiter"` raises.
 
-That rules out `pypi.amd.com/rocm-7.1.1/simple`, which carries only
-`0.1.10` and only cp310/cp312 wheels. The development image
-(`docker/Dockerfile.rocm`) bundles the wheel above, on CPython 3.12, and
-needs no separate install -- it is the one supported configuration, so in
-practice this section is only for someone assembling their own.
+The development image (`docker/Dockerfile.rocm`) bundles that wheel, on
+CPython 3.12, and needs no separate install -- it is the one supported
+configuration, so in practice this section is only for someone assembling
+their own.
 
-Every 0.1.20 wheel is cp312 only, and none is built against ROCm 10.0 —
-they share one source revision (build id `3135022`) retargeted to
-`+rocm10.1.0a`, `+rocm7.14.0` and `+rocm7.2.3`. Only the first of those and
-`+rocm7.2.3` are reachable by version specifier; pip normalises the project
-name, so the sibling `amd_aiter/` directory needs a direct wheel URL.
+Every 0.1.20 wheel is cp312 only, which is what fixes the interpreter. None
+is built against ROCm 10.0 directly; the pin above is the nearest retarget
+of the same source revision (build id `3135022`).
 
 A source build tracks master, which is many releases ahead of the pin
 **with a different C ABI** — symbols the shim expects are renamed, hidden
@@ -121,22 +118,23 @@ and can take many minutes the first time.
 
 ### `mha_fwd` ships no prebuilt kernels at all
 
-The 0.1.10 wheel carries 58 prebuilt `mha_varlen_fwd_*.so` files and zero
-`mha_fwd*` — only `mha_fwd_kernels.cu` source. Single prefill is the op that
-routes through the non-varlen `mha_fwd` template (batch=1 needs no seqstart
-plumbing, see PR #246), so **every** one of its `(dtype, needs_mask, has_lse)`
-variants JIT-builds on first call. `needs_mask` is `causal or window_left >= 0`:
-AITER splits that `.so` on whether anything is masked, not on causality.
+AITER ships prebuilt `mha_varlen_fwd_*.so` files and no `mha_fwd*` — only
+`mha_fwd_kernels.cu` source. Single prefill is the op that routes through the
+non-varlen `mha_fwd` template (batch=1 needs no seqstart plumbing, see PR
+
+# 246), so **every** one of its `(dtype, needs_mask, has_lse)` variants
+
+JIT-builds on first call. `needs_mask` is `causal or window_left >= 0`: AITER
+splits that `.so` on whether anything is masked, not on causality.
 
 **Absence of `mha_fwd*.so` is expected, not a broken install.** AITER
 prebuilds what vLLM and SGLang call, which is the varlen path; the
 non-varlen variant space is not in that set.
 
-Those 58 varlen files are not full coverage either, so this is a difference
-of degree rather than a unique case: batch prefill lazily builds the varlen
-variants that are missing — on 0.1.10, bf16 ships only `nmask_lse` and
-`mask_nlse`, so both remaining `nlogits` arms build on first use. Single
-prefill builds every variant; batch prefill builds the gaps.
+The shipped varlen set is not full coverage either, so this is a difference
+of degree rather than a unique case: batch prefill lazily builds whichever
+varlen variants are missing. Single prefill builds every variant; batch
+prefill builds the gaps.
 
 Two consequences worth planning for:
 
