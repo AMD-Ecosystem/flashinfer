@@ -218,7 +218,13 @@ def render(arch_caps) -> str:
         note = _note(f"{cap.op}/{cap.backend}", cap.note)
         lines.append(f"| `{cap.op}` | `{cap.backend}` | {' | '.join(cells)} | {note} |")
 
-    lines += ["", *(f"{BULLET} {s} {t}" for s, t in LEGEND if s in used), ""]
+    lines += ["", *(f"{BULLET} {s} {t}" for s, t in LEGEND if s in used)]
+
+    # Only separate the footnotes when there are some. An unconditional blank
+    # line leaves two in a row when the table carries no KnownBad, which the
+    # whitespace pre-commit hook then strips -- so --check could never pass.
+    if footnotes:
+        lines.append("")
 
     for number, bad, where, arch in footnotes:
         detail = bad.detail.rstrip(".")

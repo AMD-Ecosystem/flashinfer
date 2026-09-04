@@ -424,42 +424,59 @@ class TestGating:
                 )
 
 
-class TestRocm72CausalPrefill:
-    """The one measured defect: gfx950 + ROCm 7.2.x miscompiles AITER causal
-    batch prefill. gfx942 is fine on the same toolchain."""
+class TestKnownBadWindows:
+    """The table carries no ``KnownBad`` row today -- the one measured defect
+    (gfx950 + ROCm 7.2.x AITER causal prefill) was dropped when support narrowed
+    to the tested image. The mechanism stays, so it stays tested, against a
+    synthetic row rather than a real one."""
 
-    def test_gated_on_gfx950_under_rocm_72(self, as_arch, as_toolchain):
+    @pytest.fixture
+    def gated_table(self, monkeypatch):
+        """A one-row table whose gfx950 entry is broken on ROCm [7.2, 7.3)."""
+        bad = arch_caps.KnownBad(
+            rocm_min="7.2", rocm_max="7.3", detail="synthetic window"
+        )
+        row = arch_caps.Capability(
+            op="batch_prefill",
+            backend="aiter",
+            archs={
+                "gfx942": arch_caps.ArchSupport(arch_caps.Support.SUPPORTED),
+                "gfx950": arch_caps.ArchSupport(
+                    arch_caps.Support.SUPPORTED, known_bad=(bad,)
+                ),
+            },
+            fallback="fa2",
+        )
+        monkeypatch.setattr(arch_caps, "CAPABILITIES", (row,))
+        # Lookups go through the prebuilt index, not CAPABILITIES itself.
+        monkeypatch.setattr(arch_caps, "_BY_KEY", arch_caps._index((row,)))
+
+    def test_gated_inside_the_window(self, gated_table, as_arch, as_toolchain):
         as_arch("gfx950")
         as_toolchain("7.2.0")
         assert not arch_caps.capability_available(None, "batch_prefill", "aiter")
         with pytest.raises(arch_caps.ArchCapabilityError, match="known-broken"):
             arch_caps.require_capability(None, "batch_prefill", "aiter")
 
-    def test_still_gated_on_the_latest_affected_patch(self, as_arch, as_toolchain):
+    def test_upper_bound_is_exclusive(self, gated_table, as_arch, as_toolchain):
         as_arch("gfx950")
-        as_toolchain("7.2.4")
-        assert not arch_caps.capability_available(None, "batch_prefill", "aiter")
+        as_toolchain("7.3")
+        assert arch_caps.capability_available(None, "batch_prefill", "aiter")
 
-    def test_open_on_gfx950_under_rocm_71(self, as_arch, as_toolchain):
-        """Measured clean: max_abs_err 0.000250, 12/12 parametrizations pass."""
+    def test_open_below_the_window(self, gated_table, as_arch, as_toolchain):
         as_arch("gfx950")
         as_toolchain("7.1")
         assert arch_caps.capability_available(None, "batch_prefill", "aiter")
 
-    def test_gfx942_unaffected_on_the_same_toolchain(self, as_arch, as_toolchain):
-        """This is the whole point of keying on arch as well as version."""
+    def test_other_arch_unaffected(self, gated_table, as_arch, as_toolchain):
+        """The whole point of keying on arch as well as version."""
         as_arch("gfx942")
         as_toolchain("7.2.0")
         assert arch_caps.capability_available(None, "batch_prefill", "aiter")
 
-    def test_hip_fallback_stays_open_where_aiter_is_gated(self, as_arch, as_toolchain):
-        """The gate is only useful if `auto` has somewhere correct to fall back
-        to -- fa2 was measured correct on the same hardware (2.6e-4)."""
-        as_arch("gfx950")
-        as_toolchain("7.2.0")
-        assert arch_caps.capability_available(None, "batch_prefill", "hip")
-
-    def test_escape_hatch_opts_in_to_danger(self, as_arch, as_toolchain, monkeypatch):
+    def test_escape_hatch_opts_in_to_danger(
+        self, gated_table, as_arch, as_toolchain, monkeypatch
+    ):
         """Opt in to the broken path, never opt in to safety."""
         as_arch("gfx950")
         as_toolchain("7.2.0")
@@ -472,7 +489,7 @@ class TestVersionProbeIsCheap:
     with a timeout). A per-routing-decision query must not pay that repeatedly."""
 
     def test_rows_without_a_window_never_probe(self, as_arch, monkeypatch):
-        """24 of 25 rows have no ``known_bad``, so the probe is skipped outright
+        """No row carries ``known_bad`` today, so the probe is skipped outright
         rather than merely being fast the second time."""
         calls = []
 
@@ -482,12 +499,9 @@ class TestVersionProbeIsCheap:
 
         monkeypatch.setattr(arch_caps, "_live_versions", counted)
         as_arch("gfx950")
-        assert arch_caps.capability_available(None, "rmsnorm", "aiter")
+        for op, backend in [(c.op, c.backend) for c in arch_caps.CAPABILITIES]:
+            arch_caps.capability_available(None, op, backend)
         assert calls == []
-
-        # ...but a row that does carry a window still consults it.
-        assert not arch_caps.capability_available(None, "batch_prefill", "aiter")
-        assert calls == [1]
 
     def test_detection_runs_once_per_process(self):
         """Guards the ``lru_cache``: without it every gated query would re-run

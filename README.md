@@ -137,9 +137,7 @@ To override, pass `backend="aiter"`, or name the in-tree kernel:
 everything else.
 
 Two ops take no `backend=` argument: `single_decode_with_kv_cache` is
-HIP-only, and `aiter_fused_moe` is AITER-only. On gfx950 with ROCm 7.2.x,
-`batch_prefill` never resolves to AITER — see the footnote under the
-table.
+HIP-only, and `aiter_fused_moe` is AITER-only.
 
 Beyond the routed ops, this release also carries block-sparse attention
 (`BlockSparseAttentionWrapper` and the variable-block variant), POD
@@ -166,7 +164,7 @@ decisions the library makes. Do not edit it by hand; run
 | :--- | :--- | :---: | :---: | :--- |
 | `batch_decode` | `aiter` | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Under graph capture `auto` needs a declared `max_seq_len`, else it stays on fa2. |
 | `single_prefill` | `aiter` | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. |
-| `batch_prefill` | `aiter` | ✅ | ⚠️[^kb1] | Paged and ragged, with sliding window. Page sizes 128/256/1024 are served natively; others take a flat gather. |
+| `batch_prefill` | `aiter` | ✅ | ✅ | Paged and ragged, with sliding window. Page sizes 128/256/1024 are served natively; others take a flat gather. |
 | `mla` | `aiter` | ✅ | ✅ | DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here. |
 | `rope` | `aiter` | ✅ | ✅ | `apply_rope_with_cos_sin_cache` and its inplace variant, linked at the C++ level. Opt-in. |
 | `append_paged_kv_cache` | `aiter` | ✅ | ✅ | fp16/bf16 + NHD. Bit-exact with the in-tree kernel but slower, so `auto` picks `native`. |
@@ -193,9 +191,6 @@ decisions the library makes. Do not edit it by hand; run
 | `quantization` | `hip` | ✅ | ✅ | `packbits` and `segment_packbits`. |
 
 * ✅ **supported** — this op runs on this architecture and the test suite covers it.
-* ⚠️ **supported, except on some toolchains** — a specific ROCm/AITER version range miscompiles it, and routing declines it there. The footnote names the range.
-
-[^kb1]: `batch_prefill/aiter` on gfx950, ROCm [7.2, 7.3): ROCm 7.2.x miscompiles AITER's causal batch-prefill kernel on gfx950: causal=True with logits_soft_cap=0.0 returns wrong numbers (not an error), 97.6% of elements off. Use ROCm 7.1, or backend='fa2'. Override with `FLASHINFER_ARCH_ALLOW_KNOWN_BAD=1` if you have validated it yourself. <https://github.com/ROCm/aiter/blob/main/op_tests/test_batch_prefill.py>
 
 <!-- END GENERATED: arch support matrix -->
 

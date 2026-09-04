@@ -259,26 +259,6 @@ _MEASURED_950_MLA = (
     "(decode + prefill, heads 16/128)"
 )
 
-# The one defect measured so far. Upstream calls it a compiler bug and gates
-# their own test skips on exactly (major, minor) == (7, 2) with gfx950
-# (aiter op_tests/test_batch_prefill.py::should_skip_rocm72_issue, still present
-# at v0.1.20 -- so no amd-aiter upgrade avoids it).
-#
-# Confirmed here rather than taken on trust, torch and aiter held constant:
-#   ROCm 7.2.0  max_abs_err vs fp32 reference 0.595268   3/12 tests fail
-#   ROCm 7.2.4  max_abs_err vs fp32 reference 0.595268   (bit-identical)
-#   ROCm 7.1    max_abs_err vs fp32 reference 0.000250   12/12 tests pass
-_ROCM72_CAUSAL_PREFILL = KnownBad(
-    rocm_min="7.2",
-    rocm_max="7.3",
-    detail=(
-        "ROCm 7.2.x miscompiles AITER's causal batch-prefill kernel on gfx950: "
-        "causal=True with logits_soft_cap=0.0 returns wrong numbers (not an "
-        "error), 97.6% of elements off. Use ROCm 7.1, or backend='fa2'"
-    ),
-    url="https://github.com/ROCm/aiter/blob/main/op_tests/test_batch_prefill.py",
-)
-
 
 # AITER's soft-cap defect is parameter-dependent, so it is not a KnownBad row:
 # those gate a whole (op, backend, arch) on toolchain version and would also
@@ -358,12 +338,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "aiter",
         _archs(
             _OK_942,
-            ArchSupport(
-                Support.SUPPORTED,
-                evidence=_MEASURED_950,
-                caveat=("causal=True is miscompiled on ROCm 7.2.x; correct on 7.1"),
-                known_bad=(_ROCM72_CAUSAL_PREFILL,),
-            ),
+            ArchSupport(Support.SUPPORTED, evidence=_MEASURED_950),
         ),
         note="Paged and ragged, with sliding window. Page sizes 128/256/1024 are served natively; others take a flat gather.",
         fallback="fa2",

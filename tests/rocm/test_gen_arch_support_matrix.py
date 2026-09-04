@@ -184,6 +184,16 @@ class TestRender:
         )
         assert f"{gen.BULLET} {gen.UNSUPPORTED}" not in gen.render(table)
 
+    def test_no_footnotes_leaves_no_double_blank_line(self):
+        """The whitespace pre-commit hook strips a doubled blank line, so an
+        unconditional separator here makes --check unsatisfiable."""
+        table = _table(
+            caps.Capability(op="rope", backend="hip", archs={"gfx942": _support()})
+        )
+        out = gen.render(table)
+        assert "\n\n\n" not in out
+        assert out.endswith(gen.END)
+
     def test_footnotes_are_numbered_in_table_order(self):
         first = caps.KnownBad(rocm_min="7.2", detail="broken on CDNA4")
         second = caps.KnownBad(aiter_max="0.1.9", detail="old aiter")
