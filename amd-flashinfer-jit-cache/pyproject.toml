@@ -36,8 +36,8 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/ROCm/flashinfer"
-Repository = "https://github.com/ROCm/flashinfer"
+Homepage = "https://github.com/AMD-Ecosystem/flashinfer"
+Repository = "https://github.com/AMD-Ecosystem/flashinfer"
 
 [tool.setuptools]
 packages = ["amd_flashinfer_jit_cache"]

@@ -36,7 +36,7 @@ docker run -it \
   --privileged --ipc=host --network=host \
   --device=/dev/kfd --device=/dev/dri \
   --group-add video --group-add "$(getent group render | cut -d: -f3)" \
-  -v $PWD:/workspace \
+  -v "$PWD":/workspace -w /workspace \
   --name flashinfer-dev-container \
   flashinfer-dev:rocm10.0
 ```
