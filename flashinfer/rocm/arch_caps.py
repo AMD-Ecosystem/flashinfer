@@ -440,7 +440,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "hip",
         _archs(_HIP_942, _HIP_950),
         auto_pick="merge only; levels are auto-routed and can be `aiter`",
-        note='Two-level shared-prefix attention; `FLASHINFER_HIP_FUSED_CASCADE=1` folds each level\'s merge into its prefill kernel (opt-in, both paths tested). The `hip` backend is the merge kernels only -- the per-level attention runs through the ordinary batch-prefill, batch-decode and single-prefill entry points at `backend="auto"` (which one depends on the wrapper), so it routes like any other call and can reach AITER. No cascade wrapper exposes `backend=` to override that.',
+        note='Two-level shared-prefix attention; `FLASHINFER_HIP_FUSED_CASCADE=1` threads partial state through the levels of `MultiLevelCascadeAttentionWrapper` only; AITER levels and both shared-prefix wrappers still merge post-hoc. The `hip` backend is the merge kernels only -- the per-level attention runs through the ordinary batch-prefill, batch-decode and single-prefill entry points at `backend="auto"` (which one depends on the wrapper), so it routes like any other call and can reach AITER. No cascade wrapper exposes `backend=` to override that.',
     ),
     Capability(
         "pod",

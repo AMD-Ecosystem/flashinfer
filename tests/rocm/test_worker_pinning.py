@@ -60,6 +60,15 @@ def test_never_names_an_unsupported_card(root_conftest, supported):
         assert root_conftest._worker_gpu_index(worker_idx, supported) in supported
 
 
+def test_hook_is_declared_optional(root_conftest):
+    """`-p no:xdist` and PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 leave the hookspec
+    undefined, and pluggy then aborts the whole session with
+    PluginValidationError. `optionalhook` is what makes it skip the impl
+    instead -- importing xdist only proves the package exists."""
+    opts = getattr(root_conftest.pytest_xdist_auto_num_workers, "pytest_impl", {})
+    assert opts.get("optionalhook") is True
+
+
 def test_hook_lives_in_the_root_conftest(root_conftest):
     """Where the hook lives is the behaviour: xdist resolves '-n auto' from the
     initial conftests, so a subdirectory one yields the CPU count instead."""

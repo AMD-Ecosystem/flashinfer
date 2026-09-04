@@ -374,9 +374,11 @@ These take the in-tree HIP kernel. Cascade is listed first because it is the
 partial case — its own kernels are HIP, but what it calls is not:
 
 * **Cascade attention** — the *merge* kernels only.
-  `FLASHINFER_HIP_FUSED_CASCADE=1` folds each level's merge into its prefill
-  kernel rather than merging afterwards; opt-in, both paths tested, and read
-  once at import. **The attention underneath is not HIP-only**: each of the
+  `FLASHINFER_HIP_FUSED_CASCADE=1` narrows to `MultiLevelCascadeAttentionWrapper`:
+  it passes each level's partial state into the next prefill call rather than
+  merging afterwards. A level that resolves to AITER still merges post-hoc --
+  the AITER kernel takes no partial state -- and the two shared-prefix wrappers
+  never consult the flag. Opt-in, both paths tested, read once at import. **The attention underneath is not HIP-only**: each of the
   three wrappers builds an ordinary entry point internally at
   `backend="auto"` — `BatchPrefillWithPagedKVCacheWrapper` for the
   multi-level and shared-prefix-prefill wrappers,

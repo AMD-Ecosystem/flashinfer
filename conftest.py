@@ -32,12 +32,16 @@ def _worker_gpu_index(worker_idx: int, supported):
     return supported[worker_idx % len(supported)] if supported else None
 
 
-# pytest_xdist_auto_num_workers is only available when pytest-xdist is installed
-# and loaded (i.e. when -n / --dist is passed). Guard the definition so that
-# running without xdist does not produce an "unknown hook" PluginValidationError.
+# The hookspec exists only while pytest-xdist's *plugin* is loaded. Importing
+# xdist proves the package is installed, which is not the same thing: under
+# `-p no:xdist` or PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 the package still imports,
+# and defining the hook then aborts the session with PluginValidationError:
+# "unknown hook 'pytest_xdist_auto_num_workers'". optionalhook is what makes
+# pluggy skip an implementation whose spec is absent.
 try:
-    import xdist  # noqa: F401
+    import pytest
 
+    @pytest.hookimpl(optionalhook=True)
     def pytest_xdist_auto_num_workers(config):
         """Return the recommended worker count for 'pytest -n auto'.
 
