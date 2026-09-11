@@ -1270,7 +1270,15 @@ class BatchDecodeWithPagedKVCacheWrapper:
         disable_split_kv : bool
             CUDA-only split-KV scheduler knob; raises when ``True``.
         q_len_per_req : int
-            Multi-token decode. ROCm supports ``1``; more raises.
+            Query tokens per request, for speculative-decode verify. Needs
+            ``use_tensor_cores=True`` and ``kv_len >= q_len_per_req`` on every
+            request; attention is causal within a request. Part of the frozen
+            shape under cudagraph, so use one wrapper per value.
+
+            Cost steps with ``q_len_per_req * (num_qo_heads // num_kv_heads)``,
+            not with ``q_len_per_req`` alone: the tile is 16 at or below 16 and
+            64 above (``rocm/utils.cuh:100``). At GQA 32/8 that makes 4 free and
+            8 a step; at 64/8 the step lands at 2.
 
         Note
         ----
@@ -1952,16 +1960,18 @@ class BatchDecodeWithPagedKVCacheWrapper:
             Whether to enable Programmatic Dependent Launch (PDL). See https://docs.nvidia.com/cuda/cuda-c-programming-guide/#programmatic-dependent-launch-and-synchronization
             Only supported for >= sm90, and currently only for FA2 and CUDA core decode.
         q_len_per_req : Optional[int]
-            The number of query tokens per request. ROCm accepts ``None`` and
-            ``1``, both meaning one token; anything larger raises.
+            Query tokens per request. ``None`` infers it from ``q``; a value
+            given here is checked against ``q`` and against the planned value.
+            ``q`` is ``[batch_size * q_len_per_req, num_qo_heads, head_dim]``.
         Returns
         -------
         Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
-            If :attr:`return_lse` is ``False``, the attention output, shape: ``[batch_size, num_qo_heads, head_dim]``.
+            With ``N = batch_size * q_len_per_req``:
+            if :attr:`return_lse` is ``False``, the attention output, shape: ``[N, num_qo_heads, head_dim]``.
             If :attr:`return_lse` is ``True``, a tuple of two tensors:
 
-            * attention output, shape: ``[batch_size, num_qo_heads, head_dim]``
-            * logsumexp of attention scores, shape: ``[batch_size, num_qo_heads]``.
+            * attention output, shape: ``[N, num_qo_heads, head_dim]``
+            * logsumexp of attention scores, shape: ``[N, num_qo_heads]``.
         """
         reject_cuda_only(
             "skip_softmax_threshold_scale_factor",

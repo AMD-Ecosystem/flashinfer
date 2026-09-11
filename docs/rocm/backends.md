@@ -487,9 +487,21 @@ the capacity rather than attending to its full context.
 `run(..., return_lse=True)` raises on this backend under capture — PA v1
 emits no LSE and the FA2 shadow plan it borrows is not capture-safe.
 
-Multi-token decode (`q_len_per_req > 1`) raises `NotImplementedError` on
-ROCm regardless of backend, as does an output dtype that differs from the
-query dtype.
+Multi-token decode (`q_len_per_req > 1`), for speculative-decode verify,
+needs `use_tensor_cores=True` — that path runs the batch-prefill kernel,
+which is what supplies the causal mask, and AITER decode requires
+`use_tensor_cores=False`. Every request needs `kv_len >= q_len_per_req`,
+since the draft tokens must already be in the KV cache. Under graph
+capture the value is part of the frozen shape: use one wrapper per
+`q_len_per_req`.
+
+Cost steps with `q_len_per_req * gqa_group_size`, not with
+`q_len_per_req` alone — the query tile is 16 at or below 16 and 64 above
+(`include/flashinfer/rocm/utils.cuh:100`). At GQA 32/8 a draft length of
+4 is free and 8 costs a step (1.2-1.6x on gfx942, 1.4-2.0x on gfx950);
+at 64/8 the step arrives at 2.
+
+An output dtype that differs from the query dtype still raises.
 
 ### MLA
 
