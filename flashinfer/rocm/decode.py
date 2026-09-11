@@ -1382,6 +1382,14 @@ class BatchDecodeWithPagedKVCacheWrapper:
         indptr_host = indptr.to("cpu")
         last_page_len_host = last_page_len.to("cpu")
 
+        # Computed here rather than after the buffer writes below so that a
+        # plan rejected on a per-request KV length still leaves the wrapper
+        # replayable, per the contract noted at the top of this method.
+        if seq_lens is None:
+            kv_lens_arr_host = get_seq_lens(indptr_host, last_page_len_host, page_size)
+        else:
+            kv_lens_arr_host = seq_lens.cpu()
+
         # An over-capacity demotion is a property of one batch, not of the device, so
         # unlike the capability-driven resolution it must not stick: re-resolve.
         if self._backend_capacity_demoted:
@@ -1465,11 +1473,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
         self._block_tables: Optional[torch.Tensor] = block_tables
         self._max_kv_len: Optional[int] = None
         self._page_size: int = page_size
-
-        if seq_lens is None:
-            kv_lens_arr_host = get_seq_lens(indptr_host, last_page_len_host, page_size)
-        else:
-            kv_lens_arr_host = seq_lens.cpu()
 
         # Resolve auto → concrete backend. AITER decode requires use_tensor_cores=False
         # (the AITER PA v1 kernel handles its own dispatch internally). Under CUDA-graph
