@@ -927,6 +927,10 @@ def test_short_query_demotion_does_not_re_promote_under_cudagraph():
         paged_kv_last_page_len_buf=torch.empty_like(short["paged_kv_last_page_len"]),
     )
     wrapper.plan(**short, causal=True)
+    if "flat gather" not in (wrapper.backend_fallback_reason or ""):
+        pytest.skip(
+            f"AITER declined for another reason: {wrapper.backend_fallback_reason}"
+        )
     assert wrapper.backend == "fa2"
 
     # cudagraph freezes batch size and total rows, so the second plan keeps both

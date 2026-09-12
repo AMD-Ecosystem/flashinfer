@@ -1275,17 +1275,11 @@ class BatchDecodeWithPagedKVCacheWrapper:
             request; attention is causal within a request. Part of the frozen
             shape under cudagraph, so use one wrapper per value.
 
-            At ``head_dim < 256`` the cost steps with
-            ``q_len_per_req * (num_qo_heads // num_kv_heads)``, not with
-            ``q_len_per_req`` alone: the tile is 16 at or below 16 and 64 above
-            (``FA2DetermineCtaTileQ`` in ``rocm/utils.cuh``). At GQA 32/8 that makes 4 free and 8 a
-            step; at 64/8 the step lands at 2. ``head_dim >= 256`` always takes
-            the 64 tile, so no draft length is free there.
-
-            The mask is causal, so the drafts are one linear chain per request.
-            A *tree* draft (EAGLE-2, Medusa) would have siblings attend to each
-            other and return wrong numbers silently -- use ``custom_mask`` on
-            the prefill wrapper for that.
+            Below ``head_dim=256`` the cost steps with
+            ``q_len_per_req * gqa_group_size`` rather than ``q_len_per_req``
+            alone (``FA2DetermineCtaTileQ``); at or above it, no draft length
+            is free. Chain drafts only -- a tree draft is silently wrong here.
+            See ``docs/rocm/backends.md``.
 
         Note
         ----
@@ -1517,7 +1511,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
         self._cached_q_data_type = q_data_type
         self._cached_kv_data_type = kv_data_type
         self._cached_o_data_type = _resolved_o_data_type
-        self._batch_size = batch_size
         self._num_qo_heads = num_qo_heads
         self._num_kv_heads = num_kv_heads
         self._block_tables: Optional[torch.Tensor] = block_tables
@@ -1681,6 +1674,11 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     page_size,
                 )
 
+                # This path returns before the common tail, so it commits the
+                # same run()-visible state itself. AITER decode is q_len 1 by
+                # construction (it requires use_tensor_cores=False).
+                self._batch_size = batch_size
+                self._q_len_per_req = q_len_per_req
                 self._pos_encoding_mode = pos_encoding_mode
                 self._window_left = window_left
                 self._logits_soft_cap = logits_soft_cap
@@ -1697,23 +1695,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
             self._backend = "fa2"
             self._backend_fallback_reason = reason
 
-        # Committed only once no path above can still raise: these feed the
-        # frozen cudagraph check and the kernel's row stride, and a rejected
-        # plan must leave both as they were. Only the tensor-core run branch
-        # reads _qo_indptr_buf, and the AITER path has returned by here.
-        self._q_len_per_req = q_len_per_req
-        if not self.is_cuda_graph_enabled:
-            self._qo_indptr_buf = qo_indptr_host.to(
-                self.device, non_blocking=non_blocking
-            )
-
         if self.use_tensor_cores:
-            if self.is_cuda_graph_enabled:
-                # Deferred to here on purpose: _qo_indptr_buf is read by an
-                # already-captured graph, and every raise above must leave it
-                # untouched so a rejected plan stays replayable. Length is
-                # q_len-independent, so the captured pointer stays valid.
-                self._qo_indptr_buf.copy_(qo_indptr_host, non_blocking=non_blocking)
             self._max_kv_len = max(kv_lens_arr_host).item()
             if self._jit_module is not None:
                 self._cached_module = self._jit_module
@@ -1791,6 +1773,19 @@ class BatchDecodeWithPagedKVCacheWrapper:
             self._plan_info = plan_info_vec_as_tensor(
                 self._plan_info, device=self._float_workspace_buffer.device
             )
+
+        # Past the C++ plan() above, which is the last thing that can raise.
+        # run() reads all three, and a captured graph reads _qo_indptr_buf, so a
+        # rejected plan has to leave the previous values standing.
+        self._batch_size = batch_size
+        self._q_len_per_req = q_len_per_req
+        if self.use_tensor_cores:
+            if self.is_cuda_graph_enabled:
+                self._qo_indptr_buf.copy_(qo_indptr_host, non_blocking=non_blocking)
+            else:
+                self._qo_indptr_buf = qo_indptr_host.to(
+                    self.device, non_blocking=non_blocking
+                )
 
         self._pos_encoding_mode = pos_encoding_mode
         self._window_left = window_left
@@ -2015,8 +2010,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
         planned_q_len = getattr(self, "_q_len_per_req", 1) or 1
         actual_batch_size = self._batch_size
         if q_len_per_req is not None:
-            import warnings
-
             warnings.warn(
                 "Passing `q_len_per_req` to BatchDecodeWithPagedKVCacheWrapper.run() "
                 "is deprecated; pass it to plan() instead.",
@@ -2042,6 +2035,13 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 f"({actual_batch_size} * {q_len_per_req} = "
                 f"{actual_batch_size * q_len_per_req})."
             )
+        if q_len_per_req > 1 and not self.use_tensor_cores:
+            # Ahead of the equality check, whose message would tell the caller to
+            # re-plan with this q_len_per_req -- which this wrapper cannot do.
+            raise ValueError(
+                f"q implies q_len_per_req={q_len_per_req}, but the non-tensor-core "
+                "decode kernel only supports q_len_per_req=1."
+            )
         if q_len_per_req != planned_q_len:
             raise ValueError(
                 f"q implies q_len_per_req={q_len_per_req} but plan() used "
@@ -2053,8 +2053,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
         if enable_pdl is None:
             enable_pdl = self._pdl_supported
         if enable_pdl:
-            import warnings
-
             warnings.warn(
                 "enable_pdl is not supported in the HIP/ROCm backend and will be ignored.",
                 UserWarning,

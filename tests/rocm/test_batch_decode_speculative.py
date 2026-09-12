@@ -352,6 +352,34 @@ def test_run_rejects_q_len_disagreeing_with_plan():
         wrapper.run(q, kv)
 
 
+def test_run_warns_and_validates_explicit_q_len_per_req():
+    """The explicit-argument branch of run(): upstream soft-deprecates it in
+    favour of plan(), and it validates q exactly rather than by inference."""
+    device = torch.device("cuda:0")
+    batch_size, kv_len, q_len = 4, 256, 4
+    q, kv, indptr, indices, last_page_len = _paged_inputs(
+        batch_size, kv_len, q_len, 32, 8, device
+    )
+    wrapper = _decode_wrapper(device)
+    wrapper.plan(
+        indptr,
+        indices,
+        last_page_len,
+        32,
+        8,
+        HEAD_DIM,
+        PAGE_SIZE,
+        q_data_type=DTYPE,
+        kv_data_type=DTYPE,
+        q_len_per_req=q_len,
+    )
+    with pytest.warns(DeprecationWarning, match="q_len_per_req"):
+        wrapper.run(q, kv, q_len_per_req=q_len)
+    # Explicit value that does not match q's rows must be rejected outright.
+    with pytest.raises(ValueError, match="does not match batch_size"):
+        wrapper.run(q, kv, q_len_per_req=q_len + 1)
+
+
 def test_rejected_plan_leaves_wrapper_replayable():
     """_plan_impl promises a rejected plan does not disturb a wrapper that is
     still being replayed. The per-request KV check is the newest way to trip it."""
@@ -630,9 +658,9 @@ def test_run_rejects_q_rows_not_a_multiple_of_batch():
 
 
 def test_run_before_plan_says_to_call_plan():
-    """run() reads the paged buffers to recover batch_size; on a fresh wrapper
-    those are None, and the caller deserves the intended message rather than an
-    AttributeError on NoneType."""
+    """run() guards on _plan_info, not on the paged buffers: under cudagraph
+    those are allocated in __init__ and so are not None before the first
+    plan(). Removing the _plan_info check would break that case."""
     device = torch.device("cuda:0")
     wrapper = _decode_wrapper(device)
     q = torch.randn(4, 32, HEAD_DIM, device=device, dtype=DTYPE)

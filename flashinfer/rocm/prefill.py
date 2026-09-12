@@ -545,9 +545,9 @@ def _auto_select_prefill_backend(
                 # on the reason, so a per-batch value would add an entry and
                 # re-warn for every distinct query length a serving loop sees.
                 reason = (
-                    f"query length <= {threshold} on a page size AITER cannot page "
-                    "natively (its flat gather copies the whole KV cache, which a "
-                    "short query cannot amortise)"
+                    f"query length <= {threshold} on a page size AITER cannot "
+                    f"page natively (its {_FLAT_GATHER_REASON} copies the whole "
+                    "KV cache, which a short query cannot amortise)"
                 )
 
     if reason is not None:
@@ -2615,16 +2615,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
             # decode.py's _backend_capacity_demoted.
             #
             # Never under cudagraph: re-promoting swaps _cached_module and
-            # rebuilds _plan_info, which a captured graph still points at, and
-            # capture is not observable from here.
-            #
-            # Deliberately coarser than the probe site's `demotable`, which also
-            # requires _aiter_flat_gather_idx. That flag is set only when AITER
-            # *was* chosen; here fa2 was, so it is always None and that
-            # predicate would wave every re-promotion through -- see
-            # test_short_query_demotion_does_not_re_promote_under_cudagraph.
-            # The cost is that a graph-enabled wrapper keeps fa2 once demoted,
-            # which matches how cudagraph freezes the rest of the shape.
+            # _plan_info, which a captured graph still points at, and capture is
+            # not observable here. Coarser than the probe site's `demotable` on
+            # purpose -- git log.
             if self._backend_short_query_demoted and not self.is_cuda_graph_enabled:
                 self._backend = self._backend_requested
                 self._backend_short_query_demoted = False
@@ -2753,9 +2746,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         # failed: this branch is also the re-check for a page
                         # size that was never a native candidate.
                         reason = (
-                            f"page_size={page_size} takes aiter's flat gather, "
-                            "which does not pay off at query length <= "
-                            f"{short_q_threshold}"
+                            f"page_size={page_size} takes aiter's "
+                            f"{_FLAT_GATHER_REASON}, which does not pay off at "
+                            f"query length <= {short_q_threshold}"
                         )
                         logger.warning("auto backend falling back to fa2: %s", reason)
                     elif demotable:
