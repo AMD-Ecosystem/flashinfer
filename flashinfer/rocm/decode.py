@@ -1275,10 +1275,12 @@ class BatchDecodeWithPagedKVCacheWrapper:
             request; attention is causal within a request. Part of the frozen
             shape under cudagraph, so use one wrapper per value.
 
-            Cost steps with ``q_len_per_req * (num_qo_heads // num_kv_heads)``,
-            not with ``q_len_per_req`` alone: the tile is 16 at or below 16 and
-            64 above (``rocm/utils.cuh:100``). At GQA 32/8 that makes 4 free and
-            8 a step; at 64/8 the step lands at 2.
+            At ``head_dim < 256`` the cost steps with
+            ``q_len_per_req * (num_qo_heads // num_kv_heads)``, not with
+            ``q_len_per_req`` alone: the tile is 16 at or below 16 and 64 above
+            (``rocm/utils.cuh:100``). At GQA 32/8 that makes 4 free and 8 a
+            step; at 64/8 the step lands at 2. ``head_dim >= 256`` always takes
+            the 64 tile, so no draft length is free there.
 
             The mask is causal, so the drafts are one linear chain per request.
             A *tree* draft (EAGLE-2, Medusa) would have siblings attend to each
@@ -1490,11 +1492,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
             self._paged_kv_indices_buf[: len(indices)].copy_(
                 indices, non_blocking=(indices.device == self.device) and non_blocking
             )
-            if self.use_tensor_cores:
-                # Baked as arange(batch+1) in __init__ and never rewritten until
-                # now, which is correct only at q_len_per_req=1. Same length for
-                # any q_len, so the captured graph's pointer stays valid.
-                self._qo_indptr_buf.copy_(qo_indptr_host, non_blocking=non_blocking)
         else:
             self._paged_kv_indptr_buf = indptr.to(
                 self.device, non_blocking=non_blocking
@@ -1524,7 +1521,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
         self._cached_kv_data_type = kv_data_type
         self._cached_o_data_type = _resolved_o_data_type
         self._batch_size = batch_size
-        self._q_len_per_req = q_len_per_req
         self._num_qo_heads = num_qo_heads
         self._num_kv_heads = num_kv_heads
         self._block_tables: Optional[torch.Tensor] = block_tables
@@ -1704,7 +1700,17 @@ class BatchDecodeWithPagedKVCacheWrapper:
             self._backend = "fa2"
             self._backend_fallback_reason = reason
 
+        # Committed only once no path above can still raise: it feeds the frozen
+        # cudagraph check, so a rejected plan must not move it.
+        self._q_len_per_req = q_len_per_req
+
         if self.use_tensor_cores:
+            if self.is_cuda_graph_enabled:
+                # Deferred to here on purpose: _qo_indptr_buf is read by an
+                # already-captured graph, and every raise above must leave it
+                # untouched so a rejected plan stays replayable. Length is
+                # q_len-independent, so the captured pointer stays valid.
+                self._qo_indptr_buf.copy_(qo_indptr_host, non_blocking=non_blocking)
             self._max_kv_len = max(kv_lens_arr_host).item()
             if self._jit_module is not None:
                 self._cached_module = self._jit_module

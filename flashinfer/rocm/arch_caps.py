@@ -276,8 +276,9 @@ _AITER_SOFTCAP_DEFECT_ARCHS = {"gfx942": False, "gfx950": True}
 
 # A non-native page size makes AITER gather the whole KV cache before
 # attending, an O(kv) copy against an O(q*kv) attention -- so the overhead
-# decays as 1/q and only short queries lose. Per-arch because the crossover
-# is: measured on amd-aiter 0.1.20, git log for the ratio table.
+# decays as 1/q and only short queries lose. The crossover differs by arch
+# because the two kernels' throughputs do; measured on amd-aiter 0.1.20,
+# ratio table in git log.
 _AITER_FLAT_GATHER_GATED_Q_LEN = {"gfx942": 16, "gfx950": 8}
 
 

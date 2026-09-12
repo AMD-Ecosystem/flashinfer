@@ -170,9 +170,14 @@ def test_multi_token_decode_matches_aiter_reference(q_len, num_qo_heads, num_kv_
     shared by both plan paths, since they reach the same module."""
     device = torch.device("cuda:0")
     from flashinfer.rocm.aiter_utils import is_aiter_supported
+    from flashinfer.rocm.arch_caps import capability_available, capability_reason
 
     if not is_aiter_supported(device):
         pytest.skip("AITER requires gfx942/gfx950 and the aiter package")
+    # is_aiter_supported only checks the arch; the capability table can still
+    # gate this (op, backend, arch) and the wrapper would raise, not skip.
+    if not capability_available(device, "batch_prefill", "aiter"):
+        pytest.skip(capability_reason(device, "batch_prefill", "aiter"))
 
     batch_size, kv_len = 4, 1024
     q, kv, indptr, indices, last_page_len = _paged_inputs(
@@ -440,6 +445,105 @@ def test_cudagraph_replay_matches_eager():
         captured = wrapper.run(q, kv)
     graph.replay()
     torch.testing.assert_close(captured, eager, rtol=1e-3, atol=1e-3)
+
+
+def test_rejected_plan_does_not_touch_the_captured_qo_indptr():
+    """A plan that raises after the buffer-write point must leave the captured
+    _qo_indptr_buf alone -- an already-captured graph is still reading it, and a
+    stride it did not capture with produces plausible numbers, not an error.
+
+    backend="aiter" with use_tensor_cores=True raises well after the write site,
+    which is what makes it the useful probe here.
+    """
+    device = torch.device("cuda:0")
+    batch_size, kv_len = 4, 256
+    pages_per_seq = kv_len // PAGE_SIZE
+    _, _, indptr, indices, last_page_len = _paged_inputs(
+        batch_size, kv_len, 1, 32, 8, device
+    )
+    workspace = torch.empty(WORKSPACE, dtype=torch.int8, device=device)
+    wrapper = flashinfer.decode.BatchDecodeWithPagedKVCacheWrapper(
+        workspace,
+        "NHD",
+        use_cuda_graph=True,
+        use_tensor_cores=True,
+        backend="aiter",
+        paged_kv_indptr_buffer=torch.empty_like(indptr),
+        paged_kv_indices_buffer=torch.empty(
+            batch_size * pages_per_seq, dtype=torch.int32, device=device
+        ),
+        paged_kv_last_page_len_buffer=torch.empty_like(last_page_len),
+    )
+    before = wrapper._qo_indptr_buf.clone()
+    with pytest.raises(ValueError):
+        wrapper.plan(
+            indptr,
+            indices,
+            last_page_len,
+            32,
+            8,
+            HEAD_DIM,
+            PAGE_SIZE,
+            q_data_type=DTYPE,
+            kv_data_type=DTYPE,
+            q_len_per_req=4,
+        )
+    torch.testing.assert_close(wrapper._qo_indptr_buf, before)
+    assert getattr(wrapper, "_q_len_per_req", None) in (None, 1), (
+        "a rejected plan committed q_len_per_req"
+    )
+
+
+@pytest.mark.parametrize("q_len_per_req", [1, 4])
+def test_multi_token_decode_with_sliding_window(q_len_per_req):
+    """window_left and q_len_per_req meet in one place: prefill.cuh derives the
+    window iteration from kv_len - qo_len - window_left, and qo_len is the draft
+    length. A sign error there returns plausible logits rather than raising."""
+    device = torch.device("cuda:0")
+    batch_size, kv_len, window_left = 4, 512, 64
+    num_qo_heads, num_kv_heads = 32, 8
+    q, kv, indptr, indices, last_page_len = _paged_inputs(
+        batch_size, kv_len, q_len_per_req, num_qo_heads, num_kv_heads, device
+    )
+
+    wrapper = _decode_wrapper(device)
+    wrapper.plan(
+        indptr,
+        indices,
+        last_page_len,
+        num_qo_heads,
+        num_kv_heads,
+        HEAD_DIM,
+        PAGE_SIZE,
+        q_data_type=DTYPE,
+        kv_data_type=DTYPE,
+        q_len_per_req=q_len_per_req,
+        window_left=window_left,
+    )
+    out = wrapper.run(q, kv)
+
+    workspace = torch.empty(WORKSPACE, dtype=torch.int8, device=device)
+    ref = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="fa2"
+    )
+    qo_indptr = (
+        torch.arange(batch_size + 1, device=device, dtype=torch.int32) * q_len_per_req
+    )
+    ref.plan(
+        qo_indptr,
+        indptr,
+        indices,
+        last_page_len,
+        num_qo_heads,
+        num_kv_heads,
+        HEAD_DIM,
+        PAGE_SIZE,
+        causal=True,
+        window_left=window_left,
+        q_data_type=DTYPE,
+        kv_data_type=DTYPE,
+    )
+    torch.testing.assert_close(out, ref.run(q, kv), rtol=1e-3, atol=1e-3)
 
 
 def test_cudagraph_freezes_q_len_per_req_downward():

@@ -515,11 +515,12 @@ since the draft tokens must already be in the KV cache. Under graph
 capture the value is part of the frozen shape: use one wrapper per
 `q_len_per_req`.
 
-Cost steps with `q_len_per_req * gqa_group_size`, not with
-`q_len_per_req` alone — the query tile is 16 at or below 16 and 64 above
-(`include/flashinfer/rocm/utils.cuh:100`). At GQA 32/8 a draft length of
-4 is free and 8 costs a step (1.2-1.6x on gfx942, 1.4-2.0x on gfx950);
-at 64/8 the step arrives at 2.
+At `head_dim < 256` the cost steps with `q_len_per_req * gqa_group_size`,
+not with `q_len_per_req` alone — the query tile is 16 at or below 16 and 64
+above (`include/flashinfer/rocm/utils.cuh:100`). At GQA 32/8 a draft length
+of 4 is free and 8 costs a step (1.2-1.6x on gfx942, 1.4-2.0x on gfx950); at
+64/8 the step arrives at 2. `head_dim >= 256` takes the 64 tile
+unconditionally, so no draft length is free there.
 
 **Chain drafts only.** The verify mask is causal, so the draft tokens are
 taken as one linear sequence per request — which fits vanilla speculative

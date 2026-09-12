@@ -241,6 +241,11 @@ class TestAutoBackendSelection:
         before = len(prefill_rocm._aiter_auto_warned)
         first = _auto(device, max_q_len=1)[1]
         second = _auto(device, max_q_len=gated)[1]
+        # Without this the test passes vacuously wherever AITER is declined for
+        # some unrelated constant reason: both calls return that reason, so they
+        # trivially match and add exactly one entry.
+        if "flat gather" not in (first or ""):
+            pytest.skip(f"AITER declined for another reason here: {first}")
         assert first == second
         assert len(prefill_rocm._aiter_auto_warned) - before == 1
 

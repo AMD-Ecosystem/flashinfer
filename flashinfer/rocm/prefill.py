@@ -2606,7 +2606,12 @@ class BatchPrefillWithPagedKVCacheWrapper:
             # must not stick: a wrapper that served a 4-token verify would
             # otherwise stay on fa2 for every later long prefill. Mirrors
             # decode.py's _backend_capacity_demoted.
-            if self._backend_short_query_demoted:
+            #
+            # Not under capture, though: re-promoting swaps _cached_module and
+            # rebuilds _plan_info, which an already-captured graph still points
+            # at. Same reason the demotion at the probe site keeps its
+            # `demotable` guard.
+            if self._backend_short_query_demoted and not self.is_cuda_graph_enabled:
                 self._backend = self._backend_requested
                 self._backend_short_query_demoted = False
                 self._backend_fallback_reason = None
@@ -2730,11 +2735,13 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         logger.warning("auto backend falling back to fa2: %s", reason)
                     elif demotable and short_q_now:
                         self._backend_short_query_demoted = True
-                        threshold = short_q_threshold
+                        # Deliberately does not claim a native-paging probe
+                        # failed: this branch is also the re-check for a page
+                        # size that was never a native candidate.
                         reason = (
-                            "aiter native paging was unavailable for page_size="
-                            f"{page_size}, and its flat gather does not pay off at "
-                            f"query length <= {threshold}"
+                            f"page_size={page_size} takes aiter's flat gather, "
+                            "which does not pay off at query length <= "
+                            f"{short_q_threshold}"
                         )
                         logger.warning("auto backend falling back to fa2: %s", reason)
                     elif demotable:

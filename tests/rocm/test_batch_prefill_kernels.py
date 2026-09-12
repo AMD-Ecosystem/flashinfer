@@ -773,6 +773,7 @@ def test_batch_prefill_auto_declines_aiter_for_short_query():
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
 
     from flashinfer.rocm.arch_caps import _device_arch, aiter_flat_gather_gated_q_len
 
@@ -862,6 +863,7 @@ def test_short_query_demotion_does_not_stick():
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
 
     from flashinfer.rocm.arch_caps import _device_arch, aiter_flat_gather_gated_q_len
 
@@ -885,6 +887,56 @@ def test_short_query_demotion_does_not_stick():
     assert wrapper.backend == "aiter", (
         f"the earlier short-query demotion stuck: a {long_q}-token prefill is "
         "still on fa2"
+    )
+
+
+def test_short_query_demotion_does_not_re_promote_under_cudagraph():
+    """The demotion must not stick -- except under capture, where re-promoting
+    would swap _cached_module and rebuild _plan_info that a captured graph is
+    still pointing at. The eager re-promotion is tested separately."""
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
+
+    from flashinfer.rocm.arch_caps import _device_arch, aiter_flat_gather_gated_q_len
+
+    gated = aiter_flat_gather_gated_q_len(_device_arch(device))
+    if gated is None:
+        pytest.skip("no flat-gather threshold for this architecture")
+
+    short = _short_query_plan_args(device, gated)
+    batch_size = short["paged_kv_last_page_len"].numel()
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+    wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace,
+        "NHD",
+        backend="auto",
+        use_cuda_graph=True,
+        qo_indptr_buf=torch.empty_like(short["qo_indptr"]),
+        paged_kv_indptr_buf=torch.empty_like(short["paged_kv_indptr"]),
+        paged_kv_indices_buf=torch.empty_like(short["paged_kv_indices"]),
+        paged_kv_last_page_len_buf=torch.empty_like(short["paged_kv_last_page_len"]),
+    )
+    wrapper.plan(**short, causal=True)
+    assert wrapper.backend == "fa2"
+
+    # cudagraph freezes batch size and total rows, so the second plan keeps both
+    # and goes ragged instead: one long request plus short ones puts max_q_len
+    # above the gate, which is what would re-promote in eager mode.
+    total_rows = int(short["qo_indptr"][-1].item())
+    lengths = [total_rows - (batch_size - 1)] + [1] * (batch_size - 1)
+    assert max(lengths) > gated, "ragged batch does not clear the threshold"
+    long_q = dict(short)
+    long_q["qo_indptr"] = torch.tensor(
+        [0, *torch.tensor(lengths).cumsum(0).tolist()],
+        dtype=torch.int32,
+        device=device,
+    )
+    wrapper.plan(**long_q, causal=True)
+    assert wrapper.backend == "fa2", (
+        "re-promoted under capture; the captured graph still points at the fa2 "
+        "module and plan_info"
     )
 
 
