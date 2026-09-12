@@ -1111,6 +1111,12 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     "use_cuda_graph=True; drop it for eager decode."
                 )
         self._aiter_graph_max_seq_len = max_seq_len
+        # Declared here like the prefill wrappers do, so run() and the cudagraph
+        # frozen-shape check can test them directly. None means "never planned";
+        # plan() commits both only once its C++ plan has succeeded.
+        self._plan_info: Optional[torch.Tensor] = None
+        self._batch_size: int = 0
+        self._q_len_per_req: Optional[int] = None
         # ROCm never supports PDL; cache once to avoid per-call device property lookup.
         self._pdl_supported = device_support_pdl(float_workspace_buffer.device)
 
@@ -1416,7 +1422,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
         # any replan that rewrites its stride silently reinterprets the query
         # rows on replay. Capture cannot be detected from here, so a wrapper
         # that has been planned once keeps that q_len_per_req for good.
-        frozen_q_len = getattr(self, "_q_len_per_req", None)
+        frozen_q_len = self._q_len_per_req
         if (
             self.is_cuda_graph_enabled
             and frozen_q_len is not None
@@ -1784,7 +1790,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
 
         # Past the C++ plan() above, which is the last thing that can raise.
         # run() reads all three, and a captured graph reads _qo_indptr_buf, so a
-        # rejected plan has to leave the previous values standing.
+        # rejected plan must not leave them describing a plan that never took.
+        # Only these three: the paged-KV buffers above are still written first,
+        # so a failed plan() is not transactional overall.
         self._batch_size = batch_size
         self._q_len_per_req = q_len_per_req
         if self.is_cuda_graph_enabled:
@@ -2012,12 +2020,11 @@ class BatchDecodeWithPagedKVCacheWrapper:
         # one: AITER's PA v1 kernel reads q as [batch, heads, dim], so a query
         # carrying multiple rows per request has to be rejected before it gets
         # there rather than being silently misread.
-        # Neither attribute exists before the first plan(), and under cudagraph
-        # the paged buffers are allocated in __init__ -- so they cannot stand in
-        # for "has a plan" and the check has to be on the plan state itself.
-        if getattr(self, "_plan_info", None) is None:
+        # Under cudagraph the paged buffers are allocated in __init__, so they
+        # cannot stand in for "has a plan" -- the check has to be on plan state.
+        if self._plan_info is None:
             raise ValueError("plan info is not initialized; call plan() first")
-        planned_q_len = getattr(self, "_q_len_per_req", 1) or 1
+        planned_q_len = self._q_len_per_req or 1
         actual_batch_size = self._batch_size
         if q_len_per_req is not None:
             warnings.warn(
@@ -2199,10 +2206,12 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 # Multi-token verify is causal within each request. The ROCm
                 # kernel's causal mask is bottom-right aligned, so the last of
                 # the q_len_per_req rows sees the whole KV — which is what makes
-                # this the speculative-decode verify semantics.
+                # this the speculative-decode verify semantics. Keyed on the
+                # planned length, since that is what the plan above was built
+                # for; the check earlier ties the inferred value to it.
                 (
                     MaskMode.CAUSAL.value
-                    if q_len_per_req > 1
+                    if planned_q_len > 1
                     else MaskMode.NON_CAUSAL.value
                 ),
                 TensorLayout[self._kv_layout].value,
