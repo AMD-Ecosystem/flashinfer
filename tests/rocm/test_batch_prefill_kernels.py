@@ -825,6 +825,95 @@ def test_batch_prefill_auto_declines_aiter_for_short_query():
     )
 
 
+def _short_query_plan_args(device, qo_len, kv_len=256, page_size=1):
+    """Paged-prefill plan() arguments at a given query length, on a page size
+    AITER cannot page natively (so the gather gate is armed)."""
+    batch_size = 4
+    num_qo_heads, num_kv_heads, head_dim = 8, 8, 128
+    num_pages = (kv_len + page_size - 1) // page_size
+    total_pages = num_pages * batch_size
+    return dict(
+        qo_indptr=torch.arange(0, batch_size + 1, dtype=torch.int32, device=device)
+        * qo_len,
+        paged_kv_indptr=torch.arange(
+            0, batch_size + 1, dtype=torch.int32, device=device
+        )
+        * num_pages,
+        paged_kv_indices=torch.arange(0, total_pages, dtype=torch.int32, device=device),
+        paged_kv_last_page_len=torch.full(
+            (batch_size,),
+            (kv_len - 1) % page_size + 1,
+            dtype=torch.int32,
+            device=device,
+        ),
+        num_qo_heads=num_qo_heads,
+        num_kv_heads=num_kv_heads,
+        head_dim_qk=head_dim,
+        page_size=page_size,
+    )
+
+
+def test_short_query_demotion_does_not_stick():
+    """The gate keys on max_q_len, which varies per batch, so its verdict must
+    not persist. A serving loop that verifies a 4-token draft and then runs a
+    long chunked prefill on the same wrapper would otherwise stay on fa2 for
+    good -- every other constraint here is device-constant, which is why
+    resolving once was safe before this gate existed."""
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+
+    from flashinfer.rocm.arch_caps import _device_arch, aiter_flat_gather_gated_q_len
+
+    gated = aiter_flat_gather_gated_q_len(_device_arch(device))
+    if gated is None:
+        pytest.skip("no flat-gather threshold for this architecture")
+
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+    wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
+    )
+
+    wrapper.plan(**_short_query_plan_args(device, gated), causal=True)
+    assert wrapper.backend == "fa2", "short query should have demoted to fa2"
+
+    long_q = gated * 16
+    wrapper.plan(
+        **_short_query_plan_args(device, long_q, kv_len=max(256, long_q * 2)),
+        causal=True,
+    )
+    assert wrapper.backend == "aiter", (
+        f"the earlier short-query demotion stuck: a {long_q}-token prefill is "
+        "still on fa2"
+    )
+
+
+def test_explicit_aiter_survives_the_short_query_gate():
+    """docs/rocm/backends.md promises an explicit backend="aiter" is honoured --
+    this is a routing preference, not a wrong answer, so it has to stay
+    measurable. Nothing else pins that, and hoisting the gate out of the `auto`
+    branch would silently break it while the suite stayed green."""
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
+
+    from flashinfer.rocm.arch_caps import _device_arch, aiter_flat_gather_gated_q_len
+
+    gated = aiter_flat_gather_gated_q_len(_device_arch(device))
+    if gated is None:
+        pytest.skip("no flat-gather threshold for this architecture")
+
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+    wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="aiter"
+    )
+    wrapper.plan(**_short_query_plan_args(device, gated), causal=True)
+    assert wrapper.backend == "aiter", (
+        "an explicit backend='aiter' was overridden by the short-query gate"
+    )
+
+
 @pytest.mark.parametrize("page_size", [1, 5])
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("return_lse", [False, True])

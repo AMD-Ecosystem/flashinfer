@@ -1407,29 +1407,36 @@ class BatchDecodeWithPagedKVCacheWrapper:
         else:
             kv_lens_arr_host = seq_lens.cpu()
 
+        # Frozen from the *first* plan and in both directions, including back
+        # down to the default 1: the captured graph reads _qo_indptr_buf, and
+        # any replan that rewrites its stride silently reinterprets the query
+        # rows on replay. Capture cannot be detected from here, so a wrapper
+        # that has been planned once keeps that q_len_per_req for good.
+        frozen_q_len = getattr(self, "_q_len_per_req", None)
+        if (
+            self.is_cuda_graph_enabled
+            and frozen_q_len is not None
+            and frozen_q_len != q_len_per_req
+        ):
+            raise ValueError(
+                "q_len_per_req is part of the frozen cudagraph shape: this "
+                f"wrapper was planned with {frozen_q_len}, got {q_len_per_req}. "
+                "Use a separate wrapper per q_len_per_req."
+            )
+
         if q_len_per_req > 1:
-            # Under capture q_len_per_req is part of the frozen shape: the
-            # captured graph reads _qo_indptr_buf, so a replan that changed the
-            # stride would silently reinterpret the query rows.
-            frozen_q_len = getattr(self, "_q_len_per_req", None)
-            if (
-                self.is_cuda_graph_enabled
-                and frozen_q_len is not None
-                and frozen_q_len != q_len_per_req
-            ):
-                raise ValueError(
-                    "q_len_per_req is part of the frozen cudagraph shape: this "
-                    f"wrapper was planned with {frozen_q_len}, got {q_len_per_req}. "
-                    "Use a separate wrapper per q_len_per_req."
-                )
-            min_kv_len = int(min(kv_lens_arr_host).item())
-            if min_kv_len < q_len_per_req:
-                raise ValueError(
-                    f"q_len_per_req={q_len_per_req} requires kv_len >= q_len_per_req "
-                    "for every request (the verified tokens must already be appended "
-                    f"to the KV cache), but got a request with kv_len={min_kv_len}: "
-                    "its earlier rows would attend to an empty KV range."
-                )
+            # batch_size==0 has no request to check; .min() on an empty tensor
+            # would raise where there is simply nothing to verify.
+            if batch_size > 0:
+                min_kv_len = int(kv_lens_arr_host.min().item())
+                if min_kv_len < q_len_per_req:
+                    raise ValueError(
+                        f"q_len_per_req={q_len_per_req} requires kv_len >= "
+                        "q_len_per_req for every request (the verified tokens must "
+                        "already be appended to the KV cache), but got a request "
+                        f"with kv_len={min_kv_len}: its earlier rows would attend "
+                        "to an empty KV range."
+                    )
             # Out-of-place: _get_range_buf hands back a view into a module-global
             # cache, so an in-place scale would corrupt it for every other caller.
             qo_indptr_host = qo_indptr_host * q_len_per_req
@@ -1933,7 +1940,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
         Parameters
         ----------
         q : torch.Tensor
-            The query tensor, shape: ``[batch_size, num_qo_heads, head_dim]``
+            The query tensor, shape:
+            ``[batch_size * q_len_per_req, num_qo_heads, head_dim]``
+            (``q_len_per_req`` is 1 for ordinary decode).
         paged_kv_cache : Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
             The paged KV-Cache stored as a tuple of tensors or a single tensor:
 
@@ -1989,9 +1998,20 @@ class BatchDecodeWithPagedKVCacheWrapper:
         # one: AITER's PA v1 kernel reads q as [batch, heads, dim], so a query
         # carrying multiple rows per request has to be rejected before it gets
         # there rather than being silently misread.
+        if self._paged_kv_last_page_len_buf is None:
+            raise ValueError("plan info is not initialized; call plan() first")
         planned_q_len = getattr(self, "_q_len_per_req", 1) or 1
         actual_batch_size = self._paged_kv_last_page_len_buf.size(0)
         if q_len_per_req is None:
+            # Exact division, not floor: at batch_size=3 a stray q of 5 rows
+            # floors to 1, matches the planned value, and leaves the trailing
+            # rows of `out` uninitialised because the kernel only writes 3.
+            if actual_batch_size and q.size(0) % actual_batch_size:
+                raise ValueError(
+                    f"q.shape[0] ({q.size(0)}) is not a multiple of batch_size "
+                    f"({actual_batch_size}); q must be "
+                    "[batch_size * q_len_per_req, num_qo_heads, head_dim]."
+                )
             q_len_per_req = (
                 q.size(0) // actual_batch_size if actual_batch_size else planned_q_len
             )
@@ -2006,10 +2026,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 f"q implies q_len_per_req={q_len_per_req} but plan() used "
                 f"{planned_q_len}; re-plan with the matching q_len_per_req."
             )
-        if q_len_per_req > 1 and not self.use_tensor_cores:
-            raise ValueError(
-                f"q_len_per_req={q_len_per_req} requires use_tensor_cores=True."
-            )
+        # No use_tensor_cores check here: plan() refuses q_len_per_req > 1 without
+        # it, and the equality above ties this call to that plan.
 
         if enable_pdl is None:
             enable_pdl = self._pdl_supported

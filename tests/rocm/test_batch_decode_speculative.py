@@ -158,7 +158,14 @@ def test_multi_token_decode_matches_causal_prefill(
     torch.testing.assert_close(out, reference, rtol=1e-3, atol=1e-3)
 
 
-def test_multi_token_decode_matches_aiter_reference():
+# Both sides of the cta_tile_q step at q_len * gqa_group_size > 16: (4, 32/8)
+# is tile 16, (8, 32/8) and (4, 64/8) are tile 64. The fa2-vs-fa2 test cannot
+# see a fault shared by both plan paths, so this independent oracle has to cover
+# both tilings rather than only the one.
+@pytest.mark.parametrize(
+    "q_len,num_qo_heads,num_kv_heads", [(4, 32, 8), (8, 32, 8), (4, 64, 8)]
+)
+def test_multi_token_decode_matches_aiter_reference(q_len, num_qo_heads, num_kv_heads):
     """Cross-backend arm: the fa2-vs-fa2 comparison above cannot catch a fault
     shared by both plan paths, since they reach the same module."""
     device = torch.device("cuda:0")
@@ -167,8 +174,7 @@ def test_multi_token_decode_matches_aiter_reference():
     if not is_aiter_supported(device):
         pytest.skip("AITER requires gfx942/gfx950 and the aiter package")
 
-    batch_size, kv_len, q_len = 4, 1024, 4
-    num_qo_heads, num_kv_heads = 32, 8
+    batch_size, kv_len = 4, 1024
     q, kv, indptr, indices, last_page_len = _paged_inputs(
         batch_size, kv_len, q_len, num_qo_heads, num_kv_heads, device
     )
@@ -434,6 +440,93 @@ def test_cudagraph_replay_matches_eager():
         captured = wrapper.run(q, kv)
     graph.replay()
     torch.testing.assert_close(captured, eager, rtol=1e-3, atol=1e-3)
+
+
+def test_cudagraph_freezes_q_len_per_req_downward():
+    """The dangerous direction. Replanning a captured wrapper back to the
+    default q_len_per_req=1 would rewrite _qo_indptr_buf to stride 1, and
+    replay would then read 4x the rows it attends to -- plausible numbers, no
+    error. Guarding only the upward change leaves exactly that open."""
+    device = torch.device("cuda:0")
+    batch_size, kv_len = 4, 256
+    pages_per_seq = kv_len // PAGE_SIZE
+    _, _, indptr, indices, last_page_len = _paged_inputs(
+        batch_size, kv_len, 1, 32, 8, device
+    )
+    workspace = torch.empty(WORKSPACE, dtype=torch.int8, device=device)
+    wrapper = flashinfer.decode.BatchDecodeWithPagedKVCacheWrapper(
+        workspace,
+        "NHD",
+        use_cuda_graph=True,
+        use_tensor_cores=True,
+        paged_kv_indptr_buffer=torch.empty_like(indptr),
+        paged_kv_indices_buffer=torch.empty(
+            batch_size * pages_per_seq, dtype=torch.int32, device=device
+        ),
+        paged_kv_last_page_len_buffer=torch.empty_like(last_page_len),
+    )
+    plan_kwargs = dict(q_data_type=DTYPE, kv_data_type=DTYPE)
+    wrapper.plan(
+        indptr,
+        indices,
+        last_page_len,
+        32,
+        8,
+        HEAD_DIM,
+        PAGE_SIZE,
+        q_len_per_req=4,
+        **plan_kwargs,
+    )
+    # Omitting q_len_per_req entirely is the realistic way to hit this.
+    with pytest.raises(ValueError, match="frozen cudagraph shape"):
+        wrapper.plan(
+            indptr,
+            indices,
+            last_page_len,
+            32,
+            8,
+            HEAD_DIM,
+            PAGE_SIZE,
+            **plan_kwargs,
+        )
+
+
+def test_run_rejects_q_rows_not_a_multiple_of_batch():
+    """Floor division would accept this: batch 3 with 5 rows floors to 1, equals
+    the planned value, and the two trailing rows of `out` come back
+    uninitialised because the kernel only writes 3."""
+    device = torch.device("cuda:0")
+    batch_size, kv_len = 3, 256
+    _, kv, indptr, indices, last_page_len = _paged_inputs(
+        batch_size, kv_len, 1, 32, 8, device
+    )
+    wrapper = _decode_wrapper(device)
+    wrapper.plan(
+        indptr,
+        indices,
+        last_page_len,
+        32,
+        8,
+        HEAD_DIM,
+        PAGE_SIZE,
+        q_data_type=DTYPE,
+        kv_data_type=DTYPE,
+    )
+    q = torch.randn(5, 32, HEAD_DIM, device=device, dtype=DTYPE)
+    with pytest.raises(ValueError, match="not a multiple of batch_size"):
+        wrapper.run(q, kv)
+
+
+def test_run_before_plan_says_to_call_plan():
+    """run() reads the paged buffers to recover batch_size; on a fresh wrapper
+    those are None, and the caller deserves the intended message rather than an
+    AttributeError on NoneType."""
+    device = torch.device("cuda:0")
+    wrapper = _decode_wrapper(device)
+    q = torch.randn(4, 32, HEAD_DIM, device=device, dtype=DTYPE)
+    kv = torch.randn(4, 2, PAGE_SIZE, 8, HEAD_DIM, device=device, dtype=DTYPE)
+    with pytest.raises(ValueError, match="call plan\\(\\) first"):
+        wrapper.run(q, kv)
 
 
 def test_cudagraph_freezes_q_len_per_req():
