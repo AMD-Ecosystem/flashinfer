@@ -47,7 +47,7 @@ void single_decode_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::T
   CHECK_DIM(3, v);
   CHECK_SHAPE(k, v);
   CHECK_EQ(q.size(1), k.size(2));
-  CHECK_EQ(v.scalar_type(), k.scalar_type());
+  CHECK_KV_DTYPES_MATCH(k, v);
   unsigned int num_qo_heads = q.size(0);
   unsigned int head_dim_qk = q.size(1);
   unsigned int head_dim_vo = v.size(2);

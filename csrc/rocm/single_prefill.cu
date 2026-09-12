@@ -39,6 +39,7 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
                                   at::Tensor o, std::optional<at::Tensor> maybe_lse,
                                   int64_t mask_mode_code, int64_t layout,
                                   int64_t window_left ADDITIONAL_FUNC_PARAMS) {
+  CHECK_KV_DTYPES_MATCH(k, v);
   auto device = q.device();
   unsigned int head_dim_qk = q.size(2);
   unsigned int kv_len, qo_len, num_kv_heads, num_qo_heads;

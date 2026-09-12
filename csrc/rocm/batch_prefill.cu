@@ -77,6 +77,7 @@ void BatchPrefillWithRaggedKVCacheRun(at::Tensor float_workspace_buffer,
                                       at::Tensor qo_indptr, at::Tensor kv_indptr, at::Tensor o,
                                       std::optional<at::Tensor> maybe_lse, int64_t mask_mode_code,
                                       int64_t layout, int64_t window_left ADDITIONAL_FUNC_PARAMS) {
+  CHECK_KV_DTYPES_MATCH(k, v);
   PrefillPlanInfo plan_info;
   plan_info.FromVector(tensor_to_vec(plan_info_vec));
   QKVLayout kv_layout = static_cast<QKVLayout>(layout);
@@ -207,6 +208,7 @@ void BatchPrefillWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
                                      int64_t layout, int64_t window_left ADDITIONAL_FUNC_PARAMS,
                                      std::optional<at::Tensor> maybe_partial_o = std::nullopt,
                                      std::optional<at::Tensor> maybe_partial_lse = std::nullopt) {
+  CHECK_KV_DTYPES_MATCH(paged_k_cache, paged_v_cache);
   PrefillPlanInfo plan_info;
   plan_info.FromVector(tensor_to_vec(plan_info_vec));
   QKVLayout kv_layout = static_cast<QKVLayout>(layout);

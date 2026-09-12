@@ -53,6 +53,8 @@ void batch_pod_with_kv_cache_tensor(
     std::optional<at::Tensor> maybe_mask_indptr_d, std::optional<at::Tensor> maybe_alibi_slopes_d,
     double logits_soft_cap_d, double sm_scale_d, double rope_rcp_scale_d, double rope_rcp_theta_d,
     bool enable_pdl, at::Tensor sm_aware_sched) {
+  CHECK_KV_DTYPES_MATCH(paged_k_cache_p, paged_v_cache_p);
+  CHECK_KV_DTYPES_MATCH(paged_k_cache_d, paged_v_cache_d);
   // Prefill setup
   PrefillPlanInfo plan_info_p;
   plan_info_p.FromVector(tensor_to_vec(plan_info_vec_p));

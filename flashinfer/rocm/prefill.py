@@ -16,7 +16,6 @@ limitations under the License.
 """
 
 import functools
-import logging
 import math
 import os
 import threading
@@ -30,6 +29,7 @@ from .api_compat import reject_cuda_only
 from .arch_caps import capability_reason, require_capability
 from ..jit.core import logger
 from ..jit.rocm import aiter_variants as _variants
+from ..jit.rocm.modules import _check_fa2_fp8_dtypes
 from ..jit import (
     gen_batch_prefill_module,
     gen_customize_batch_prefill_module,
@@ -201,6 +201,11 @@ def get_customize_batch_prefill_module(
 
 @functools.cache
 def get_single_prefill_module(backend, *args):
+    # Before the URI: it indexes filename_safe_dtype_map, so an unsupported
+    # dtype would raise KeyError rather than the allowlist's message.
+    # AITER compiles its own fp8 dtypes, so it is checked at its own seam.
+    if backend != "aiter":
+        _check_fa2_fp8_dtypes("single prefill", *args[:3], kv_must_match_q=True)
     uri = get_single_prefill_uri(backend, *args)
     module = gen_single_prefill_module(backend, *args).build_and_load()
     run_func = module.run.default
@@ -518,19 +523,33 @@ def _require_native_fp8_dtype(dtype_q: torch.dtype) -> None:
         )
 
 
-def _reject_fp8_on_fa2(dtype_q: torch.dtype, backend: str) -> None:
-    """Raise if an fp8 prefill resolved to fa2, which has no fp8 kernel.
+def _check_kv_dtypes_match(k: torch.Tensor, v: torch.Tensor) -> None:
+    """The kernel is built for one DTypeKV, taken from k, and reads v with it.
 
-    Without this the refusal surfaces from ninja: the in-tree kernel rejects
-    8-bit types with a static_assert, so the caller gets a compiler log.
+    Only 2-byte KV used to reach the kernel, so a mismatch was caught by the
+    8-bit static_assert; with an fp8 cache it returns NaN instead.
+    """
+    if k.dtype != v.dtype:
+        raise ValueError(
+            f"k has dtype {k.dtype} but v has {v.dtype}; ROCm attention compiles a "
+            "single KV dtype and would reinterpret v's bytes as k's."
+        )
+
+
+def _reject_fp8_on_fa2(dtype_q: torch.dtype, backend: str) -> None:
+    """Raise if an fp8 *query* prefill resolved to fa2, which serves KV only.
+
+    Without this the refusal surfaces from ninja: the in-tree kernel rejects an
+    8-bit query with a static_assert, so the caller gets a compiler log.
     """
     if backend == "fa2" and dtype_q in FP8_PREFILL_DTYPES:
         raise NotImplementedError(
-            f"fp8 prefill (dtype={dtype_q}) has no in-tree fa2 kernel on ROCm -- "
-            "include/flashinfer/rocm/attention/prefill.cuh rejects 8-bit types at "
-            "compile time. AITER serves fp8 only on paged batch prefill, via "
+            f"fp8 prefill query (dtype={dtype_q}) has no in-tree fa2 kernel on "
+            "ROCm -- the MFMA path is f16f16f32, so prefill.cuh takes a 2-byte "
+            "query. AITER serves an fp8 query on paged batch prefill only, via "
             "BatchPrefillWithPagedKVCacheWrapper with per-tensor scale_q/scale_k/"
-            "scale_v. Otherwise cast q/k/v to bf16 or fp16."
+            "scale_v. To stay on fa2, cast the query to bf16 or fp16 and keep the "
+            "KV cache fp8 -- an fnuz fp8 KV cache is served in-tree."
         )
 
 
@@ -1071,6 +1090,11 @@ def _aiter_batch_ragged_available(
 
 @functools.cache
 def get_batch_prefill_module(backend, *args):
+    # Before the URI: it indexes filename_safe_dtype_map, so an unsupported
+    # dtype would raise KeyError rather than the allowlist's message.
+    # AITER compiles its own fp8 dtypes, so it is checked at its own seam.
+    if backend != "aiter":
+        _check_fa2_fp8_dtypes("batch prefill", *args[:3], kv_must_match_q=True)
     if backend == "aiter":
         module = gen_batch_prefill_module(backend, *args).build_and_load()
         _c_paged_run = module.paged_run.default
@@ -1851,6 +1875,7 @@ def single_prefill_with_kv_cache(
 
     _check_pos_encoding_mode(pos_encoding_mode)
     _check_kv_layout(kv_layout)
+    _check_kv_dtypes_match(k, v)
     tmp = _get_cache_buf("single_prefill_with_kv_cache_tmp", 32 * 1024 * 1024, q.device)
     if logits_soft_cap is None:
         logits_soft_cap = 0.0
@@ -1885,7 +1910,14 @@ def single_prefill_with_kv_cache(
         #   1. unsupported feature
         #   2. dtype check
         assert window_left == -1
-        assert q.dtype == k.dtype == v.dtype
+        # Not an assert: a wide KV cache under an fp8 query reaches here before
+        # any backend is chosen, and no backend serves that pair.
+        if not (q.dtype == k.dtype == v.dtype):
+            raise NotImplementedError(
+                f"single prefill: an fp8 query needs an fp8 k and v, got q={q.dtype}, "
+                f"k={k.dtype}, v={v.dtype}. The in-tree kernel refuses an fp8 query "
+                "outright, and AITER compiles one dtype for all three."
+            )
         assert q.shape[-1] == k.shape[-1] == v.shape[-1]
         if scale_q is None:
             scale_q = torch.ones(q.shape[1], dtype=torch.float32, device=q.device)
@@ -4217,15 +4249,6 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             check_shape_dtype_device(
                 out, q.shape[:-1] + v.shape[-1:], q.dtype, q.device, "out"
             )
-        if is_float8(q):
-            logging.warning(
-                "Our current prefill kernel implementation needs f16 input, the f8 inputs "
-                " are casted to f16, which could result in performance degradation."
-            )
-            q = q.to(torch.float16)
-            k = k.to(torch.float16)
-            v = v.to(torch.float16)
-
         if self._custom_mask_buf is not None:
             mask_mode = MaskMode.CUSTOM.value
         else:
