@@ -432,6 +432,26 @@ Paged prefill keeps AITER at a native page size, since that route takes
 fp32 reference on both architectures — and falls back only when the run-time
 probe demotes it to a flat gather. Every other soft-cap shape is unaffected.
 
+### Short-query paged prefill avoids AITER's flat gather
+
+At a page size AITER cannot page natively, its paged prefill first
+`index_select`s the whole KV cache into a contiguous buffer. That copy is
+`O(kv)` against an `O(q·kv)` attention, so its cost decays as `1/q`: a long
+query amortises it, a short one pays it in full. `auto` therefore serves
+short queries with `fa2`, and `backend_fallback_reason` names the threshold.
+
+| arch | routed to `fa2` when `max_q_len` is | AITER slower by |
+| :--- | :--- | :--- |
+| gfx942 | ≤ 16 | 1.35–4.6× |
+| gfx950 | ≤ 8 | 1.25–4.6× |
+
+Three paths are deliberately **not** gated. Native page sizes have no gather
+and beat `fa2` even at one query row (0.93× on gfx942, 0.54× on gfx950).
+Ragged prefill dispatches through `mha_varlen_fwd` on already-contiguous KV.
+Decode is genuinely one query row, and AITER wins there. An explicit
+`backend="aiter"` is also honoured — this is a routing preference, not a
+wrong answer, so it stays measurable.
+
 ### `fused_add_rmsnorm` and `gemma_fused_add_rmsnorm` at large `hidden_size`
 
 The `native` fused kernels stage the fp32 row in shared memory, costing
