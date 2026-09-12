@@ -952,6 +952,53 @@ def test_short_query_demotion_does_not_re_promote_under_cudagraph():
     )
 
 
+def test_short_query_gate_re_checks_when_native_paging_probe_fails(monkeypatch):
+    """A native page size disarms the gate in the selector, because native paging
+    has no gather. When the run-time probe then proves native paging unavailable,
+    the call takes the gather after all -- so the gate has to be re-checked at the
+    probe site, which is the only place that knows."""
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
+
+    from flashinfer.rocm import prefill as prefill_rocm
+    from flashinfer.rocm.arch_caps import _device_arch, aiter_flat_gather_gated_q_len
+
+    gated = aiter_flat_gather_gated_q_len(_device_arch(device))
+    if gated is None:
+        pytest.skip("no flat-gather threshold for this architecture")
+
+    native = sorted(prefill_rocm._aiter_native_page_sizes())
+    assert native, "no native page size to disarm the selector with"
+    page_size = native[0]
+
+    # Force the probe to fail so a page size the selector treated as native
+    # lands on flat-gather. Patching the probe rather than finding a config
+    # AITER cannot serve keeps the test independent of the installed build.
+    monkeypatch.setattr(
+        prefill_rocm, "_aiter_native_paging_available", lambda *a, **k: False
+    )
+
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+    wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
+    )
+    wrapper.plan(
+        **_short_query_plan_args(device, gated, page_size=page_size), causal=True
+    )
+
+    assert wrapper.backend == "fa2", (
+        f"native page_size={page_size} fell back to the gather at "
+        f"qo_len={gated}, but the gate was not re-checked"
+    )
+    reason = wrapper.backend_fallback_reason or ""
+    assert "flat gather" in reason and f"<= {gated}" in reason, reason
+    assert wrapper._backend_short_query_demoted, (
+        "a per-batch demotion must be marked re-evaluable"
+    )
+
+
 def test_explicit_aiter_survives_the_short_query_gate():
     """docs/rocm/backends.md promises an explicit backend="aiter" is honoured --
     this is a routing preference, not a wrong answer, so it has to stay

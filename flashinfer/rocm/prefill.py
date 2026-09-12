@@ -454,29 +454,36 @@ def _aiter_softcap_defect(
     return aiter_softcap_defect_arch(_device_arch(device))
 
 
-# Marker shared by both places that decline AITER for the gather, so the
-# per-batch demotion can be recognised from the reason without re-deriving it.
-_FLAT_GATHER_REASON = "flat gather"
-
-
 def _aiter_flat_gather_short_query(
     max_q_len: Optional[int],
     device: Optional[torch.device] = None,
-) -> Tuple[bool, Optional[int]]:
+) -> Optional[int]:
     """Would this call pay more for AITER's flat gather than the attention saves?
 
-    Returns ``(gated, threshold)``. ``max_q_len=None`` disarms, which is how a
-    planner says the page size pages natively -- that path has no gather and
-    beats fa2 even at one query row. The post-probe re-check passes a length
-    unconditionally on purpose, since by then a "native" page size may have
-    fallen back to the gather.
+    Returns the threshold that gated it, or ``None`` when it is not gated.
+    ``max_q_len=None`` disarms, which is how a planner says the page size pages
+    natively -- that path has no gather and beats fa2 even at one query row.
     """
     if max_q_len is None:
-        return False, None
+        return None
     from .arch_caps import _device_arch, aiter_flat_gather_gated_q_len
 
     gated = aiter_flat_gather_gated_q_len(_device_arch(device))
-    return (gated is not None and max_q_len <= gated), gated
+    return gated if gated is not None and max_q_len <= gated else None
+
+
+def _flat_gather_short_query_reason(threshold: int) -> str:
+    """The auto-selector's short-query decline, built in exactly one place.
+
+    The demotion site recognises it by equality. A substring marker would also
+    match the soft-cap-on-flat-gather reason, which is a different cause and
+    must not be re-evaluated per batch.
+    """
+    return (
+        f"query length <= {threshold} on a page size AITER cannot page "
+        "natively (its flat gather copies the whole KV cache, which a short "
+        "query cannot amortise)"
+    )
 
 
 def _auto_select_prefill_backend(
@@ -539,16 +546,12 @@ def _auto_select_prefill_backend(
                 "(AITER mha_varlen_fwd computes the soft cap incorrectly)"
             )
         else:
-            gated, threshold = _aiter_flat_gather_short_query(max_q_len, device)
-            if gated:
+            threshold = _aiter_flat_gather_short_query(max_q_len, device)
+            if threshold is not None:
                 # Names the threshold, not max_q_len: _aiter_auto_warned is keyed
                 # on the reason, so a per-batch value would add an entry and
                 # re-warn for every distinct query length a serving loop sees.
-                reason = (
-                    f"query length <= {threshold} on a page size AITER cannot "
-                    f"page natively (its {_FLAT_GATHER_REASON} copies the whole "
-                    "KV cache, which a short query cannot amortise)"
-                )
+                reason = _flat_gather_short_query_reason(threshold)
 
     if reason is not None:
         key = (device, reason)
@@ -2640,12 +2643,17 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         max_q_len=gather_q_len,
                     )
                 )
-                # Read off the selector's own reason rather than re-evaluating
-                # the predicate: re-running it would also flag calls the
-                # selector declined earlier for a constant constraint, which
-                # never needs re-resolving.
-                self._backend_short_query_demoted = _FLAT_GATHER_REASON in (
-                    self._backend_fallback_reason or ""
+                # Compare the selector's own reason rather than re-evaluating
+                # the predicate alone: the gate sits last in an elif chain, so a
+                # call declined earlier for a constant constraint is also
+                # "short", and re-resolving that every plan() buys nothing.
+                short_q_threshold = _aiter_flat_gather_short_query(
+                    gather_q_len, self.device
+                )
+                self._backend_short_query_demoted = (
+                    short_q_threshold is not None
+                    and self._backend_fallback_reason
+                    == _flat_gather_short_query_reason(short_q_threshold)
                 )
             if self._backend == "aiter" and _aiter_softcap_defect(
                 causal, logits_soft_cap, head_dim_qk, softcap_kv_len, self.device
@@ -2721,7 +2729,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     # already resolved to "aiter" by an earlier long-query plan()
                     # ever gets, so narrowing it to the looked-native case would
                     # silently delete that path.
-                    short_q_now, short_q_threshold = _aiter_flat_gather_short_query(
+                    short_q_threshold = _aiter_flat_gather_short_query(
                         self._max_q_len, self.device
                     )
                     if softcap_now and not demotable:
@@ -2740,15 +2748,15 @@ class BatchPrefillWithPagedKVCacheWrapper:
                             f"{_AITER_SOFTCAP_DEFECT_THROUGH})"
                         )
                         logger.warning("auto backend falling back to fa2: %s", reason)
-                    elif demotable and short_q_now:
+                    elif demotable and short_q_threshold is not None:
                         self._backend_short_query_demoted = True
                         # Deliberately does not claim a native-paging probe
                         # failed: this branch is also the re-check for a page
                         # size that was never a native candidate.
                         reason = (
-                            f"page_size={page_size} takes aiter's "
-                            f"{_FLAT_GATHER_REASON}, which does not pay off at "
-                            f"query length <= {short_q_threshold}"
+                            f"page_size={page_size} takes aiter's flat gather, "
+                            "which does not pay off at query length <= "
+                            f"{short_q_threshold}"
                         )
                         logger.warning("auto backend falling back to fa2: %s", reason)
                     elif demotable:
