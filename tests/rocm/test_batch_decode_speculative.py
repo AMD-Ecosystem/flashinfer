@@ -381,8 +381,10 @@ def test_run_warns_and_validates_explicit_q_len_per_req():
 
 
 def test_rejected_plan_leaves_wrapper_replayable():
-    """_plan_impl promises a rejected plan does not disturb a wrapper that is
-    still being replayed. The per-request KV check is the newest way to trip it."""
+    """A plan rejected *before* any wrapper state is written leaves the previous
+    plan usable. Scope note: this covers the pre-write raises only. The paged-KV
+    buffers are still written ahead of the C++ plan() -- pre-existing, and not
+    something this test should be read as certifying."""
     device = torch.device("cuda:0")
     batch_size, kv_len, q_len = 4, 256, 4
     num_qo_heads, num_kv_heads = 32, 8
@@ -475,6 +477,11 @@ def test_cudagraph_replay_matches_eager():
     # The buffer the captured graph will read must carry the scaled offsets.
     expected_qo = torch.arange(batch_size + 1, device=device, dtype=torch.int32) * q_len
     torch.testing.assert_close(wrapper._qo_indptr_buf, expected_qo)
+
+    # Warm up outside the graph: a first call allocates into module-global
+    # caches, and capturing that puts them in the graph's private pool.
+    wrapper.run(q, kv)
+    torch.cuda.synchronize()
 
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
@@ -662,11 +669,25 @@ def test_run_before_plan_says_to_call_plan():
     those are allocated in __init__ and so are not None before the first
     plan(). Removing the _plan_info check would break that case."""
     device = torch.device("cuda:0")
-    wrapper = _decode_wrapper(device)
     q = torch.randn(4, 32, HEAD_DIM, device=device, dtype=DTYPE)
     kv = torch.randn(4, 2, PAGE_SIZE, 8, HEAD_DIM, device=device, dtype=DTYPE)
     with pytest.raises(ValueError, match="call plan\\(\\) first"):
-        wrapper.run(q, kv)
+        _decode_wrapper(device).run(q, kv)
+
+    # The cudagraph wrapper is the case that matters: __init__ pre-allocates the
+    # paged buffers, so a guard keyed on those would pass straight through.
+    _, _, indptr, indices, last_page_len = _paged_inputs(4, 256, 1, 32, 8, device)
+    graph_wrapper = flashinfer.decode.BatchDecodeWithPagedKVCacheWrapper(
+        torch.empty(WORKSPACE, dtype=torch.int8, device=device),
+        "NHD",
+        use_cuda_graph=True,
+        use_tensor_cores=True,
+        paged_kv_indptr_buffer=torch.empty_like(indptr),
+        paged_kv_indices_buffer=torch.empty_like(indices),
+        paged_kv_last_page_len_buffer=torch.empty_like(last_page_len),
+    )
+    with pytest.raises(ValueError, match="call plan\\(\\) first"):
+        graph_wrapper.run(q, kv)
 
 
 def test_cudagraph_freezes_q_len_per_req():

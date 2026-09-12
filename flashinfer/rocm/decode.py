@@ -1082,7 +1082,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
 
         if use_tensor_cores:
             if use_cuda_graph:
-                # NOTE(Zihao): if once created, no need to update it in plan/run
+                # Created once; plan() rewrites it only when q_len_per_req > 1.
                 self._qo_indptr_buf = torch.arange(
                     self._fixed_batch_size + 1,
                     dtype=torch.int32,
@@ -1401,7 +1401,15 @@ class BatchDecodeWithPagedKVCacheWrapper:
         if seq_lens is None:
             kv_lens_arr_host = get_seq_lens(indptr_host, last_page_len_host, page_size)
         else:
-            kv_lens_arr_host = seq_lens.cpu()
+            # .flatten() and the length check mirror the prefill planner: the
+            # new per-request kv_len guard reads this, so a [batch, 1] or
+            # wrong-length tensor would validate rows the plan never schedules.
+            kv_lens_arr_host = seq_lens.cpu().flatten()
+            if kv_lens_arr_host.numel() != batch_size:
+                raise ValueError(
+                    f"seq_lens has {kv_lens_arr_host.numel()} entries but "
+                    f"batch_size is {batch_size}"
+                )
 
         # Frozen from the *first* plan and in both directions, including back
         # down to the default 1: the captured graph reads _qo_indptr_buf, and
@@ -1779,13 +1787,15 @@ class BatchDecodeWithPagedKVCacheWrapper:
         # rejected plan has to leave the previous values standing.
         self._batch_size = batch_size
         self._q_len_per_req = q_len_per_req
-        if self.use_tensor_cores:
-            if self.is_cuda_graph_enabled:
+        if self.is_cuda_graph_enabled:
+            # __init__ already baked arange(batch+1); only a multi-token plan
+            # changes it. The buffer exists there only for tensor cores.
+            if self.use_tensor_cores and q_len_per_req > 1:
                 self._qo_indptr_buf.copy_(qo_indptr_host, non_blocking=non_blocking)
-            else:
-                self._qo_indptr_buf = qo_indptr_host.to(
-                    self.device, non_blocking=non_blocking
-                )
+        else:
+            self._qo_indptr_buf = qo_indptr_host.to(
+                self.device, non_blocking=non_blocking
+            )
 
         self._pos_encoding_mode = pos_encoding_mode
         self._window_left = window_left
@@ -2173,9 +2183,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
             return (out, lse) if return_lse else out
 
         if self.use_tensor_cores:
-            assert self._plan_info is not None, (
-                "plan info is not initialized; call plan() first"
-            )
             run_args = [
                 self._float_workspace_buffer,
                 self._int_workspace_buffer,

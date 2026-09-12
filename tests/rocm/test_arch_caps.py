@@ -680,8 +680,8 @@ class TestAiterFlatGatherQLenGate:
 
     The gather copies the whole KV cache (O(kv)) before an O(q*kv) attention, so
     the overhead decays as 1/q and the crossover differs by architecture:
-    median-of-3 has gfx942 still losing at q=16 (1.35x) while gfx950 has already
-    won by q=12 (0.89x).
+    median-of-3 has gfx942 still losing at q=16 (1.35x) while gfx950 flips at
+    exactly q=9, where its GQA-8 configurations reach 0.91x.
     """
 
     def test_gfx942_gates_through_16(self):
