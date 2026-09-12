@@ -522,6 +522,16 @@ of 4 is free and 8 costs a step (1.2-1.6x on gfx942, 1.4-2.0x on gfx950); at
 64/8 the step arrives at 2. `head_dim >= 256` takes the 64 tile
 unconditionally, so no draft length is free there.
 
+That rule describes **eager** planning only. Under `enable_cuda_graph` the
+scheduler cannot see per-request lengths, so it bounds them by
+`total_num_rows - batch_size + 1` and sizes the tile from that
+(`PrefillSplitQOKVIndptr` in `include/flashinfer/rocm/attention/scheduler.cuh`).
+The tile is therefore 64 whenever
+`(batch_size * (q_len_per_req - 1) + 1) * gqa_group_size > 16` — at batch 4 /
+draft 4 / GQA 4 that is `13 * 4 = 52`, so capture takes the 64 tile where eager
+takes 16. Any draft length above 1 crosses it at a large enough batch, so
+measure under capture rather than carrying the eager figures over.
+
 **Chain drafts only.** The verify mask is causal, so the draft tokens are
 taken as one linear sequence per request — which fits vanilla speculative
 decoding, DeepSeek MTP, n-gram/prompt-lookup, and EAGLE run in chain mode.
