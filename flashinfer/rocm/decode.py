@@ -1080,6 +1080,10 @@ class BatchDecodeWithPagedKVCacheWrapper:
         self._use_tensor_cores = use_tensor_cores
         self._use_cuda_graph = use_cuda_graph
 
+        # Declared for every configuration so it is never merely absent; only
+        # the cudagraph tensor-core case can pre-bake it, the rest get theirs
+        # from plan().
+        self._qo_indptr_buf: Optional[torch.Tensor] = None
         if use_tensor_cores:
             if use_cuda_graph:
                 # Created once; plan() rewrites it only when q_len_per_req > 1.
@@ -1407,15 +1411,16 @@ class BatchDecodeWithPagedKVCacheWrapper:
         if seq_lens is None:
             kv_lens_arr_host = get_seq_lens(indptr_host, last_page_len_host, page_size)
         else:
-            # .flatten() and the length check mirror the prefill planner: the
-            # new per-request kv_len guard reads this, so a [batch, 1] or
-            # wrong-length tensor would validate rows the plan never schedules.
+            # Sliced, not rejected: callers size seq_lens to a capacity and reuse
+            # it every step, the same way paged_kv_indices is already handled.
+            # Unsliced, the zero padding would sink the kv_len guard below.
             kv_lens_arr_host = seq_lens.cpu().flatten()
-            if kv_lens_arr_host.numel() != batch_size:
+            if kv_lens_arr_host.numel() < batch_size:
                 raise ValueError(
                     f"seq_lens has {kv_lens_arr_host.numel()} entries but "
                     f"batch_size is {batch_size}"
                 )
+            kv_lens_arr_host = kv_lens_arr_host[:batch_size]
 
         # Frozen from the *first* plan and in both directions, including back
         # down to the default 1: the captured graph reads _qo_indptr_buf, and
@@ -1438,7 +1443,13 @@ class BatchDecodeWithPagedKVCacheWrapper:
             # batch_size==0 has no request to check; .min() on an empty tensor
             # would raise where there is simply nothing to verify.
             if batch_size > 0:
-                min_kv_len = int(kv_lens_arr_host.min().item())
+                # From the paged metadata, not a caller-supplied seq_lens: the
+                # mask compares kv_len against qo_len as the kernel derives it,
+                # so an override that disagrees would slip past into a C++ abort.
+                kernel_kv_lens = get_seq_lens(
+                    indptr_host, last_page_len_host, page_size
+                )
+                min_kv_len = int(kernel_kv_lens.min().item())
                 if min_kv_len < q_len_per_req:
                     raise ValueError(
                         f"q_len_per_req={q_len_per_req} requires kv_len >= "
@@ -1693,6 +1704,13 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 # construction (it requires use_tensor_cores=False).
                 self._batch_size = batch_size
                 self._q_len_per_req = q_len_per_req
+                if not self.is_cuda_graph_enabled:
+                    # Set unconditionally in eager mode before the tail moved,
+                    # so keep setting it here rather than leaving the attribute
+                    # absent on this path alone.
+                    self._qo_indptr_buf = qo_indptr_host.to(
+                        self.device, non_blocking=non_blocking
+                    )
                 self._pos_encoding_mode = pos_encoding_mode
                 self._window_left = window_left
                 self._logits_soft_cap = logits_soft_cap
@@ -2037,15 +2055,23 @@ class BatchDecodeWithPagedKVCacheWrapper:
             # Exact division, not floor: at batch_size=3 a stray q of 5 rows
             # floors to 1, matches the planned value, and leaves the trailing
             # rows of `out` uninitialised because the kernel only writes 3.
-            if actual_batch_size and q.size(0) % actual_batch_size:
+            # A zero-request plan has nothing to divide by, so it takes the
+            # same rule spelled out: no rows at all.
+            if actual_batch_size == 0:
+                if q.size(0) != 0:
+                    raise ValueError(
+                        f"q.shape[0] ({q.size(0)}) must be 0: plan() was called "
+                        "with an empty batch."
+                    )
+                q_len_per_req = planned_q_len
+            elif q.size(0) % actual_batch_size:
                 raise ValueError(
                     f"q.shape[0] ({q.size(0)}) is not a multiple of batch_size "
                     f"({actual_batch_size}); q must be "
                     "[batch_size * q_len_per_req, num_qo_heads, head_dim]."
                 )
-            q_len_per_req = (
-                q.size(0) // actual_batch_size if actual_batch_size else planned_q_len
-            )
+            else:
+                q_len_per_req = q.size(0) // actual_batch_size
         elif q.size(0) != actual_batch_size * q_len_per_req:
             raise ValueError(
                 f"q.shape[0] ({q.size(0)}) does not match batch_size * q_len_per_req "
@@ -2254,7 +2280,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
             self._cached_module.paged_run(*run_args)
         else:
             plan_info = self._plan_info
-            assert plan_info is not None, "plan info is not initialized"
 
             run_args = [
                 self._float_workspace_buffer,
