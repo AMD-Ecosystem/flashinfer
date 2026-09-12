@@ -1278,7 +1278,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
             At ``head_dim < 256`` the cost steps with
             ``q_len_per_req * (num_qo_heads // num_kv_heads)``, not with
             ``q_len_per_req`` alone: the tile is 16 at or below 16 and 64 above
-            (``rocm/utils.cuh:100``). At GQA 32/8 that makes 4 free and 8 a
+            (``FA2DetermineCtaTileQ`` in ``rocm/utils.cuh``). At GQA 32/8 that makes 4 free and 8 a
             step; at 64/8 the step lands at 2. ``head_dim >= 256`` always takes
             the 64 tile, so no draft length is free there.
 
@@ -1502,9 +1502,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
             self._paged_kv_last_page_len_buf = last_page_len.to(
                 self.device, non_blocking=non_blocking
             )
-            self._qo_indptr_buf = qo_indptr_host.to(
-                self.device, non_blocking=non_blocking
-            )
 
         if data_type is not None:
             if q_data_type is None:
@@ -1700,9 +1697,15 @@ class BatchDecodeWithPagedKVCacheWrapper:
             self._backend = "fa2"
             self._backend_fallback_reason = reason
 
-        # Committed only once no path above can still raise: it feeds the frozen
-        # cudagraph check, so a rejected plan must not move it.
+        # Committed only once no path above can still raise: these feed the
+        # frozen cudagraph check and the kernel's row stride, and a rejected
+        # plan must leave both as they were. Only the tensor-core run branch
+        # reads _qo_indptr_buf, and the AITER path has returned by here.
         self._q_len_per_req = q_len_per_req
+        if not self.is_cuda_graph_enabled:
+            self._qo_indptr_buf = qo_indptr_host.to(
+                self.device, non_blocking=non_blocking
+            )
 
         if self.use_tensor_cores:
             if self.is_cuda_graph_enabled:
@@ -2004,10 +2007,22 @@ class BatchDecodeWithPagedKVCacheWrapper:
         # one: AITER's PA v1 kernel reads q as [batch, heads, dim], so a query
         # carrying multiple rows per request has to be rejected before it gets
         # there rather than being silently misread.
-        if self._paged_kv_last_page_len_buf is None:
+        # Neither attribute exists before the first plan(), and under cudagraph
+        # the paged buffers are allocated in __init__ -- so they cannot stand in
+        # for "has a plan" and the check has to be on the plan state itself.
+        if getattr(self, "_plan_info", None) is None:
             raise ValueError("plan info is not initialized; call plan() first")
         planned_q_len = getattr(self, "_q_len_per_req", 1) or 1
-        actual_batch_size = self._paged_kv_last_page_len_buf.size(0)
+        actual_batch_size = self._batch_size
+        if q_len_per_req is not None:
+            import warnings
+
+            warnings.warn(
+                "Passing `q_len_per_req` to BatchDecodeWithPagedKVCacheWrapper.run() "
+                "is deprecated; pass it to plan() instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         if q_len_per_req is None:
             # Exact division, not floor: at batch_size=3 a stray q of 5 rows
             # floors to 1, matches the planned value, and leaves the trailing

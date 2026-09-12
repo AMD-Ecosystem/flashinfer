@@ -454,15 +454,22 @@ def _aiter_softcap_defect(
     return aiter_softcap_defect_arch(_device_arch(device))
 
 
+# Marker shared by both places that decline AITER for the gather, so the
+# per-batch demotion can be recognised from the reason without re-deriving it.
+_FLAT_GATHER_REASON = "flat gather"
+
+
 def _aiter_flat_gather_short_query(
     max_q_len: Optional[int],
     device: Optional[torch.device] = None,
 ) -> Tuple[bool, Optional[int]]:
     """Would this call pay more for AITER's flat gather than the attention saves?
 
-    Returns ``(gated, threshold)``. ``max_q_len=None`` disarms, which is how the
-    caller says the page size pages natively -- that path has no gather and is
-    faster than fa2 even at one query row, so it must never reach here.
+    Returns ``(gated, threshold)``. ``max_q_len=None`` disarms, which is how a
+    planner says the page size pages natively -- that path has no gather and
+    beats fa2 even at one query row. The post-probe re-check passes a length
+    unconditionally on purpose, since by then a "native" page size may have
+    fallen back to the gather.
     """
     if max_q_len is None:
         return False, None
@@ -2607,10 +2614,17 @@ class BatchPrefillWithPagedKVCacheWrapper:
             # otherwise stay on fa2 for every later long prefill. Mirrors
             # decode.py's _backend_capacity_demoted.
             #
-            # Not under capture, though: re-promoting swaps _cached_module and
-            # rebuilds _plan_info, which an already-captured graph still points
-            # at. Same reason the demotion at the probe site keeps its
-            # `demotable` guard.
+            # Never under cudagraph: re-promoting swaps _cached_module and
+            # rebuilds _plan_info, which a captured graph still points at, and
+            # capture is not observable from here.
+            #
+            # Deliberately coarser than the probe site's `demotable`, which also
+            # requires _aiter_flat_gather_idx. That flag is set only when AITER
+            # *was* chosen; here fa2 was, so it is always None and that
+            # predicate would wave every re-promotion through -- see
+            # test_short_query_demotion_does_not_re_promote_under_cudagraph.
+            # The cost is that a graph-enabled wrapper keeps fa2 once demoted,
+            # which matches how cudagraph freezes the rest of the shape.
             if self._backend_short_query_demoted and not self.is_cuda_graph_enabled:
                 self._backend = self._backend_requested
                 self._backend_short_query_demoted = False
@@ -2633,12 +2647,12 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         max_q_len=gather_q_len,
                     )
                 )
-                # Only a short-query demotion is per-batch. Flagging it when some
-                # other constant constraint also declined AITER is harmless: the
-                # re-resolution next plan() simply reaches the same verdict.
-                self._backend_short_query_demoted = (
-                    self._backend == "fa2"
-                    and _aiter_flat_gather_short_query(gather_q_len, self.device)[0]
+                # Read off the selector's own reason rather than re-evaluating
+                # the predicate: re-running it would also flag calls the
+                # selector declined earlier for a constant constraint, which
+                # never needs re-resolving.
+                self._backend_short_query_demoted = _FLAT_GATHER_REASON in (
+                    self._backend_fallback_reason or ""
                 )
             if self._backend == "aiter" and _aiter_softcap_defect(
                 causal, logits_soft_cap, head_dim_qk, softcap_kv_len, self.device

@@ -31,7 +31,15 @@ WORKSPACE = 128 * 1024 * 1024
 def warmup_jit():
     flashinfer.jit.build_jit_specs(
         gen_prefill_attention_modules(
-            [DTYPE], [DTYPE], [HEAD_DIM], [0], [False], [False], [False]
+            # use_sliding_window covers both: the window test would otherwise
+            # compile a fresh module inside its own body, twice.
+            [DTYPE],
+            [DTYPE],
+            [HEAD_DIM],
+            [0],
+            [False, True],
+            [False],
+            [False],
         ),
         verbose=False,
     )
@@ -114,7 +122,7 @@ def _decode_wrapper(device, use_tensor_cores=True, **kwargs):
 
 @pytest.mark.parametrize("q_len_per_req", [1, 2, 3, 4, 8])
 # 32/8 and 64/8 straddle the cta_tile_q step at q_len * gqa_group_size > 16
-# (rocm/utils.cuh:100), which is where the cost -- and any tiling bug -- changes.
+# (FA2DetermineCtaTileQ), which is where the cost -- and any tiling bug -- changes.
 @pytest.mark.parametrize("num_qo_heads,num_kv_heads", [(32, 8), (64, 8)])
 @pytest.mark.parametrize("kv_len", [256, 1024])
 def test_multi_token_decode_matches_causal_prefill(

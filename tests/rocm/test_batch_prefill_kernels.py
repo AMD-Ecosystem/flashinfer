@@ -884,6 +884,14 @@ def test_short_query_demotion_does_not_stick():
         **_short_query_plan_args(device, long_q, kv_len=max(256, long_q * 2)),
         causal=True,
     )
+    if wrapper.backend == "fa2" and "flat gather" not in (
+        wrapper.backend_fallback_reason or ""
+    ):
+        # An unrelated AITER decline here (unbuildable variant, gated row) is an
+        # environment fact, not the sticky verdict this test is about.
+        pytest.skip(
+            f"AITER declined for another reason: {wrapper.backend_fallback_reason}"
+        )
     assert wrapper.backend == "aiter", (
         f"the earlier short-query demotion stuck: a {long_q}-token prefill is "
         "still on fa2"
