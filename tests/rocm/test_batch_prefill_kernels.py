@@ -669,7 +669,11 @@ def test_batch_prefill_auto_selects_aiter(page_size, causal, return_lse):
 
     # Use qo_len < kv_len (prefill-with-history) to exercise the meaningful causal case.
     # Both flat-gather and native-paged paths use mask_bottom_right matching FA2.
-    batch_size, qo_len, kv_len = 4, 16, 128
+    # qo_len stays above aiter_flat_gather_gated_q_len (16 on gfx942): this test's
+    # subject is the capability chain -- layout, dtype, head dims -- so it must not
+    # sit in the short-query region, where declining AITER is now correct.
+    # test_batch_prefill_auto_declines_aiter_for_short_query covers that.
+    batch_size, qo_len, kv_len = 4, 32, 256
     num_qo_heads, num_kv_heads, head_dim = 8, 8, 128
 
     q = torch.randn(
@@ -756,6 +760,69 @@ def test_batch_prefill_auto_selects_aiter(page_size, causal, return_lse):
         o_ref = wrapper_ref.run(q, kv_data)
 
     torch.testing.assert_close(o_auto, o_ref, rtol=1e-3, atol=1e-3)
+
+
+def test_batch_prefill_auto_declines_aiter_for_short_query():
+    """A page size AITER cannot page natively makes it gather the whole KV cache
+    before attending; below the per-arch threshold that costs more than the
+    attention saves (1.25-4.6x measured), so `auto` must steer to fa2.
+
+    Guards the routing rather than the numerics: both backends return the right
+    answer here, so only a perf regression would show, and silently.
+    """
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+
+    from flashinfer.rocm.arch_caps import _device_arch, aiter_flat_gather_gated_q_len
+
+    gated = aiter_flat_gather_gated_q_len(_device_arch(device))
+    if gated is None:
+        pytest.skip("no flat-gather threshold for this architecture")
+
+    # page_size=1 is not in _aiter_native_page_sizes(), so this call gathers.
+    page_size, batch_size, qo_len, kv_len = 1, 4, gated, 256
+    num_qo_heads, num_kv_heads, head_dim = 8, 8, 128
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+
+    # No q/kv tensors: plan() is where the backend is resolved, and running the
+    # kernel would only re-measure what both backends already get right.
+    num_pages = (kv_len + page_size - 1) // page_size
+    total_pages = num_pages * batch_size
+    qo_indptr = (
+        torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * qo_len
+    )
+    kv_indptr = (
+        torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * num_pages
+    )
+    kv_indices = torch.arange(0, total_pages, dtype=torch.int32, device=device)
+    kv_last_page_len = torch.full(
+        (batch_size,), (kv_len - 1) % page_size + 1, dtype=torch.int32, device=device
+    )
+
+    wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
+    )
+    wrapper.plan(
+        qo_indptr,
+        kv_indptr,
+        kv_indices,
+        kv_last_page_len,
+        num_qo_heads,
+        num_kv_heads,
+        head_dim,
+        page_size,
+        causal=True,
+    )
+
+    assert wrapper.backend == "fa2", (
+        f"auto kept AITER at qo_len={qo_len} on a gathering page size"
+    )
+    # Assert the reason too: an unrelated fallback must not masquerade as the
+    # gate working.
+    assert f"<= {gated}" in (wrapper.backend_fallback_reason or ""), (
+        wrapper.backend_fallback_reason
+    )
 
 
 @pytest.mark.parametrize("page_size", [1, 5])

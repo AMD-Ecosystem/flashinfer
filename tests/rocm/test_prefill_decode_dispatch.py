@@ -184,6 +184,66 @@ class TestAutoBackendSelection:
         assert backend == "fa2"
         assert fragment in reason
 
+    def test_short_query_on_a_gathering_page_size_declines_aiter(self, device):
+        """A page size AITER cannot page natively makes it copy the whole KV
+        cache first; a short query cannot amortise that. Measured 1.25-4.6x
+        slower at or below the threshold on both arches."""
+        from flashinfer.rocm.arch_caps import (
+            _device_arch,
+            aiter_flat_gather_gated_q_len,
+        )
+
+        gated = aiter_flat_gather_gated_q_len(_device_arch(device))
+        if gated is None:
+            pytest.skip("no flat-gather threshold for this architecture")
+
+        backend, reason = _auto(device, max_q_len=gated)
+        assert backend == "fa2"
+        assert f"<= {gated}" in reason, reason
+
+    def test_query_above_the_threshold_keeps_aiter(self, device):
+        from flashinfer.rocm.arch_caps import (
+            _device_arch,
+            aiter_flat_gather_gated_q_len,
+        )
+
+        gated = aiter_flat_gather_gated_q_len(_device_arch(device))
+        if gated is None:
+            pytest.skip("no flat-gather threshold for this architecture")
+
+        backend, reason = _auto(device, max_q_len=gated + 1)
+        if backend == "fa2" and "flat gather" not in (reason or ""):
+            pytest.skip(f"AITER unavailable here for another reason: {reason}")
+        assert (backend, reason) == ("aiter", None)
+
+    def test_max_q_len_none_disarms_the_gate(self, device):
+        """None is how the paged planner says the page size pages natively --
+        that route has no gather and beats fa2 even at one query row, so it must
+        not be steered away."""
+        backend, reason = _auto(device, max_q_len=None)
+        if backend == "fa2":
+            pytest.skip(f"AITER unavailable here: {reason}")
+        assert (backend, reason) == ("aiter", None)
+
+    def test_the_gate_warns_once_across_different_query_lengths(self, device):
+        """The reason names the threshold, not the observed length. Embedding the
+        length would add a _aiter_auto_warned entry per distinct query length, so
+        a serving loop with varying draft lengths would re-warn forever."""
+        from flashinfer.rocm.arch_caps import (
+            _device_arch,
+            aiter_flat_gather_gated_q_len,
+        )
+
+        gated = aiter_flat_gather_gated_q_len(_device_arch(device))
+        if gated is None or gated < 2:
+            pytest.skip("needs a threshold with room for two distinct lengths")
+
+        before = len(prefill_rocm._aiter_auto_warned)
+        first = _auto(device, max_q_len=1)[1]
+        second = _auto(device, max_q_len=gated)[1]
+        assert first == second
+        assert len(prefill_rocm._aiter_auto_warned) - before == 1
+
     def test_the_warning_fires_once_per_device_and_reason(self, device):
         """Asserted through the warn-once set, not the log: flashinfer's logger
         installs its own handlers, so records are not reliably observable from a

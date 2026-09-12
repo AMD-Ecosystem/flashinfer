@@ -673,3 +673,22 @@ class TestAiterSoftcapDefectArchs:
 
     def test_unknown_arch_disarms_rather_than_blocks(self):
         assert arch_caps.aiter_softcap_defect_arch("unknown") is False
+
+
+class TestAiterFlatGatherQLenGate:
+    """Below this query length AITER's flat-gather paged prefill loses to fa2.
+
+    The gather copies the whole KV cache (O(kv)) before an O(q*kv) attention, so
+    the overhead decays as 1/q and the crossover differs by architecture:
+    median-of-3 has gfx942 still losing at q=16 (1.35x) while gfx950 has already
+    won by q=12 (0.89x).
+    """
+
+    def test_gfx942_gates_through_16(self):
+        assert arch_caps.aiter_flat_gather_gated_q_len("gfx942") == 16
+
+    def test_gfx950_gates_through_8(self):
+        assert arch_caps.aiter_flat_gather_gated_q_len("gfx950") == 8
+
+    def test_unknown_arch_disarms_rather_than_blocks(self):
+        assert arch_caps.aiter_flat_gather_gated_q_len("unknown") is None

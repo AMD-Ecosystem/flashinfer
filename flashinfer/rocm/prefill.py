@@ -454,6 +454,24 @@ def _aiter_softcap_defect(
     return aiter_softcap_defect_arch(_device_arch(device))
 
 
+def _aiter_flat_gather_short_query(
+    max_q_len: Optional[int],
+    device: Optional[torch.device] = None,
+) -> Tuple[bool, Optional[int]]:
+    """Would this call pay more for AITER's flat gather than the attention saves?
+
+    Returns ``(gated, threshold)``. ``max_q_len=None`` disarms, which is how the
+    caller says the page size pages natively -- that path has no gather and is
+    faster than fa2 even at one query row, so it must never reach here.
+    """
+    if max_q_len is None:
+        return False, None
+    from .arch_caps import _device_arch, aiter_flat_gather_gated_q_len
+
+    gated = aiter_flat_gather_gated_q_len(_device_arch(device))
+    return (gated is not None and max_q_len <= gated), gated
+
+
 def _auto_select_prefill_backend(
     device: torch.device,
     *,
@@ -468,6 +486,7 @@ def _auto_select_prefill_backend(
     causal: bool = False,
     logits_soft_cap: Optional[float] = None,
     kv_len: Optional[int] = None,
+    max_q_len: Optional[int] = None,
 ) -> Tuple[str, Optional[str]]:
     """Return ``(backend, reason)``: 'aiter' when the GPU and call parameters satisfy
     AITER's constraints, else 'fa2' plus the reason AITER was declined.
@@ -512,6 +531,17 @@ def _auto_select_prefill_backend(
                 f"logits_soft_cap={logits_soft_cap} with causal head_dim={head_dim_qk} "
                 "(AITER mha_varlen_fwd computes the soft cap incorrectly)"
             )
+        else:
+            gated, threshold = _aiter_flat_gather_short_query(max_q_len, device)
+            if gated:
+                # Names the threshold, not max_q_len: _aiter_auto_warned is keyed
+                # on the reason, so a per-batch value would add an entry and
+                # re-warn for every distinct query length a serving loop sees.
+                reason = (
+                    f"query length <= {threshold} on a page size AITER cannot page "
+                    "natively (its flat gather copies the whole KV cache, which a "
+                    "short query cannot amortise)"
+                )
 
     if reason is not None:
         key = (device, reason)
@@ -2564,6 +2594,11 @@ class BatchPrefillWithPagedKVCacheWrapper:
             softcap_kv_len = (
                 None if page_size in _aiter_native_page_sizes() else self._max_kv_len
             )
+            # Same disarm: the flat-gather penalty only exists when the page size
+            # forces the gather. Native paging beats fa2 even at one query row.
+            gather_q_len = (
+                None if page_size in _aiter_native_page_sizes() else self._max_q_len
+            )
             if self._backend == "auto":
                 self._backend, self._backend_fallback_reason = (
                     _auto_select_prefill_backend(
@@ -2579,6 +2614,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         causal=causal,
                         logits_soft_cap=logits_soft_cap,
                         kv_len=softcap_kv_len,
+                        max_q_len=gather_q_len,
                     )
                 )
             if self._backend == "aiter" and _aiter_softcap_defect(
@@ -2663,6 +2699,24 @@ class BatchPrefillWithPagedKVCacheWrapper:
                             "logits_soft_cap for causal head_dim=128 "
                             "on this GPU (through amd-aiter "
                             f"{_AITER_SOFTCAP_DEFECT_THROUGH})"
+                        )
+                        logger.warning("auto backend falling back to fa2: %s", reason)
+                    elif (
+                        demotable
+                        and _aiter_flat_gather_short_query(
+                            self._max_q_len, self.device
+                        )[0]
+                    ):
+                        # Same second chance for the perf gate: gather_q_len was
+                        # disarmed above because the page size looked native, and
+                        # the probe has just shown this call gathers after all.
+                        threshold = _aiter_flat_gather_short_query(
+                            self._max_q_len, self.device
+                        )[1]
+                        reason = (
+                            "aiter native paging was unavailable for page_size="
+                            f"{page_size}, and its flat gather does not pay off at "
+                            f"query length <= {threshold}"
                         )
                         logger.warning("auto backend falling back to fa2: %s", reason)
                     elif demotable:

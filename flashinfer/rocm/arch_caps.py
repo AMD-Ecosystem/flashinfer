@@ -35,6 +35,7 @@ __all__ = [
     "KnownBad",
     "Support",
     "aiter_fallback_backend",
+    "aiter_flat_gather_gated_q_len",
     "aiter_softcap_defect_arch",
     "capability_available",
     "capability_reason",
@@ -271,6 +272,40 @@ _MEASURED_950_MLA = (
 # by architecture is whether the kernel is affected, not at which length.
 # Measured on amd-aiter 0.1.20 over qo_len x kv_len x cap, vs an fp32 reference.
 _AITER_SOFTCAP_DEFECT_ARCHS = {"gfx942": False, "gfx950": True}
+
+
+# A paged prefill whose page size AITER cannot serve natively takes a flat
+# gather: batch_prefill_paged_aiter.cu index_selects the whole KV cache into a
+# contiguous buffer before attending. That copy is O(kv) while the attention is
+# O(q*kv), so the overhead decays as 1/q and only short queries are hurt. This
+# is a routing preference, not a wrong answer -- an explicit backend="aiter"
+# still gets AITER.
+#
+# Median of 3 runs, amd-aiter 0.1.20 / ROCm 10.0, bf16 causal head_dim=128,
+# page 64, batch 16, over GQA groups {4,8} x kv_len {512, 4096, 32768}. Values
+# are the worst (smallest) aiter/fa2 ratio seen at that q across all of them:
+#
+#           q=1   q=2   q=4   q=8   q=12  q=16  q=24
+#   gfx942  1.86  1.77  1.74  1.67  1.37  1.35  0.89   <- AITER wins from 24
+#   gfx950  1.85  1.75  1.47  1.25  0.89  0.86  0.54   <- AITER wins from 12
+#
+# So gate at or below 16 on gfx942 and 8 on gfx950. Ratios are quoted rather
+# than absolute times deliberately: on a shared node both backends drift
+# together (one sweep moved 45% on the fastest config while its ratio held to
+# 1.78 vs 1.92), so the ratio is the contention-robust quantity.
+_AITER_FLAT_GATHER_GATED_Q_LEN = {"gfx942": 16, "gfx950": 8}
+
+
+def aiter_flat_gather_gated_q_len(arch: str) -> Optional[int]:
+    """Largest ``max_q_len`` that should avoid AITER's flat-gather paged prefill.
+
+    Compare with ``<=``. ``None`` for an unknown architecture disarms the gate
+    rather than steering a machine that is probably fine, matching
+    :func:`aiter_softcap_defect_arch`. Applies only to page sizes AITER
+    cannot page natively; native paging is faster than fa2 even at ``q=1`` and
+    must not be gated.
+    """
+    return _AITER_FLAT_GATHER_GATED_Q_LEN.get(normalize_arch(arch))
 
 
 def aiter_softcap_defect_arch(arch: str) -> bool:
