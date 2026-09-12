@@ -199,6 +199,11 @@ class TestAutoBackendSelection:
 
         backend, reason = _auto(device, max_q_len=gated)
         assert backend == "fa2"
+        if "flat gather" not in (reason or ""):
+            # The gate sits last in the elif chain, so a constant constraint
+            # (a gated capability row, a toolchain the table blocks) answers
+            # first. That is an environment fact, not this test's subject.
+            pytest.skip(f"AITER declined for another reason: {reason}")
         assert f"<= {gated}" in reason, reason
 
     def test_query_above_the_threshold_keeps_aiter(self, device):

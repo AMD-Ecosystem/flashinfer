@@ -407,10 +407,17 @@ def test_rejected_plan_leaves_wrapper_replayable():
     )
     expected = wrapper.run(q, kv)
 
+    # Distinguishing input: the rejected plan carries a *different* page
+    # mapping. Passing the accepted one back would make the buffers
+    # byte-identical whether or not the writes ran, so the test could not tell
+    # a correct ordering from a broken one.
+    other_indices = torch.flip(indices, dims=(0,)).contiguous()
+    assert not torch.equal(other_indices, indices)
+
     with pytest.raises(ValueError, match="empty KV range"):
         wrapper.plan(
             indptr,
-            indices,
+            other_indices,
             last_page_len,
             num_qo_heads,
             num_kv_heads,
@@ -539,9 +546,9 @@ def test_rejected_plan_does_not_touch_the_captured_qo_indptr():
 
 @pytest.mark.parametrize("q_len_per_req", [1, 4])
 def test_multi_token_decode_with_sliding_window(q_len_per_req):
-    """window_left and q_len_per_req meet in one place: prefill.cuh derives the
-    window iteration from kv_len - qo_len - window_left, and qo_len is the draft
-    length. A sign error there returns plausible logits rather than raising."""
+    """The decode adapter must forward window_left and the scaled qo_indptr
+    together. Both arms run the same fa2 kernel, so this cannot catch an error
+    inside prefill.cuh's window derivation -- that needs an independent oracle."""
     device = torch.device("cuda:0")
     batch_size, kv_len, window_left = 4, 512, 64
     num_qo_heads, num_kv_heads = 32, 8

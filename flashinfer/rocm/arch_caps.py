@@ -290,6 +290,10 @@ def aiter_flat_gather_gated_q_len(arch: str) -> Optional[int]:
     :func:`aiter_softcap_defect_arch`. Applies only to page sizes AITER
     cannot page natively; native paging is faster than fa2 even at ``q=1`` and
     must not be gated.
+
+    Measured over head_dim 128, GQA groups {4, 8}, kv_len {512, 4096, 32768}.
+    It is a per-arch scalar, so a much larger head_dim or GQA group is steered
+    on an extrapolation -- re-measure before trusting it there.
     """
     return _AITER_FLAT_GATHER_GATED_Q_LEN.get(normalize_arch(arch))
 
