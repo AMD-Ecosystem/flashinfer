@@ -454,6 +454,18 @@ def _aiter_softcap_defect(
     return aiter_softcap_defect_arch(_device_arch(device))
 
 
+def _warn_auto_fallback_once(device: torch.device, reason: str) -> None:
+    """Log an ``auto`` demotion the first time this (device, reason) is seen.
+
+    The probe site demotes per batch, so without the shared set a wrapper that
+    degrades on every plan() would warn on every plan().
+    """
+    key = (device, reason)
+    if key not in _aiter_auto_warned:
+        _aiter_auto_warned.add(key)
+        logger.warning("auto backend falling back to fa2: %s", reason)
+
+
 def _aiter_flat_gather_short_query(
     max_q_len: Optional[int],
     device: Optional[torch.device] = None,
@@ -554,10 +566,7 @@ def _auto_select_prefill_backend(
                 reason = _flat_gather_short_query_reason(threshold)
 
     if reason is not None:
-        key = (device, reason)
-        if key not in _aiter_auto_warned:
-            _aiter_auto_warned.add(key)
-            logger.warning("auto backend falling back to fa2: %s", reason)
+        _warn_auto_fallback_once(device, reason)
         return "fa2", reason
 
     if not _aiter_ops_importable():
@@ -581,10 +590,7 @@ def _auto_select_prefill_backend(
         # Keyed on the reason, like the branch above: a constant key would let
         # whichever condition fired first hide the other for the rest of the
         # process, and "too old" and "not installed" want different actions.
-        key = (device, reason)
-        if key not in _aiter_auto_warned:
-            _aiter_auto_warned.add(key)
-            logger.warning("auto backend falling back to fa2: %s", reason)
+        _warn_auto_fallback_once(device, reason)
         return "fa2", reason
 
     return "aiter", None
@@ -2747,7 +2753,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
                             "on this GPU (through amd-aiter "
                             f"{_AITER_SOFTCAP_DEFECT_THROUGH})"
                         )
-                        logger.warning("auto backend falling back to fa2: %s", reason)
+                        _warn_auto_fallback_once(self.device, reason)
                     elif demotable and short_q_threshold is not None:
                         self._backend_short_query_demoted = True
                         # Deliberately does not claim a native-paging probe
@@ -2758,7 +2764,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
                             "which does not pay off at query length <= "
                             f"{short_q_threshold}"
                         )
-                        logger.warning("auto backend falling back to fa2: %s", reason)
+                        _warn_auto_fallback_once(self.device, reason)
                     elif demotable:
                         reason = _aiter_batch_ragged_available(
                             q_data_type, has_logits, needs_mask, head_dim_qk, dev_idx
