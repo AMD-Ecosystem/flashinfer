@@ -461,25 +461,25 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "batch_decode",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ) and CUDA-graph capture.",
+        note="MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ, E5M2FNUZ) on both the plain and `use_tensor_cores=True` paths, and CUDA-graph capture.",
     ),
     Capability(
         "single_prefill",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="MHA / GQA / MQA, including custom attention masks.",
+        note="MHA / GQA / MQA, including custom attention masks. fp8 KV-cache (E4M3FNUZ, E5M2FNUZ) with a 2-byte query, JIT-only; the OCP spellings are refused, since they would be read under the fnuz exponent bias.",
     ),
     Capability(
         "batch_prefill",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="Paged and ragged; MHA / GQA / MQA, including custom attention masks.",
+        note="Paged and ragged; MHA / GQA / MQA, including custom attention masks. fp8 KV-cache (E4M3FNUZ, E5M2FNUZ) with a 2-byte query, JIT-only -- no fp8 prefill module is prebuilt, so first use pays a cold build.",
     ),
     Capability(
         "block_sparse",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="`BlockSparseAttentionWrapper` and the variable-block variant. Native HIP FA2 only -- `determine_attention_backend` never returns `aiter` here.",
+        note="`BlockSparseAttentionWrapper` and the variable-block variant. Native HIP FA2 only -- `determine_attention_backend` never returns `aiter` here. Both wrappers build through the batch-prefill module, so the fp8 KV-cache dtypes and refusals are the same as `batch_prefill`.",
     ),
     Capability(
         "cascade",
@@ -492,7 +492,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "pod",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="`PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream.",
+        note="`PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream. An fp8 KV-cache is refused: POD sizes its tiles independently of the prefill dispatchers and no geometry there has been tested.",
     ),
     Capability(
         "rope",

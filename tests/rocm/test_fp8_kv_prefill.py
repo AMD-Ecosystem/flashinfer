@@ -488,7 +488,9 @@ def test_single_prefill_fp8_kv_sliding_window(fp8_dtype, window_left):
     the kFillZero/kNoFill split the fp8 produce arm rewrites."""
     torch.manual_seed(0)
     qo_len, kv_len, num_qo_heads, num_kv_heads, head_dim = 77, 396, 32, 8, 128
-    q = torch.randn(qo_len, num_qo_heads, head_dim, dtype=torch.float16, device="cuda:0")
+    q = torch.randn(
+        qo_len, num_qo_heads, head_dim, dtype=torch.float16, device="cuda:0"
+    )
     k8, k16 = _quantized_pair((kv_len, num_kv_heads, head_dim), fp8_dtype)
     v8, v16 = _quantized_pair((kv_len, num_kv_heads, head_dim), fp8_dtype)
 
