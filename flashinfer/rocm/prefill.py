@@ -77,6 +77,11 @@ FP8_PREFILL_DTYPES = (torch.float8_e4m3fnuz, torch.float8_e4m3fn)
 # fp8 prefill writes bf16: AITER ships no fp8-output prefill kernel.
 FP8_PREFILL_OUT_DTYPE = torch.bfloat16
 
+# Longest query, per request, for which `auto` prefers fa2 over AITER on the
+# paged route. mha_batch_prefill's cost is flat in query length, so a short
+# query pays a full KV scan for a few rows: 1.19-6.08x slower at 16, both arches.
+_AITER_SHORT_QO_LEN = 16
+
 
 def _aiter_paged_route_page_sizes(dtype: torch.dtype) -> frozenset:
     """Page sizes we will *route* through the native paged kernel.
@@ -535,6 +540,7 @@ def _auto_select_prefill_backend(
     causal: bool = False,
     logits_soft_cap: Optional[float] = None,
     kv_len: Optional[int] = None,
+    qo_len: Optional[int] = None,
     allow_fp8: bool = False,
 ) -> Tuple[str, Optional[str]]:
     """Return ``(backend, reason)``: 'aiter' when the GPU and call parameters satisfy
@@ -548,6 +554,10 @@ def _auto_select_prefill_backend(
     prefill only, so checking a single shared "is AITER supported here" would
     either under- or over-block.
 
+    ``qo_len`` is the longest per-request query in the batch, and unlike every
+    other argument it declines AITER on speed rather than capability. Pass it
+    only from the paged wrapper -- ragged's short-query cost is arch-dependent.
+
     The warning fires once per ``(device, reason)`` for the process lifetime, so a
     caller that needs the reason on *every* call must read it from the return
     value -- the log carries it only the first time.
@@ -558,6 +568,7 @@ def _auto_select_prefill_backend(
     # "fa2" silently, which on CDNA4 would mean a user quietly losing the AITER
     # path with nothing to explain it.
     reason: Optional[str] = capability_reason(device, op, "aiter")
+    chose_on_speed = False
     if reason is None:
         if kv_layout != "NHD":
             reason = f"kv_layout={kv_layout!r} (AITER requires NHD)"
@@ -585,12 +596,24 @@ def _auto_select_prefill_backend(
                 f"logits_soft_cap={logits_soft_cap} with causal head_dim={head_dim_qk} "
                 "(AITER mha_varlen_fwd computes the soft cap incorrectly)"
             )
+        elif qo_len is not None and qo_len <= _AITER_SHORT_QO_LEN:
+            # Last in the chain on purpose: this one is a speed choice, so a
+            # capability reason should out-rank it in the message. Logged at
+            # info, since picking the faster kernel is not a degradation.
+            reason = (
+                f"qo_len={qo_len} <= {_AITER_SHORT_QO_LEN} "
+                "(fa2 is faster than AITER for short queries)"
+            )
+            chose_on_speed = True
 
     if reason is not None:
         key = (device, reason)
         if key not in _aiter_auto_warned:
             _aiter_auto_warned.add(key)
-            logger.warning("auto backend falling back to fa2: %s", reason)
+            if chose_on_speed:
+                logger.info("auto backend selecting fa2: %s", reason)
+            else:
+                logger.warning("auto backend falling back to fa2: %s", reason)
         return "fa2", reason
 
     if not _aiter_ops_importable():
@@ -2617,7 +2640,12 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 if page_size in _aiter_paged_route_page_sizes(q_data_type)
                 else self._max_kv_len
             )
-            if self._backend == "auto":
+            # `auto` re-resolves every plan, because the choice now depends on
+            # max_q_len. Not under graph capture: the captured graph holds
+            # buffers belonging to the backend it was captured with.
+            if self._backend == "auto" or (
+                resolved_from_auto and not self.is_cuda_graph_enabled
+            ):
                 self._backend, self._backend_fallback_reason = (
                     _auto_select_prefill_backend(
                         self.device,
@@ -2632,6 +2660,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         causal=causal,
                         logits_soft_cap=logits_soft_cap,
                         kv_len=softcap_kv_len,
+                        qo_len=self._max_q_len,
                         # Paged is the only route with an fp8 kernel wired up;
                         # single and ragged still take mha_fwd/mha_varlen_fwd.
                         allow_fp8=True,
@@ -3749,6 +3778,9 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         if self._jit_module is not None:
             self._cached_module = self._jit_module
         else:
+            # No qo_len here, unlike the paged wrapper: mha_varlen_fwd's short-query
+            # cost splits by architecture. At bs32/kv2048/q16 gfx950 runs AITER 1.7x
+            # *faster* than fa2 where gfx942 runs it 1.14x slower.
             if self._backend == "auto":
                 self._backend, self._backend_fallback_reason = (
                     _auto_select_prefill_backend(

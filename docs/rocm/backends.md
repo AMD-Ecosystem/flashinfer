@@ -386,6 +386,25 @@ in CI, where a silent slowdown is easy to absorb and hard to notice.
 Ragged (non-paged) batch prefill is supported through
 `BatchPrefillWithRaggedKVCacheWrapper`, with the same auto-routing rules.
 
+### Batch prefill: short queries go to `fa2`
+
+`mha_batch_prefill` costs the same whatever the query length, so a batch of a
+few query tokens pays a full KV scan for a handful of rows. Measured against
+`fa2` at 16 query tokens, page size 16, causal bf16: AITER is 1.46-5.04x slower
+on gfx942 and 1.19-6.08x on gfx950, across batch 1-32 and kv 1024-8192. So
+`auto` sends a **paged** prefill whose longest per-request query is 16 tokens
+or fewer to `fa2`, and reports `qo_len=N <= 16` as the reason. That covers
+speculative-decode verify and the tail of a chunked prefill. An explicit
+`backend="aiter"` is unaffected.
+
+The choice is re-made on every `plan()`, since a served wrapper sees a
+different shape each step. Under CUDA-graph capture the first plan's backend
+sticks, because the captured graph holds that backend's buffers.
+
+Ragged prefill is deliberately **not** gated: `mha_varlen_fwd`'s short-query
+cost splits by architecture, and at batch 32 / kv 2048 / 16 query tokens gfx950
+runs AITER 1.7x *faster* than `fa2` where gfx942 runs it 1.14x slower.
+
 ### Batch decode: CUDA-graph capture
 
 AITER's launch grid and `.so` variant are fixed at capture time, so the
