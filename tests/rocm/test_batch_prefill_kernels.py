@@ -958,8 +958,12 @@ def test_batch_prefill_aiter_falls_back_when_native_paging_missing(
 
 
 def _plan_softcap_flat_gather(wrapper, device, page_size, kv_len, dtype):
-    """plan() a defect-shape call (causal, cap>0, head_dim=128, kv_len>=512)."""
-    batch_size, qo_len = 1, 16
+    """plan() a defect-shape call (causal, cap>0, head_dim=128, kv_len>=512).
+
+    qo_len also clears _AITER_SHORT_QO_LEN, or the `auto` arm declines on speed
+    before it reaches the soft-cap reason this asserts on.
+    """
+    batch_size, qo_len = 1, 32
     num_qo_heads = num_kv_heads = 8
     num_pages = (kv_len + page_size - 1) // page_size
     qo_indptr = (
