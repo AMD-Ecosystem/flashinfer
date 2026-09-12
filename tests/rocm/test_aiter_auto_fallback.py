@@ -251,8 +251,10 @@ def test_non_demotable_failures_propagate(device, monkeypatch, exc):
 
 
 def _paged_inputs(device, page_size=16, dtype=torch.bfloat16):
+    # qo_len clears _AITER_SHORT_QO_LEN: at or below it `auto` picks fa2 on
+    # speed and never reaches the bootstrap-failure demotion under test.
     torch.manual_seed(0)
-    batch_size, qo_len, kv_len = 2, 16, 128
+    batch_size, qo_len, kv_len = 2, 32, 128
     num_qo_heads = num_kv_heads = 8
     head_dim = 128
     num_pages = (kv_len + page_size - 1) // page_size

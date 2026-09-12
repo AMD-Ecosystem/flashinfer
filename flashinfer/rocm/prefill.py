@@ -78,8 +78,8 @@ FP8_PREFILL_DTYPES = (torch.float8_e4m3fnuz, torch.float8_e4m3fn)
 FP8_PREFILL_OUT_DTYPE = torch.bfloat16
 
 # Longest query, per request, for which `auto` prefers fa2 over AITER on the
-# paged route. mha_batch_prefill's cost is flat in query length, so a short
-# query pays a full KV scan for a few rows: 1.19-6.08x slower at 16, both arches.
+# paged route: mha_batch_prefill's cost is flat in query length, so a short
+# query pays a full KV scan for a few rows.
 _AITER_SHORT_QO_LEN = 16
 
 
@@ -568,7 +568,6 @@ def _auto_select_prefill_backend(
     # "fa2" silently, which on CDNA4 would mean a user quietly losing the AITER
     # path with nothing to explain it.
     reason: Optional[str] = capability_reason(device, op, "aiter")
-    chose_on_speed = False
     if reason is None:
         if kv_layout != "NHD":
             reason = f"kv_layout={kv_layout!r} (AITER requires NHD)"
@@ -596,24 +595,12 @@ def _auto_select_prefill_backend(
                 f"logits_soft_cap={logits_soft_cap} with causal head_dim={head_dim_qk} "
                 "(AITER mha_varlen_fwd computes the soft cap incorrectly)"
             )
-        elif qo_len is not None and qo_len <= _AITER_SHORT_QO_LEN:
-            # Last in the chain on purpose: this one is a speed choice, so a
-            # capability reason should out-rank it in the message. Logged at
-            # info, since picking the faster kernel is not a degradation.
-            reason = (
-                f"qo_len={qo_len} <= {_AITER_SHORT_QO_LEN} "
-                "(fa2 is faster than AITER for short queries)"
-            )
-            chose_on_speed = True
 
     if reason is not None:
         key = (device, reason)
         if key not in _aiter_auto_warned:
             _aiter_auto_warned.add(key)
-            if chose_on_speed:
-                logger.info("auto backend selecting fa2: %s", reason)
-            else:
-                logger.warning("auto backend falling back to fa2: %s", reason)
+            logger.warning("auto backend falling back to fa2: %s", reason)
         return "fa2", reason
 
     if not _aiter_ops_importable():
@@ -642,6 +629,30 @@ def _auto_select_prefill_backend(
             _aiter_auto_warned.add(key)
             logger.warning("auto backend falling back to fa2: %s", reason)
         return "fa2", reason
+
+    # Last, and after the capability checks above, because this one is a speed
+    # preference: a caller whose AITER is missing or too old must hear that, not
+    # that fa2 happens to be quicker here. fp8 is exempt -- fa2 has no fp8
+    # kernel, so preferring it would turn a working call into an exception.
+    if (
+        qo_len is not None
+        and qo_len <= _AITER_SHORT_QO_LEN
+        and dtype_q not in FP8_PREFILL_DTYPES
+    ):
+        # Deduped on a constant, unlike the reasons above: the length varies per
+        # call, so keying on the message would log one line per distinct query.
+        key = (device, "short-qo")
+        if key not in _aiter_auto_warned:
+            _aiter_auto_warned.add(key)
+            logger.info(
+                "auto backend selecting fa2: queries of %d tokens or fewer are "
+                "faster on fa2 than on AITER",
+                _AITER_SHORT_QO_LEN,
+            )
+        return "fa2", (
+            f"qo_len={qo_len} <= {_AITER_SHORT_QO_LEN} "
+            "(fa2 is faster than AITER for short queries)"
+        )
 
     return "aiter", None
 
@@ -2641,10 +2652,10 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 else self._max_kv_len
             )
             # `auto` re-resolves every plan, because the choice now depends on
-            # max_q_len. Not under graph capture: the captured graph holds
-            # buffers belonging to the backend it was captured with.
-            if self._backend == "auto" or (
-                resolved_from_auto and not self.is_cuda_graph_enabled
+            # max_q_len. Under graph capture the first answer sticks: the
+            # captured graph holds buffers belonging to the backend it captured.
+            if resolved_from_auto and (
+                self._backend == "auto" or not self.is_cuda_graph_enabled
             ):
                 self._backend, self._backend_fallback_reason = (
                     _auto_select_prefill_backend(
@@ -2752,7 +2763,15 @@ class BatchPrefillWithPagedKVCacheWrapper:
                             "on this GPU (through amd-aiter "
                             f"{_AITER_SOFTCAP_DEFECT_THROUGH})"
                         )
-                        logger.warning("auto backend falling back to fa2: %s", reason)
+                        # Deduped like the selector's own reasons: `auto`
+                        # re-resolves every plan, so this branch is re-entered
+                        # once per step rather than only on the first.
+                        key = (self.device, reason)
+                        if key not in _aiter_auto_warned:
+                            _aiter_auto_warned.add(key)
+                            logger.warning(
+                                "auto backend falling back to fa2: %s", reason
+                            )
                     elif demotable:
                         reason = _aiter_batch_ragged_available(
                             q_data_type, has_logits, needs_mask, head_dim_qk, dev_idx
@@ -3778,9 +3797,9 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         if self._jit_module is not None:
             self._cached_module = self._jit_module
         else:
-            # No qo_len here, unlike the paged wrapper: mha_varlen_fwd's short-query
-            # cost splits by architecture. At bs32/kv2048/q16 gfx950 runs AITER 1.7x
-            # *faster* than fa2 where gfx942 runs it 1.14x slower.
+            # No qo_len here, unlike the paged wrapper: mha_varlen_fwd's
+            # short-query cost splits by architecture, so one threshold would
+            # regress CDNA4.
             if self._backend == "auto":
                 self._backend, self._backend_fallback_reason = (
                     _auto_select_prefill_backend(

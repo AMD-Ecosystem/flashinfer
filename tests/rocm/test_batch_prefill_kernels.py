@@ -669,7 +669,8 @@ def test_batch_prefill_auto_selects_aiter(page_size, causal, return_lse):
 
     # Use qo_len < kv_len (prefill-with-history) to exercise the meaningful causal case.
     # Both flat-gather and native-paged paths use mask_bottom_right matching FA2.
-    batch_size, qo_len, kv_len = 4, 16, 128
+    # qo_len must also clear _AITER_SHORT_QO_LEN, below which `auto` prefers fa2.
+    batch_size, qo_len, kv_len = 4, 32, 128
     num_qo_heads, num_kv_heads, head_dim = 8, 8, 128
 
     q = torch.randn(

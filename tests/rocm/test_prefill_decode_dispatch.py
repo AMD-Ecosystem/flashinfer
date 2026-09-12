@@ -209,6 +209,7 @@ class TestAutoBackendSelection:
         assert first == second is not None
 
     def test_a_short_query_selects_fa2_and_names_qo_len(self, device):
+        self._skip_unless_aiter_is_selectable(device)
         backend, reason = _auto(device, qo_len=prefill_rocm._AITER_SHORT_QO_LEN)
 
         assert backend == "fa2"
@@ -217,20 +218,29 @@ class TestAutoBackendSelection:
     def test_one_token_past_the_threshold_keeps_aiter(self, device):
         """Pins the boundary: an off-by-one here silently moves every batch of
         17 query tokens onto the slower kernel, or 16 onto the faster one."""
+        self._skip_unless_aiter_is_selectable(device)
         backend, reason = _auto(device, qo_len=prefill_rocm._AITER_SHORT_QO_LEN + 1)
-        if backend == "fa2" and "qo_len" not in reason:
-            pytest.skip(f"AITER unavailable here: {reason}")
 
         assert (backend, reason) == ("aiter", None)
 
     def test_an_unspecified_qo_len_is_not_gated(self, device):
         """Single prefill passes no qo_len; the threshold was measured on the
         paged wrapper's kernel, not on mha_fwd."""
+        self._skip_unless_aiter_is_selectable(device)
         backend, reason = _auto(device)
-        if backend == "fa2":
-            pytest.skip(f"AITER unavailable here: {reason}")
 
         assert (backend, reason) == ("aiter", None)
+
+    def test_fp8_is_exempt_from_the_speed_gate(self, device):
+        """Paged AITER is fp8's only prefill route, so preferring fa2 on speed
+        would turn a working short-query call into a NotImplementedError."""
+        self._skip_unless_aiter_is_selectable(device)
+        for dtype in prefill_rocm.FP8_PREFILL_DTYPES:
+            backend, reason = _auto(
+                device, dtype_q=dtype, dtype_kv=dtype, qo_len=1, allow_fp8=True
+            )
+
+            assert (backend, reason) == ("aiter", None)
 
     def test_a_capability_reason_outranks_the_speed_reason(self, device):
         """Both apply; the caller should hear about the one they control."""
@@ -238,9 +248,20 @@ class TestAutoBackendSelection:
 
         assert "kv_layout" in reason
 
+    def test_a_missing_aiter_outranks_the_speed_reason(self, device, monkeypatch):
+        """Otherwise a short query reports a perf choice on a box where AITER is
+        simply absent, and the loud warning never fires."""
+        prefill_rocm._aiter_ops_importable.cache_clear()
+        monkeypatch.setattr(prefill_rocm, "_aiter_ops_importable", lambda: False)
+
+        _, reason = _auto(device, qo_len=1)
+
+        assert "aiter package not installed" in reason
+
     def test_choosing_fa2_on_speed_does_not_warn(self, device, monkeypatch):
         """A warning would fire on every spec-decode server start, for a call
         that picked the faster kernel and degraded nothing."""
+        self._skip_unless_aiter_is_selectable(device)
         calls = []
         monkeypatch.setattr(
             prefill_rocm.logger, "warning", lambda *a, **k: calls.append(a)
@@ -249,6 +270,24 @@ class TestAutoBackendSelection:
         _auto(device, qo_len=1)
 
         assert calls == []
+
+    def test_the_speed_decline_logs_once_however_many_lengths(self, device):
+        """The reason embeds the length, so keying the warn-once set on it would
+        leave one entry and one log line per distinct query length."""
+        self._skip_unless_aiter_is_selectable(device)
+        for qo_len in range(1, prefill_rocm._AITER_SHORT_QO_LEN + 1):
+            _auto(device, qo_len=qo_len)
+
+        assert len(prefill_rocm._aiter_auto_warned) == 1
+
+    @staticmethod
+    def _skip_unless_aiter_is_selectable(device):
+        """`capability_reason` short-circuits the whole chain, so on a gated arch
+        every assertion below would see that reason instead of the one it names."""
+        backend, reason = _auto(device, qo_len=1024)
+        if backend != "aiter":
+            pytest.skip(f"AITER unavailable here: {reason}")
+        prefill_rocm._aiter_auto_warned.clear()
 
     def test_a_missing_aiter_package_is_its_own_reason(self, device, monkeypatch):
         prefill_rocm._aiter_ops_importable.cache_clear()

@@ -32,12 +32,27 @@ def device():
     return torch.device("cuda:0")
 
 
+@pytest.fixture(scope="module")
+def _aiter_declined():
+    """Positive control, run once: plan a query that should keep AITER.
+
+    Without AITER every plan resolves to fa2 and the file passes for the wrong
+    reason. Capability is not enough to check -- plan() also probes, and a
+    build that cannot compile the variant demotes with a bootstrap reason.
+    """
+    dev = torch.device("cuda:0")
+    if not is_aiter_supported(dev) or not _aiter_ops_importable():
+        return "AITER requires a gfx942/gfx950 GPU and the aiter package"
+    wrapper = _plan_paged(_paged_wrapper(dev), dev, LONG_QO)
+    if wrapper._backend == "aiter":
+        return None
+    return f"AITER declined a long query here: {wrapper._backend_fallback_reason}"
+
+
 @pytest.fixture(autouse=True)
-def _require_aiter(device):
-    """Without AITER every plan resolves to fa2 and each assertion below would
-    pass for the wrong reason."""
-    if not is_aiter_supported(device) or not _aiter_ops_importable():
-        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+def _require_aiter(_aiter_declined):
+    if _aiter_declined is not None:
+        pytest.skip(_aiter_declined)
 
 
 def _paged_wrapper(device, backend="auto"):
@@ -45,7 +60,7 @@ def _paged_wrapper(device, backend="auto"):
     return flashinfer.BatchPrefillWithPagedKVCacheWrapper(ws, "NHD", backend=backend)
 
 
-def _plan_paged(wrapper, device, s_qo, s_kv=1024, **kwargs):
+def _plan_paged(wrapper, device, s_qo, s_kv=1024, dtype=torch.bfloat16, **kwargs):
     npages = s_kv // PAGE
     wrapper.plan(
         torch.tensor([0, s_qo], dtype=torch.int32, device=device),
@@ -57,8 +72,8 @@ def _plan_paged(wrapper, device, s_qo, s_kv=1024, **kwargs):
         HEAD_DIM,
         PAGE,
         causal=True,
-        q_data_type=torch.bfloat16,
-        kv_data_type=torch.bfloat16,
+        q_data_type=dtype,
+        kv_data_type=dtype,
         **kwargs,
     )
     return wrapper
@@ -95,6 +110,15 @@ class TestPagedRouting:
         """The gate is a preference, not a capability: asking for AITER at a
         short query must still get AITER."""
         w = _plan_paged(_paged_wrapper(device, backend="aiter"), device, 1)
+
+        assert w._backend == "aiter"
+
+    def test_a_short_fp8_query_still_reaches_aiter(self, device):
+        """fa2 has no fp8 kernel, so preferring it on speed would turn a call
+        that worked into a NotImplementedError with no route left."""
+        import aiter
+
+        w = _plan_paged(_paged_wrapper(device), device, 8, dtype=aiter.dtypes.fp8)
 
         assert w._backend == "aiter"
 
@@ -143,6 +167,9 @@ class TestReplanning:
         _plan_paged(w, device, 1, s_kv=1024)
 
         assert w._backend == "aiter"
+        # Not merely "still aiter": the selector must not have run at all, which
+        # a re-resolution that happened to re-pick aiter would not satisfy.
+        assert "qo_len" not in (w._backend_fallback_reason or "")
 
 
 class TestRaggedIsNotGated:
@@ -171,9 +198,13 @@ class TestNumerics:
             npages, 2, PAGE, NHKV, HEAD_DIM, dtype=torch.bfloat16, device=device
         )
 
-        auto = _plan_paged(_paged_wrapper(device), device, s_qo, s_kv=s_kv).run(q, kv)
-        aiter = _plan_paged(
+        auto_w = _plan_paged(_paged_wrapper(device), device, s_qo, s_kv=s_kv)
+        ref_w = _plan_paged(
             _paged_wrapper(device, backend="aiter"), device, s_qo, s_kv=s_kv
-        ).run(q, kv)
+        )
+        # Or the comparison is fa2 against fa2 and proves nothing about routing.
+        assert (auto_w._backend, ref_w._backend) == ("fa2", "aiter")
 
-        torch.testing.assert_close(auto, aiter, rtol=2e-2, atol=2e-2)
+        torch.testing.assert_close(
+            auto_w.run(q, kv), ref_w.run(q, kv), rtol=2e-2, atol=2e-2
+        )

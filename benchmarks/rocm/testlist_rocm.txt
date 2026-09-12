@@ -67,8 +67,11 @@
 --routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 128 --batch_size 4 --s_qo 4096 --s_kv 4096 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
 
 ## Batch paged prefill -- short queries (spec-decode verify, chunked-prefill tail).
-## `auto` declines AITER at or below 16 query tokens; q=64 is the control that
-## must stay on AITER. page_size 16 is the serving default, unlike the rows above.
+## `auto` declines AITER at or below 16 query tokens, so these three rows measure
+## fa2 twice and the row to read is backend_fallback_reason, not the time. q=64 is
+## the control that must stay on AITER: if it ever resolves to fa2, or a q16 row
+## resolves to aiter, the threshold has moved. There is no `--backends aiter`, so
+## reproducing the AITER cost these avoid means re-running at a larger q.
 --routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 1 --s_qo 16 --s_kv 8192 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "spec-verify"
 --routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 8 --s_qo 16 --s_kv 8192 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "spec-verify"
 --routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 32 --s_qo 16 --s_kv 2048 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "spec-verify"
