@@ -1280,6 +1280,11 @@ class BatchDecodeWithPagedKVCacheWrapper:
             64 above (``rocm/utils.cuh:100``). At GQA 32/8 that makes 4 free and
             8 a step; at 64/8 the step lands at 2.
 
+            The mask is causal, so the drafts are one linear chain per request.
+            A *tree* draft (EAGLE-2, Medusa) would have siblings attend to each
+            other and return wrong numbers silently -- use ``custom_mask`` on
+            the prefill wrapper for that.
+
         Note
         ----
         The :meth:`plan` method should be called before any :meth:`run` or

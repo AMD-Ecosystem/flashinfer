@@ -521,6 +521,18 @@ Cost steps with `q_len_per_req * gqa_group_size`, not with
 4 is free and 8 costs a step (1.2-1.6x on gfx942, 1.4-2.0x on gfx950);
 at 64/8 the step arrives at 2.
 
+**Chain drafts only.** The verify mask is causal, so the draft tokens are
+taken as one linear sequence per request — which fits vanilla speculative
+decoding, DeepSeek MTP, n-gram/prompt-lookup, and EAGLE run in chain mode.
+It does **not** fit tree drafts (EAGLE-2, Medusa's multi-head tree,
+SpecInfer): a causal mask lets a draft token attend to a sibling on another
+branch, so a tree would return plausible but wrong numbers rather than an
+error. Tree verification needs a topology mask, which this path does not
+accept — build it with `custom_mask` on
+`BatchPrefillWithPagedKVCacheWrapper` instead. Note the acceptance step is
+chain-only too: `chain_speculative_sampling` takes
+`(batch_size, num_speculate_tokens)`, not a tree.
+
 An output dtype that differs from the query dtype still raises.
 
 ### MLA
