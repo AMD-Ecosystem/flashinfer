@@ -201,14 +201,28 @@ def resolve_aiter_build_arch() -> str:
     return _DEFAULT_BUILD_ARCH
 
 
+def _rocm_version() -> str:
+    """The ROCm/HIP version these artifacts were compiled against."""
+    try:
+        import torch
+
+        return torch.version.hip or "unknown"
+    except Exception:
+        return "unknown"
+
+
 def _aiter_cache_tag() -> str:
-    """A filesystem-safe tag keying the lib cache by target arch and AITER version.
+    """A filesystem-safe tag keying the lib cache by arch, AITER version and ROCm.
 
     Without the arch component, a lib built for one arch would be silently reused
     on a machine with a different arch. Without the version component, an AITER
     upgrade (which can change the C++ ABI the FlashInfer shim links against) would
     silently reuse the stale .so. The FlashInfer JIT dir already keys by its own
     version+arch, but this cache sits outside it.
+
+    ROCm is a component because a source-built AITER's version is bare
+    ("0.1.21.post2"), where a wheel's carried "+rocm10.1.0a..." and keyed ROCm by
+    accident. Without it, two ROCm toolchains share one tag.
 
     Keyed on the *resolved* architecture -- the one actually compiled for -- so
     the tag cannot disagree with the contents of the directory it names."""
@@ -231,13 +245,21 @@ def _aiter_cache_tag() -> str:
         version = _md.version("amd-aiter")
     except Exception:
         version = "unknown"
-    return f"{arch}__aiter-{version}"
+    tag = f"{arch}__aiter-{version}__rocm-{_rocm_version()}"
+    # The version strings come from package metadata and torch, neither of which
+    # this module controls, so the composed tag gets the same check the arch did.
+    if tag != Path(tag).name or tag.startswith("."):
+        raise ValueError(
+            f"refusing to build a cache directory name from {tag!r}: "
+            f"not a single safe path component"
+        )
+    return tag
 
 
 @functools.lru_cache(maxsize=1)
 def _aiter_libs_dir() -> Path:
-    # Keyed by arch + AITER version so a cached lib is never reused across an
-    # incompatible arch or a changed AITER ABI.
+    # Keyed by arch + AITER version + ROCm so a cached lib is never reused across
+    # an incompatible arch, a changed AITER ABI, or a different toolchain.
     d = jit_env.FLASHINFER_CACHE_DIR / "aiter_libs" / _aiter_cache_tag()
     d.mkdir(parents=True, exist_ok=True)
     return d

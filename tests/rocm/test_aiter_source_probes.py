@@ -53,24 +53,70 @@ class TestCacheTag:
 
         assert tag.startswith("gfx942__aiter-")
 
+    def test_the_tag_carries_the_rocm_version(self, monkeypatch):
+        """A source-built AITER's version is bare, so ROCm is no longer keyed by
+        the wheel's "+rocm..." local segment and has to be its own component."""
+        monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: "gfx942")
+        monkeypatch.setattr(aiter_source, "_rocm_version", lambda: "7.15.26333")
+
+        assert aiter_source._aiter_cache_tag().endswith("__rocm-7.15.26333")
+
+    def test_two_rocm_toolchains_do_not_share_a_tag(self, monkeypatch):
+        monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: "gfx942")
+
+        monkeypatch.setattr(aiter_source, "_rocm_version", lambda: "7.15.26333")
+        first = aiter_source._aiter_cache_tag()
+        monkeypatch.setattr(aiter_source, "_rocm_version", lambda: "6.4.43483")
+        second = aiter_source._aiter_cache_tag()
+
+        assert first != second
+
     def test_an_unreadable_version_still_produces_a_tag(self, monkeypatch):
         """A cache key with no version is still better than failing the build."""
         import importlib.metadata
 
         monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: "gfx942")
+        monkeypatch.setattr(aiter_source, "_rocm_version", lambda: "unknown")
         monkeypatch.setattr(
             importlib.metadata,
             "version",
             lambda name: (_ for _ in ()).throw(RuntimeError("no metadata")),
         )
 
-        assert aiter_source._aiter_cache_tag() == "gfx942__aiter-unknown"
+        assert aiter_source._aiter_cache_tag() == "gfx942__aiter-unknown__rocm-unknown"
+
+    def test_an_absent_torch_still_produces_a_tag(self, monkeypatch):
+        """`_rocm_version` runs on the import path of a CPU-only smoke test."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _no_torch(name, *args, **kwargs):
+            if name == "torch":
+                raise ImportError("no torch")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _no_torch)
+
+        assert aiter_source._rocm_version() == "unknown"
 
     @pytest.mark.parametrize("arch", ["", ".", "..", "a/b", ".hidden"])
     def test_an_unsafe_arch_never_becomes_a_directory_name(self, monkeypatch, arch):
         """The tag is used as a path component; a traversal or a dotfile here
         would put the cache somewhere nobody looks."""
         monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: arch)
+
+        with pytest.raises(ValueError, match="single safe path component"):
+            aiter_source._aiter_cache_tag()
+
+    @pytest.mark.parametrize("rocm", ["../..", "a/b", "7.15/26333"])
+    def test_an_unsafe_rocm_version_never_becomes_a_directory_name(
+        self, monkeypatch, rocm
+    ):
+        """`torch.version.hip` is not this module's to trust; the arch guard
+        alone would let a separator through in the ROCm component."""
+        monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: "gfx942")
+        monkeypatch.setattr(aiter_source, "_rocm_version", lambda: rocm)
 
         with pytest.raises(ValueError, match="single safe path component"):
             aiter_source._aiter_cache_tag()

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .. import env as jit_env
-from .aiter_source import resolve_aiter_build_arch
+from .aiter_source import _rocm_version, resolve_aiter_build_arch
 
 __all__ = [
     "Family",
@@ -199,21 +199,6 @@ def builds() -> Tuple[BuildSpec, ...]:
 
 
 MANIFEST_NAME = "variants_manifest.json"
-
-
-def _rocm_version() -> str:
-    """The ROCm/HIP version the artifacts were compiled against.
-
-    Part of the store tag because these are CK-tile objects that ship between
-    machines in a wheel, unlike the ``aiter_libs`` cache, which never leaves the
-    box that built it.
-    """
-    try:
-        import torch
-
-        return torch.version.hip or "unknown"
-    except Exception:
-        return "unknown"
 
 
 def variant_store_dir(arch: Optional[str] = None) -> Path:
