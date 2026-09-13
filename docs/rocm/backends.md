@@ -272,9 +272,12 @@ probe has to run whether or not the artifact is in the store, and prebuilding
 that family costs ~32 min on gfx942 for files nothing ever saves time on. Pass
 `--only mha_batch_prefill` to build them anyway.
 
-**It needs a GPU**: the only supported way to make AITER emit a variant is to
-call the op. So it cannot be a `docker build` step — run it as a GPU-attached
-job and copy the resulting directory into the image.
+**This driver needs a GPU**: it emits a variant by calling the op, which launches
+a kernel. So run it as a GPU-attached job and copy the resulting directory into
+the image. AITER's build machinery itself needs no GPU — `aiter`'s own
+`setup.py` drives it through a flat `sys.path` import of `jit.core` that never
+runs `aiter/__init__.py` — so a differently written driver can build variants
+inside `docker build`.
 
 The store lives under FlashInfer's cache directory, at
 `aiter_variants/<arch>__aiter-<version>__rocm-<version>/`. That cache is
