@@ -59,6 +59,7 @@ When porting an upstream kernel, mechanically rewrite:
 - **`gen_jit_spec` auto-injects `--offload-arch=gfxNNN`** for every target arch plus `COMMON_HIPCC_FLAGS` (FP8 enables, warp-sync builtins, etc.). Don't add `--offload-arch` by hand.
 - **Validation macros** live in [`pytorch_extension_utils.h`](../../../csrc/rocm/pytorch_extension_utils.h): `CHECK_INPUT` (GPU + contiguous), `CHECK_LAST_DIM_CONTIGUOUS_INPUT`, `CHECK_EQ`, `CHECK_DIM`, `CHECK_GE`, `CHECK_SHAPE`. Dispatch macros: `DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16` (FP16+BF16), `DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP8` (E4M3+E5M2, both `_fnuz` on CDNA3/4), and the unsuffixed `DISPATCH_PYTORCH_DTYPE_TO_CTYPE` (FP16+BF16+FP8 combined). There is **no** `_FP16_FP32` variant — if you need FP32, dispatch manually.
 - **The `_jit_pybind.cu` naming pattern** (e.g. `batch_decode_jit_pybind.cu`) is used by newer AITER-integrated bindings; the older `flashinfer_<op>_binding.cu` pattern is used by everything else. Both work — match the neighbors.
+- **AITER-backed ops have two binding styles, and they differ in whether you get AITER's dispatcher.** Link-time via [`jit/rocm/aiter_source.py`](../../../flashinfer/jit/rocm/aiter_source.py) takes AITER's `srcs` unmodified and keeps it (norm, rope, activation, page, MoE); `dlopen` via [`aiter_loader.cc`](../../../csrc/rocm/aiter_loader.cc) picks **one** prebuilt module and does not. On the `dlopen` path, verify the arm you are targeting is actually linked — CLAUDE.md has the check.
 
 ## CDNA3 (`gfx942`) vs CDNA4 (`gfx950`)
 

@@ -142,6 +142,22 @@ sed -n '/<fn>/,/;/p' <site-packages>/aiter_meta/csrc/include/<hdr>.h
 
 Check availability in code: `from flashinfer.rocm.aiter_utils import is_aiter_supported`
 
+**Bind AITER in C++, never through `aiter.ops.*` from the Python API.** Python
+is for capability probes, JIT bootstrap, and backend routing; the call itself
+belongs in `csrc/rocm/`. `mla.py` is the one remaining exception.
+
+**Resolving a dispatcher symbol does not mean you get its arms.** AITER splits
+one entry point across modules built with different flags: `aiter::mha_fwd`
+tries asm then CK-Tile in source, but `module_mha_fwd` compiles `-DFAV2_ON=1`
+only, and the asm arm lives in a separate `module_fmha_v3_fwd`
+(`-DFAV3_ON=1 -DENABLE_CK=0`). Read `flags_extra_cc` before designing against
+an arm, or the arg that selects it is a dead store:
+
+```bash
+python -c 'import aiter,json,os;d=os.path.dirname(aiter.__file__);print(json.load(open(d+"/jit/optCompilerConfig.json"))["module_mha_fwd"]["flags_extra_cc"])'
+strings -a <variant>.so | grep -c fmha_fwd_v3    # 0 => the asm arm is not in this binary
+```
+
 ## Arch ↔ codename
 
 MI300X / MI325X = gfx942 = CDNA3; MI350X / MI355X = gfx950 = CDNA4.

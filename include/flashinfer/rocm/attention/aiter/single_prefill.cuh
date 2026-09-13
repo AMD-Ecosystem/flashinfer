@@ -11,6 +11,14 @@
 #include <hip/hip_runtime.h>
 
 #include <ck_tile/host/stream_config.hpp>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <exception>
+#include <flashinfer/rocm/gpu_runtime_compat.hpp>
+#include <fstream>
+#include <stdexcept>
+#include <string>
 
 namespace flashinfer {
 
@@ -30,13 +38,69 @@ inline constexpr bool AiterAsmV3HdimSupported(uint32_t hdim_q, uint32_t hdim_v) 
   return hdim_q == 128 && hdim_v == 128;
 }
 
-// Returns true iff AITER's mha_fwd dispatcher will hit the ASM v3 pipeline for
-// these traits (matches the guard in aiter::fmha_fwd_v3).
+// Cheap pre-filter for the ASM v3 arm, mirroring the guard in aiter::fmha_fwd_v3.
+// AITER's own v3_api_check probe is the authoritative test, but it needs the asm .so
+// dlopened and it logs a warning on every rejection, so screen the obvious misses here
+// rather than probing for each fp16 or hd64 caller.
 inline constexpr bool AiterAsmV3Eligible(uint32_t hdim_q, uint32_t hdim_v,
                                          flashinfer::aiter::VariantKey::Dtype dtype,
                                          bool has_logits_cap, int32_t window_left) {
   return AiterAsmV3HdimSupported(hdim_q, hdim_v) &&
          dtype == flashinfer::aiter::VariantKey::Dtype::kBf16 && !has_logits_cap && window_left < 0;
+}
+
+// Smallest qo_len at which the asm arm is worth taking, by architecture. Mirrors
+// _AITER_ASM_PREFILL_MIN_QO_LEN in flashinfer/rocm/arch_caps.py, which carries the
+// measurement; 0 means never.
+//
+// These macros are what tests/rocm/test_aiter_asm_routing.py compares against the
+// Python table, and they are also what the function returns -- a marker comment
+// would let the two drift while the test kept passing.
+#define FLASHINFER_AITER_ASM_MIN_QO_LEN_GFX942 0  // never: non-monotonic on CDNA3
+#define FLASHINFER_AITER_ASM_MIN_QO_LEN_GFX950 2048
+
+inline uint32_t AiterAsmPrefillMinQoLen(const char* arch) {
+  if (arch == nullptr) return 0u;
+  if (std::strcmp(arch, "gfx950") == 0) return FLASHINFER_AITER_ASM_MIN_QO_LEN_GFX950;
+  if (std::strcmp(arch, "gfx942") == 0) return FLASHINFER_AITER_ASM_MIN_QO_LEN_GFX942;
+  return 0u;  // an unrecognised arch is treated as "never", same as a measured loss
+}
+
+// One-shot stderr note under FLASHINFER_AITER_ASM_VERBOSE=1, so which arm ran is
+// observable. Without it nothing distinguishes "asm served this" from "asm was
+// silently unavailable and CK Tile served it" -- the numerics are the same either
+// way, so tests and operators both need a signal.
+inline void AiterAsmPrefillNote(const char* what) {
+  static const bool verbose = [] {
+    const char* v = std::getenv("FLASHINFER_AITER_ASM_VERBOSE");
+    return v != nullptr && std::strcmp(v, "0") != 0;
+  }();
+  if (verbose) std::fprintf(stderr, "[flashinfer] aiter asm prefill: %s\n", what);
+}
+
+// AITER opens its code object with AITER_CHECK, which aborts rather than returns, so
+// a stale or partial AITER_ASM_DIR takes the process down before any fallback. Our
+// eligibility pins arch, dtype, head dim and mask, so the exact .co name is known --
+// check it and stay on CK Tile when it is missing. Layout: amd-aiter 0.1.20.
+inline bool AiterAsmCoPresent(const char* arch, uint32_t hdim, bool causal) {
+  const char* dir = std::getenv("AITER_ASM_DIR");
+  if (dir == nullptr || *dir == '\0' || arch == nullptr || *arch == '\0') return false;
+  std::string path(dir);
+  if (path.back() != '/') path.push_back('/');
+  path += std::string(arch) + "/fmha_v3_fwd/fwd_hd" + std::to_string(hdim) + "_bf16" +
+          (causal ? "_causal" : "") + ".co";
+  return std::ifstream(path.c_str()).good();
+}
+
+// FLASHINFER_AITER_ASM_PREFILL=0 pins the CK Tile arm. AITER aborts the process on
+// several asm failure modes rather than returning, so an operator-side off switch is
+// part of the contract, not a convenience.
+inline bool AiterAsmPrefillEnabled() {
+  static const bool enabled = [] {
+    const char* v = std::getenv("FLASHINFER_AITER_ASM_PREFILL");
+    return v == nullptr || std::strcmp(v, "0") != 0;
+  }();
+  return enabled;
 }
 
 // params.lse: [num_qo_heads, qo_len] float32 scratch in natural-log scale; nullptr to skip.
@@ -88,10 +152,9 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
   }
 
   ::aiter::mha_fwd_args args{};
-  // ASM v3 path (bf16 + hd128) is ~10-15% faster than CK Tile, gated by the same
-  // eligibility predicate as aiter::fmha_fwd_v3.
-  args.use_asm_v3 =
-      AiterAsmV3Eligible(HEAD_DIM_QK, HEAD_DIM_VO, dtype_enum, has_logits_cap, window_left);
+  // Set per arm below: the CK Tile .so ignores this field entirely (it is built
+  // -DFAV2_ON=1 with no -DFAV3_ON), and the asm .so returns -1 unless it is true.
+  args.use_asm_v3 = false;
   args.v3_api_check = false;
   args.how_v3_bf16_cvt = 0;
   args.data_type = dtype_str;
@@ -143,13 +206,108 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
   // A window needs it too: right=-1 saturates to the full extent, leaving the
   // left-bound-only band FlashInfer defines. right=0 is the causal convention.
   args.mask_type = needs_mask ? kAiterMaskBottomRight : kAiterMaskNone;
-  args.window_size_left = window_left;
+  // Normalize any negative sentinel to -1: AITER's config lookup matches on -1
+  // exactly, so -2 would miss and poison the probe cache for later valid calls.
+  args.window_size_left = window_left < 0 ? -1 : window_left;
   args.window_size_right = causal ? 0 : -1;
 
   ::ck_tile::stream_config sconfig{};
   sconfig.stream_id_ = stream;
 
-  fn(args, sconfig);
+  // Pure-predicate checks first, so an fp16, hd64, windowed or below-threshold caller
+  // reaches CK Tile without paying a HIP runtime query it can never benefit from.
+  bool asm_wanted =
+      AiterAsmPrefillEnabled() &&
+      AiterAsmV3Eligible(HEAD_DIM_QK, HEAD_DIM_VO, dtype_enum, has_logits_cap, window_left);
+  const char* arch_name = "";
+  if (asm_wanted) {
+    int device = 0;
+    uint32_t asm_min_qo_len = 0;
+    if (hipGetDevice(&device) == hipSuccess) {
+      try {
+        arch_name = getGcnArchName(device);
+        asm_min_qo_len = AiterAsmPrefillMinQoLen(arch_name);
+      } catch (const std::exception&) {
+        asm_min_qo_len = 0;  // FI_HIP_CALL throws; an unreadable arch stays on CK Tile
+      }
+    }
+    asm_wanted = asm_min_qo_len > 0 && params.qo_len >= asm_min_qo_len;
+  }
+  if (asm_wanted) {
+    // AITER loads its .co lazily on the first asm call, and HIP rejects a module load
+    // during stream capture -- which AITER turns into std::abort() rather than an
+    // error. Stay on CK Tile while capturing.
+    hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
+    asm_wanted = hipStreamIsCapturing(stream, &capture_status) == hipSuccess &&
+                 capture_status == hipStreamCaptureStatusNone;
+  }
+
+  // A failed load never becomes available later, so skip the block outright rather
+  // than re-entering it to throw and immediately catch. Per-thread, so a second
+  // thread retries the dlopen once before memoizing its own copy.
+  static thread_local bool handle_failed = false;
+  if (asm_wanted && !handle_failed) {
+    // Only this shim's own errors are catchable. AITER reaches std::abort() through
+    // AITER_CHECK for a missing .co, a failed hipModuleLoad and most other internal
+    // failures, because the thread_local that would make it throw defaults to false
+    // and is per-.so under RTLD_LOCAL. That is why the loader pre-checks
+    // AITER_ASM_DIR, why capture is excluded above, and why the kill switch exists:
+    // there is no way to recover once AITER is inside one of those paths.
+    try {
+      auto asm_fn = reinterpret_cast<mha_fwd_fn>(flashinfer::aiter::get_aiter_mha_fwd_asm_handle());
+
+      // Probe once per trait set. v3_api_check resolves AITER's config table and
+      // returns without launching, so this costs one lookup per process rather than
+      // a wasted dispatch per call. The slot covers needs_mask and the normalized
+      // window: head dim is a template parameter, dtype is fixed by the eligibility
+      // check above, and is_group_mode is false whenever there is no soft cap.
+      static thread_local int probe[2] = {0, 0};  // 0 unknown, 1 supported, -1 not
+      const int slot = needs_mask ? 1 : 0;
+      if (probe[slot] == 0 && !AiterAsmCoPresent(arch_name, HEAD_DIM_QK, needs_mask)) {
+        probe[slot] = -1;
+        AiterAsmPrefillNote("code object missing under AITER_ASM_DIR; using CK Tile");
+      }
+      if (probe[slot] == 0) {
+        ::aiter::mha_fwd_args probe_args = args;
+        probe_args.use_asm_v3 = true;
+        probe_args.v3_api_check = true;
+        // v3_api_check returns a literal 1 when the config table has the instance
+        // and -1 when it does not; the real launch below returns the kernel time,
+        // hence > 0 here and >= 0 there.
+        probe[slot] = asm_fn(probe_args, sconfig) > 0.f ? 1 : -1;
+        AiterAsmPrefillNote(probe[slot] == 1 ? "probe: supported" : "probe: unsupported");
+      }
+
+      if (probe[slot] == 1) {
+        args.use_asm_v3 = true;
+        if (asm_fn(args, sconfig) >= 0.f) {
+          AiterAsmPrefillNote("launched");
+          // The shim consumes hipGetLastError() on its own failure path, so a clean
+          // return means it saw none; read it anyway so an async error is reported
+          // here rather than charged to whichever op runs next.
+          return hipGetLastError();
+        }
+        // The real call disagreed with the probe, so stop trusting it: otherwise
+        // every later call pays a wasted dispatch plus AITER's warning.
+        probe[slot] = -1;
+        args.use_asm_v3 = false;
+        AiterAsmPrefillNote("declined after probe said supported; using CK Tile");
+      }
+    } catch (const std::exception&) {
+      handle_failed = true;
+      // asm_fn may have thrown after this was set. Inert today (the CK variant is
+      // built without FAV3_ON and ignores it), but not if a variant ever ships both.
+      args.use_asm_v3 = false;
+      AiterAsmPrefillNote("unavailable; using CK Tile");
+    }
+  }
+
+  // A negative return means no kernel instance matched and nothing was launched,
+  // which would otherwise leave the caller's output buffer untouched and unflagged.
+  // Drop anything the abandoned asm attempt left pending, or the CK Tile call below
+  // is reported as having failed with an error it did not cause.
+  if (asm_wanted) static_cast<void>(hipGetLastError());
+  if (fn(args, sconfig) < 0.f) return hipErrorNoBinaryForGpu;
   return hipGetLastError();
 }
 

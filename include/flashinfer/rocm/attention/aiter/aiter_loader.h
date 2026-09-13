@@ -38,7 +38,9 @@ struct VariantKeyHash {
 
 // Returns the raw dlsym function pointer for aiter::mha_fwd(mha_fwd_args, stream_config const&)
 // out of AITER's mha_fwd template .so. The CK Tile kernel instances baked in are batch-mode
-// (matching is_group_mode=false); the ASM v3 path is still reachable via use_asm_v3=true.
+// (matching is_group_mode=false). These .so files are built -DFAV2_ON=1 with no -DFAV3_ON, so
+// aiter::mha_fwd here is CK Tile only and use_asm_v3 is ignored; the asm arm is a separate
+// module, reached via get_aiter_mha_fwd_asm_handle().
 // This is the preferred loader for single-sequence prefill on shapes that don't need
 // logits_soft_cap or min_seqlen_q semantics — it lets us skip group-mode seqstart
 // [0, seqlen] plumbing entirely.
@@ -47,6 +49,21 @@ struct VariantKeyHash {
 // _logits/_nlogits arm); callers must verify has_logits_cap==false before invoking,
 // otherwise the resulting kernel ignores logits_soft_cap.
 void* get_aiter_mha_fwd_handle(VariantKey const& key);
+
+// Returns the raw dlsym function pointer for aiter::mha_fwd out of AITER's prebuilt
+// module_fmha_v3_fwd.so — the hand-written gfx9 asm arm. That module is built
+// -DFAV3_ON=1 -DENABLE_CK=0, so the same symbol dispatches to asm only and returns a
+// negative value, having launched nothing, for any traits its config table does not
+// carry. Callers must check the return and fall back to CK Tile.
+//
+// Unlike the variant .so files this one ships prebuilt in the wheel and is trait-generic
+// (AITER resolves dtype/hdim/mask/mode from its own table per call), so there is no
+// VariantKey and no JIT bootstrap to trigger.
+//
+// Throws if the .so or symbol is missing, or if AITER_ASM_DIR is unset — the asm kernels
+// are .co files read from that directory at launch time, and AITER calls std::abort()
+// rather than returning an error when it cannot find them. A throw means "use CK Tile".
+void* get_aiter_mha_fwd_asm_handle();
 
 // Returns the raw dlsym function pointer for aiter::mha_fwd out of AITER's mha_varlen_fwd
 // template .so. The CK Tile kernel instances baked in are group-mode only. Use this for

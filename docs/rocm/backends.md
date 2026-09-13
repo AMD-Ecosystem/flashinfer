@@ -416,6 +416,42 @@ being ignored.
 
 ## Per-op notes
 
+### Single prefill takes AITER's asm kernel on CDNA4 only
+
+`aiter::mha_fwd` is a two-arm dispatcher in AITER's source — hand-written
+gfx9 asm first, CK Tile second — but the arms are compiled into separate
+modules. The per-variant `.so` files this port loads are built `-DFAV2_ON=1`
+with no `-DFAV3_ON`, so they contain CK Tile only; the asm arm lives in a
+prebuilt `module_fmha_v3_fwd.so` that has to be opened explicitly.
+
+It is worth opening only where it wins, and that differs by architecture.
+Over a 60-cell sweep at bf16 `head_dim` 128 (batch 1 and 4 × 16/32/64 q-heads
+× `seqlen` 256-6144), asm against CK Tile:
+
+* **gfx950** — the per-`seqlen` geomean rises monotonically above 1024. At and
+  above `qo_len` 2048 all 24 cells are wins or level: geomean 1.21, worst cell
+  1.00. That is the shipping threshold.
+* **gfx942** — non-monotonic. 1.34× at `seqlen` 1024 falls to 0.90× at 1536 and
+  recovers, both reproducible against a ±2% A/A floor, so no threshold holds and
+  the arm stays unreachable. The same 2048 cut scores geomean 1.03 there with 8
+  of 24 cells regressing.
+
+The mechanism is occupancy: the asm kernel tiles 256 rows of Q at a time, so at
+batch 1 with few heads there are too few workgroups to fill the device, and it
+loses. That is also why the gate reads `qo_len` rather than `kv_len` — a
+prefill-with-history shape (`qo` 512, `kv` 4096) measures 0.73× on gfx950 and
+must stay on CK Tile.
+
+Re-run with `python benchmarks/rocm/bench_asm_vs_cktile.py --aa` for the noise
+floor and then without `--aa`; read the A/A first, since a margin inside it is
+not a result. `FLASHINFER_AITER_ASM_PREFILL=0` pins CK Tile.
+
+The sweep is square (`qo_len == kv_len`) apart from one point, so a long cached
+context with `qo_len >= 2048` — chunked prefill — takes the asm arm on evidence
+from square shapes only. Correctness is covered either way; if that shape matters
+to you, measure it before relying on the speedup, and use
+`FLASHINFER_AITER_ASM_VERBOSE=1` to confirm which arm ran.
+
 ### Soft-capped causal prefill avoids one AITER kernel
 
 AITER's
