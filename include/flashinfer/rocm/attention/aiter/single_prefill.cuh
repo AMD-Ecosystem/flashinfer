@@ -197,26 +197,31 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
   ::ck_tile::stream_config sconfig{};
   sconfig.stream_id_ = stream;
 
-  int device = 0;
-  uint32_t asm_min_qo_len = 0;
-  if (hipGetDevice(&device) == hipSuccess) {
-    try {
-      asm_min_qo_len = AiterAsmPrefillMinQoLen(getGcnArchName(device));
-    } catch (const std::exception&) {
-      asm_min_qo_len = 0;  // FI_HIP_CALL throws; an unreadable arch stays on CK Tile
-    }
-  }
-  // AITER loads its .co lazily on the first asm call, and HIP rejects a module load
-  // during stream capture -- which AITER turns into std::abort() rather than an
-  // error. Stay on CK Tile while capturing.
-  hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
-  const bool capturing = hipStreamIsCapturing(stream, &capture_status) != hipSuccess ||
-                         capture_status != hipStreamCaptureStatusNone;
-
-  const bool asm_wanted =
-      asm_min_qo_len > 0 && params.qo_len >= asm_min_qo_len && !capturing &&
+  // Pure-predicate checks first, so an fp16, hd64, windowed or below-threshold caller
+  // reaches CK Tile without paying a HIP runtime query it can never benefit from.
+  bool asm_wanted =
       AiterAsmPrefillEnabled() &&
       AiterAsmV3Eligible(HEAD_DIM_QK, HEAD_DIM_VO, dtype_enum, has_logits_cap, window_left);
+  if (asm_wanted) {
+    int device = 0;
+    uint32_t asm_min_qo_len = 0;
+    if (hipGetDevice(&device) == hipSuccess) {
+      try {
+        asm_min_qo_len = AiterAsmPrefillMinQoLen(getGcnArchName(device));
+      } catch (const std::exception&) {
+        asm_min_qo_len = 0;  // FI_HIP_CALL throws; an unreadable arch stays on CK Tile
+      }
+    }
+    asm_wanted = asm_min_qo_len > 0 && params.qo_len >= asm_min_qo_len;
+  }
+  if (asm_wanted) {
+    // AITER loads its .co lazily on the first asm call, and HIP rejects a module load
+    // during stream capture -- which AITER turns into std::abort() rather than an
+    // error. Stay on CK Tile while capturing.
+    hipStreamCaptureStatus capture_status = hipStreamCaptureStatusNone;
+    asm_wanted = hipStreamIsCapturing(stream, &capture_status) == hipSuccess &&
+                 capture_status == hipStreamCaptureStatusNone;
+  }
 
   if (asm_wanted) {
     // Only this shim's own errors are catchable. AITER reaches std::abort() through
