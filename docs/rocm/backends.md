@@ -429,12 +429,16 @@ Over a 60-cell sweep at bf16 `head_dim` 128 (batch 1 and 4 × 16/32/64 q-heads
 × `seqlen` 256-6144), asm against CK Tile:
 
 * **gfx950** — the per-`seqlen` geomean rises monotonically above 1024. At and
-  above `qo_len` 2048 all 24 cells are wins or level: geomean 1.21, worst cell
-  1.00. That is the shipping threshold.
+  above `qo_len` 2048, 23 of 24 cells win or hold: geomean 1.17, worst cell 0.98
+  (batch 1, 16 heads, `seqlen` 2048). That is the shipping threshold.
 * **gfx942** — non-monotonic. 1.34× at `seqlen` 1024 falls to 0.90× at 1536 and
-  recovers, both reproducible against a ±2% A/A floor, so no threshold holds and
-  the arm stays unreachable. The same 2048 cut scores geomean 1.03 there with 8
+  recovers, both reproducible against the A/A floor, so no threshold holds and
+  the arm stays unreachable. The same 2048 cut scores geomean 1.02 there with 9
   of 24 cells regressing.
+
+Measured on an idle node against an A/A floor of 0.987-1.013 (gfx942) and
+0.989-1.012 (gfx950), so the one gfx950 cell at 0.98 is a real if small loss
+rather than noise.
 
 The mechanism is occupancy: the asm kernel tiles 256 rows of Q at a time, so at
 batch 1 with few heads there are too few workgroups to fill the device, and it
@@ -447,9 +451,11 @@ floor and then without `--aa`; read the A/A first, since a margin inside it is
 not a result. `FLASHINFER_AITER_ASM_PREFILL=0` pins CK Tile.
 
 The sweep is square (`qo_len == kv_len`) apart from one point, so a long cached
-context with `qo_len >= 2048` — chunked prefill — takes the asm arm on evidence
-from square shapes only. Correctness is covered either way; if that shape matters
-to you, measure it before relying on the speedup, and use
+context with `qo_len >= 2048` — chunked prefill — takes the asm arm on speed
+evidence from square shapes only. Correctness there is covered:
+`test_aiter_asm_routing.py` runs `kv_len == 4 * qo_len` above the threshold and
+checks output and LSE against fp32 on the execution that reached asm. If the
+speedup matters for that shape, measure it, and use
 `FLASHINFER_AITER_ASM_VERBOSE=1` to confirm which arm ran.
 
 ### Soft-capped causal prefill avoids one AITER kernel
