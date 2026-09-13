@@ -224,8 +224,9 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
                  capture_status == hipStreamCaptureStatusNone;
   }
 
-  // A failed load never becomes available later in the process, so skip the block
-  // outright rather than re-entering it to throw and immediately catch.
+  // A failed load never becomes available later, so skip the block outright rather
+  // than re-entering it to throw and immediately catch. Per-thread, so a second
+  // thread retries the dlopen once before memoizing its own copy.
   static thread_local bool handle_failed = false;
   if (asm_wanted && !handle_failed) {
     // Only this shim's own errors are catchable. AITER reaches std::abort() through
@@ -248,6 +249,9 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
         ::aiter::mha_fwd_args probe_args = args;
         probe_args.use_asm_v3 = true;
         probe_args.v3_api_check = true;
+        // v3_api_check returns a literal 1 when the config table has the instance
+        // and -1 when it does not; the real launch below returns the kernel time,
+        // hence > 0 here and >= 0 there.
         probe[slot] = asm_fn(probe_args, sconfig) > 0.f ? 1 : -1;
         AiterAsmPrefillNote(probe[slot] == 1 ? "probe: supported" : "probe: unsupported");
       }
@@ -278,6 +282,9 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
 
   // A negative return means no kernel instance matched and nothing was launched,
   // which would otherwise leave the caller's output buffer untouched and unflagged.
+  // Drop anything the abandoned asm attempt left pending, or the CK Tile call below
+  // is reported as having failed with an error it did not cause.
+  if (asm_wanted) static_cast<void>(hipGetLastError());
   if (fn(args, sconfig) < 0.f) return hipErrorNoBinaryForGpu;
   return hipGetLastError();
 }

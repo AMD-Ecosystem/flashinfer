@@ -78,6 +78,13 @@ def test_cuh_mirrors_arch_caps():
             rf'strcmp\(arch, "{re.escape(arch)}"\) == 0\)\s*return {macro};', text
         ), f"the {arch} branch does not return {macro}"
 
+    # Iterating the Python table cannot see a branch that exists only in C++.
+    branches = re.findall(r'strcmp\(arch, "([^"]+)"\) == 0\)', text)
+    assert sorted(branches) == sorted(_AITER_ASM_PREFILL_MIN_QO_LEN), (
+        f"single_prefill.cuh branches on {sorted(branches)}, but arch_caps.py lists "
+        f"{sorted(_AITER_ASM_PREFILL_MIN_QO_LEN)}"
+    )
+
 
 @pytest.mark.parametrize(
     "arch,expected",
@@ -263,13 +270,29 @@ def test_asm_arm_is_actually_reached(tmp_path, causal, return_lse):
     if not threshold:
         pytest.skip(f"{_device_arch(device)} never routes to asm")
 
-    _, _, above = _run_probe(tmp_path, threshold, causal=causal, return_lse=return_lse)
+    asm_out, _, above = _run_probe(
+        tmp_path, threshold, causal=causal, return_lse=return_lse
+    )
     _, _, below = _run_probe(tmp_path, 512, causal=causal, return_lse=return_lse)
     assert "aiter asm prefill: launched" in above, (
         f"qo_len={threshold} did not reach the asm arm. stderr:\n{above[-2000:]}"
     )
     assert "aiter asm prefill: launched" not in below, (
         f"qo_len=512 is below the threshold but took the asm arm. stderr:\n{below[-2000:]}"
+    )
+
+    # Check the numbers from the same execution that proved the arm ran. Asserting
+    # them apart lets both halves pass while asm is unreachable and CK Tile, whose
+    # output is identical, quietly serves every numerics case.
+    assert asm_out is not None, "the above-threshold probe wrote no tensor"
+    torch.manual_seed(7)  # same seed and shapes as _PROBE
+    d = torch.device("cuda:0")
+    q = torch.randn(threshold, 8, HEAD_DIM, dtype=torch.bfloat16, device=d)
+    k = torch.randn(threshold, 2, HEAD_DIM, dtype=torch.bfloat16, device=d)
+    v = torch.randn(threshold, 2, HEAD_DIM, dtype=torch.bfloat16, device=d)
+    ref_o, _ = naive_attention(q.float(), k.float(), v.float(), causal=causal)
+    torch.testing.assert_close(
+        asm_out.float(), ref_o.float().cpu(), rtol=2e-2, atol=2e-2
     )
 
 

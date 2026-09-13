@@ -235,7 +235,10 @@ def _sweep(causal: bool, dry_run_iters: int, repeat_iters: int, aa: bool) -> lis
                 rec[f"{arm}_err"] = f"{type(exc).__name__}: {exc}"[:160]
             finally:
                 torch.cuda.synchronize()
-                torch.cuda.empty_cache()
+
+        # Between shapes, never between arms: releasing segments mid-shape makes the
+        # second arm re-acquire through hipMalloc and pay for it in the ratio.
+        torch.cuda.empty_cache()
 
         ck, asm = rec.get("ck_us"), rec.get("asm_us")
         rec["speedup"] = round(ck / asm, 4) if ck and asm else None
