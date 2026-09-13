@@ -430,17 +430,22 @@ Over a 60-cell sweep at bf16 `head_dim` 128 (batch 1 and 4 × 16/32/64 q-heads
 
 * **gfx950** — the per-`seqlen` geomean climbs with length above 1024: 1.01,
   1.09, 1.15, 1.14, 1.19, 1.19. The one step down (3072) is inside the A/A
-  floor. At and above `qo_len` 2048, 23 of 24 cells win or hold: geomean 1.17,
-  worst cell 0.98 (batch 1, 16 heads, `seqlen` 2048). That is the shipping
-  threshold.
+  floor. At and above `qo_len` 2048, 11 of the 12 batch-1 cells win: geomean
+  1.14, worst cell 0.98 (16 heads, `seqlen` 2048). That is the shipping
+  threshold. Over all 24 cells the same region reads 1.17.
 * **gfx942** — non-monotonic, and the oscillation does not damp with length:
   1.08 at `seqlen` 2048, 0.97 at 3072, 1.06 at 4096, 0.99 at 6144. Every one of
   those steps is outside the A/A floor, so no threshold holds and the arm stays
-  unreachable. The same 2048 cut scores geomean 1.02 with 9 of 24 cells
-  regressing.
+  unreachable. The batch-1 gate region is a net loss there — geomean 0.98 with 8
+  of 12 cells regressing, the worst at 0.81.
 
-Measured on an idle node against an A/A floor of 0.987-1.013 (gfx942) and
-0.989-1.012 (gfx950), so the one gfx950 cell at 0.98 is a real if small loss
+Single prefill is one request, so the dispatcher hard-codes `args.batch = 1` and
+only the batch-1 half of the sweep is reachable through this entry point. Those
+12 cells are what the routing decision rests on; the batch-4 half is kept
+because it is what the batched prefill paths see.
+
+Measured on an idle node against a batch-1 A/A floor of 0.991-1.005 (gfx942) and
+0.995-1.008 (gfx950), so the one gfx950 cell at 0.98 is a real if small loss
 rather than noise.
 
 The mechanism is occupancy: the asm kernel tiles 256 rows of Q at a time, so at

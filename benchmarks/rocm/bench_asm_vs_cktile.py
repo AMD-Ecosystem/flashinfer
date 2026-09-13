@@ -29,9 +29,12 @@ threshold that does not generalise -- batch 1 with 16 heads and batch 4 with 64
 heads sit at opposite ends of the same effect.
 
 ``--aa`` runs CK Tile against itself to establish the noise floor. Read it before
-believing any ratio: a margin inside the A/A spread is not a result. Since the
-allocator-cache fix the floor is roughly +/-1.3%, tight enough that every
-per-seqlen geomean in the sweep now sits outside it.
+believing any ratio, and compare each cell against its own A/A control rather
+than one global band -- the per-shape floors differ and a margin inside one is
+not a result.
+
+Only the ``batch=1`` rows are reachable through ``single_prefill``, which pins
+``args.batch = 1``; the ``batch=4`` rows describe the batched prefill paths.
 
 Run:
     python benchmarks/rocm/bench_asm_vs_cktile.py --aa
