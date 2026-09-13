@@ -781,7 +781,8 @@ def test_batch_prefill_auto_declines_aiter_for_short_query():
     if gated is None:
         pytest.skip("no flat-gather threshold for this architecture")
 
-    # page_size=1 is not in _aiter_native_page_sizes(), so this call gathers.
+    # page_size=1 is outside the bf16 *route* set, so this call gathers -- it
+    # is in the capability set, which is no longer what arms the gate.
     page_size, batch_size, qo_len, kv_len = 1, 4, gated, 256
     num_qo_heads, num_kv_heads, head_dim = 8, 8, 128
     workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
@@ -828,7 +829,7 @@ def test_batch_prefill_auto_declines_aiter_for_short_query():
 
 def _short_query_plan_args(device, qo_len, kv_len=256, page_size=1):
     """Paged-prefill plan() arguments at a given query length, on a page size
-    AITER cannot page natively (so the gather gate is armed)."""
+    that is not *routed* natively for bf16 (so the gather gate is armed)."""
     batch_size = 4
     num_qo_heads, num_kv_heads, head_dim = 8, 8, 128
     num_pages = (kv_len + page_size - 1) // page_size
@@ -969,9 +970,13 @@ def test_short_query_gate_re_checks_when_native_paging_probe_fails(monkeypatch):
     if gated is None:
         pytest.skip("no flat-gather threshold for this architecture")
 
-    native = sorted(prefill_rocm._aiter_native_page_sizes())
-    assert native, "no native page size to disarm the selector with"
-    page_size = native[0]
+    # The *route* set, not the capability set: the selector disarms the gate on
+    # what it routes natively, and bf16 is routed only at 1024 even though it
+    # can page 1 and 16. Picking from the capability set leaves the gate armed,
+    # so the selector returns fa2 and the probe site below never runs.
+    routed = prefill_rocm._aiter_paged_route_page_sizes(torch.bfloat16)
+    assert routed, "no routed page size to disarm the selector with"
+    page_size = max(routed)
 
     # Force the probe to fail so a page size the selector treated as native
     # lands on flat-gather. Patching the probe rather than finding a config

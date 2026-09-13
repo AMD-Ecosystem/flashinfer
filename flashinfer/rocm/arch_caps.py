@@ -34,6 +34,7 @@ __all__ = [
     "Capability",
     "KnownBad",
     "Support",
+    "aiter_asm_prefill_min_qo_len",
     "aiter_fallback_backend",
     "aiter_flat_gather_gated_q_len",
     "aiter_softcap_defect_arch",
@@ -307,6 +308,30 @@ def aiter_softcap_defect_arch(arch: str) -> bool:
     return bool(_AITER_SOFTCAP_DEFECT_ARCHS.get(normalize_arch(arch), False))
 
 
+# AITER's asm forward beats its CK Tile arm only where there is enough q-side
+# parallelism to fill the device, and where that starts differs by architecture.
+# Not a KnownBad row for the same reason as the soft cap above: this gates a
+# shape range, not a whole (op, backend, arch).
+#
+# Measured on amd-aiter 0.1.20, bf16 head_dim=128, asm/CK Tile over a 60-cell
+# sweep (batch 1 and 4 x 16/32/64 q-heads x seqlen 256..6144), A/A-controlled at
+# a +/-2% noise floor:
+#   gfx950  monotone above seqlen 1024; at/above 2048 the 24 cells give a 1.21x
+#           geomean with the worst cell at 1.00, so nothing regresses
+#   gfx942  non-monotonic -- 1.34x at 1024 falls to 0.90x at 1536 and back,
+#           reproduced -- so no threshold holds and asm stays unreachable
+_AITER_ASM_PREFILL_MIN_QO_LEN = {"gfx942": None, "gfx950": 2048}
+
+
+def aiter_asm_prefill_min_qo_len(arch: str) -> Optional[int]:
+    """Smallest qo_len at which AITER's asm prefill is worth taking on ``arch``.
+
+    ``None`` means never route to asm there, which covers both an architecture
+    measured as a loss and an unrecognised one -- the safe answer is the same.
+    """
+    return _AITER_ASM_PREFILL_MIN_QO_LEN.get(normalize_arch(arch))
+
+
 def _archs(gfx942: ArchSupport, gfx950: ArchSupport) -> Mapping[str, ArchSupport]:
     """Positional shorthand for the two architectures every row must declare."""
     return {"gfx942": gfx942, "gfx950": gfx950}
@@ -355,7 +380,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "single_prefill",
         "aiter",
         _archs(_OK_942, _OK_950),
-        note="MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP.",
+        note="MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. On gfx950 an unwindowed, uncapped bf16 head_dim 128 call at `qo_len` >= 2048 takes AITER's asm kernel, outside HIP graph capture; everything else is CK Tile.",
         fallback="fa2",
     ),
     Capability(
@@ -365,7 +390,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
             _OK_942,
             ArchSupport(Support.SUPPORTED, evidence=_MEASURED_950),
         ),
-        note="Paged and ragged, with sliding window. fp8 query/KV on the paged route (bf16 out, per-tensor descales, no LSE). Page sizes 1/16/1024 are native; fp16/bf16 keep the flat gather, which measured faster.",
+        note="Paged and ragged, with sliding window. fp8 query/KV on the paged route (bf16 out, per-tensor descales, no LSE). Page sizes 1/16/1024 are native; fp16/bf16 are routed there only at 1024 and flat-gather below it, which measured faster.",
         fallback="fa2",
     ),
     # No alternative backend -- hence no fallback=.

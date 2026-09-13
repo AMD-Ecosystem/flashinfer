@@ -79,6 +79,7 @@ FP8_PREFILL_DTYPES = (torch.float8_e4m3fnuz, torch.float8_e4m3fn)
 FP8_PREFILL_OUT_DTYPE = torch.bfloat16
 
 
+@functools.cache
 def _aiter_paged_route_page_sizes(dtype: torch.dtype) -> frozenset:
     """Page sizes we will *route* through the native paged kernel.
 
@@ -2314,7 +2315,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._seq_lens_q = None
         self._block_tables = None
         # Pre-computed flat-KV buffers for the AITER backend when the page
-        # size is not natively supported (see _aiter_native_page_sizes()).
+        # size is not routed natively (see _aiter_paged_route_page_sizes()).
         self._aiter_flat_gather_idx: Optional[torch.Tensor] = None
         self._aiter_flat_kv_indptr: Optional[torch.Tensor] = None
 
@@ -2803,6 +2804,12 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 )
             if self._backend == "aiter":
                 _require_native_fp8_dtype(q_data_type)
+            # Ahead of the fa2 message: fp8 here was declined for the page size,
+            # not the kernel, and the short-query gate can reach fa2 first.
+            if page_size not in _aiter_paged_route_page_sizes(q_data_type):
+                _reject_fp8_off_native_paging(
+                    q_data_type, "the paged flat-gather route"
+                )
             _reject_fp8_on_fa2(q_data_type, self._backend)
             if self._backend == "aiter" and _aiter_softcap_defect(
                 causal, logits_soft_cap, head_dim_qk, softcap_kv_len, self.device
@@ -2932,10 +2939,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
                             dev_idx,
                         )
             if reason is not None:
-                # Re-guard: the check above ran before the probe, and fa2 still
-                # has no fp8 kernel. Without this the demotion reaches the
-                # static_assert and the caller gets a ninja log.
-                _reject_fp8_on_fa2(q_data_type, "fa2")
+                # No fp8 re-guard: _reject_fp8_off_native_paging at the top of
+                # this block already raised for every fp8 dtype.
                 self._backend = "fa2"
                 self._backend_fallback_reason = reason
                 self._cached_module = get_batch_prefill_module("fa2", *get_module_args)
@@ -3946,6 +3951,9 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         )
 
         resolved_from_auto = self._backend_requested == "auto"
+        # Above the jit-module split: ragged dispatches through mha_varlen_fwd
+        # whatever module is supplied, and it has no fp8 kernel.
+        _reject_fp8_off_native_paging(q_data_type, "ragged batch prefill")
         if self._jit_module is not None:
             self._cached_module = self._jit_module
         else:
@@ -3968,9 +3976,6 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                         kv_len=self._max_kv_len,
                     )
                 )
-            # Unconditional, not _reject_fp8_on_fa2: ragged dispatches through
-            # mha_varlen_fwd on both backends and neither has an fp8 kernel.
-            _reject_fp8_off_native_paging(q_data_type, "ragged batch prefill")
             if self._backend == "aiter" and _aiter_softcap_defect(
                 causal, logits_soft_cap, head_dim_qk, self._max_kv_len, self.device
             ):
@@ -4021,10 +4026,8 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                         dev_idx,
                     )
             if reason is not None:
-                # Re-guard: the check above ran before the probe, and fa2 still
-                # has no fp8 kernel. Without this the demotion reaches the
-                # static_assert and the caller gets a ninja log.
-                _reject_fp8_on_fa2(q_data_type, "fa2")
+                # No fp8 re-guard: _reject_fp8_off_native_paging at the top of
+                # this block already raised for every fp8 dtype.
                 self._backend = "fa2"
                 self._backend_fallback_reason = reason
                 self._cached_module = get_batch_prefill_module("fa2", *get_module_args)

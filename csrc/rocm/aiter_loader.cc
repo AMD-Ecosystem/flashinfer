@@ -204,6 +204,16 @@ std::string mha_fwd_variant_so_name(VariantKey const& key) {
 std::shared_mutex s_mf_mu;
 std::unordered_map<VariantKey, void*, VariantKeyHash> s_mf_cache;
 
+// ----- asm (fmha_v3) module cache -----
+//
+// One handle serves every trait set: module_fmha_v3_fwd.so carries no variant axes,
+// because AITER resolves the kernel from its own config table on each call. Keyed on a
+// constant so it can share load_variant_sym's double-checked locking.
+constexpr const char* kAsmModuleName = "module_fmha_v3_fwd.so";
+
+std::shared_mutex s_asm_mu;
+std::unordered_map<int, void*> s_asm_cache;
+
 // ----- mha_varlen_fwd (varlen, group-mode CK) cache -----
 
 std::string mha_varlen_fwd_variant_so_name(VariantKey const& key) {
@@ -272,6 +282,27 @@ void* get_aiter_mha_fwd_handle(VariantKey const& key) {
            std::string(dtype_token(key)) + ", is_causal=" + (key.needs_mask ? "true" : "false") +
            " (window_size_left>=0 selects the same variant)" +
            ", return_softmax_lse=" + (key.has_lse ? "true" : "false") + ")." + kAbiPinNote;
+  });
+}
+
+void* get_aiter_mha_fwd_asm_handle() {
+  // AITER reads its .co files out of AITER_ASM_DIR at launch and aborts rather than
+  // erroring when it cannot. `import aiter` sets it; a pure-C++ consumer may not have.
+  // Empty counts as unset: AITER would root the path at "/<arch>/..." and abort there.
+  const char* asm_dir = std::getenv("AITER_ASM_DIR");
+  if (asm_dir == nullptr || *asm_dir == '\0') {
+    throw std::runtime_error(
+        "AITER_ASM_DIR is unset or empty, so AITER cannot locate its asm kernels and would abort "
+        "the process rather than report an error. It is set when the aiter Python package is "
+        "imported; import it before this path, or set FLASHINFER_AITER_ASM_PREFILL=0 to stay "
+        "on CK Tile.");
+  }
+  return load_variant_sym(s_asm_mu, s_asm_cache, 0, kAsmModuleName, kMhaFwdSymbol, []() {
+    return "  Hint: " + std::string(kAsmModuleName) +
+           " ships prebuilt in the amd-aiter wheel, so unlike the mha_fwd variants there is no "
+           "JIT build to trigger. Its absence means the wheel is incomplete or the JIT dir "
+           "points elsewhere." +
+           kAbiPinNote;
   });
 }
 

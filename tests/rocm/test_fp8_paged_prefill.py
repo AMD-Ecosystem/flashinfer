@@ -102,7 +102,8 @@ def test_fp8_paged_prefill_matches_fp32_reference(s_qo, s_kv):
 
     Tolerance is set against the bf16 result on the same inputs rather than a
     constant -- fp8 error is dominated by the uncalibrated per-tensor descale,
-    so a fixed bound would either pass anything or fail on noise.
+    so a fixed bound would either pass anything or fail on noise. Note the two
+    take different routes at PAGE=16: bf16 flat-gathers, fp8 pages natively.
     """
     device = torch.device("cuda:0")
     _require_aiter(device)
@@ -243,20 +244,16 @@ def test_fp8_on_a_non_routed_page_size_raises_rather_than_running():
     _require_aiter(device)
     fp8 = fp8_dtype()
     assert 32 not in _aiter_paged_route_page_sizes(fp8), "test premise"
-    global PAGE
-    original, PAGE = PAGE, 32
-    try:
-        # NotImplementedError specifically: a bare RuntimeError is what the
-        # AITER bootstrap and the ninja path raise, so accepting those would
-        # let the regression this guards against pass.
-        with pytest.raises(NotImplementedError, match="fp8 prefill"):
-            _plan_and_run(device, 512, 512, fp8, fp8)
-    finally:
-        PAGE = original
+    # NotImplementedError specifically: a bare RuntimeError is what the AITER
+    # bootstrap and the ninja path raise, so accepting those would let the
+    # regression this guards against pass.
+    with pytest.raises(NotImplementedError, match="fp8 prefill"):
+        _plan_and_run(device, 512, 512, fp8, fp8, page=32)
 
 
+@pytest.mark.parametrize("s_qo", [4, 512])
 @pytest.mark.parametrize("backend", ["auto", "aiter"])
-def test_a_non_routed_page_size_is_refused_on_either_backend(backend):
+def test_a_non_routed_page_size_is_refused_on_either_backend(backend, s_qo):
     """An explicit `aiter` is not demotable, so it reaches AITER's own bootstrap.
 
     Before the guard that answered `RuntimeError: invalid argument for fmha_fwd`
@@ -266,13 +263,10 @@ def test_a_non_routed_page_size_is_refused_on_either_backend(backend):
     device = torch.device("cuda:0")
     _require_aiter(device)
     fp8 = fp8_dtype()
-    global PAGE
-    original, PAGE = PAGE, 32
-    try:
-        with pytest.raises(NotImplementedError, match="flat-gather"):
-            _plan_and_run(device, 512, 512, fp8, fp8, backend=backend)
-    finally:
-        PAGE = original
+    # s_qo=4 also crosses the short-query gate, which picks fa2 first; the
+    # message must still name the page size rather than fa2's missing kernel.
+    with pytest.raises(NotImplementedError, match="flat-gather"):
+        _plan_and_run(device, s_qo, 1024, fp8, fp8, backend=backend, page=32)
 
 
 @pytest.mark.parametrize("backend", ["auto", "aiter"])

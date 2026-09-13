@@ -75,8 +75,8 @@ def test_single_prefill_with_kv_cache(
     if causal and qo_len > kv_len:
         pytest.skip("causal attention requires kv_len >= qo_len")
 
-    # A non-zero soft cap disables AITER's asm paths, leaving mha_varlen_fwd's
-    # CK kernel, which applies the cap wrongly. Non-causal is unaffected, and
+    # A non-zero soft cap forces mha_varlen_fwd, whose CK kernel applies the cap
+    # wrongly. Non-causal is unaffected, and
     # mha_batch_prefill is exact on the same inputs. Which architectures are
     # affected comes from the capability table, not a literal.
     from flashinfer.rocm.arch_caps import _device_arch, aiter_softcap_defect_arch
@@ -243,11 +243,12 @@ def test_single_prefill_aiter_bf16(
     causal: bool,
     return_lse: bool,
 ):
-    """AITER single-prefill with bf16 inputs. Exercises the ASM v3 (bf16+hd128)
-    fast path inside aiter::mha_fwd in addition to the CK Tile fallback for
-    hd64/hd256. logits_soft_cap is held at 0.0 here so this also covers the
-    mha_fwd (non-varlen, batch-mode) .so loader path that has no bf16 coverage
-    in the fp16-only matrix above."""
+    """AITER single-prefill with bf16 inputs, all of it on the CK Tile arm.
+
+    Every qo_len here is below the asm routing threshold, so this covers the
+    mha_fwd (non-varlen, batch-mode) .so loader path -- which the fp16-only
+    matrix above does not reach -- and nothing else. The asm arm is covered by
+    tests/rocm/test_aiter_asm_routing.py."""
     if not is_aiter_supported(torch.device("cuda:0")) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
     if causal and qo_len > kv_len:
@@ -338,7 +339,7 @@ def test_auto_backend_selects_aiter(head_dim, return_lse):
 
 # (causal, logits_soft_cap, head_dim, kv_len, expect_aiter)
 _SOFTCAP_ROUTING = [
-    (True, 0.0, 128, 512, True),  # no cap: asm path, exact
+    (True, 0.0, 128, 512, True),  # no cap: not gated, exact
     (False, 8.0, 128, 512, True),  # non-causal: exact
     (True, 8.0, 64, 512, True),  # other head dims unaffected
     (True, 8.0, 256, 512, True),
@@ -429,7 +430,7 @@ def test_explicit_aiter_backend_rejects_softcap_defect():
         (True, True, 8.0, 128, 1024, True),  # the gated combination
         (False, True, 8.0, 128, 1024, False),  # unaffected arch: never gated
         (True, False, 8.0, 128, 1024, False),  # non-causal is exact
-        (True, True, 0.0, 128, 1024, False),  # no cap: asm path
+        (True, True, 0.0, 128, 1024, False),  # no cap: not gated
         # None is what single prefill actually passes on the uncapped path.
         (True, True, None, 128, 1024, False),
         (True, True, 8.0, 64, 1024, False),  # other head dims unaffected

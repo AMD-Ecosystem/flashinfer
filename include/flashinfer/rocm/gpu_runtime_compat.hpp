@@ -15,6 +15,7 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_runtime_api.h>
 
+#include <cstring>
 #include <sstream>
 #include <stdexcept>
 
@@ -55,6 +56,33 @@ inline int getMaxSharedMemPerMultiprocessor(int dev_id) {
   max_smem_per_sm = deviceProp.sharedMemPerMultiprocessor;
 
   return max_smem_per_sm;
+}
+
+/// Returns the device's gfx architecture with the feature suffix stripped, so
+/// `gfx950:sramecc+:xnack-` comes back as `gfx950` — matching what Python's
+/// `arch_caps.normalize_arch` produces, since routing policy is keyed on it.
+///
+/// Cached per device id like the queries above; the returned pointer stays valid
+/// for the life of the thread. AITER carries the same logic in
+/// `aiter_hip_common.h`, but its headers pull in pybind11 and cannot be included
+/// from a `-DPy_LIMITED_API` translation unit.
+///
+/// @param dev_id Device ID
+/// @return NUL-terminated arch name; "" only for a device id outside the cache
+///         range. A failed query throws via FI_HIP_CALL, as the accessors above do.
+inline const char* getGcnArchName(int dev_id) {
+  static thread_local char cache[64][32] = {};
+  if (dev_id < 0 || dev_id >= 64) return "";  // out of cache range; "" reads as unknown
+  if (cache[dev_id][0] != '\0') return cache[dev_id];
+
+  hipDeviceProp_t deviceProp;
+  FI_HIP_CALL(hipGetDeviceProperties(&deviceProp, dev_id));
+  const char* full = deviceProp.gcnArchName;
+  size_t n = 0;
+  while (full[n] != '\0' && full[n] != ':' && n < sizeof(cache[0]) - 1) ++n;
+  std::memcpy(cache[dev_id], full, n);
+  cache[dev_id][n] = '\0';
+  return cache[dev_id];
 }
 
 /// Returns the maximum shared memory per thread block

@@ -159,8 +159,8 @@ library's actual routing. Do not edit it by hand; run
 | Op | Backend | gfx942 (CDNA3) | gfx950 (CDNA4) | Notes |
 | :--- | :--- | :---: | :---: | :--- |
 | `batch_decode` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Under graph capture `auto` needs a declared `max_seq_len`, else it stays on fa2. |
-| `single_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. |
-| `batch_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | Paged and ragged, with sliding window. fp8 query/KV on the paged route (bf16 out, per-tensor descales, no LSE). Page sizes 1/16/1024 are native; fp16/bf16 keep the flat gather, which measured faster. |
+| `single_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. On gfx950 an unwindowed, uncapped bf16 head_dim 128 call at `qo_len` >= 2048 takes AITER's asm kernel, outside HIP graph capture; everything else is CK Tile. |
+| `batch_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | Paged and ragged, with sliding window. fp8 query/KV on the paged route (bf16 out, per-tensor descales, no LSE). Page sizes 1/16/1024 are native; fp16/bf16 are routed there only at 1024 and flat-gather below it, which measured faster. |
 | `mla` | `aiter` -- only backend | ✅ | ✅ | DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here. |
 | `rope` | `aiter` -- opt-in | ✅ | ✅ | `apply_rope_with_cos_sin_cache` and its inplace variant, linked at the C++ level. Opt-in. |
 | `append_paged_kv_cache` | `aiter` -- opt-in | ✅ | ✅ | fp16/bf16 + NHD. Bit-exact with the in-tree kernel but slower, so `auto` picks `native`. |
@@ -230,6 +230,12 @@ numbers. Paged prefill at a native page size is exempt — it dispatches
 See
 [per-op notes](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md#per-op-notes).
 
+**Long single prefill uses AITER's asm kernel on MI350X/MI355X.** An unwindowed,
+uncapped bf16 `head_dim=128` call at `qo_len >= 2048` outside HIP graph capture is
+about 1.21× faster there; the same kernel is non-monotonic on MI300X/MI325X, so
+CDNA3 stays on CK Tile — see
+[per-op notes](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md#per-op-notes).
+
 ## `torch.compile`
 
 Set `FLASHINFER_USE_TORCH_CUSTOM_OPS=1` **before** importing `flashinfer` to
@@ -278,6 +284,8 @@ Read at runtime or import time:
 | :--- | :--- | :--- |
 | `FLASHINFER_USE_TORCH_CUSTOM_OPS` | `0` | Wrap kernels for `torch.compile`; set before importing `flashinfer`. See above. |
 | `FLASHINFER_AITER_STRICT` | `0` | Raise instead of degrading when AITER cannot serve a page size natively. Set in CI to catch coverage regressions rather than absorb them as a slowdown. |
+| `FLASHINFER_AITER_ASM_PREFILL` | `1` | Set to `0` to keep single prefill on AITER's CK Tile kernel. AITER aborts the process on several asm failure modes rather than returning an error, so this is the supported way out. |
+| `FLASHINFER_AITER_ASM_VERBOSE` | `0` | Log to stderr which prefill arm ran. The two arms agree numerically, so this is the only way to tell asm from CK Tile. |
 | `FLASHINFER_ARCH_ALLOW_KNOWN_BAD` | `0` | Run an (op, backend, arch) combination the capability table marks known-broken on your toolchain. Only if you have validated it yourself. |
 | `FLASHINFER_HIP_FUSED_CASCADE` | `0` | In `MultiLevelCascadeAttentionWrapper` only, pass each level's partial state into the next prefill call instead of merging afterwards; AITER levels and the shared-prefix wrappers ignore it. Both paths tested. Read once at import, so set it first. |
 | `FLASHINFER_WORKSPACE_BASE` | `$HOME` | Parent of the JIT cache (`.cache/flashinfer/`); point at fast local disk when `$HOME` is on NFS. Prefer an absolute path: the value is wrapped in `pathlib.Path` unvalidated, so a relative one resolves against the working directory and `~` becomes a literal `./~` directory. |
