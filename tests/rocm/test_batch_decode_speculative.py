@@ -308,7 +308,8 @@ def test_rejects_non_positive_q_len(bad):
 
 def test_rejects_kv_shorter_than_q_len():
     """The draft tokens must already be in the KV cache; otherwise the earlier
-    query rows would attend to nothing and the C++ dispatch aborts."""
+    query rows attend to an empty range and the result is silently wrong -- the
+    batch paged path has no kv_len < qo_len guard to abort on."""
     device = torch.device("cuda:0")
     # One page of 16 tokens per request, asking to verify 32.
     _, _, indptr, indices, last_page_len = _paged_inputs(2, PAGE_SIZE, 1, 32, 8, device)
@@ -325,6 +326,35 @@ def test_rejects_kv_shorter_than_q_len():
             q_data_type=DTYPE,
             kv_data_type=DTYPE,
             q_len_per_req=32,
+        )
+
+
+def test_kv_len_guard_ignores_a_disagreeing_seq_lens_override():
+    """The guard reads the paged metadata, not seq_lens. An override may legally
+    understate the cache, so trusting it would pass a request the kernel then
+    attends with kv_len < qo_len -- silently wrong, not an error."""
+    device = torch.device("cuda:0")
+    batch_size, q_len = 2, 32
+    # Metadata says 16 tokens per request; the override claims 512.
+    _, _, indptr, indices, last_page_len = _paged_inputs(
+        batch_size, PAGE_SIZE, 1, 32, 8, device
+    )
+    seq_lens = torch.full((batch_size,), 512, dtype=torch.int32, device=device)
+
+    wrapper = _decode_wrapper(device)
+    with pytest.raises(ValueError, match="empty KV range"):
+        wrapper.plan(
+            indptr,
+            indices,
+            last_page_len,
+            32,
+            8,
+            HEAD_DIM,
+            PAGE_SIZE,
+            q_data_type=DTYPE,
+            kv_data_type=DTYPE,
+            seq_lens=seq_lens,
+            q_len_per_req=q_len,
         )
 
 
