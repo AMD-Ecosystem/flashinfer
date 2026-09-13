@@ -110,6 +110,9 @@ def _provenance() -> dict:
         "arch": props.gcnArchName,
         "cu_count": props.multi_processor_count,
         "torch": torch.__version__,
+        # Kernel selection and timing are both ROCm-version sensitive, so two runs
+        # are only comparable when this matches.
+        "hip": torch.version.hip or "none",
         "aiter": aiter_ver,
         "shipping_threshold": aiter_asm_prefill_min_qo_len(arch),
     }

@@ -224,16 +224,17 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
                  capture_status == hipStreamCaptureStatusNone;
   }
 
-  if (asm_wanted) {
+  // A failed load never becomes available later in the process, so skip the block
+  // outright rather than re-entering it to throw and immediately catch.
+  static thread_local bool handle_failed = false;
+  if (asm_wanted && !handle_failed) {
     // Only this shim's own errors are catchable. AITER reaches std::abort() through
     // AITER_CHECK for a missing .co, a failed hipModuleLoad and most other internal
     // failures, because the thread_local that would make it throw defaults to false
     // and is per-.so under RTLD_LOCAL. That is why the loader pre-checks
     // AITER_ASM_DIR, why capture is excluded above, and why the kill switch exists:
     // there is no way to recover once AITER is inside one of those paths.
-    static thread_local bool handle_failed = false;  // don't retry a known-bad load
     try {
-      if (handle_failed) throw std::runtime_error("asm handle previously unavailable");
       auto asm_fn = reinterpret_cast<mha_fwd_fn>(flashinfer::aiter::get_aiter_mha_fwd_asm_handle());
 
       // Probe once per trait set. v3_api_check resolves AITER's config table and
