@@ -63,9 +63,8 @@ def _skip_unless_aiter(device: torch.device) -> None:
 def test_cuh_mirrors_arch_caps():
     """The C++ gate carries its own copy of the table; drift would be silent.
 
-    Reads the macros AiterAsmPrefillMinQoLen actually returns. An earlier version
-    of this test grepped a marker comment, which would have passed while the
-    returned value said something else -- the one failure it existed to catch.
+    Binds each arch to the macro its own branch returns, so swapping the two
+    branches fails here rather than silently reversing the routing policy.
     """
     text = _CUH.read_text()
     for arch, value in _AITER_ASM_PREFILL_MIN_QO_LEN.items():
@@ -75,7 +74,9 @@ def test_cuh_mirrors_arch_caps():
             f"{macro} in single_prefill.cuh does not equal {expected}; "
             "arch_caps.py and the C++ gate have drifted."
         )
-        assert f"return {macro};" in text, f"{macro} is defined but not returned"
+        assert re.search(
+            rf'strcmp\(arch, "{re.escape(arch)}"\) == 0\)\s*return {macro};', text
+        ), f"the {arch} branch does not return {macro}"
 
 
 @pytest.mark.parametrize(
