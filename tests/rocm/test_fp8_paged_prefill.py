@@ -214,6 +214,88 @@ def test_fp8_ignoring_descales_would_be_caught():
     )
 
 
+def _fp8_kv_with_distinct_scales(device, fp8, s_qo=512, s_kv=512):
+    """Quantize K and V separately, so their descales differ by ~8x.
+
+    The shared helper scales the whole KV tensor at once, which makes a swapped
+    K/V descale pointer cancel out and stay invisible.
+    """
+    npages = s_kv // PAGE
+    torch.manual_seed(0)
+    q = torch.randn(s_qo, NHQ, HEAD_DIM, dtype=torch.bfloat16, device=device)
+    k = torch.randn(npages, PAGE, NHKV, HEAD_DIM, dtype=torch.bfloat16, device=device)
+    v = 8.0 * torch.randn(
+        npages, PAGE, NHKV, HEAD_DIM, dtype=torch.bfloat16, device=device
+    )
+    q8, sq = _quant(q, fp8)
+    k8, sk = _quant(k, fp8)
+    v8, sv = _quant(v, fp8)
+    assert float(sv) > 4 * float(sk), "test premise: the two scales must differ"
+
+    ws = torch.empty(512 * 1024 * 1024, dtype=torch.uint8, device=device)
+    wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(ws, "NHD", backend="auto")
+    wrapper.plan(
+        torch.tensor([0, s_qo], dtype=torch.int32, device=device),
+        torch.tensor([0, npages], dtype=torch.int32, device=device),
+        torch.arange(npages, dtype=torch.int32, device=device),
+        torch.tensor([PAGE], dtype=torch.int32, device=device),
+        NHQ,
+        NHKV,
+        HEAD_DIM,
+        PAGE,
+        causal=True,
+        q_data_type=fp8,
+        kv_data_type=fp8,
+    )
+    ref = _reference(q, k.reshape(-1, NHKV, HEAD_DIM), v.reshape(-1, NHKV, HEAD_DIM))
+    return wrapper, torch.stack((k8, v8), dim=1), q8, (sq, sk, sv), ref
+
+
+def test_the_k_and_v_descales_reach_their_own_operands():
+    """K and V carry different scales here, so swapping them changes the answer
+    instead of cancelling -- which is what pins the two pointers in the shim."""
+    device = torch.device("cuda:0")
+    _require_aiter(device)
+    fp8 = fp8_dtype()
+    wrapper, kv8, q8, (sq, sk, sv), ref = _fp8_kv_with_distinct_scales(device, fp8)
+
+    good = wrapper.run(q8, kv8, scale_q=sq, scale_k=sk, scale_v=sv)
+    swapped = wrapper.run(q8, kv8, scale_q=sq, scale_k=sv, scale_v=sk)
+
+    err = float((good.float() - ref).abs().max())
+    assert err < 40 * float(sv), f"correct descales disagree with the reference: {err}"
+    assert not torch.allclose(good.float(), swapped.float(), atol=1e-2), (
+        "swapping scale_k and scale_v changed nothing; the shim is not "
+        "distinguishing the two descale pointers"
+    )
+
+
+@pytest.mark.parametrize("omitted", ["scale_q", "scale_k", "scale_v"])
+def test_every_descale_is_required_for_fp8(omitted):
+    """AITER's fp8 kernels have no no-scale instance, so a missing descale must
+    be refused rather than passed through as a null pointer."""
+    device = torch.device("cuda:0")
+    _require_aiter(device)
+    fp8 = fp8_dtype()
+    wrapper, kv8, q8, (sq, sk, sv), _ = _fp8_kv_with_distinct_scales(device, fp8)
+    scales = {"scale_q": sq, "scale_k": sk, "scale_v": sv}
+    del scales[omitted]
+
+    with pytest.raises(RuntimeError, match="requires q/k/v descales"):
+        wrapper.run(q8, kv8, **scales)
+
+
+def test_descales_are_refused_for_a_non_fp8_query():
+    """The other direction: scales on a bf16 call would be silently ignored."""
+    device = torch.device("cuda:0")
+    _require_aiter(device)
+    fp8 = fp8_dtype()
+    one = torch.ones(1, dtype=torch.float32, device=device)
+
+    with pytest.raises(RuntimeError, match="only meaningful for an fp8 query"):
+        _plan_and_run(device, 512, 512, torch.bfloat16, fp8, scale_q=one)
+
+
 def test_fp8_rejects_per_head_descale():
     """Per-head descales are silently mis-applied by the per-tensor kernel."""
     device = torch.device("cuda:0")

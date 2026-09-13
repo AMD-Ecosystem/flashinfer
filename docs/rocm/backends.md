@@ -525,8 +525,10 @@ page size 1024. fp8 is the exception: its flat-gather route would be
 `mha_varlen_fwd`, which has no fp8 kernel, so fp8 always takes native paging.
 
 That list is a starting point, not a guarantee. `plan()` confirms it by
-building the kernel, and a page size the installed AITER cannot actually
-serve also falls back to the gather with a warning naming the reason.
+building the kernel, and for fp16/bf16 a page size the installed AITER cannot
+actually serve falls back to the gather with a warning naming the reason. fp8
+has no gather to fall back to, so the same probe failure raises
+`NotImplementedError` instead.
 Builds installed from an AITER source commit (as SGLang and vLLM do) are
 the usual case where a "native" page size is rejected.
 
@@ -700,12 +702,18 @@ causal). Four constraints, all of them AITER's:
   `scale_q`, `scale_k`, `scale_v`, passed to `run()`. AITER reads element 0 of
   whatever it is given, so a per-head tensor would silently apply head 0's scale
   to every head; the shim rejects it instead.
+* **The fp8 encoding must be the architecture's own** — `aiter.dtypes.fp8`,
+  which is `e4m3fnuz` on gfx942 and OCP `e4m3fn` on gfx950. Both are 8 bits and
+  neither AITER nor the `.so` name distinguishes them, so the other one is read
+  under the wrong exponent bias and returns NaN; the shim rejects it.
 * **`return_lse` is unavailable.** AITER builds no LSE instance of the fp8
   kernel at any page size, so it raises rather than degrading.
 * Every other prefill route — single, ragged, and the paged flat-gather path —
-  reaches `mha_fwd`/`mha_varlen_fwd`, which have no fp8 kernel. Those raise
-  `NotImplementedError` naming fp8; the in-tree fa2 kernel rejects 8-bit types
-  in a `static_assert`, which would otherwise surface as a compiler log.
+  reaches `mha_fwd`/`mha_varlen_fwd`, which have no fp8 kernel. Ragged and the
+  flat-gather path raise `NotImplementedError` naming fp8 on either backend;
+  single prefill raises `NotImplementedError` on fa2 and `RuntimeError` from
+  AITER's own dtype check on `backend="aiter"`. What none of them do is reach
+  the fa2 kernel's `static_assert`, which surfaces as a compiler log.
 
 ## Tests
 

@@ -615,8 +615,9 @@ def _auto_select_prefill_backend(
     """Return ``(backend, reason)``: 'aiter' when the GPU and call parameters satisfy
     AITER's constraints, else 'fa2' plus the reason AITER was declined.
 
-    On gfx942/gfx950, checks NHD layout, no custom mask, fp16/bf16, equal dtypes and head dims.
-    Falls back to 'fa2' with a one-time warning for each distinct skip reason.
+    On gfx942/gfx950, checks NHD layout, no custom mask, fp16/bf16 (fp8 too when
+    ``allow_fp8``), equal dtypes and head dims. Falls back to 'fa2' with a
+    one-time warning for each distinct skip reason.
 
     ``op`` selects the capability row. It matters because the gates are not
     uniform across ops: an arch-specific causal miscompile can apply to batch
@@ -2213,6 +2214,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
             The implementation backend, could be ``auto``/``fa2``/``aiter``. Defaults to ``auto``.
             On ROCm gfx942/gfx950, ``auto`` selects the AITER backend when constraints are met
             (NHD layout, fp16/bf16, no custom mask, equal head dims); otherwise falls back to FA2.
+            fp8 is the one dtype exception: it is served on the natively routed paged route,
+            with per-tensor descales and a bf16 output, and declined everywhere else.
 
         jit_args : Optional[List[Any]]
             If provided, the wrapper will use the provided arguments to create the JIT module,
