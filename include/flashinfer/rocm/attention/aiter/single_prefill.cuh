@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <stdexcept>
 #include <flashinfer/rocm/gpu_runtime_compat.hpp>
 
 namespace flashinfer {
@@ -267,6 +268,9 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
       }
     } catch (const std::exception&) {
       handle_failed = true;
+      // asm_fn may have thrown after this was set. Inert today (the CK variant is
+      // built without FAV3_ON and ignores it), but not if a variant ever ships both.
+      args.use_asm_v3 = false;
       AiterAsmPrefillNote("unavailable; using CK Tile");
     }
   }
