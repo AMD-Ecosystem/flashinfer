@@ -106,17 +106,21 @@ def test_gfx942_never_routes_to_asm():
 
 
 @pytest.mark.parametrize(
-    "qo_len,kv_len", [(512, 512), (2048, 2048), (4096, 4096), (512, 4096)]
+    "qo_len,kv_len",
+    [(512, 512), (2048, 2048), (4096, 4096), (512, 4096), (2048, 8192)],
 )
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("return_lse", [False, True])
 def test_asm_gate_numerics(qo_len, kv_len, causal, return_lse):
     """Both sides of the threshold against an fp32 reference.
 
-    Shapes are chosen to straddle it: 512 is always CK Tile, 2048 and 4096 take
-    asm on gfx950, and (512, 4096) checks the gate reads qo_len rather than
-    kv_len -- that shape measured 0.73x, so routing it to asm would be a
-    regression.
+    Shapes straddle it: 512 is always CK Tile, 2048 and 4096 take asm on gfx950,
+    and (512, 4096) checks the gate reads qo_len rather than kv_len -- that shape
+    measured 0.73x, so routing it to asm would be a regression.
+
+    (2048, 8192) is the chunked-prefill shape: above the threshold *and* non-square,
+    so causal means bottom-right masking on the asm arm. The asm kernel applies that
+    row offset itself, and no other case here exercises it.
     """
     device = torch.device("cuda:0")
     _skip_unless_aiter(device)
@@ -145,8 +149,9 @@ def test_asm_gate_numerics(qo_len, kv_len, causal, return_lse):
 
 
 _PROBE = """
-import os, torch, flashinfer
+import os, pathlib, torch, flashinfer
 
+print("PROBE_FLASHINFER=" + str(pathlib.Path(flashinfer.__file__).resolve()), flush=True)
 d = torch.device("cuda:0")
 torch.manual_seed(7)
 qo = int(os.environ["PROBE_QO_LEN"])
@@ -164,8 +169,18 @@ def call():
 
 
 if os.environ.get("PROBE_CAPTURE") == "1":
-    # Cold on purpose: the guard exists because AITER loads its .co on the first
-    # asm call, and a module load inside capture aborts the process.
+    # Build and dlopen FlashInfer's own module first, on a below-threshold shape that
+    # cannot reach asm. Otherwise a cold ~/.cache/flashinfer compiles inside capture
+    # and the test fails for that instead of the guard. AITER's .co stays cold, which
+    # is the condition under test: loading one during capture aborts the process.
+    warm_q = torch.randn(512, 8, 128, dtype=torch.bfloat16, device=d)
+    warm_k = torch.randn(512, 2, 128, dtype=torch.bfloat16, device=d)
+    warm_v = torch.randn(512, 2, 128, dtype=torch.bfloat16, device=d)
+    flashinfer.single_prefill_with_kv_cache(
+        warm_q, warm_k, warm_v, causal=causal, backend="aiter", return_lse=return_lse
+    )
+    torch.cuda.synchronize()
+
     g = torch.cuda.CUDAGraph()
     s = torch.cuda.Stream()
     s.wait_stream(torch.cuda.current_stream())
@@ -194,10 +209,14 @@ def _run_probe(
     """
     import os
 
-    tag = (
-        f"{qo_len}-{int(causal)}{int(return_lse)}{int(capture)}{''.join(env_overrides)}"
-    )
-    out_path = tmp_path / f"o{tag}.pt"
+    # Values, not just keys: two runs that differ only in an override value would
+    # otherwise share a path, and a second process that exits 0 without writing
+    # would leave the first run's tensor to be compared against itself.
+    overrides = "".join(f"{k}={v}" for k, v in sorted(env_overrides.items()))
+    tag = f"{qo_len}-{int(causal)}{int(return_lse)}{int(capture)}{overrides}"
+    out_path = tmp_path / f"o{re.sub(r'[^A-Za-z0-9_.-]', '_', tag)}.pt"
+    if out_path.exists():
+        out_path.unlink()
     env = dict(os.environ)
     env.update(
         PROBE_QO_LEN=str(qo_len),
@@ -220,8 +239,13 @@ def _run_probe(
         timeout=3600,
     )
     assert proc.returncode == 0, f"probe failed ({tag}): {proc.stderr[-2000:]}"
+    # The subprocess resolves flashinfer independently of pytest's rootdir insertion,
+    # so an editable install elsewhere on sys.path would silently test other code.
+    assert f"PROBE_FLASHINFER={Path(flashinfer.__file__).resolve()}" in proc.stdout, (
+        f"probe imported a different flashinfer than the tests:\n{proc.stdout[-500:]}"
+    )
     out = torch.load(out_path) if out_path.exists() else None
-    return out, proc.stderr
+    return out, proc.stdout, proc.stderr
 
 
 @pytest.mark.parametrize("causal", [False, True])
@@ -239,8 +263,8 @@ def test_asm_arm_is_actually_reached(tmp_path, causal, return_lse):
     if not threshold:
         pytest.skip(f"{_device_arch(device)} never routes to asm")
 
-    _, above = _run_probe(tmp_path, threshold, causal=causal, return_lse=return_lse)
-    _, below = _run_probe(tmp_path, 512, causal=causal, return_lse=return_lse)
+    _, _, above = _run_probe(tmp_path, threshold, causal=causal, return_lse=return_lse)
+    _, _, below = _run_probe(tmp_path, 512, causal=causal, return_lse=return_lse)
     assert "aiter asm prefill: launched" in above, (
         f"qo_len={threshold} did not reach the asm arm. stderr:\n{above[-2000:]}"
     )
@@ -262,8 +286,10 @@ def test_graph_capture_stays_on_ck_tile(tmp_path):
     if not threshold:
         pytest.skip(f"{_device_arch(device)} never routes to asm")
 
-    _, err = _run_probe(tmp_path, threshold, capture=True)
-    assert "CAPTURE_OK" not in err  # stdout, not stderr
+    _, out, err = _run_probe(tmp_path, threshold, capture=True)
+    # Positive check: the graph must actually have been captured and replayed,
+    # otherwise "no asm launch" below is satisfied by having done nothing.
+    assert "CAPTURE_OK" in out, f"capture did not complete. stdout:\n{out[-2000:]}"
     assert "aiter asm prefill: launched" not in err, (
         f"asm arm was entered during graph capture. stderr:\n{err[-2000:]}"
     )
@@ -277,8 +303,11 @@ def test_kill_switch_pins_ck_tile(tmp_path):
     if not threshold:
         pytest.skip(f"{_device_arch(device)} never routes to asm")
 
-    on_out, on_err = _run_probe(tmp_path, threshold, FLASHINFER_AITER_ASM_PREFILL=None)
-    off_out, off_err = _run_probe(tmp_path, threshold, FLASHINFER_AITER_ASM_PREFILL="0")
+    on_out, _, on_err = _run_probe(tmp_path, threshold, FLASHINFER_AITER_ASM_PREFILL=None)
+    off_out, _, off_err = _run_probe(
+        tmp_path, threshold, FLASHINFER_AITER_ASM_PREFILL="0"
+    )
+    assert on_out is not None and off_out is not None, "a probe wrote no tensor"
 
     assert "aiter asm prefill: launched" in on_err
     assert "aiter asm prefill" not in off_err, "the kill switch did not disable the arm"
