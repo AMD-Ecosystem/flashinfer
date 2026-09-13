@@ -45,7 +45,6 @@ from ..get_include_paths import get_include as get_include
 from ..norm import fused_add_rmsnorm as fused_add_rmsnorm
 from ..norm import gemma_fused_add_rmsnorm as gemma_fused_add_rmsnorm
 from ..norm import gemma_rmsnorm as gemma_rmsnorm
-from ..norm import layernorm as layernorm
 from ..norm import rmsnorm as rmsnorm
 from ..page import append_paged_kv_cache as append_paged_kv_cache
 from ..page import append_paged_mla_kv_cache as append_paged_mla_kv_cache
@@ -147,7 +146,6 @@ __all__ = [
     "fused_add_rmsnorm",
     "gemma_fused_add_rmsnorm",
     "gemma_rmsnorm",
-    "layernorm",
     "rmsnorm",
     "append_paged_kv_cache",
     "append_paged_mla_kv_cache",

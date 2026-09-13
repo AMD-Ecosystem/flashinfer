@@ -10,6 +10,7 @@ import torch
 
 from ..core import JitSpec, gen_jit_spec, logger
 from ..env import FLASHINFER_CSRC_DIR, FLASHINFER_GEN_SRC_DIR
+from .aiter_variants import export_variant_store as _export_variant_store
 from ..utils import (
     dtype_map_hip,
     filename_safe_dtype_map,
@@ -367,6 +368,9 @@ def gen_batch_decode_aiter_module(
 ) -> JitSpec:
     import aiter as _aiter_mod
 
+    # Batch decode resolves its .so as an absolute path from Python via
+    # get_aiter_extern_c_handle, so it never consults the candidate list and
+    # needs no variant store.
     aiter_jit_dir = os.path.join(os.path.dirname(_aiter_mod.__file__), "jit")
 
     uri = get_batch_decode_aiter_uri(
@@ -724,6 +728,10 @@ def gen_customize_single_prefill_module(
         import aiter as _aiter_mod
 
         aiter_jit_dir = os.path.join(os.path.dirname(_aiter_mod.__file__), "jit")
+        # Publish FlashInfer's prebuilt store for aiter_loader.cc to try
+        # before the baked default. Resolved now, not baked: an
+        # AOT-packaged module would otherwise carry the build machine's path.
+        _export_variant_store()
 
         gen_directory = FLASHINFER_GEN_SRC_DIR / uri
         additional_params_decl, additional_func_params, additional_params_setter = (
@@ -974,6 +982,10 @@ def gen_customize_batch_prefill_module(
         import aiter as _aiter_mod
 
         aiter_jit_dir = os.path.join(os.path.dirname(_aiter_mod.__file__), "jit")
+        # Publish FlashInfer's prebuilt store for aiter_loader.cc to try
+        # before the baked default. Resolved now, not baked: an
+        # AOT-packaged module would otherwise carry the build machine's path.
+        _export_variant_store()
 
         gen_directory = FLASHINFER_GEN_SRC_DIR / uri
 

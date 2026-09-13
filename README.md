@@ -180,7 +180,7 @@ library's actual routing. Do not edit it by hand; run
 | `append_paged_kv_cache` | `hip` -- auto picks this | ✅ | ✅ | fp8 KV-cache supported. Sustains 3.62 TB/s against AITER's 2.86 on gfx942, so `auto` picks this. |
 | `rmsnorm` | `hip` -- auto picks this | ✅ | ✅ | What `auto` always picks: level with AITER on speed and more accurate. |
 | `fused_add_rmsnorm` | `hip` -- auto picks this | ✅ | ✅ | What `auto` always picks: 1.6-1.8x faster than AITER on both arches. |
-| `layernorm` | `hip` -- only backend | ✅ | ✅ | `layernorm` plus the Gemma RMSNorm variants. No AITER path. |
+| `gemma_rmsnorm` | `hip` -- only backend | ✅ | ✅ | `gemma_rmsnorm` and `gemma_fused_add_rmsnorm`. No AITER path. |
 | `sampling` | `hip` -- only backend | ✅ | ✅ | Top-K / Top-P / Min-P / OnlineSoftmax / SamplingFromLogits. |
 | `logits_processor` | `hip` -- only backend | ✅ | ✅ | Composable processor pipeline (cap, mask, temperature, ...). |
 | `silu_and_mul` | `hip` -- auto picks this | ✅ | ✅ | SiLU and GELU with fused gating; the default for `auto`. |

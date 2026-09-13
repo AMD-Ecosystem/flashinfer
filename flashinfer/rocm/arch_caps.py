@@ -466,11 +466,14 @@ CAPABILITIES: Tuple[Capability, ...] = (
         _archs(_HIP_942, _HIP_950),
         note="What `auto` always picks: 1.6-1.8x faster than AITER on both arches.",
     ),
+    # `layernorm` was declared here until it turned out to have no ROCm kernel
+    # behind it. It is now listed with the other unported ops in
+    # docs/rocm/backends.md; a row is a promise that the op routes.
     Capability(
-        "layernorm",
+        "gemma_rmsnorm",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="`layernorm` plus the Gemma RMSNorm variants. No AITER path.",
+        note="`gemma_rmsnorm` and `gemma_fused_add_rmsnorm`. No AITER path.",
     ),
     Capability(
         "sampling",

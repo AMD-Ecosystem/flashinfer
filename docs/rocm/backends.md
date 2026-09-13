@@ -12,6 +12,7 @@ constraints that are easy to trip over.
   * [NVIDIA-only, but not gated](#nvidia-only-but-not-gated)
   * [Blocked on a missing package](#blocked-on-a-missing-package-not-on-rocm)
 * [Installing AITER](#installing-aiter)
+  * [Prebuilding the variants](#prebuilding-the-variants)
 * [How `backend="auto"` resolves](#how-backendauto-resolves)
 * [CUDA-only arguments](#cuda-only-arguments)
 * [Known limitations](#known-limitations)
@@ -88,6 +89,13 @@ ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
   want of `tvm_ffi`, which the image does not ship.
 * `flashinfer.diffusion_ops` — it re-exports four fused DiT entry points from
   `flashinfer.norm`, and `csrc/rocm/norm.cu` defines none of them.
+* `flashinfer.norm`'s `layernorm`, `layernorm_quant`, `rmsnorm_quant` and
+  `fused_add_rmsnorm_quant`. These fail differently: the JIT source exists and
+  builds, but `csrc/rocm/flashinfer_norm_binding.cu` binds only `rmsnorm`,
+  `fused_add_rmsnorm`, `gemma_rmsnorm` and `gemma_fused_add_rmsnorm`, so the
+  call dies on a bare `AttributeError`. AITER's CK `layernorm2d` cannot stand in
+  for `layernorm`: it reads fp32 `gamma`/`beta` as the input dtype and returns
+  NaN, and casting them down misses the op's 1e-2 bf16 tolerance.
 * `flashinfer.trace.templates.gemm`, through the `nv_internal` FP4 sources.
 * Three side paths of otherwise supported modules: `utils.set_log_level()`,
   the opt-in GPU stats counter in `api_logging`, and `norm`'s fused
@@ -101,8 +109,12 @@ their templates directly, and fused rmsnorm+silu copies its source before any
 build starts.
 
 `tests/rocm/test_kernel_source_coverage.py` holds this list. It fails when a
-newly vendored op names a kernel source absent from `csrc/rocm`, so the set
-above cannot grow unnoticed.
+newly vendored op names a kernel source absent from `csrc/rocm`.
+
+It only sees missing *files*, though, which is how the unbound `norm` entry
+points above went unnoticed — there the file exists and the symbol does not.
+`tests/rocm/test_norm_entry_points.py` covers that case for `norm`, asserting
+the unresolvable set in both directions so porting one is also a test change.
 
 ### NVIDIA-only, but not gated
 
@@ -193,6 +205,23 @@ with `AITER_SYMBOL_VISIBLE=1` and caches it under
 `~/.cache/flashinfer/aiter_libs/`. The `module_rmsnorm_quant` build is large
 and can take many minutes the first time.
 
+### Not all of AITER is Composable Kernel
+
+Worth knowing before comparing backends: the modules linked where `auto` picks
+the in-tree kernel are AITER's own hand-written HIP, not CK.
+
+| AITER module | backing | used for |
+| :--- | :--- | :--- |
+| `module_rmsnorm_quant`, `module_activation`, `module_rope_*` | AITER HIP (no `ck_tile` references) | norm, activation, rope |
+| `module_norm` | CK-tile | `layernorm2d` only — it exports no rmsnorm |
+| `mha_fwd`, `mha_varlen_fwd`, `mha_batch_prefill` | CK-tile | prefill |
+
+So an "AITER lost to the in-tree kernel" result for norm, activation or rope is
+a HIP-vs-HIP comparison and says nothing about CK. CK-tile `layernorm2d` was
+measured for `layernorm` and rejected on contract, not speed: it derives one
+dtype from the input and reads this API's fp32 `gamma`/`beta` as bf16, which
+returns silent garbage rather than an error (see *Not ported yet*).
+
 ### `mha_fwd` ships no prebuilt kernels at all
 
 AITER ships prebuilt `mha_varlen_fwd_*.so` files and no `mha_fwd*` — only
@@ -213,11 +242,66 @@ prefill builds the gaps.
 
 Two consequences worth planning for:
 
-* Budget **20+ minutes** for a cold variant. This is the same first-build
-  cost as the C++ AITER modules above, not a separate surprise.
+* A cold variant costs a CK-tile compile. Measured at `MAX_JOBS=32` on
+  gfx942 (MI300X, ROCm 10.0), one variant per family: `mha_fwd` 280-360 s,
+  `mha_batch_prefill` 119 s, `mha_varlen_fwd` 74 s. A 16-core gfx950 box took
+  roughly 2x each, tracking core count rather than architecture. It is paid once
+  per *variant* -- one `.so` serves every head dimension -- and again on any
+  restart that does not persist `site-packages`.
 * A read-only or foreign-owned `site-packages/aiter/jit/` lets the build
-  succeed but the install step fail. That error currently propagates out of
-  `backend="auto"` instead of falling back to `fa2`.
+  succeed but the install step fail. Under `auto` that demotes to `fa2` with a
+  warning; under `backend="aiter"` it raises.
+
+Both are what the variant store below exists to remove.
+
+### Prebuilding the variants
+
+`plan()` resolves a variant from FlashInfer's own store before asking AITER to
+build one, so the whole set can be built once, ahead of time:
+
+```bash
+python -m flashinfer.rocm.prebuild_aiter_variants --list    # what the default set covers
+python -m flashinfer.rocm.prebuild_aiter_variants           # build the missing ones
+python -m flashinfer.rocm.prebuild_aiter_variants --prune   # report stores from an older pin
+```
+
+The default set is `mha_fwd` and `mha_varlen_fwd` — 24 of the 40 variants, from
+16 builds. `mha_batch_prefill` is excluded because its bootstrap is also the
+`page_size` capability probe: the variant filename has no page-size axis, so the
+probe has to run whether or not the artifact is in the store, and prebuilding
+that family costs ~32 min on gfx942 for files nothing ever saves time on. Pass
+`--only mha_batch_prefill` to build them anyway.
+
+**It needs a GPU**: the only supported way to make AITER emit a variant is to
+call the op. So it cannot be a `docker build` step — run it as a GPU-attached
+job and copy the resulting directory into the image.
+
+The store lives under FlashInfer's cache directory, at
+`aiter_variants/<arch>__aiter-<version>__rocm-<version>/`. That cache is
+`~/.cache/flashinfer` unless `FLASHINFER_WORKSPACE_BASE` moves it; there is no
+`FLASHINFER_CACHE_DIR` environment variable.
+All three components are in the tag on purpose: these are CK-tile objects that
+travel between machines, so bumping AITER or ROCm names a directory that does
+not exist, and the lookup misses into a rebuild rather than loading a
+mismatched artifact. Nothing prunes the old ones — each is ~165 MB per
+architecture — hence `--prune`, which is dry-run unless you add `--yes`.
+
+`FLASHINFER_AITER_VARIANT_DIR` points the loader at a store somewhere else, for
+an image that ships one. `AITER_JIT_DIR` still takes precedence over both, so an
+operator pointing at a custom AITER build is unaffected.
+
+The `amd-flashinfer-jit-cache` wheel carries a store when one was built before
+the wheel was, under `aiter_variants/<tag>/`. The layout allows one subdirectory
+per tag so a consumer can pick its own, but a single wheel build packages only
+the architecture it ran on — a variant can only be produced on the device it
+targets, so a two-architecture wheel is assembled from two builds. The tag is the whole compatibility check, which is why this is not recorded
+in the AOT manifest: that names a comma-joined list of architectures, and a
+store is always single-arch. A wheel built without running the prebuild simply
+carries none, and variants are built on demand exactly as before.
+
+40 variants are reachable per architecture, not 64: `has_alibi` is hard-coded
+false at every call site, and `mha_fwd` has no `_logits` arm. One `.so` serves
+every head dim.
 
 ## How `backend="auto"` resolves
 

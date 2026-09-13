@@ -20,6 +20,7 @@ import numpy as np
 import torch
 
 import flashinfer
+from flashinfer.rocm.device_utils import IS_HIP
 from flashinfer.testing.utils import bench_gpu_time
 
 from .flashinfer_benchmark_utils import (
@@ -231,7 +232,7 @@ def testRmsnorm(args):
     backends = args.backends[:]  # Make a copy to avoid modifying the original
 
     # Default backend to cute-dsl for rmsnorm variants (CuTe-DSL kernels by default)
-    if backends == ["cuda"]:
+    if backends == ["cuda"] and not IS_HIP:
         backends = ["cute-dsl"]
 
     batch_size = args.batch_size
@@ -270,7 +271,7 @@ def testRmsnorm(args):
         print(f"[VVERBOSE] {weight.shape = }")
 
     def run_backend(backend, input_tensor, weight):
-        if backend == "cute-dsl":
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             return flashinfer.rmsnorm(
                 input_tensor, weight, eps=eps, enable_pdl=enable_pdl
             )
@@ -385,7 +386,7 @@ def testFusedAddRmsnorm(args):
     backends = args.backends[:]
 
     # Default backend to cute-dsl for rmsnorm variants (CuTe-DSL kernels by default)
-    if backends == ["cuda"]:
+    if backends == ["cuda"] and not IS_HIP:
         backends = ["cute-dsl"]
 
     batch_size = args.batch_size
@@ -419,7 +420,7 @@ def testFusedAddRmsnorm(args):
         print(f"[VVERBOSE] {weight.shape = }")
 
     def run_backend(backend, input_tensor, residual_tensor, weight):
-        if backend == "cute-dsl":
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             flashinfer.fused_add_rmsnorm(
                 input_tensor,
                 residual_tensor,
@@ -542,7 +543,7 @@ def testGemmaRmsnorm(args):
     backends = args.backends[:]
 
     # Default backend to cute-dsl for rmsnorm variants (CuTe-DSL kernels by default)
-    if backends == ["cuda"]:
+    if backends == ["cuda"] and not IS_HIP:
         backends = ["cute-dsl"]
 
     batch_size = args.batch_size
@@ -579,7 +580,7 @@ def testGemmaRmsnorm(args):
         print(f"[VVERBOSE] {weight.shape = }")
 
     def run_backend(backend, input_tensor, weight):
-        if backend == "cute-dsl":
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             return flashinfer.gemma_rmsnorm(
                 input_tensor, weight, eps=eps, enable_pdl=enable_pdl
             )
@@ -688,7 +689,7 @@ def testGemmaFusedAddRmsnorm(args):
     backends = args.backends[:]
 
     # Default backend to cute-dsl for rmsnorm variants (CuTe-DSL kernels by default)
-    if backends == ["cuda"]:
+    if backends == ["cuda"] and not IS_HIP:
         backends = ["cute-dsl"]
 
     batch_size = args.batch_size
@@ -722,7 +723,7 @@ def testGemmaFusedAddRmsnorm(args):
         print(f"[VVERBOSE] {weight.shape = }")
 
     def run_backend(backend, input_tensor, residual_tensor, weight):
-        if backend == "cute-dsl":
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             flashinfer.gemma_fused_add_rmsnorm(
                 input_tensor,
                 residual_tensor,
@@ -860,7 +861,7 @@ def testRmsnormQuant(args):
     backends = args.backends[:]  # Make a copy to avoid modifying the original
 
     # Default backend to cute-dsl for rmsnorm variants (CuTe-DSL kernels by default)
-    if backends == ["cuda"]:
+    if backends == ["cuda"] and not IS_HIP:
         backends = ["cute-dsl"]
 
     batch_size = args.batch_size
@@ -909,7 +910,7 @@ def testRmsnormQuant(args):
         print(f"[VVERBOSE] {scale = }")
 
     def run_backend(backend, out_tensor, input_tensor, weight):
-        if backend == "cute-dsl":
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             flashinfer.norm.rmsnorm_quant(
                 out_tensor,
                 input_tensor,
@@ -1239,7 +1240,7 @@ def testFusedAddRmsnormQuant(args):
     backends = args.backends[:]  # Make a copy to avoid modifying the original
 
     # Default backend to cute-dsl for rmsnorm variants (CuTe-DSL kernels by default)
-    if backends == ["cuda"]:
+    if backends == ["cuda"] and not IS_HIP:
         backends = ["cute-dsl"]
 
     batch_size = args.batch_size
@@ -1290,7 +1291,7 @@ def testFusedAddRmsnormQuant(args):
         print(f"[VVERBOSE] {scale = }")
 
     def run_backend(backend, out_tensor, input_tensor, residual_tensor, weight):
-        if backend == "cute-dsl":
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             flashinfer.norm.fused_add_rmsnorm_quant(
                 out_tensor,
                 input_tensor,
@@ -1444,7 +1445,7 @@ def testRmsnormFp4quant(args):
     backends = args.backends[:]  # Make a copy to avoid modifying the original
 
     # Default backend to cute-dsl for FP4 quantization routines
-    if backends == ["cuda"]:
+    if backends == ["cuda"] and not IS_HIP:
         backends = ["cute-dsl"]
 
     batch_size = args.batch_size
@@ -1532,7 +1533,7 @@ def testRmsnormFp4quant(args):
         )
 
     def run_backend(backend, input_tensor, weight):
-        if backend == "cute-dsl":
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             return flashinfer.rmsnorm_fp4quant(
                 input_tensor,
                 weight,
@@ -1635,7 +1636,7 @@ def testAddRmsnormFp4quant(args):
     backends = args.backends[:]  # Make a copy to avoid modifying the original
 
     # Default backend to cute-dsl for FP4 quantization routines
-    if backends == ["cuda"]:
+    if backends == ["cuda"] and not IS_HIP:
         backends = ["cute-dsl"]
 
     batch_size = args.batch_size
@@ -1718,7 +1719,7 @@ def testAddRmsnormFp4quant(args):
         print("[WARNING] --refcheck is not supported for add_rmsnorm_fp4quant. ")
 
     def run_backend(backend, input_tensor, residual_tensor, weight):
-        if backend == "cute-dsl":
+        if backend == "cute-dsl" or (IS_HIP and backend == "cuda"):
             return flashinfer.add_rmsnorm_fp4quant(
                 input_tensor,
                 residual_tensor,

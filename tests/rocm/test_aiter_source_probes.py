@@ -125,3 +125,78 @@ class TestFindBuiltSo:
     def test_a_directory_named_like_the_library_is_not_a_hit(self, tmp_path):
         (tmp_path / "mod.so").mkdir()
         assert aiter_source._find_built_so("mod", tmp_path) is None
+
+
+class TestAiterEnvScope:
+    """The scope mutates process-global env AITER reads at import and at build.
+
+    Restoring it wrongly is silent: a leaked AITER_JIT_DIR sends the next
+    module's .so hunt to the wrong directory, and a leaked AITER_SYMBOL_VISIBLE
+    changes whether the next build is linkable.
+    """
+
+    def _scope(self, tmp_path, **kw):
+        return aiter_source._aiter_env_scope(tmp_path, **kw)
+
+    def test_it_sets_the_build_dir_and_restores_absence(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AITER_JIT_DIR", raising=False)
+        monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: "gfx942")
+
+        with self._scope(tmp_path, symbol_visible=True):
+            import os
+
+            assert os.environ["AITER_JIT_DIR"] == str(tmp_path)
+            assert os.environ["AITER_SYMBOL_VISIBLE"] == "1"
+
+        import os
+
+        assert "AITER_JIT_DIR" not in os.environ
+        assert "AITER_SYMBOL_VISIBLE" not in os.environ
+
+    def test_a_preexisting_value_is_put_back(self, tmp_path, monkeypatch):
+        import os
+
+        monkeypatch.setenv("AITER_JIT_DIR", "/somewhere/else")
+        monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: "gfx942")
+
+        with self._scope(tmp_path, symbol_visible=True):
+            assert os.environ["AITER_JIT_DIR"] == str(tmp_path)
+        assert os.environ["AITER_JIT_DIR"] == "/somewhere/else"
+
+    def test_symbol_visible_false_leaves_the_flag_unset(self, tmp_path, monkeypatch):
+        import os
+
+        monkeypatch.delenv("AITER_SYMBOL_VISIBLE", raising=False)
+        monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: "gfx942")
+
+        with self._scope(tmp_path, symbol_visible=False):
+            # dlopen'd variants are resolved by mangled name, so they want
+            # AITER's own default visibility rather than the linkable rebuild.
+            assert "AITER_SYMBOL_VISIBLE" not in os.environ
+
+    def test_gpu_archs_survives_on_purpose(self, tmp_path, monkeypatch):
+        """AITER's own Python ops build outside this scope and assert on an
+        unset GPU_ARCHS, so it is deliberately not restored to absent."""
+        import os
+
+        monkeypatch.delenv("GPU_ARCHS", raising=False)
+        monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: "gfx950")
+
+        with self._scope(tmp_path, symbol_visible=True):
+            assert os.environ["GPU_ARCHS"] == "gfx950"
+        assert os.environ["GPU_ARCHS"] == "gfx950"
+
+    def test_the_environment_is_restored_when_the_body_raises(
+        self, tmp_path, monkeypatch
+    ):
+        import os
+
+        monkeypatch.setenv("AITER_JIT_DIR", "/somewhere/else")
+        monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: "gfx942")
+
+        with (
+            pytest.raises(RuntimeError, match="boom"),
+            self._scope(tmp_path, symbol_visible=True),
+        ):
+            raise RuntimeError("boom")
+        assert os.environ["AITER_JIT_DIR"] == "/somewhere/else"

@@ -220,6 +220,59 @@ def copy_built_kernels(
             json.dumps({"rocm_arch_list": rocm_arch_list}) + "\n"
         )
 
+    _copy_aiter_variant_store(out_dir)
+
+
+def _copy_aiter_variant_store(out_dir: Path) -> None:
+    """Package the prebuilt AITER variants, if this box has built any.
+
+    Kept out of the AOT manifest: that is a comma-joined multi-arch list and a
+    store is always single-arch, so each store carries its own
+    ``<arch>__aiter-<ver>__rocm-<ver>`` name and the consumer matches its tag.
+    One build therefore packages one architecture; a two-arch wheel has to be
+    assembled from two, since ``copy_built_kernels`` opens with an ``rmtree``.
+    """
+    from ..jit.rocm.aiter_variants import (
+        reachable_variants,
+        so_name,
+        variant_store_dir,
+    )
+
+    try:
+        store = variant_store_dir()
+    except Exception:
+        return
+    if not store.is_dir():
+        return
+    artifacts = sorted(store.glob("*.so"))
+    if not artifacts:
+        return
+
+    dst = out_dir / "aiter_variants" / store.name
+    dst.mkdir(parents=True, exist_ok=True)
+    for src in artifacts:
+        # Same tmp+replace as the prebuild driver's _publish: an interrupted
+        # wheel build would otherwise leave a truncated .so that still satisfies
+        # a filename lookup on the consumer.
+        tmp = dst / f".{src.name}.{os.getpid()}.tmp"
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dst / src.name)
+    print(f"  packaged {len(artifacts)} AITER variant(s) from {store}")
+
+    # Against the driver's default set, not every reachable variant: the paged
+    # family is deliberately not prebuilt, so its absence is not a gap.
+    expected = {
+        so_name(k) for k in reachable_variants() if k.family.servable_from_store
+    }
+    missing = expected - {p.name for p in artifacts}
+    if missing:
+        # A partial store is legitimate (--only, or a family that failed), but it
+        # would ship silently otherwise and every gap rebuilds at plan() forever.
+        print(
+            f"  WARNING: store is missing {len(missing)} of {len(expected)} "
+            f"prebuildable variants; consumers will build those on demand"
+        )
+
 
 @contextlib.contextmanager
 def _redirected_jit_env(build_dir: Path) -> Iterator[None]:

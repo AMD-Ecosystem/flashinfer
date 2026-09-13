@@ -29,6 +29,7 @@ from .aiter_utils import handle_aiter_probe_failure
 from .api_compat import reject_cuda_only
 from .arch_caps import capability_reason, require_capability
 from ..jit.core import logger
+from ..jit.rocm import aiter_variants as _variants
 from ..jit import (
     gen_batch_prefill_module,
     gen_customize_batch_prefill_module,
@@ -641,6 +642,17 @@ def _aiter_bootstrap_single_prefill_varlen(
     varlen .so because mha_fwd has no _logits arm). The .so is split on whether
     anything is masked (mask vs nmask), so pass needs_mask, not causal.
     """
+    # A store hit means the .so this would force already exists; skipping is
+    # what turns the store into a latency win.
+    if _variants.prebuilt(
+        _variants.Family.MHA_VARLEN_FWD,
+        dtype,
+        has_logits_cap=True,
+        needs_mask=needs_mask,
+        has_lse=None,
+    ):
+        return
+
     device = torch.device("cuda", device_idx)
     q = torch.zeros(2, 2, head_dim, dtype=dtype, device=device)
     k = torch.zeros(4, 2, head_dim, dtype=dtype, device=device)
@@ -680,9 +692,22 @@ def _aiter_bootstrap_single_prefill_mha_fwd(
 
     Unlike mha_varlen_fwd, mha_fwd ships no prebuilt .so files in the aiter
     package; every (dtype, needs_mask, has_lse) combination is JIT-built on first
-    use, which takes 20+ minutes per variant. Bootstrapping here surfaces the
-    build at plan time rather than as a dlopen failure inside the C++ path.
+    use -- 280-360s on gfx942 at MAX_JOBS=32, and the costliest of the three mha
+    families. Bootstrapping here surfaces the build at plan time rather than as a
+    dlopen failure inside the C++ path.
+
+    head_dim is a cache key but not a build axis: one .so serves every head dim.
     """
+    # A store hit means the .so this would force already exists; skipping is
+    # what turns the store into a latency win.
+    if _variants.prebuilt(
+        _variants.Family.MHA_FWD,
+        dtype,
+        needs_mask=needs_mask,
+        has_lse=has_lse,
+    ):
+        return
+
     from aiter.ops.mha import mha_fwd
 
     device = torch.device("cuda", device_idx)
@@ -728,6 +753,17 @@ def _aiter_bootstrap_batch_ragged_prefill(
     ``_aiter_native_page_sizes()``). Both loop over return_lse here because the .so is
     also split on lse, and plan() cannot know which run() will request.
     """
+    # A store hit means the .so this would force already exists; skipping is
+    # what turns the store into a latency win.
+    if _variants.prebuilt(
+        _variants.Family.MHA_VARLEN_FWD,
+        dtype,
+        has_logits_cap=has_logits_cap,
+        needs_mask=needs_mask,
+        has_lse=None,
+    ):
+        return
+
     device = torch.device("cuda", device_idx)
     q = torch.zeros(2, 2, head_dim, dtype=dtype, device=device)
     k = torch.zeros(4, 2, head_dim, dtype=dtype, device=device)
@@ -765,7 +801,16 @@ def _aiter_bootstrap_batch_prefill(
     head_dim: int,
     device_idx: int,
 ) -> None:
-    """Force AITER's lazy JIT to compile mha_batch_prefill_*.so for this variant."""
+    """Force AITER's lazy JIT to compile mha_batch_prefill_*.so for this variant.
+
+    Deliberately *not* short-circuited on a prebuilt-store hit, unlike the other
+    three bootstraps. ``_aiter_native_paging_available`` uses this call as its
+    capability probe for ``page_size`` -- and the variant filename carries no
+    page-size axis, so a store built at one page size would answer for every
+    other. Skipping here would turn a warned flat-gather fallback into
+    "no matching kernel found" inside run(). The launch is cheap once AITER has
+    the .so; it is the build that is expensive, and that is already skipped.
+    """
     from aiter.ops.mha import mha_batch_prefill_func
 
     device = torch.device("cuda", device_idx)

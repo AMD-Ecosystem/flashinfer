@@ -238,7 +238,30 @@ Run this gate on the branch's full diff before `gh pr create`, in order:
    that touch no Python have no relevant tests — say so explicitly rather than
    claiming a run.
 
-4. **Update the documentation the change invalidates.** Ask what a reader would
+4. **Benchmark it. Performance is the point of this repo**, so "the tests pass"
+   is half a result — a PR also has to show it did not slow anything down, and
+   say what it sped up. Name the benchmark, the arch, and the number.
+
+   - A/B against the **merge-base**, not against your own earlier commit, with
+     both arms pinned (`~/.claude/bin/pin-run.sh`) and warm.
+   - Use `benchmarks/rocm/` — `bench_aiter_prefill.py`, `bench_batch_decode.py`,
+     `bench_mla.py`, `bench_norm.py`, `bench_rope.py` — and pick by what the diff
+     can reach. Read `backend_resolved` before believing any `auto` row.
+   - **The A/B needs a distinguishing input.** If arm B would behave identically
+     with your change reverted, it measured nothing; force the new path.
+   - A pure build/packaging change still gets a number: steady-state neutral is a
+     claim to verify, and its win is a latency one to quantify.
+   - **The boxes are shared.** Pin to an idle card, sample `rocm-smi --showuse`
+     before *and* after each arm, interleave A,B,A,B and compare per-shape
+     minimums — contention only inflates, so a min cannot fake a win. An
+     implausible delta is a contended run until proven otherwise; check an
+     untouched path (fa2) as a control to establish the noise floor.
+   - Put the table in the PR description under `## Benchmark results`, and the
+     regression verdict in the commit message.
+   - No number and no plausible perf story means say so explicitly — never leave
+     it unstated.
+
+5. **Update the documentation the change invalidates.** Ask what a reader would
    now find wrong, and check each of these against the diff:
 
    | Where | Covers |
@@ -257,7 +280,7 @@ Run this gate on the branch's full diff before `gh pr create`, in order:
    fact stated in two files will drift, so cite the one that owns it rather
    than restating it.
 
-5. **Commit** the resulting changes.
+6. **Commit** the resulting changes.
 
 Only after this gate passes do the pre-flight safeguards and `gh pr create`.
 

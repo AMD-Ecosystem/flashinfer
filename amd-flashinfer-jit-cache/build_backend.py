@@ -146,7 +146,14 @@ def _build_aot_modules():
         _compile_jit_cache(aot_package_dir)
 
         # Verify that some modules were actually compiled
-        so_files = list(aot_package_dir.rglob("*.so"))
+        # Exclude the AITER variant store: it lives under the same jit_cache
+        # root, and counting it would let a build with zero compiled kernels
+        # satisfy the guard whose whole purpose is to catch that.
+        so_files = [
+            f
+            for f in aot_package_dir.rglob("*.so")
+            if "aiter_variants" not in f.relative_to(aot_package_dir).parts
+        ]
         if not so_files:
             raise RuntimeError("No .so files were generated during AOT compilation")
 
