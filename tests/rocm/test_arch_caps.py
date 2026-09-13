@@ -293,6 +293,46 @@ class TestTableWellFormed:
             f"{sorted(used - declared)}"
         )
 
+    def test_benchmark_registry_ops_are_declared(self):
+        """The benchmark registry names capability ops; check the targets exist.
+
+        Parsed rather than imported: this lane has no torch, and support.py
+        reaches flashinfer. It is also why the regex scan above cannot cover it
+        -- support.py passes `op` as a variable, so the strings live in a dict
+        literal and never appear at a call site.
+
+        `layernorm` sat here until arch_caps stopped declaring it; git merged
+        both changes cleanly and two Gemma routines silently stopped producing
+        rows. tests/rocm/test_benchmark_harness.py catches it too, but runs on
+        no CI lane.
+        """
+        import ast
+
+        root = pathlib.Path(__file__).resolve().parents[2]
+        src = root / "benchmarks" / "routines" / "rocm" / "support.py"
+        tree = ast.parse(src.read_text())
+        referenced = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not any(
+                isinstance(t, ast.Name) and t.id == "_ROCM_ROUTINE_TO_CAP_OP"
+                for t in node.targets
+            ):
+                continue
+            for value in node.value.values:
+                op = value.elts[0]
+                assert isinstance(op, ast.Constant), f"non-literal cap op: {op!r}"
+                referenced.add(op.value)
+
+        assert referenced, "no capability ops parsed; the registry moved or renamed"
+        assert "rmsnorm" in referenced, "parse found no known op; the shape changed"
+        declared = {c.op for c in arch_caps.CAPABILITIES if c.backend == "hip"}
+        assert referenced <= declared, (
+            "benchmark registry names capability ops with no hip row: "
+            f"{sorted(referenced - declared)}"
+        )
+
     def test_known_bad_rows_explain_themselves(self):
         """A gate with no detail is unactionable for whoever hits it."""
         for cap in arch_caps.CAPABILITIES:

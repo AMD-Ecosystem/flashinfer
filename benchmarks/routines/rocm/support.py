@@ -31,8 +31,8 @@ _ROCM_ROUTINE_TO_CAP_OP = {
     # norm
     "rmsnorm": ("rmsnorm", _NATIVE),
     "fused_add_rmsnorm": ("fused_add_rmsnorm", _NATIVE),
-    "gemma_rmsnorm": ("layernorm", _NATIVE),
-    "gemma_fused_add_rmsnorm": ("layernorm", _NATIVE),
+    "gemma_rmsnorm": ("gemma_rmsnorm", _NATIVE),
+    "gemma_fused_add_rmsnorm": ("gemma_rmsnorm", _NATIVE),
     # rope. apply_rope_with_cos_sin_cache is absent: the routine builds
     # cos_sin_cache in --input_dtype, but the op requires float32 and
     # --input_dtype offers none, so it fails on CUDA too.
