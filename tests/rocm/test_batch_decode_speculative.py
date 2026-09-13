@@ -179,11 +179,15 @@ def test_multi_token_decode_matches_aiter_reference(q_len, num_qo_heads, num_kv_
     device = torch.device("cuda:0")
     from flashinfer.rocm.aiter_utils import is_aiter_supported
     from flashinfer.rocm.arch_caps import capability_available, capability_reason
+    from flashinfer.rocm.prefill import _aiter_ops_importable
 
-    if not is_aiter_supported(device):
+    # Both conditions, like the other AITER tests: is_aiter_supported checks
+    # HIP and the arch only, so a supported GPU without an importable aiter
+    # would reach the explicit-AITER reference below and fail rather than skip.
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires gfx942/gfx950 and the aiter package")
-    # is_aiter_supported only checks the arch; the capability table can still
-    # gate this (op, backend, arch) and the wrapper would raise, not skip.
+    # The capability table can still gate this (op, backend, arch), and the
+    # wrapper would raise, not skip.
     if not capability_available(device, "batch_prefill", "aiter"):
         pytest.skip(capability_reason(device, "batch_prefill", "aiter"))
 
