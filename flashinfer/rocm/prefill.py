@@ -497,8 +497,19 @@ def _require_native_fp8_dtype(dtype_q: torch.dtype) -> None:
     them, so the wrong one is read under the wrong exponent bias. Measured on
     gfx942: e4m3fn returns NaN where e4m3fnuz is exact.
     """
+    if dtype_q not in FP8_PREFILL_DTYPES:
+        return
     native = _native_fp8_dtype()
-    if dtype_q in FP8_PREFILL_DTYPES and native is not None and dtype_q != native:
+    if native is None:
+        # Fail closed: _aiter_ops_importable() only proves aiter.ops imports, so
+        # aiter.dtypes can still be absent, and dispatching an encoding we
+        # cannot check is the NaN case rather than a clean refusal.
+        raise NotImplementedError(
+            "fp8 prefill cannot be validated: aiter.dtypes.fp8 is unreadable, so "
+            "this GPU's fp8 encoding is unknown and the wrong one returns NaN. "
+            "Reinstall amd-aiter, or cast q/k/v to bf16 or fp16."
+        )
+    if dtype_q != native:
         raise NotImplementedError(
             f"fp8 prefill needs this GPU's encoding, {native}; got {dtype_q}, "
             "which the kernel reads under the wrong exponent bias and returns "
@@ -2679,7 +2690,13 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 if page_size in _aiter_paged_route_page_sizes(q_data_type)
                 else self._max_kv_len
             )
-            if self._backend == "auto":
+            # `auto` re-resolves every plan: the choice depends on dtype and page
+            # size, so a wrapper that once went to fa2 would refuse a later fp8
+            # plan outright. Under graph capture the first answer sticks, since
+            # the captured graph holds that backend's buffers.
+            if resolved_from_auto and (
+                self._backend == "auto" or not self.is_cuda_graph_enabled
+            ):
                 self._backend, self._backend_fallback_reason = (
                     _auto_select_prefill_backend(
                         self.device,

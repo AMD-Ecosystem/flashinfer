@@ -16,6 +16,7 @@ import pytest
 import torch
 
 import flashinfer
+import flashinfer.rocm.prefill
 from flashinfer.rocm.aiter_utils import is_aiter_supported
 from flashinfer.rocm.prefill import (
     FP8_PREFILL_DTYPES,
@@ -44,12 +45,15 @@ def _quant(t, fp8):
     return (t / scale).to(fp8), scale.reshape(1)
 
 
-def _plan_and_run(device, s_qo, s_kv, dtype, fp8, backend="auto", **run_kwargs):
-    npages = s_kv // PAGE
+def _plan_and_run(
+    device, s_qo, s_kv, dtype, fp8, backend="auto", page=None, **run_kwargs
+):
+    page = PAGE if page is None else page
+    npages = s_kv // page
     torch.manual_seed(0)
     q = torch.randn(s_qo, NHQ, HEAD_DIM, dtype=torch.bfloat16, device=device)
     kv = torch.randn(
-        npages, 2, PAGE, NHKV, HEAD_DIM, dtype=torch.bfloat16, device=device
+        npages, 2, page, NHKV, HEAD_DIM, dtype=torch.bfloat16, device=device
     )
     ref_k = kv[:, 0].reshape(-1, NHKV, HEAD_DIM)[:s_kv]
     ref_v = kv[:, 1].reshape(-1, NHKV, HEAD_DIM)[:s_kv]
@@ -69,11 +73,11 @@ def _plan_and_run(device, s_qo, s_kv, dtype, fp8, backend="auto", **run_kwargs):
         torch.tensor([0, s_qo], dtype=torch.int32, device=device),
         torch.tensor([0, npages], dtype=torch.int32, device=device),
         torch.arange(npages, dtype=torch.int32, device=device),
-        torch.tensor([PAGE], dtype=torch.int32, device=device),
+        torch.tensor([page], dtype=torch.int32, device=device),
         NHQ,
         NHKV,
         HEAD_DIM,
-        PAGE,
+        page,
         causal=True,
         q_data_type=dtype,
         kv_data_type=dtype,
@@ -114,6 +118,81 @@ def test_fp8_paged_prefill_matches_fp32_reference(s_qo, s_kv):
     err16 = float((out16.float() - ref).abs().max())
     # Generous, but far below the ~2.0 a dropped descale produces.
     assert err8 < max(40 * err16, 0.5), f"fp8 err {err8:.4f} vs bf16 {err16:.4f}"
+
+
+@pytest.mark.parametrize("page", [1, 16, 1024])
+def test_every_routed_fp8_page_size_is_numerically_right(page):
+    """Page size is an AITER dispatch axis, so set membership is not coverage.
+
+    The routed set is {1, 16, 1024}; a kernel that exists for one of them can
+    still be wrong or missing for another, which is the failure mode this whole
+    change is about.
+    """
+    device = torch.device("cuda:0")
+    _require_aiter(device)
+    fp8 = fp8_dtype()
+    if page not in _aiter_paged_route_page_sizes(fp8):
+        pytest.skip(f"page_size={page} is not routed natively on this build")
+
+    s_kv = max(page, 1024)
+    w, out, (q, k, v) = _plan_and_run(device, 512, s_kv, fp8, fp8, page=page)
+    assert w._backend == "aiter", w._backend_fallback_reason
+
+    ref = _reference(q, k, v)
+    assert torch.isfinite(out.float()).all(), "fp8 output has NaN/Inf"
+    assert float((out.float() - ref).abs().max()) < 0.5
+
+
+def test_a_wrapper_that_once_chose_fa2_can_still_reach_fp8():
+    """plan() went concrete on the first call and never re-resolved `auto`.
+
+    So a wrapper whose first plan hit any fa2 constraint refused fp8 for the
+    rest of its life -- and a served wrapper is re-planned every step.
+    """
+    device = torch.device("cuda:0")
+    _require_aiter(device)
+    fp8 = fp8_dtype()
+    s_kv, npages = 512, 512 // PAGE
+    ws = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=device)
+    wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(ws, "NHD", backend="auto")
+    args = (
+        torch.tensor([0, s_kv], dtype=torch.int32, device=device),
+        torch.tensor([0, npages], dtype=torch.int32, device=device),
+        torch.arange(npages, dtype=torch.int32, device=device),
+        torch.tensor([PAGE], dtype=torch.int32, device=device),
+        NHQ,
+        NHKV,
+        HEAD_DIM,
+        PAGE,
+    )
+
+    # A custom mask is an AITER constraint, so this plan resolves to fa2.
+    wrapper.plan(
+        *args,
+        custom_mask=torch.ones(s_kv * s_kv, dtype=torch.bool, device=device),
+        q_data_type=torch.bfloat16,
+        kv_data_type=torch.bfloat16,
+    )
+    assert wrapper._backend == "fa2", "test premise: the first plan must pick fa2"
+
+    wrapper.plan(*args, causal=True, q_data_type=fp8, kv_data_type=fp8)
+
+    assert wrapper._backend == "aiter", wrapper._backend_fallback_reason
+
+
+def test_an_unreadable_fp8_encoding_is_refused_not_guessed(monkeypatch):
+    """Failing open here dispatches data under the wrong exponent bias.
+
+    `_aiter_ops_importable()` only proves `aiter.ops` imports, so
+    `aiter.dtypes` can be absent while the AITER backend is still selected.
+    """
+    device = torch.device("cuda:0")
+    _require_aiter(device)
+    fp8 = fp8_dtype()
+    monkeypatch.setattr(flashinfer.rocm.prefill, "_native_fp8_dtype", lambda: None)
+
+    with pytest.raises(NotImplementedError, match="unreadable"):
+        _plan_and_run(device, 512, 512, fp8, fp8)
 
 
 def test_fp8_ignoring_descales_would_be_caught():
