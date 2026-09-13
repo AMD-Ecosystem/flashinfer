@@ -431,13 +431,27 @@ It is worth opening only where it wins, and that differs by architecture.
 Over a 60-cell sweep at bf16 `head_dim` 128 (batch 1 and 4 × 16/32/64 q-heads
 × `seqlen` 256-6144), asm against CK Tile:
 
-* **gfx950** — the per-`seqlen` geomean rises monotonically above 1024. At and
-  above `qo_len` 2048 all 24 cells are wins or level: geomean 1.21, worst cell
-  1.00. That is the shipping threshold.
-* **gfx942** — non-monotonic. 1.34× at `seqlen` 1024 falls to 0.90× at 1536 and
-  recovers, both reproducible against a ±2% A/A floor, so no threshold holds and
-  the arm stays unreachable. The same 2048 cut scores geomean 1.03 there with 8
-  of 24 cells regressing.
+* **gfx950** — the per-`seqlen` geomean climbs with length above 1024: 1.01,
+  1.09, 1.15, 1.14, 1.19, 1.19. The one step down (3072) is inside the A/A
+  floor. At and above `qo_len` 2048, 11 of the 12 batch-1 cells win: geomean
+  1.14, worst cell 0.98 (16 heads, `seqlen` 2048). That is the shipping
+  threshold. Over all 24 cells the same region reads 1.17.
+* **gfx942** — non-monotonic, and the oscillation does not damp with length:
+  1.08 at `seqlen` 2048, 0.97 at 3072, 1.06 at 4096, 0.99 at 6144. Every one of
+  those steps is outside the A/A floor, so no threshold holds and the arm stays
+  unreachable. The batch-1 gate region is a net loss there — geomean 0.98 with 8
+  of 12 cells regressing, the worst at 0.81.
+
+Single prefill is one request, so the dispatcher hard-codes `args.batch = 1` and
+only the batch-1 half of the sweep is reachable through this entry point. Those
+12 cells are what the routing decision rests on. The batch-4 half describes no
+shipping path — batched prefill uses group-mode `mha_varlen_fwd` with the asm
+arm off, or `mha_batch_prefill` — and is retained only so the earlier mixed
+figures remain reproducible.
+
+Measured on an idle node against a batch-1 A/A floor of 0.991-1.005 (gfx942) and
+0.995-1.008 (gfx950), so the one gfx950 cell at 0.98 is a real if small loss
+rather than noise.
 
 The mechanism is occupancy: the asm kernel tiles 256 rows of Q at a time, so at
 batch 1 with few heads there are too few workgroups to fill the device, and it
@@ -450,9 +464,11 @@ floor and then without `--aa`; read the A/A first, since a margin inside it is
 not a result. `FLASHINFER_AITER_ASM_PREFILL=0` pins CK Tile.
 
 The sweep is square (`qo_len == kv_len`) apart from one point, so a long cached
-context with `qo_len >= 2048` — chunked prefill — takes the asm arm on evidence
-from square shapes only. Correctness is covered either way; if that shape matters
-to you, measure it before relying on the speedup, and use
+context with `qo_len >= 2048` — chunked prefill — takes the asm arm on speed
+evidence from square shapes only. Correctness there is covered:
+`test_aiter_asm_routing.py` runs `kv_len == 4 * qo_len` above the threshold and
+checks output and LSE against fp32 on the execution that reached asm. If the
+speedup matters for that shape, measure it, and use
 `FLASHINFER_AITER_ASM_VERBOSE=1` to confirm which arm ran.
 
 ### Soft-capped causal prefill avoids one AITER kernel
