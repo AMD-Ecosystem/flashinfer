@@ -241,9 +241,9 @@ def _run_probe(
     assert proc.returncode == 0, f"probe failed ({tag}): {proc.stderr[-2000:]}"
     # The subprocess resolves flashinfer independently of pytest's rootdir insertion,
     # so an editable install elsewhere on sys.path would silently test other code.
-    assert f"PROBE_FLASHINFER={Path(flashinfer.__file__).resolve()}" in proc.stdout, (
-        f"probe imported a different flashinfer than the tests:\n{proc.stdout[-500:]}"
-    )
+    assert (
+        f"PROBE_FLASHINFER={pathlib.Path(flashinfer.__file__).resolve()}" in proc.stdout
+    ), f"probe imported a different flashinfer than the tests:\n{proc.stdout[-500:]}"
     out = torch.load(out_path) if out_path.exists() else None
     return out, proc.stdout, proc.stderr
 
@@ -303,7 +303,9 @@ def test_kill_switch_pins_ck_tile(tmp_path):
     if not threshold:
         pytest.skip(f"{_device_arch(device)} never routes to asm")
 
-    on_out, _, on_err = _run_probe(tmp_path, threshold, FLASHINFER_AITER_ASM_PREFILL=None)
+    on_out, _, on_err = _run_probe(
+        tmp_path, threshold, FLASHINFER_AITER_ASM_PREFILL=None
+    )
     off_out, _, off_err = _run_probe(
         tmp_path, threshold, FLASHINFER_AITER_ASM_PREFILL="0"
     )

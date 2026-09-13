@@ -355,7 +355,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "single_prefill",
         "aiter",
         _archs(_OK_942, _OK_950),
-        note="MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. On gfx950 an unwindowed bf16 head_dim 128 call at `qo_len` >= 2048 takes AITER's asm kernel; everything else is CK Tile.",
+        note="MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. On gfx950 an unwindowed, uncapped bf16 head_dim 128 call at `qo_len` >= 2048 takes AITER's asm kernel, outside HIP graph capture; everything else is CK Tile.",
         fallback="fa2",
     ),
     Capability(

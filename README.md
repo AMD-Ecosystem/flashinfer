@@ -159,7 +159,7 @@ library's actual routing. Do not edit it by hand; run
 | Op | Backend | gfx942 (CDNA3) | gfx950 (CDNA4) | Notes |
 | :--- | :--- | :---: | :---: | :--- |
 | `batch_decode` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Under graph capture `auto` needs a declared `max_seq_len`, else it stays on fa2. |
-| `single_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. On gfx950 an unwindowed bf16 head_dim 128 call at `qo_len` >= 2048 takes AITER's asm kernel; everything else is CK Tile. |
+| `single_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. On gfx950 an unwindowed, uncapped bf16 head_dim 128 call at `qo_len` >= 2048 takes AITER's asm kernel, outside HIP graph capture; everything else is CK Tile. |
 | `batch_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | Paged and ragged, with sliding window. Page sizes 128/256/1024 are served natively; others take a flat gather. |
 | `mla` | `aiter` -- only backend | ✅ | ✅ | DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here. |
 | `rope` | `aiter` -- opt-in | ✅ | ✅ | `apply_rope_with_cos_sin_cache` and its inplace variant, linked at the C++ level. Opt-in. |
@@ -230,9 +230,10 @@ numbers. Paged prefill at a native page size is exempt — it dispatches
 See
 [per-op notes](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md#per-op-notes).
 
-**Long single prefill uses AITER's asm kernel on MI350X/MI355X.** An unwindowed
-bf16 `head_dim=128` call at `qo_len >= 2048` is about 1.21× faster there; the
-same kernel is non-monotonic on MI300X/MI325X, so CDNA3 stays on CK Tile — see
+**Long single prefill uses AITER's asm kernel on MI350X/MI355X.** An unwindowed,
+uncapped bf16 `head_dim=128` call at `qo_len >= 2048` outside HIP graph capture is
+about 1.21× faster there; the same kernel is non-monotonic on MI300X/MI325X, so
+CDNA3 stays on CK Tile — see
 [per-op notes](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md#per-op-notes).
 
 ## `torch.compile`

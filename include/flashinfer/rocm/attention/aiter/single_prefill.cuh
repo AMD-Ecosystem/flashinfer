@@ -15,8 +15,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
-#include <stdexcept>
 #include <flashinfer/rocm/gpu_runtime_compat.hpp>
+#include <stdexcept>
 
 namespace flashinfer {
 
