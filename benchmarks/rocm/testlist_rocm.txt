@@ -1,10 +1,14 @@
-# ROCm attention testlist for benchmarks/flashinfer_benchmark.py (gfx942 / gfx950).
+# ROCm testlist for benchmarks/flashinfer_benchmark.py (gfx942 / gfx950).
 #
 #   cd benchmarks
 #   python flashinfer_benchmark.py --testlist rocm/testlist_rocm.txt \
 #       --output_path run-$(date +%F).csv
 #
-# Every line requests `fa2` and `auto`. `fa2` is the in-tree HIP kernel and, being
+# The attention sections below request `fa2` and `auto`; the norm, rope and
+# sampling sections at the end run a single `cuda` backend and have their own
+# notes. Everything from here to those sections is about attention.
+#
+# Every attention line requests `fa2` and `auto`. `fa2` is the in-tree HIP kernel and, being
 # listed first, is also the reference that --refcheck compares against; `auto` is
 # whatever the library would pick in production. Read backend_resolved to see
 # which one `auto` became and backend_fallback_reason for why it declined AITER.
@@ -73,3 +77,52 @@
 --routine BatchPrefillWithRaggedKVCacheWrapper --backends fa2 auto --batch_size 1 --s_qo 1024 --s_kv 1024 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
 --routine BatchPrefillWithRaggedKVCacheWrapper --backends fa2 auto --batch_size 16 --s_qo 1024 --s_kv 1024 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
 --routine BatchPrefillWithRaggedKVCacheWrapper --backends fa2 auto --batch_size 4 --s_qo 4096 --s_kv 4096 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+
+## Norm -- bf16 and fp16
+# The backend column reads "cuda": these routines take no backend argument, so
+# each op runs at its own default, which for norm and rope is native. For the
+# native-vs-AITER comparison run rocm/bench_norm.py with no flag; --aa there is
+# native against itself, i.e. the noise floor a ratio has to clear.
+#
+# hidden_size 111 is in the sweep on purpose: the native kernel's vec_size is
+# gcd(16/sizeof(T), d), so an ill-aligned d goes fully scalar. A powers-of-two
+# sweep never sees it.
+--routine rmsnorm --batch_size 989 --hidden_size 4096 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine rmsnorm --batch_size 989 --hidden_size 8192 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+--routine rmsnorm --batch_size 989 --hidden_size 111 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "ill-aligned"
+--routine fused_add_rmsnorm --batch_size 989 --hidden_size 4096 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine fused_add_rmsnorm --batch_size 989 --hidden_size 8192 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+--routine gemma_rmsnorm --batch_size 989 --hidden_size 3072 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Gemma-7B"
+--routine gemma_fused_add_rmsnorm --batch_size 989 --hidden_size 3072 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Gemma-7B"
+
+## RoPE -- bf16
+# head_dim 128 throughout: it is what every model in the attention sections uses.
+# The fp8 variants quantize to E4M3FNUZ -- the ROCm quantize kernels accept only
+# the fnuz encodings (is_float8_tensor), on both architectures.
+--routine apply_rope --batch_size 32 --seq_len 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim 128 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine apply_rope --batch_size 4 --seq_len 4096 --num_qo_heads 32 --num_kv_heads 8 --head_dim 128 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine apply_rope_pos_ids --batch_size 32 --seq_len 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim 128 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine apply_llama31_rope --batch_size 32 --seq_len 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim 128 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine apply_llama31_rope_pos_ids --batch_size 32 --seq_len 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim 128 --input_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine rope_quantize_fp8 --batch_size 32 --seq_len 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim 128 --input_dtype bfloat16 --quant_dtype fp8_e4m3 --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine mla_rope_quantize_fp8 --batch_size 32 --seq_len 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim 128 --input_dtype bfloat16 --quant_dtype fp8_e4m3 --generate_repro_command --case_tag "DeepSeek-MLA"
+--routine rope_quantize_fp8_append_paged_kv_cache --batch_size 32 --seq_len 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim 128 --page_size 16 --input_dtype bfloat16 --quant_dtype fp8_e4m3 --generate_repro_command --case_tag "Llama-3.1-8B"
+
+## Sampling -- Llama-3 vocab
+# batch_size 64 and 512 bracket the serving range; the kernels are
+# vocab-bandwidth bound, so batch is the axis that separates launch overhead
+# from steady state. No --refcheck: these routines sample, so a run is only
+# reproducible against itself.
+--routine softmax --batch_size 64 --vocab_size 128512 --generate_repro_command --case_tag "Llama-3"
+--routine softmax --batch_size 512 --vocab_size 128512 --generate_repro_command --case_tag "Llama-3"
+--routine sampling_from_probs --batch_size 64 --vocab_size 128512 --generate_repro_command --case_tag "Llama-3"
+--routine sampling_from_logits --batch_size 64 --vocab_size 128512 --generate_repro_command --case_tag "Llama-3"
+--routine top_k_sampling_from_probs --batch_size 64 --vocab_size 128512 --top_k 100 --generate_repro_command --case_tag "Llama-3"
+--routine top_p_sampling_from_probs --batch_size 64 --vocab_size 128512 --top_p 0.9 --generate_repro_command --case_tag "Llama-3"
+--routine top_k_top_p_sampling_from_probs --batch_size 64 --vocab_size 128512 --top_k 100 --top_p 0.9 --generate_repro_command --case_tag "Llama-3"
+--routine top_k_top_p_sampling_from_logits --batch_size 64 --vocab_size 128512 --top_k 100 --top_p 0.9 --generate_repro_command --case_tag "Llama-3"
+--routine min_p_sampling_from_probs --batch_size 64 --vocab_size 128512 --min_p 0.1 --generate_repro_command --case_tag "Llama-3"
+--routine top_k_renorm_probs --batch_size 512 --vocab_size 128512 --top_k 100 --generate_repro_command --case_tag "Llama-3"
+--routine top_p_renorm_probs --batch_size 512 --vocab_size 128512 --top_p 0.9 --generate_repro_command --case_tag "Llama-3"
+--routine top_k_mask_logits --batch_size 512 --vocab_size 128512 --top_k 100 --generate_repro_command --case_tag "Llama-3"
+--routine chain_speculative_sampling --batch_size 64 --vocab_size 128512 --generate_repro_command --case_tag "Llama-3-spec"

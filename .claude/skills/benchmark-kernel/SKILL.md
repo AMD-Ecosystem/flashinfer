@@ -32,9 +32,11 @@ For the in-repo profiler wrapper, see [`profiler/rocm/rocm_profiler.py`](../../.
 
 ## What can actually be benchmarked on ROCm
 
-Only the APIs in the `IS_HIP` branch of [`flashinfer/__init__.py`](../../../flashinfer/__init__.py) are callable. **Not** available: MLA, cascade, POD, FP4, MoE, cuDNN backends. Don't try to import them.
+Only the APIs in the `IS_HIP` branch of [`flashinfer/__init__.py`](../../../flashinfer/__init__.py) are callable — which is more than it used to be: MLA, cascade, POD, block-sparse and AITER MoE are all exported now. The generated support matrix in [`README.md`](../../../README.md) is the list; **not** available are FP4, cuDNN backends, upstream's CUTLASS MoE, and everything else `flashinfer/rocm/__init__.py` gates.
 
-AITER backend available for: single prefill, batch prefill (paged + ragged) — opt in via `backend="aiter"`. Not available for decode, norm, rope, sampling, etc.
+`auto` tries AITER first for single prefill, batch prefill (paged + ragged), decode and MLA, and AITER is the only backend for MoE. It stays native for norm, rope, activation and paged append — native measured faster there, so reaching AITER needs an explicit `backend="aiter"`. The per-op column of the README matrix is authoritative; it is generated from `flashinfer/rocm/arch_caps.py`.
+
+Two families of driver live in [`benchmarks/rocm/`](../../../benchmarks/rocm/): the `rocm_profiler` ones that answer "where is this kernel on the roofline", and the standalone A/B ones (`bench_norm.py`, `bench_block_sparse_attention.py`, `bench_mixed_attention.py`) that answer "which arm should I use". Copy whichever matches the question.
 
 ## `rocm_profiler` counter presets
 
