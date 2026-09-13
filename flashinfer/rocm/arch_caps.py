@@ -35,6 +35,7 @@ __all__ = [
     "KnownBad",
     "Support",
     "aiter_fallback_backend",
+    "aiter_flat_gather_gated_q_len",
     "aiter_softcap_defect_arch",
     "capability_available",
     "capability_reason",
@@ -271,6 +272,30 @@ _MEASURED_950_MLA = (
 # by architecture is whether the kernel is affected, not at which length.
 # Measured on amd-aiter 0.1.20 over qo_len x kv_len x cap, vs an fp32 reference.
 _AITER_SOFTCAP_DEFECT_ARCHS = {"gfx942": False, "gfx950": True}
+
+
+# A non-native page size makes AITER gather the whole KV cache before
+# attending, an O(kv) copy against an O(q*kv) attention -- so the overhead
+# decays as 1/q and only short queries lose. The crossover differs by arch
+# because the two kernels' throughputs do; measured on amd-aiter 0.1.20,
+# ratio table in git log.
+_AITER_FLAT_GATHER_GATED_Q_LEN = {"gfx942": 16, "gfx950": 8}
+
+
+def aiter_flat_gather_gated_q_len(arch: str) -> Optional[int]:
+    """Largest ``max_q_len`` that should avoid AITER's flat-gather paged prefill.
+
+    Compare with ``<=``. ``None`` for an unknown architecture disarms the gate
+    rather than steering a machine that is probably fine, matching
+    :func:`aiter_softcap_defect_arch`. Applies only to page sizes AITER
+    cannot page natively; native paging is faster than fa2 even at ``q=1`` and
+    must not be gated.
+
+    Measured over head_dim 128, GQA groups {4, 8}, kv_len {512, 4096, 32768}.
+    It is a per-arch scalar, so a much larger head_dim or GQA group is steered
+    on an extrapolation -- re-measure before trusting it there.
+    """
+    return _AITER_FLAT_GATHER_GATED_Q_LEN.get(normalize_arch(arch))
 
 
 def aiter_softcap_defect_arch(arch: str) -> bool:
