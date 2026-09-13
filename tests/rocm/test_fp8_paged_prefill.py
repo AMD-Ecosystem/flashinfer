@@ -46,7 +46,16 @@ def _quant(t, fp8):
 
 
 def _plan_and_run(
-    device, s_qo, s_kv, dtype, fp8, backend="auto", page=None, **run_kwargs
+    device,
+    s_qo,
+    s_kv,
+    dtype,
+    fp8,
+    backend="auto",
+    page=None,
+    causal=True,
+    logits_soft_cap=0.0,
+    **run_kwargs,
 ):
     page = PAGE if page is None else page
     npages = s_kv // page
@@ -78,21 +87,24 @@ def _plan_and_run(
         NHKV,
         HEAD_DIM,
         page,
-        causal=True,
+        causal=causal,
+        logits_soft_cap=logits_soft_cap,
         q_data_type=dtype,
         kv_data_type=dtype,
     )
     return w, w.run(q_in, kv_in, **run_kwargs), (q, ref_k, ref_v)
 
 
-def _reference(q, k, v):
+def _reference(q, k, v, causal=True):
     rep = q.shape[1] // k.shape[1]
     qs = q.permute(1, 0, 2).float()
     ks = k.repeat_interleave(rep, dim=1).permute(1, 0, 2).float()
     vs = v.repeat_interleave(rep, dim=1).permute(1, 0, 2).float()
     s = (qs @ ks.transpose(-1, -2)) / math.sqrt(HEAD_DIM)
     sq, sk = s.shape[-2], s.shape[-1]
-    m = torch.ones(sq, sk, dtype=torch.bool, device=s.device).tril(sk - sq)
+    m = torch.ones(sq, sk, dtype=torch.bool, device=s.device)
+    if causal:
+        m = m.tril(sk - sq)
     return ((s.masked_fill(~m, float("-inf"))).softmax(-1) @ vs).permute(1, 0, 2)
 
 
@@ -194,6 +206,43 @@ def test_an_unreadable_fp8_encoding_is_refused_not_guessed(monkeypatch):
 
     with pytest.raises(NotImplementedError, match="unreadable"):
         _plan_and_run(device, 512, 512, fp8, fp8)
+
+
+def test_non_causal_fp8_selects_its_own_variant_and_is_right():
+    """`needs_mask` picks a different .so, so causal coverage is not coverage of
+    the `_nmask` arm -- a naming or bootstrap defect there would reach a caller
+    on their first non-causal call."""
+    device = torch.device("cuda:0")
+    _require_aiter(device)
+    fp8 = fp8_dtype()
+
+    w, out, (q, k, v) = _plan_and_run(device, 512, 512, fp8, fp8, causal=False)
+
+    assert w._backend == "aiter", w._backend_fallback_reason
+    ref = _reference(q, k, v, causal=False)
+    assert torch.isfinite(out.float()).all(), "fp8 non-causal output has NaN/Inf"
+    assert float((out.float() - ref).abs().max()) < 0.5
+
+
+@pytest.mark.parametrize("causal", [True, False])
+def test_a_soft_capped_fp8_call_reaches_the_logits_variant(causal):
+    """`has_logits_cap` is the other axis in the .so name. Asserted against the
+    uncapped result rather than a reference: what matters is that the cap
+    reached the kernel, and a dropped cap would return the uncapped answer."""
+    device = torch.device("cuda:0")
+    _require_aiter(device)
+    fp8 = fp8_dtype()
+
+    w_cap, capped, _ = _plan_and_run(
+        device, 512, 512, fp8, fp8, causal=causal, logits_soft_cap=1.0
+    )
+    _, uncapped, _ = _plan_and_run(device, 512, 512, fp8, fp8, causal=causal)
+
+    assert w_cap._backend == "aiter", w_cap._backend_fallback_reason
+    assert torch.isfinite(capped.float()).all(), "capped fp8 output has NaN/Inf"
+    assert not torch.allclose(capped.float(), uncapped.float(), atol=1e-2), (
+        "a soft cap of 1.0 changed nothing; the _logits variant is not in use"
+    )
 
 
 def test_fp8_ignoring_descales_would_be_caught():

@@ -710,7 +710,7 @@ partial case — its own kernels are HIP, but what it calls is not:
 
 `BatchPrefillWithPagedKVCacheWrapper` serves an fp8 query and KV cache, at
 **1.22-1.66x** over bf16 through the wrapper (gfx942, page size 16, GQA 32/8,
-causal). Four constraints, all of them AITER's:
+causal). The constraints, all of them AITER's:
 
 * **Output is bf16**, whatever the query dtype — there is no fp8-output kernel.
   `plan()` defaults `o_data_type` accordingly and rejects anything else.
