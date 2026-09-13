@@ -16,7 +16,9 @@
 #include <cstring>
 #include <exception>
 #include <flashinfer/rocm/gpu_runtime_compat.hpp>
+#include <fstream>
 #include <stdexcept>
+#include <string>
 
 namespace flashinfer {
 
@@ -74,6 +76,20 @@ inline void AiterAsmPrefillNote(const char* what) {
     return v != nullptr && std::strcmp(v, "0") != 0;
   }();
   if (verbose) std::fprintf(stderr, "[flashinfer] aiter asm prefill: %s\n", what);
+}
+
+// AITER opens its code object with AITER_CHECK, which aborts rather than returns, so
+// a stale or partial AITER_ASM_DIR takes the process down before any fallback. Our
+// eligibility pins arch, dtype, head dim and mask, so the exact .co name is known --
+// check it and stay on CK Tile when it is missing. Layout: amd-aiter 0.1.20.
+inline bool AiterAsmCoPresent(const char* arch, uint32_t hdim, bool causal) {
+  const char* dir = std::getenv("AITER_ASM_DIR");
+  if (dir == nullptr || *dir == '\0' || arch == nullptr || *arch == '\0') return false;
+  std::string path(dir);
+  if (path.back() != '/') path.push_back('/');
+  path += std::string(arch) + "/fmha_v3_fwd/fwd_hd" + std::to_string(hdim) + "_bf16" +
+          (causal ? "_causal" : "") + ".co";
+  return std::ifstream(path.c_str()).good();
 }
 
 // FLASHINFER_AITER_ASM_PREFILL=0 pins the CK Tile arm. AITER aborts the process on
@@ -203,12 +219,14 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
   bool asm_wanted =
       AiterAsmPrefillEnabled() &&
       AiterAsmV3Eligible(HEAD_DIM_QK, HEAD_DIM_VO, dtype_enum, has_logits_cap, window_left);
+  const char* arch_name = "";
   if (asm_wanted) {
     int device = 0;
     uint32_t asm_min_qo_len = 0;
     if (hipGetDevice(&device) == hipSuccess) {
       try {
-        asm_min_qo_len = AiterAsmPrefillMinQoLen(getGcnArchName(device));
+        arch_name = getGcnArchName(device);
+        asm_min_qo_len = AiterAsmPrefillMinQoLen(arch_name);
       } catch (const std::exception&) {
         asm_min_qo_len = 0;  // FI_HIP_CALL throws; an unreadable arch stays on CK Tile
       }
@@ -245,6 +263,10 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
       // check above, and is_group_mode is false whenever there is no soft cap.
       static thread_local int probe[2] = {0, 0};  // 0 unknown, 1 supported, -1 not
       const int slot = needs_mask ? 1 : 0;
+      if (probe[slot] == 0 && !AiterAsmCoPresent(arch_name, HEAD_DIM_QK, needs_mask)) {
+        probe[slot] = -1;
+        AiterAsmPrefillNote("code object missing under AITER_ASM_DIR; using CK Tile");
+      }
       if (probe[slot] == 0) {
         ::aiter::mha_fwd_args probe_args = args;
         probe_args.use_asm_v3 = true;
