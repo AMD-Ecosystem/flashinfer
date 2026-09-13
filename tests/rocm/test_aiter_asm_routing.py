@@ -162,11 +162,12 @@ print("PROBE_FLASHINFER=" + str(pathlib.Path(flashinfer.__file__).resolve()), fl
 d = torch.device("cuda:0")
 torch.manual_seed(7)
 qo = int(os.environ["PROBE_QO_LEN"])
+kv = int(os.environ["PROBE_KV_LEN"])
 causal = os.environ["PROBE_CAUSAL"] == "1"
 return_lse = os.environ["PROBE_LSE"] == "1"
 q = torch.randn(qo, 8, 128, dtype=torch.bfloat16, device=d)
-k = torch.randn(qo, 2, 128, dtype=torch.bfloat16, device=d)
-v = torch.randn(qo, 2, 128, dtype=torch.bfloat16, device=d)
+k = torch.randn(kv, 2, 128, dtype=torch.bfloat16, device=d)
+v = torch.randn(kv, 2, 128, dtype=torch.bfloat16, device=d)
 
 
 def call():
@@ -200,13 +201,22 @@ if os.environ.get("PROBE_CAPTURE") == "1":
     print("CAPTURE_OK")
 else:
     res = call()
-    out = res[0] if return_lse else res
-    torch.save(out.float().cpu(), os.environ["PROBE_OUT"])
+    out, lse = (res[0], res[1]) if return_lse else (res, None)
+    torch.save(
+        {"out": out.float().cpu(), "lse": None if lse is None else lse.float().cpu()},
+        os.environ["PROBE_OUT"],
+    )
 """
 
 
 def _run_probe(
-    tmp_path, qo_len, causal=True, return_lse=False, capture=False, **env_overrides
+    tmp_path,
+    qo_len,
+    kv_len=None,
+    causal=True,
+    return_lse=False,
+    capture=False,
+    **env_overrides,
 ):
     """Run one prefill in a fresh process; return (output tensor or None, stderr).
 
@@ -219,14 +229,16 @@ def _run_probe(
     # Values, not just keys: two runs that differ only in an override value would
     # otherwise share a path, and a second process that exits 0 without writing
     # would leave the first run's tensor to be compared against itself.
+    kv_len = qo_len if kv_len is None else kv_len
     overrides = "".join(f"{k}={v}" for k, v in sorted(env_overrides.items()))
-    tag = f"{qo_len}-{int(causal)}{int(return_lse)}{int(capture)}{overrides}"
+    tag = f"{qo_len}x{kv_len}-{int(causal)}{int(return_lse)}{int(capture)}{overrides}"
     out_path = tmp_path / f"o{re.sub(r'[^A-Za-z0-9_.-]', '_', tag)}.pt"
     if out_path.exists():
         out_path.unlink()
     env = dict(os.environ)
     env.update(
         PROBE_QO_LEN=str(qo_len),
+        PROBE_KV_LEN=str(kv_len),
         PROBE_CAUSAL="1" if causal else "0",
         PROBE_LSE="1" if return_lse else "0",
         PROBE_CAPTURE="1" if capture else "0",
@@ -257,43 +269,55 @@ def _run_probe(
 
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("return_lse", [False, True])
-def test_asm_arm_is_actually_reached(tmp_path, causal, return_lse):
-    """Which arm ran has to be observable for every trait the gate admits.
+@pytest.mark.parametrize("kv_mult", [1, 4])
+def test_asm_arm_is_actually_reached(tmp_path, causal, return_lse, kv_mult):
+    """Which arm ran, and whether it was right, asserted on the same execution.
 
-    If the asm .so is missing or AITER_ASM_DIR is unset, the C++ swallows the
-    failure and CK Tile serves the call with identical numerics -- so without this,
-    test_asm_gate_numerics would pass whether or not the arm was ever reached.
+    Split across two tests they both pass while asm is unreachable: CK Tile serves
+    the numerics with identical output. kv_mult=4 is the chunked-prefill shape, so
+    causal there is bottom-right masking -- the asm kernel applies that row offset
+    itself, and nothing else exercises it on this arm.
     """
     device = torch.device("cuda:0")
     _skip_unless_aiter(device)
     threshold = aiter_asm_prefill_min_qo_len(_device_arch(device))
     if not threshold:
         pytest.skip(f"{_device_arch(device)} never routes to asm")
+    kv_len = threshold * kv_mult
 
-    asm_out, _, above = _run_probe(
-        tmp_path, threshold, causal=causal, return_lse=return_lse
+    saved, _, above = _run_probe(
+        tmp_path, threshold, kv_len=kv_len, causal=causal, return_lse=return_lse
     )
-    _, _, below = _run_probe(tmp_path, 512, causal=causal, return_lse=return_lse)
     assert "aiter asm prefill: launched" in above, (
-        f"qo_len={threshold} did not reach the asm arm. stderr:\n{above[-2000:]}"
+        f"qo_len={threshold} kv_len={kv_len} did not reach the asm arm. "
+        f"stderr:\n{above[-2000:]}"
     )
-    assert "aiter asm prefill: launched" not in below, (
-        f"qo_len=512 is below the threshold but took the asm arm. stderr:\n{below[-2000:]}"
-    )
+    if kv_mult == 1:
+        _, _, below = _run_probe(tmp_path, 512, causal=causal, return_lse=return_lse)
+        assert "aiter asm prefill: launched" not in below, (
+            f"qo_len=512 is below the threshold but took the asm arm. "
+            f"stderr:\n{below[-2000:]}"
+        )
 
-    # Check the numbers from the same execution that proved the arm ran. Asserting
-    # them apart lets both halves pass while asm is unreachable and CK Tile, whose
-    # output is identical, quietly serves every numerics case.
-    assert asm_out is not None, "the above-threshold probe wrote no tensor"
+    # Same execution that proved the arm ran, so this cannot be CK Tile's answer.
+    assert saved is not None, "the above-threshold probe wrote no tensor"
     torch.manual_seed(7)  # same seed and shapes as _PROBE
     d = torch.device("cuda:0")
     q = torch.randn(threshold, 8, HEAD_DIM, dtype=torch.bfloat16, device=d)
-    k = torch.randn(threshold, 2, HEAD_DIM, dtype=torch.bfloat16, device=d)
-    v = torch.randn(threshold, 2, HEAD_DIM, dtype=torch.bfloat16, device=d)
-    ref_o, _ = naive_attention(q.float(), k.float(), v.float(), causal=causal)
-    torch.testing.assert_close(
-        asm_out.float(), ref_o.float().cpu(), rtol=2e-2, atol=2e-2
+    k = torch.randn(kv_len, 2, HEAD_DIM, dtype=torch.bfloat16, device=d)
+    v = torch.randn(kv_len, 2, HEAD_DIM, dtype=torch.bfloat16, device=d)
+    ref_o, ref_lse = naive_attention(
+        q.float(), k.float(), v.float(), causal=causal, return_lse=return_lse
     )
+    torch.testing.assert_close(saved["out"], ref_o.float().cpu(), rtol=2e-2, atol=2e-2)
+    if return_lse:
+        # The asm kernel writes LSE from a different path than CK Tile and the shim
+        # divides by log(2) unconditionally, so a differing base corrupts it silently.
+        assert saved["lse"] is not None, "return_lse=True probe saved no LSE"
+        assert torch.isfinite(saved["lse"]).all(), "asm arm returned a non-finite LSE"
+        torch.testing.assert_close(
+            saved["lse"], ref_lse.float().cpu(), rtol=5e-2, atol=5e-2
+        )
 
 
 def test_graph_capture_stays_on_ck_tile(tmp_path):
@@ -338,4 +362,6 @@ def test_kill_switch_pins_ck_tile(tmp_path):
     assert "aiter asm prefill" not in off_err, "the kill switch did not disable the arm"
     # Elementwise, not a sum: ~8M near-zero-mean terms cancel, so a sum would pass
     # even with a whole block of the output wrong.
-    assert (on_out - off_out).abs().max().item() < 2e-2, "asm and CK Tile disagree"
+    assert (on_out["out"] - off_out["out"]).abs().max().item() < 2e-2, (
+        "asm and CK Tile disagree"
+    )
