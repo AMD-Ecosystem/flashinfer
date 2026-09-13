@@ -3193,6 +3193,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
             one element on ``q.device``. Required for an fp8 query, rejected
             otherwise. ``scale_k`` / ``scale_v`` are the same for the KV cache.
             A per-head tensor is silently read as element 0, so shape matters.
+            Mutually exclusive with the float ``q_scale`` / ``k_scale`` /
+            ``v_scale`` above: those fold into ``sm_scale`` and the output,
+            these are applied by the kernel, and both would dequantize twice.
         Returns
         -------
         Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
@@ -3245,6 +3248,18 @@ class BatchPrefillWithPagedKVCacheWrapper:
             logits_soft_cap = 0.0
         if sm_scale is None:
             sm_scale = 1.0 / math.sqrt(q.size(-1))
+        # The float q/k/v_scale fold into sm_scale and the output; the fp8
+        # descales are applied inside AITER. Both sets would dequantize twice,
+        # silently, so an fp8 query takes the tensor ones only.
+        if q.dtype in FP8_PREFILL_DTYPES and (
+            q_scale is not None or k_scale is not None or v_scale is not None
+        ):
+            raise ValueError(
+                "q_scale/k_scale/v_scale cannot be combined with an fp8 query: "
+                "they multiply sm_scale and the output, while scale_q/scale_k/"
+                "scale_v are applied by the kernel, so passing both dequantizes "
+                "twice. Use scale_q/scale_k/scale_v alone for fp8."
+            )
         if q_scale is not None:
             sm_scale *= q_scale
         if k_scale is not None:

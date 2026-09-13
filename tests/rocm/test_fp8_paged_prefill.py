@@ -311,11 +311,14 @@ def test_the_k_and_v_descales_reach_their_own_operands():
     good = wrapper.run(q8, kv8, scale_q=sq, scale_k=sk, scale_v=sv)
     swapped = wrapper.run(q8, kv8, scale_q=sq, scale_k=sv, scale_v=sk)
 
-    err = float((good.float() - ref).abs().max())
-    assert err < 40 * float(sv), f"correct descales disagree with the reference: {err}"
-    assert not torch.allclose(good.float(), swapped.float(), atol=1e-2), (
-        "swapping scale_k and scale_v changed nothing; the shim is not "
-        "distinguishing the two descale pointers"
+    # Against the reference, not against each other: "they differ" only shows
+    # the pointers reach different operands, not that the order is right.
+    err_good = float((good.float() - ref).abs().max())
+    err_swapped = float((swapped.float() - ref).abs().max())
+    assert err_good < err_swapped, (
+        f"the declared K/V descale order is no better than the swapped one "
+        f"({err_good:.4f} vs {err_swapped:.4f}); the shim is not wiring them "
+        "to their own operands"
     )
 
 
@@ -343,6 +346,38 @@ def test_descales_are_refused_for_a_non_fp8_query():
 
     with pytest.raises(RuntimeError, match="only meaningful for an fp8 query"):
         _plan_and_run(device, 512, 512, torch.bfloat16, fp8, scale_q=one)
+
+
+def test_a_routed_page_whose_probe_fails_still_refuses_fp8(monkeypatch):
+    """The page-size check passes here, so this is the only guard left.
+
+    A routed page size can still fail `_aiter_native_paging_available` -- an
+    AITER source build is the usual way -- and without the guard inside the
+    probe-failure branch the call would enter flat-gather, which has no fp8
+    kernel.
+    """
+    device = torch.device("cuda:0")
+    _require_aiter(device)
+    fp8 = fp8_dtype()
+    assert PAGE in _aiter_paged_route_page_sizes(fp8), "test premise"
+    monkeypatch.setattr(
+        flashinfer.rocm.prefill, "_aiter_native_paging_available", lambda *a, **k: False
+    )
+
+    with pytest.raises(NotImplementedError, match="flat-gather"):
+        _plan_and_run(device, 512, 512, fp8, fp8)
+
+
+@pytest.mark.parametrize("legacy", ["q_scale", "k_scale", "v_scale"])
+def test_the_legacy_float_scales_are_refused_for_fp8(legacy):
+    """Two calibration APIs on one call would dequantize twice, silently: the
+    float scales fold into sm_scale and the output, the descales go to AITER."""
+    device = torch.device("cuda:0")
+    _require_aiter(device)
+    fp8 = fp8_dtype()
+
+    with pytest.raises(ValueError, match="cannot be combined with an fp8 query"):
+        _plan_and_run(device, 512, 512, fp8, fp8, **{legacy: 2.0})
 
 
 def test_fp8_rejects_per_head_descale():
