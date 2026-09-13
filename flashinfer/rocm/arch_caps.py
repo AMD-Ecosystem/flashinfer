@@ -315,11 +315,12 @@ def aiter_softcap_defect_arch(arch: str) -> bool:
 #
 # Measured on amd-aiter 0.1.20, bf16 head_dim=128, asm/CK Tile over a 60-cell
 # sweep (batch 1 and 4 x 16/32/64 q-heads x seqlen 256..6144), A/A-controlled at
-# a +/-2% noise floor:
-#   gfx950  monotone above seqlen 1024; at/above 2048 the 24 cells give a 1.21x
-#           geomean with the worst cell at 1.00, so nothing regresses
-#   gfx942  non-monotonic -- 1.34x at 1024 falls to 0.90x at 1536 and back,
-#           reproduced -- so no threshold holds and asm stays unreachable
+# a +/-1.3% noise floor:
+#   gfx950  climbs with length above seqlen 1024 (1.01, 1.09, 1.15, 1.14, 1.19,
+#           1.19); at/above 2048 the 24 cells give a 1.17x geomean, worst cell
+#           0.98 at batch 1 / 16 heads / seqlen 2048
+#   gfx942  non-monotonic and undamped -- 1.08x at 2048, 0.97x at 3072, 1.06x at
+#           4096, 0.99x at 6144 -- so no threshold holds and asm stays unreachable
 _AITER_ASM_PREFILL_MIN_QO_LEN = {"gfx942": None, "gfx950": 2048}
 
 
