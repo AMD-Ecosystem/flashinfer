@@ -1139,7 +1139,9 @@ def test_batch_prefill_aiter_falls_back_when_native_paging_missing(
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
-    if page_size not in _aiter_paged_route_page_sizes(torch.float16):
+    # bfloat16: the dtype this test actually plans with, and the route set is
+    # dtype-dependent.
+    if page_size not in _aiter_paged_route_page_sizes(torch.bfloat16):
         pytest.skip(f"page_size={page_size} is not routed natively on this build")
     # Ends in an assert_close against fa2 with causal=True, so it is a numerics
     # test despite being named for the fallback.

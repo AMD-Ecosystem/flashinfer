@@ -946,7 +946,8 @@ def _aiter_native_paging_available(
     the native path definitionally cannot work — forcing it anyway just trades this
     error for ``AITER .so not found`` inside run().
 
-    Falling back is always correct: the flat-gather path serves every page size.
+    Falling back is correct for fp16/bf16: the flat-gather path serves every
+    page size. fp8 has no such kernel, so there plan() raises instead.
     It is not free, though — it materializes a contiguous copy of K and V on each
     run() — so the fallback is warned about rather than taken silently. Set
     FLASHINFER_AITER_STRICT=1 to re-raise instead of degrading.
@@ -983,16 +984,23 @@ def _aiter_native_paging_available(
     except Exception as e:
         if os.environ.get("FLASHINFER_AITER_STRICT", "0") == "1":
             raise
+        outcome = (
+            "plan() will raise: fp8 has no flat-gather kernel to fall back to"
+            if dtype in FP8_PREFILL_DTYPES
+            else (
+                "Falling back to the flat-gather path, which copies K/V per "
+                "run(). Set FLASHINFER_AITER_STRICT=1 to raise instead"
+            )
+        )
         logger.warning(
             "AITER has no native paged-prefill kernel for page_size=%d "
-            "(dtype=%s, needs_mask=%s, logits_cap=%s): %s. Falling back to the "
-            "flat-gather path, which copies K/V per run(). Set "
-            "FLASHINFER_AITER_STRICT=1 to raise instead.",
+            "(dtype=%s, needs_mask=%s, logits_cap=%s): %s. %s.",
             page_size,
             dtype,
             needs_mask,
             has_logits_cap,
             e,
+            outcome,
         )
         return False
     return True

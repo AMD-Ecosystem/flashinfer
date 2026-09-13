@@ -22,10 +22,12 @@
 #
 # Choices worth knowing before editing:
 #
-#   --page_size 128 for paged prefill, not 16. 128 is AITER-native; other
-#     sizes take a flat-gather path that copies the whole KV cache inside the
-#     timed region, so the row becomes a memcpy benchmark. Decode has no
-#     gather path and uses the serving-default 16.
+#   --page_size 1024 for paged prefill, not 16 or 128. 1024 is the only size
+#     `auto` routes natively for bf16; every other size takes a flat-gather
+#     path that copies the whole KV cache inside the timed region, so the row
+#     becomes a memcpy benchmark. 128 was used here until the native set was
+#     measured to be {1, 16, 1024} -- it is not native and never was. Decode
+#     has no gather path and uses the serving-default 16.
 #
 #   --refcheck WITHOUT --allow_output_mismatch. fa2 and auto run side by side
 #     anyway, so the correctness check is free, and a fast-but-wrong number is
@@ -62,13 +64,13 @@
 --routine BatchDecodeWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 16 --s_qo 1 --s_kv 1024 --num_qo_heads 128 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-405B"
 --routine BatchDecodeWithPagedKVCacheWrapper --backends fa2 auto --page_size 16 --batch_size 64 --s_qo 1 --s_kv 8192 --num_qo_heads 128 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-405B"
 
-## Batch paged prefill -- page_size 128 (AITER-native), causal, bf16
---routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 128 --batch_size 1 --s_qo 1024 --s_kv 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
---routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 128 --batch_size 16 --s_qo 1024 --s_kv 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
---routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 128 --batch_size 4 --s_qo 4096 --s_kv 4096 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
---routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 128 --batch_size 1 --s_qo 1024 --s_kv 1024 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
---routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 128 --batch_size 16 --s_qo 1024 --s_kv 1024 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
---routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 128 --batch_size 4 --s_qo 4096 --s_kv 4096 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+## Batch paged prefill -- page_size 1024 (natively routed for bf16), causal, bf16
+--routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 1024 --batch_size 1 --s_qo 1024 --s_kv 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 1024 --batch_size 16 --s_qo 1024 --s_kv 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 1024 --batch_size 4 --s_qo 4096 --s_kv 4096 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
+--routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 1024 --batch_size 1 --s_qo 1024 --s_kv 1024 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+--routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 1024 --batch_size 16 --s_qo 1024 --s_kv 1024 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
+--routine BatchPrefillWithPagedKVCacheWrapper --backends fa2 auto --page_size 1024 --batch_size 4 --s_qo 4096 --s_kv 4096 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
 
 ## Batch ragged prefill -- causal, bf16
 --routine BatchPrefillWithRaggedKVCacheWrapper --backends fa2 auto --batch_size 1 --s_qo 1024 --s_kv 1024 --num_qo_heads 32 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-8B"
