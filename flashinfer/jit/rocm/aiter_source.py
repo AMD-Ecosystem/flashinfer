@@ -311,17 +311,41 @@ def refresh_aiter_jitspec(spec: JitSpec) -> JitSpec:
 
 @functools.lru_cache(maxsize=1)
 def _aiter_csrc_include_dir() -> Path:
-    """The aiter_meta C++ public header dir (rmsnorm.h / activation.h / rope.h)."""
+    """The AITER C++ public header dir (rmsnorm.h / activation.h / rope.h).
+
+    Normally ``aiter_meta/csrc/include``. An editable AITER install has no
+    ``aiter_meta`` at all -- ``setup.py develop`` takes a branch that sets
+    ``packages = ["aiter"]`` -- so fall back to AITER's own ``AITER_CSRC_DIR``,
+    which resolves to the clone's ``csrc/`` in that layout and honours an
+    ``AITER_META_DIR`` override in any layout.
+    """
     # aiter ships its C++ sources/headers in the sibling aiter_meta package,
     # which is a namespace package (no __file__) — resolve via __path__.
-    import aiter_meta
+    try:
+        import aiter_meta
 
-    for p in aiter_meta.__path__:
-        inc = Path(p) / "csrc" / "include"
+        for p in aiter_meta.__path__:
+            inc = Path(p) / "csrc" / "include"
+            if inc.exists():
+                return inc
+    except ImportError:
+        pass
+
+    # Only reached when aiter_meta is missing or incomplete, which is also the
+    # only case where importing aiter (and needing a live GPU for it) is no
+    # worse than the RuntimeError below.
+    try:
+        from aiter.jit.core import AITER_CSRC_DIR
+
+        inc = Path(AITER_CSRC_DIR) / "include"
         if inc.exists():
             return inc
+    except Exception:
+        pass
+
     raise RuntimeError(
-        "Could not locate aiter_meta/csrc/include; is the aiter source package installed?"
+        "Could not locate AITER's csrc/include, via either aiter_meta or "
+        "aiter.jit.core.AITER_CSRC_DIR; is the aiter source package installed?"
     )
 
 

@@ -129,12 +129,70 @@ class TestCsrcIncludeDir:
         yield
         aiter_source._aiter_csrc_include_dir.cache_clear()
 
-    def test_a_missing_header_tree_names_the_package(self, monkeypatch):
+    @staticmethod
+    def _fake_aiter_core(monkeypatch, csrc_dir):
+        """Put aiter.jit.core in sys.modules so the fallback resolves without a
+        real `import aiter`, which runs arch detection and needs a device."""
+        import sys
+        import types
+
+        pkg = types.ModuleType("aiter")
+        pkg.__path__ = []
+        jit = types.ModuleType("aiter.jit")
+        jit.__path__ = []
+        core = types.ModuleType("aiter.jit.core")
+        core.AITER_CSRC_DIR = str(csrc_dir)
+        for name, mod in (
+            ("aiter", pkg),
+            ("aiter.jit", jit),
+            ("aiter.jit.core", core),
+        ):
+            monkeypatch.setitem(sys.modules, name, mod)
+
+    @staticmethod
+    def _no_aiter_meta(monkeypatch):
+        """`setup.py develop` ships no aiter_meta at all, so the import raises."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _blocked(name, *args, **kwargs):
+            if name == "aiter_meta":
+                raise ImportError("no module named aiter_meta")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _blocked)
+
+    def test_aiter_meta_is_preferred_when_present(self):
+        found = aiter_source._aiter_csrc_include_dir()
+        assert found.name == "include" and found.parent.name == "csrc"
+
+    def test_an_absent_aiter_meta_falls_back_to_aiter_csrc_dir(
+        self, monkeypatch, tmp_path
+    ):
+        inc = tmp_path / "csrc" / "include"
+        inc.mkdir(parents=True)
+        self._no_aiter_meta(monkeypatch)
+        self._fake_aiter_core(monkeypatch, tmp_path / "csrc")
+
+        assert aiter_source._aiter_csrc_include_dir() == inc
+
+    def test_an_incomplete_aiter_meta_falls_back_too(self, monkeypatch, tmp_path):
+        """Present but pointing nowhere useful is the same failure as absent."""
         import aiter_meta
 
+        inc = tmp_path / "csrc" / "include"
+        inc.mkdir(parents=True)
         monkeypatch.setattr(aiter_meta, "__path__", ["/nonexistent"])
+        self._fake_aiter_core(monkeypatch, tmp_path / "csrc")
 
-        with pytest.raises(RuntimeError, match="aiter_meta/csrc/include"):
+        assert aiter_source._aiter_csrc_include_dir() == inc
+
+    def test_neither_route_working_names_both(self, monkeypatch, tmp_path):
+        self._no_aiter_meta(monkeypatch)
+        self._fake_aiter_core(monkeypatch, tmp_path / "absent")
+
+        with pytest.raises(RuntimeError, match="aiter_meta.*AITER_CSRC_DIR"):
             aiter_source._aiter_csrc_include_dir()
 
 
