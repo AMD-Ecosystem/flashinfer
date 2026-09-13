@@ -34,7 +34,10 @@ than one global band -- the per-shape floors differ and a margin inside one is
 not a result.
 
 Only the ``batch=1`` rows are reachable through ``single_prefill``, which pins
-``args.batch = 1``; the ``batch=4`` rows describe the batched prefill paths.
+``args.batch = 1``. The ``batch=4`` rows characterise no shipping path -- batched
+prefill goes to group-mode ``mha_varlen_fwd`` with the asm arm off, or to
+``mha_batch_prefill`` -- and are kept only to reproduce the mixed aggregate
+published before the threshold was rescoped.
 
 Run:
     python benchmarks/rocm/bench_asm_vs_cktile.py --aa

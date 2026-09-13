@@ -441,8 +441,10 @@ Over a 60-cell sweep at bf16 `head_dim` 128 (batch 1 and 4 × 16/32/64 q-heads
 
 Single prefill is one request, so the dispatcher hard-codes `args.batch = 1` and
 only the batch-1 half of the sweep is reachable through this entry point. Those
-12 cells are what the routing decision rests on; the batch-4 half is kept
-because it is what the batched prefill paths see.
+12 cells are what the routing decision rests on. The batch-4 half describes no
+shipping path — batched prefill uses group-mode `mha_varlen_fwd` with the asm
+arm off, or `mha_batch_prefill` — and is retained only so the earlier mixed
+figures remain reproducible.
 
 Measured on an idle node against a batch-1 A/A floor of 0.991-1.005 (gfx942) and
 0.995-1.008 (gfx950), so the one gfx950 cell at 0.98 is a real if small loss
