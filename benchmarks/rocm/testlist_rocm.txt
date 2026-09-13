@@ -78,11 +78,15 @@
 --routine BatchPrefillWithRaggedKVCacheWrapper --backends fa2 auto --batch_size 16 --s_qo 1024 --s_kv 1024 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
 --routine BatchPrefillWithRaggedKVCacheWrapper --backends fa2 auto --batch_size 4 --s_qo 4096 --s_kv 4096 --num_qo_heads 64 --num_kv_heads 8 --head_dim_qk 128 --head_dim_vo 128 --causal --q_dtype bfloat16 --kv_dtype bfloat16 --refcheck --generate_repro_command --case_tag "Llama-3.1-70B"
 
-## Norm -- bf16 and fp16
+## Norm -- bf16
 # The backend column reads "cuda": these routines take no backend argument, so
 # each op runs at its own default, which for norm and rope is native. For the
 # native-vs-AITER comparison run rocm/bench_norm.py with no flag; --aa there is
 # native against itself, i.e. the noise floor a ratio has to clear.
+#
+# fp16 is deliberately absent: vec_size is gcd(16/sizeof(T), d) and both
+# 2-byte types give the same one, so fp16 would re-run this path for
+# numerical noise alone.
 #
 # hidden_size 111 is in the sweep on purpose: the native kernel's vec_size is
 # gcd(16/sizeof(T), d), so an ill-aligned d goes fully scalar. A powers-of-two

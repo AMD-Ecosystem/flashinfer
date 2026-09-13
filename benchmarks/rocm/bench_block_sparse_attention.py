@@ -236,6 +236,10 @@ def _sweep(kinds, dry_run_iters: int, repeat_iters: int, nb: int, seed: int) -> 
                         "num_kv_heads": num_kv,
                         "density": density,
                         "num_blocks": nb,
+                        # Layout and inputs are both seed-derived, so two
+                        # seeds at one density time differently; without
+                        # this the rows are indistinguishable.
+                        "seed": seed,
                     }
                     try:
                         if kind == "variable":
@@ -401,6 +405,10 @@ def main() -> None:
             f"--num-blocks {args.num_blocks} does not divide {bad}; the truncated "
             "block size would shrink the sparse problem below the dense baseline."
         )
+
+    # --seed reached only the block mask; q/k/v came from the global RNG,
+    # so the seed recorded per row did not pin --accuracy's inputs.
+    torch.manual_seed(args.seed)
 
     for key, value in _provenance().items():
         print(f"# {key}: {value}")
