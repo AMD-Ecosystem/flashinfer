@@ -358,6 +358,75 @@ def test_kv_len_guard_ignores_a_disagreeing_seq_lens_override():
         )
 
 
+def test_seq_lens_may_be_a_capacity_buffer():
+    """Serving stacks size seq_lens to a max batch once and reuse it, as they
+    already may for paged_kv_indices. The trailing entries are not this batch's,
+    so they must be sliced off -- unsliced, the zero padding is a kv_len of 0
+    and the guard rejects a perfectly good plan."""
+    device = torch.device("cuda:0")
+    batch_size, kv_len, q_len = 2, 256, 4
+    num_qo_heads, num_kv_heads = 32, 8
+    q, kv, indptr, indices, last_page_len = _paged_inputs(
+        batch_size, kv_len, q_len, num_qo_heads, num_kv_heads, device
+    )
+    padded = torch.zeros(8, dtype=torch.int32, device=device)
+    padded[:batch_size] = kv_len
+
+    wrapper = _decode_wrapper(device)
+    wrapper.plan(
+        indptr,
+        indices,
+        last_page_len,
+        num_qo_heads,
+        num_kv_heads,
+        HEAD_DIM,
+        PAGE_SIZE,
+        q_data_type=DTYPE,
+        kv_data_type=DTYPE,
+        seq_lens=padded,
+        q_len_per_req=q_len,
+    )
+    reference = _prefill_reference(
+        q,
+        kv,
+        indptr,
+        indices,
+        last_page_len,
+        batch_size,
+        q_len,
+        num_qo_heads,
+        num_kv_heads,
+        device,
+    )
+    torch.testing.assert_close(wrapper.run(q, kv), reference, rtol=1e-3, atol=1e-3)
+
+
+def test_rejects_seq_lens_shorter_than_the_batch():
+    """Too long is a capacity buffer; too short cannot describe the batch at
+    all, so it is the one length that still has to raise."""
+    device = torch.device("cuda:0")
+    batch_size = 4
+    _, _, indptr, indices, last_page_len = _paged_inputs(
+        batch_size, 256, 1, 32, 8, device
+    )
+    short = torch.full((batch_size - 1,), 256, dtype=torch.int32, device=device)
+
+    wrapper = _decode_wrapper(device)
+    with pytest.raises(ValueError, match=r"seq_lens has 3 entries but batch_size is 4"):
+        wrapper.plan(
+            indptr,
+            indices,
+            last_page_len,
+            32,
+            8,
+            HEAD_DIM,
+            PAGE_SIZE,
+            q_data_type=DTYPE,
+            kv_data_type=DTYPE,
+            seq_lens=short,
+        )
+
+
 def test_run_rejects_q_len_disagreeing_with_plan():
     device = torch.device("cuda:0")
     batch_size, kv_len = 4, 256
