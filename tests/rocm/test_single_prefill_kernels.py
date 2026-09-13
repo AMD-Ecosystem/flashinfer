@@ -492,6 +492,27 @@ def test_auto_declines_softcap_only_on_an_affected_arch(monkeypatch, affected):
         assert chosen == "aiter", reason
 
 
+def _disarm_softcap_gate(monkeypatch, device, kv_len, head_dim=128):
+    """Let one shape past the gate, after checking the gate covered it.
+
+    Measuring through the public API keeps the test on the path callers take,
+    which is why this disarms the predicate rather than calling AITER directly.
+    """
+    from flashinfer.rocm import prefill as _prefill
+
+    original = _prefill._aiter_softcap_defect
+    assert original(True, 8.0, head_dim, kv_len, device), (
+        f"the gate no longer covers causal head_dim={head_dim} kv_len={kv_len}, so "
+        "measuring the kernel here proves nothing about whether it is justified"
+    )
+
+    def stub(causal, logits_soft_cap, hd, kv, dev=None):
+        measured = causal and hd == head_dim and kv == kv_len and logits_soft_cap
+        return False if measured else original(causal, logits_soft_cap, hd, kv, dev)
+
+    monkeypatch.setattr(_prefill, "_aiter_softcap_defect", stub)
+
+
 def _softcap_vs_reference(device, qo_len, kv_len, cap, num_heads=4, head_dim=128):
     """max|AITER - fp32 reference| for one causal soft-capped prefill."""
     torch.manual_seed(0)
@@ -556,7 +577,7 @@ def test_aiter_softcap_is_exact_wherever_the_table_allows_it(qo_len, kv_len, cap
 
 
 @pytest.mark.parametrize("qo_len,kv_len", [(17, 2048), (512, 512)])
-def test_gated_architecture_really_is_defective(qo_len, kv_len):
+def test_gated_architecture_really_is_defective(qo_len, kv_len, monkeypatch):
     """The gate must stay justified: on a gated arch the cap must still be wrong.
 
     Without this nothing re-checks the gate, and a stale one costs 2-5x -- which
@@ -566,6 +587,7 @@ def test_gated_architecture_really_is_defective(qo_len, kv_len):
     device = torch.device("cuda:0")
     if not _softcap_arch_or_skip(device):
         pytest.skip("this architecture is not gated")
+    _disarm_softcap_gate(monkeypatch, device, kv_len)
 
     uncapped = _softcap_vs_reference(device, qo_len, kv_len, 0.0)
     capped = _softcap_vs_reference(device, qo_len, kv_len, 8.0)
