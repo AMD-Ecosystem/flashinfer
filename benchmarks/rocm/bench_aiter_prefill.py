@@ -16,7 +16,8 @@ limitations under the License.
 AITER prefill benchmark: single-prefill and batch-paged via backend="aiter".
 
 Shapes: q=256, GQA 16/4, HD=64, causal, kv ∈ {512, 1024, 2048, 3072, 4096, 8192}.
-Paged regimes: page_size=256 (native-paged) and page_size=16 (flat-gather).
+Paged regimes: page_size=1024 (native-paged) and page_size=16 (flat-gather).
+The native size is read from the route set at run time, not hard-coded.
 
 Run:
     python benchmarks/rocm/bench_aiter_prefill.py               # full pipeline
@@ -156,7 +157,8 @@ def _make_configs() -> list[KernelConfig]:
 
     # Route, not capability: bf16 is routed natively only at 1024, so picking
     # from the capability set would label two flat-gather rows as "native".
-    routed = _aiter_paged_route_page_sizes(torch.bfloat16)
+    # Keyed on _DTYPE, since the route set is dtype-specific for fp8.
+    routed = _aiter_paged_route_page_sizes(_DTYPE)
     native_page = max(routed) if routed else 1024
     flat_gather_page = 16  # deliberately not routed for bf16
 

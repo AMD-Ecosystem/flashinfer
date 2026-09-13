@@ -522,6 +522,23 @@ def _reject_fp8_on_fa2(dtype_q: torch.dtype, backend: str) -> None:
         )
 
 
+def _reject_fp8_off_native_paging(dtype_q: torch.dtype, route: str) -> None:
+    """Raise for fp8 on a route with no fp8 kernel, whatever the backend.
+
+    ``_reject_fp8_on_fa2`` covers only the fa2 arm. An explicit
+    ``backend="aiter"`` instead reaches AITER's own bootstrap, which answers
+    ``RuntimeError: invalid argument for fmha_fwd``.
+    """
+    if dtype_q in FP8_PREFILL_DTYPES:
+        raise NotImplementedError(
+            f"fp8 prefill (dtype={dtype_q}) is not supported on {route}. AITER "
+            "serves fp8 only through mha_batch_prefill, which needs native "
+            "paging: use BatchPrefillWithPagedKVCacheWrapper at a natively "
+            "routed page size with per-tensor scale_q/scale_k/scale_v, or cast "
+            "q/k/v to bf16 or fp16."
+        )
+
+
 def _auto_select_prefill_backend(
     device: torch.device,
     *,
@@ -2736,6 +2753,12 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         dev_idx,
                     )
                 if not use_native_paging:
+                    # Before anything below bootstraps the flat-gather family:
+                    # that route is mha_varlen_fwd, which has no fp8 kernel, and
+                    # an explicit backend="aiter" would reach it undemoted.
+                    _reject_fp8_off_native_paging(
+                        q_data_type, "the paged flat-gather route"
+                    )
                     # The guard above disarmed itself because the page size looked
                     # native; the probe just proved otherwise, so this call takes
                     # flat-gather after all. Re-check against the real kv_len.
@@ -2940,6 +2963,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
         skip_softmax_threshold_scale_factor: Optional[float] = None,
         use_fp16_softmax: Optional[bool] = None,
         uses_spcompress: Optional[bool] = None,
+        scale_q: Optional[torch.Tensor] = None,
+        scale_k: Optional[torch.Tensor] = None,
+        scale_v: Optional[torch.Tensor] = None,
     ) -> torch.Tensor: ...
 
     @overload
@@ -2962,6 +2988,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
         skip_softmax_threshold_scale_factor: Optional[float] = None,
         use_fp16_softmax: Optional[bool] = None,
         uses_spcompress: Optional[bool] = None,
+        scale_q: Optional[torch.Tensor] = None,
+        scale_k: Optional[torch.Tensor] = None,
+        scale_v: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]: ...
 
     def run(
@@ -3022,6 +3051,11 @@ class BatchPrefillWithPagedKVCacheWrapper:
         enable_pdl : bool
             Whether to enable Programmatic Dependent Launch (PDL). See https://docs.nvidia.com/cuda/cuda-c-programming-guide/#programmatic-dependent-launch-and-synchronization
             Only supported for >= sm90, and currently only for FA2 and CUDA core decode.
+        scale_q : Optional[torch.Tensor]
+            fp8 dequantisation scale for ``q``: a **per-tensor** float32 tensor of
+            one element on ``q.device``. Required for an fp8 query, rejected
+            otherwise. ``scale_k`` / ``scale_v`` are the same for the KV cache.
+            A per-head tensor is silently read as element 0, so shape matters.
         Returns
         -------
         Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
@@ -3813,7 +3847,9 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                         kv_len=self._max_kv_len,
                     )
                 )
-            _reject_fp8_on_fa2(q_data_type, self._backend)
+            # Unconditional, not _reject_fp8_on_fa2: ragged dispatches through
+            # mha_varlen_fwd on both backends and neither has an fp8 kernel.
+            _reject_fp8_off_native_paging(q_data_type, "ragged batch prefill")
             if self._backend == "aiter" and _aiter_softcap_defect(
                 causal, logits_soft_cap, head_dim_qk, self._max_kv_len, self.device
             ):

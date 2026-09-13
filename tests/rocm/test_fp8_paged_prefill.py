@@ -167,10 +167,57 @@ def test_fp8_on_a_non_routed_page_size_raises_rather_than_running():
     global PAGE
     original, PAGE = PAGE, 32
     try:
-        with pytest.raises((NotImplementedError, RuntimeError, ValueError)):
+        # NotImplementedError specifically: a bare RuntimeError is what the
+        # AITER bootstrap and the ninja path raise, so accepting those would
+        # let the regression this guards against pass.
+        with pytest.raises(NotImplementedError, match="fp8 prefill"):
             _plan_and_run(device, 512, 512, fp8, fp8)
     finally:
         PAGE = original
+
+
+@pytest.mark.parametrize("backend", ["auto", "aiter"])
+def test_a_non_routed_page_size_is_refused_on_either_backend(backend):
+    """An explicit `aiter` is not demotable, so it reaches AITER's own bootstrap.
+
+    Before the guard that answered `RuntimeError: invalid argument for fmha_fwd`
+    -- not the ninja log the earlier tests chase, but not the documented
+    contract either.
+    """
+    device = torch.device("cuda:0")
+    _require_aiter(device)
+    fp8 = fp8_dtype()
+    global PAGE
+    original, PAGE = PAGE, 32
+    try:
+        with pytest.raises(NotImplementedError, match="flat-gather"):
+            _plan_and_run(device, 512, 512, fp8, fp8, backend=backend)
+    finally:
+        PAGE = original
+
+
+@pytest.mark.parametrize("backend", ["auto", "aiter"])
+def test_ragged_fp8_is_refused_on_either_backend(backend):
+    """Ragged is mha_varlen_fwd on both backends, and it has no fp8 kernel."""
+    device = torch.device("cuda:0")
+    _require_aiter(device)
+    fp8 = fp8_dtype()
+    ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
+    wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
+        ws, "NHD", backend=backend
+    )
+
+    with pytest.raises(NotImplementedError, match="ragged batch prefill"):
+        wrapper.plan(
+            torch.tensor([0, 64], dtype=torch.int32, device=device),
+            torch.tensor([0, 64], dtype=torch.int32, device=device),
+            NHQ,
+            NHKV,
+            HEAD_DIM,
+            causal=True,
+            q_data_type=fp8,
+            kv_data_type=fp8,
+        )
 
 
 def test_single_prefill_fp8_raises_instead_of_a_ninja_log():

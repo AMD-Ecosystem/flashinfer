@@ -379,7 +379,9 @@ kwargs below are parameters of it.
 * GPU is not gfx942 or gfx950
 * `kv_layout` is not `NHD`
 * a custom attention mask tensor is supplied
-* `q_dtype` is not `float16` / `bfloat16` (no fp32, fp8, or int8)
+* `q_dtype` is not `float16` / `bfloat16` (no fp32 or int8). fp8 is the one
+  exception: it is served on the natively paged batch-prefill route, and
+  declined everywhere else
 * `q_dtype != kv_dtype` — mixed-precision Q/KV is unsupported
 * `head_dim_qk != head_dim_vo` (e.g. DeepSeek-style MLA with 192/128)
 * `pos_encoding_mode != "NONE"` — AITER attention supports only `"NONE"`
@@ -396,7 +398,8 @@ backend fixes only the first group.
 **Dropped on the AITER path; pass `backend="fa2"` if you need them:**
 
 * attention sinks (`sinks`)
-* FP8 dequant scales (`scale_q` / `scale_k` / `scale_v`)
+* FP8 dequant scales (`scale_q` / `scale_k` / `scale_v`) — **except** on the
+  natively paged batch-prefill route, where they are required and honoured
 * `use_fp16_qk_reduction`
 * RoPE scaling kwargs (`rope_scale`, `rope_theta`) — only meaningful
   alongside `pos_encoding_mode != "NONE"`, which AITER attention rejects
@@ -447,10 +450,12 @@ above the threshold: the Gemma variant has no `backend=` argument, and
 ### Batch prefill: page size and the flat-gather path
 
 AITER's CK FMHA kernels natively serve page sizes `{1, 16, 1024}` — the same
-set for fp16, bf16 and fp8, measured by sweeping the kernel itself. Other sizes
-still work but go through an extra GPU gather that flattens the paged KV cache
-before the AITER call — inside the timed region, which matters when
-benchmarking.
+set for fp16, bf16 and fp8, measured by sweeping the kernel itself. For fp16
+and bf16, other sizes still work but go through an extra GPU gather that
+flattens the paged KV cache before the AITER call — inside the timed region,
+which matters when benchmarking. **For fp8 they do not work at all**: the
+gather route is `mha_varlen_fwd`, which has no fp8 kernel, so a non-routed page
+size raises `NotImplementedError` rather than falling back.
 
 **Being able to serve a page size natively is not a reason to.** For fp16 and
 bf16 the gather measured equal to or faster than the native kernel at every

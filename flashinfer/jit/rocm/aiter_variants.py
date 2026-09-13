@@ -36,24 +36,28 @@ __all__ = [
 class Family(Enum):
     """The three ``.so`` families, keyed by their loader in aiter_loader.cc.
 
-    ``prefix``/``suffix``/``include_logits`` mirror the ``build_so_name`` call
-    sites there exactly; ``tests/rocm/test_aiter_variants.py`` asserts the
-    spelling against the C++ source rather than trusting this copy.
+    ``prefix``/``infix``/``suffix``/``include_logits`` mirror the
+    ``build_so_name`` call sites there exactly; ``tests/rocm/test_aiter_variants.py``
+    asserts the spelling against the C++ source rather than trusting this copy.
+    The quantisation token sits between infix and suffix, which is why the two
+    are separate rather than one string.
     """
 
-    MHA_FWD = ("mha_fwd_", "_ndropout_nqscale.so", False, True)
-    MHA_VARLEN_FWD = ("mha_varlen_fwd_", "_ndropout_nskip_nqscale.so", True, True)
+    MHA_FWD = ("mha_fwd_", "_ndropout_", ".so", False, True)
+    MHA_VARLEN_FWD = ("mha_varlen_fwd_", "_ndropout_nskip_", ".so", True, True)
     MHA_BATCH_PREFILL = (
         "mha_batch_prefill_",
-        "_ndropout_nqscale_nsink.so",
+        "_ndropout_",
+        "_nsink.so",
         True,
         False,
     )
 
     def __init__(
-        self, prefix: str, suffix: str, include_logits: bool, servable: bool
+        self, prefix: str, infix: str, suffix: str, include_logits: bool, servable: bool
     ) -> None:
         self.prefix = prefix
+        self.infix = infix
         self.suffix = suffix
         self.include_logits = include_logits
         # Can a store hit actually spare the AITER build? Only where the
@@ -84,14 +88,19 @@ class VariantKey:
 
 
 def so_name(key: VariantKey) -> str:
-    """The filename ``aiter_loader.cc`` will ask ``dlopen`` for."""
+    """The filename ``aiter_loader.cc`` will ask ``dlopen`` for.
+
+    The quantisation token is always ``nqscale``: the ``pertensor`` arm is fp8,
+    which only the batch-prefill family serves, and that family is not
+    ``servable_from_store`` -- see ``Family.servable_from_store``.
+    """
     name = key.family.prefix + key.dtype
     if key.family.include_logits:
         name += "_logits" if key.has_logits_cap else "_nlogits"
     name += "_nbias"
     name += "_mask" if key.needs_mask else "_nmask"
     name += "_lse" if key.has_lse else "_nlse"
-    return name + key.family.suffix
+    return name + key.family.infix + "nqscale" + key.family.suffix
 
 
 _DTYPES = ("bf16", "fp16")
