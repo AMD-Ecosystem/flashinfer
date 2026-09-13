@@ -550,6 +550,50 @@ def _reject_fp8_off_native_paging(dtype_q: torch.dtype, route: str) -> None:
         )
 
 
+def _warn_auto_fallback_once(device: torch.device, reason: str) -> None:
+    """Log an ``auto`` demotion the first time this (device, reason) is seen.
+
+    The probe site demotes per batch, so without the shared set a wrapper that
+    degrades on every plan() would warn on every plan().
+    """
+    key = (device, reason)
+    if key not in _aiter_auto_warned:
+        _aiter_auto_warned.add(key)
+        logger.warning("auto backend falling back to fa2: %s", reason)
+
+
+def _aiter_flat_gather_short_query(
+    max_q_len: Optional[int],
+    device: Optional[torch.device] = None,
+) -> Optional[int]:
+    """Would this call pay more for AITER's flat gather than the attention saves?
+
+    Returns the threshold that gated it, or ``None`` when it is not gated.
+    ``max_q_len=None`` disarms, which is how a planner says the page size pages
+    natively -- that path has no gather and beats fa2 even at one query row.
+    """
+    if max_q_len is None:
+        return None
+    from .arch_caps import _device_arch, aiter_flat_gather_gated_q_len
+
+    gated = aiter_flat_gather_gated_q_len(_device_arch(device))
+    return gated if gated is not None and max_q_len <= gated else None
+
+
+def _flat_gather_short_query_reason(threshold: int) -> str:
+    """The auto-selector's short-query decline, built in exactly one place.
+
+    The demotion site recognises it by equality. A substring marker would also
+    match the soft-cap-on-flat-gather reason, which is a different cause and
+    must not be re-evaluated per batch.
+    """
+    return (
+        f"query length <= {threshold} on a page size AITER cannot page "
+        "natively (its flat gather copies the whole KV cache, which a short "
+        "query cannot amortise)"
+    )
+
+
 def _auto_select_prefill_backend(
     device: torch.device,
     *,
@@ -565,6 +609,7 @@ def _auto_select_prefill_backend(
     logits_soft_cap: Optional[float] = None,
     kv_len: Optional[int] = None,
     allow_fp8: bool = False,
+    max_q_len: Optional[int] = None,
 ) -> Tuple[str, Optional[str]]:
     """Return ``(backend, reason)``: 'aiter' when the GPU and call parameters satisfy
     AITER's constraints, else 'fa2' plus the reason AITER was declined.
@@ -614,12 +659,16 @@ def _auto_select_prefill_backend(
                 f"logits_soft_cap={logits_soft_cap} with causal head_dim={head_dim_qk} "
                 "(AITER mha_varlen_fwd computes the soft cap incorrectly)"
             )
+        else:
+            threshold = _aiter_flat_gather_short_query(max_q_len, device)
+            if threshold is not None:
+                # Names the threshold, not max_q_len: _aiter_auto_warned is keyed
+                # on the reason, so a per-batch value would add an entry and
+                # re-warn for every distinct query length a serving loop sees.
+                reason = _flat_gather_short_query_reason(threshold)
 
     if reason is not None:
-        key = (device, reason)
-        if key not in _aiter_auto_warned:
-            _aiter_auto_warned.add(key)
-            logger.warning("auto backend falling back to fa2: %s", reason)
+        _warn_auto_fallback_once(device, reason)
         return "fa2", reason
 
     if not _aiter_ops_importable():
@@ -643,10 +692,7 @@ def _auto_select_prefill_backend(
         # Keyed on the reason, like the branch above: a constant key would let
         # whichever condition fired first hide the other for the rest of the
         # process, and "too old" and "not installed" want different actions.
-        key = (device, reason)
-        if key not in _aiter_auto_warned:
-            _aiter_auto_warned.add(key)
-            logger.warning("auto backend falling back to fa2: %s", reason)
+        _warn_auto_fallback_once(device, reason)
         return "fa2", reason
 
     return "aiter", None
@@ -2259,6 +2305,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
         # once on AITER can still meet an unbuildable variant later.
         self._backend_requested = backend
         self._backend_fallback_reason: Optional[str] = None
+        # The short-query gate keys on max_q_len, which varies per batch, so
+        # unlike every other constraint here its verdict must not stick.
+        self._backend_short_query_demoted = False
         self._plan_info: Optional[torch.Tensor] = None
         self._cached_module = None
         self._seq_lens_kv = None
@@ -2690,10 +2739,33 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 if page_size in _aiter_paged_route_page_sizes(q_data_type)
                 else self._max_kv_len
             )
-            # `auto` re-resolves every plan: the choice depends on dtype and page
-            # size, so a wrapper that once went to fa2 would refuse a later fp8
-            # plan outright. Under graph capture the first answer sticks, since
-            # the captured graph holds that backend's buffers.
+            # Same disarm as softcap_kv_len, and against the same set: the
+            # flat-gather penalty exists exactly when this page size is not
+            # *routed* natively. Being in the capability set is not enough --
+            # bf16 can serve page 16 natively and still be routed to the gather.
+            gather_q_len = (
+                None
+                if page_size in _aiter_paged_route_page_sizes(q_data_type)
+                else self._max_q_len
+            )
+            # A short-query demotion describes one batch, not the device, so it
+            # must not stick: a wrapper that served a 4-token verify would
+            # otherwise stay on fa2 for every later long prefill. Mirrors
+            # decode.py's _backend_capacity_demoted.
+            #
+            # Never under cudagraph: re-promoting swaps _cached_module and
+            # _plan_info, which a captured graph still points at, and capture is
+            # not observable here. Coarser than the probe site's `demotable` on
+            # purpose -- git log.
+            if self._backend_short_query_demoted and not self.is_cuda_graph_enabled:
+                self._backend = self._backend_requested
+                self._backend_short_query_demoted = False
+                self._backend_fallback_reason = None
+            # Re-resolve every plan, not only while _backend is still "auto":
+            # the choice also depends on dtype and page size, so a wrapper
+            # demoted for any *other* reason -- a custom mask, say -- would
+            # refuse a later fp8 plan outright. Graph capture keeps the first
+            # answer, for the reason given just above.
             if resolved_from_auto and (
                 self._backend == "auto" or not self.is_cuda_graph_enabled
             ):
@@ -2711,10 +2783,23 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         causal=causal,
                         logits_soft_cap=logits_soft_cap,
                         kv_len=softcap_kv_len,
+                        max_q_len=gather_q_len,
                         # Paged is the only route with an fp8 kernel wired up;
                         # single and ragged still take mha_fwd/mha_varlen_fwd.
                         allow_fp8=True,
                     )
+                )
+                # Compare the selector's own reason rather than re-evaluating
+                # the predicate alone: the gate sits last in an elif chain, so a
+                # call declined earlier for a constant constraint is also
+                # "short", and re-resolving that every plan() buys nothing.
+                short_q_threshold = _aiter_flat_gather_short_query(
+                    gather_q_len, self.device
+                )
+                self._backend_short_query_demoted = (
+                    short_q_threshold is not None
+                    and self._backend_fallback_reason
+                    == _flat_gather_short_query_reason(short_q_threshold)
                 )
             if self._backend == "aiter":
                 _require_native_fp8_dtype(q_data_type)
@@ -2793,6 +2878,15 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         self.is_cuda_graph_enabled
                         and self._aiter_flat_gather_idx is not None
                     )
+                    # Hoisted like softcap_now, and evaluated once. Unlike its
+                    # soft-cap sibling this is deliberately *not* conditioned on
+                    # gather_q_len being None: it is the only re-check a wrapper
+                    # already resolved to "aiter" by an earlier long-query plan()
+                    # ever gets, so narrowing it to the looked-native case would
+                    # silently delete that path.
+                    short_q_threshold = _aiter_flat_gather_short_query(
+                        self._max_q_len, self.device
+                    )
                     if softcap_now and not demotable:
                         raise ValueError(
                             "AITER miscomputes logits_soft_cap for causal head_dim=128 "
@@ -2808,7 +2902,17 @@ class BatchPrefillWithPagedKVCacheWrapper:
                             "on this GPU (through amd-aiter "
                             f"{_AITER_SOFTCAP_DEFECT_THROUGH})"
                         )
-                        logger.warning("auto backend falling back to fa2: %s", reason)
+                        _warn_auto_fallback_once(self.device, reason)
+                    elif demotable and short_q_threshold is not None:
+                        self._backend_short_query_demoted = True
+                        # The selector's own wording, so one cause keeps one
+                        # warn-once key: a wrapper cycling short -> long ->
+                        # short reaches the gate from both sites and a second
+                        # phrasing would warn twice. It stays accurate here --
+                        # by this point the page size does gather, whether it
+                        # was never native or the probe just demoted it.
+                        reason = _flat_gather_short_query_reason(short_q_threshold)
+                        _warn_auto_fallback_once(self.device, reason)
                     elif demotable:
                         reason = _aiter_batch_ragged_available(
                             q_data_type, has_logits, needs_mask, head_dim_qk, dev_idx

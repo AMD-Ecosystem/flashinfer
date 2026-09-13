@@ -435,6 +435,31 @@ Paged prefill keeps AITER at a native page size, since that route takes
 fp32 reference on both architectures — and falls back only when the run-time
 probe demotes it to a flat gather. Every other soft-cap shape is unaffected.
 
+### Short-query paged prefill avoids AITER's flat gather
+
+At a page size AITER cannot page natively, its paged prefill first
+`index_select`s the whole KV cache into a contiguous buffer. That copy is
+`O(kv)` against an `O(q·kv)` attention, so its cost decays as `1/q`: a long
+query amortises it, a short one pays it in full. `auto` therefore serves
+short queries with `fa2`, and `backend_fallback_reason` names the threshold.
+
+One exception: once a cudagraph-enabled wrapper has planned AITER's
+flat-gather path, later short-query plans stay on AITER. Demoting would null
+the gather buffers a captured graph still points at. Use a separate wrapper
+per query-length regime if you need both routed correctly under capture.
+
+| arch | routed to `fa2` when `max_q_len` is | AITER slower by |
+| :--- | :--- | :--- |
+| gfx942 | ≤ 16 | 1.35–4.6× |
+| gfx950 | ≤ 8 | 1.25–4.6× |
+
+Three paths are deliberately **not** gated. Native page sizes have no gather
+and beat `fa2` even at one query row (0.93× on gfx942, 0.54× on gfx950).
+Ragged prefill dispatches through `mha_varlen_fwd` on already-contiguous KV.
+Decode is genuinely one query row, and AITER wins there. An explicit
+`backend="aiter"` is also honoured — this is a routing preference, not a
+wrong answer, so it stays measurable.
+
 ### `fused_add_rmsnorm` and `gemma_fused_add_rmsnorm` at large `hidden_size`
 
 The `native` fused kernels stage the fp32 row in shared memory, costing
@@ -499,9 +524,44 @@ the capacity rather than attending to its full context.
 `run(..., return_lse=True)` raises on this backend under capture — PA v1
 emits no LSE and the FA2 shadow plan it borrows is not capture-safe.
 
-Multi-token decode (`q_len_per_req > 1`) raises `NotImplementedError` on
-ROCm regardless of backend, as does an output dtype that differs from the
-query dtype.
+Multi-token decode (`q_len_per_req > 1`), for speculative-decode verify,
+needs `use_tensor_cores=True` — that path runs the batch-prefill kernel,
+which is what supplies the causal mask, and AITER decode requires
+`use_tensor_cores=False`. Every request needs `kv_len >= q_len_per_req`,
+since the draft tokens must already be in the KV cache. Under graph
+capture the value is part of the frozen shape: use one wrapper per
+`q_len_per_req`.
+
+At `head_dim < 256` the cost steps with `q_len_per_req * gqa_group_size`,
+not with `q_len_per_req` alone — the query tile is 16 at or below 16 and 64
+above (`FA2DetermineCtaTileQ` in `include/flashinfer/rocm/utils.cuh`). At GQA 32/8 a draft length
+of 4 is free and 8 costs a step (1.2-1.6x on gfx942, 1.4-2.0x on gfx950); at
+64/8 the step arrives at 2. `head_dim >= 256` takes the 64 tile
+unconditionally, so no draft length is free there.
+
+That rule describes **eager** planning only. Under `enable_cuda_graph` the
+scheduler cannot see per-request lengths, so it bounds them by
+`total_num_rows - batch_size + 1` and sizes the tile from that
+(`PrefillSplitQOKVIndptr` in `include/flashinfer/rocm/attention/scheduler.cuh`).
+The tile is therefore 64 whenever
+`(batch_size * (q_len_per_req - 1) + 1) * gqa_group_size > 16` — at batch 4 /
+draft 4 / GQA 4 that is `13 * 4 = 52`, so capture takes the 64 tile where eager
+takes 16. Any draft length above 1 crosses it at a large enough batch, so
+measure under capture rather than carrying the eager figures over.
+
+**Chain drafts only.** The verify mask is causal, so the draft tokens are
+taken as one linear sequence per request — which fits vanilla speculative
+decoding, DeepSeek MTP, n-gram/prompt-lookup, and EAGLE run in chain mode.
+It does **not** fit tree drafts (EAGLE-2, Medusa's multi-head tree,
+SpecInfer): a causal mask lets a draft token attend to a sibling on another
+branch, so a tree would return plausible but wrong numbers rather than an
+error. Tree verification needs a topology mask, which this path does not
+accept — build it with `custom_mask` on
+`BatchPrefillWithPagedKVCacheWrapper` instead. Note the acceptance step is
+chain-only too: `chain_speculative_sampling` takes
+`(batch_size, num_speculate_tokens)`, not a tree.
+
+An output dtype that differs from the query dtype still raises.
 
 ### MLA
 
