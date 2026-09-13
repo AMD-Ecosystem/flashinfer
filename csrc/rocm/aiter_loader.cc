@@ -193,7 +193,7 @@ std::unordered_map<VariantKey, void*, VariantKeyHash> s_mf_cache;
 //
 // One handle serves every trait set: module_fmha_v3_fwd.so carries no variant axes,
 // because AITER resolves the kernel from its own config table on each call. Keyed on a
-// constant so it can share load_and_cache_sym's double-checked locking.
+// constant so it can share load_variant_sym's double-checked locking.
 constexpr const char* kAsmModuleName = "module_fmha_v3_fwd.so";
 
 std::shared_mutex s_asm_mu;
@@ -272,19 +272,18 @@ void* get_aiter_mha_fwd_handle(VariantKey const& key) {
 }
 
 void* get_aiter_mha_fwd_asm_handle() {
-  // AITER reads its asm kernels as .co files out of AITER_ASM_DIR at launch time, and
-  // calls std::abort() rather than returning an error when the variable is unset. The
-  // variable is a side effect of `import aiter`, which nothing in a pure-C++ consumer
-  // guarantees, so refuse here and let the caller stay on CK Tile.
-  if (std::getenv("AITER_ASM_DIR") == nullptr) {
+  // AITER reads its .co files out of AITER_ASM_DIR at launch and aborts rather than
+  // erroring when it cannot. `import aiter` sets it; a pure-C++ consumer may not have.
+  // Empty counts as unset: AITER would root the path at "/<arch>/..." and abort there.
+  const char* asm_dir = std::getenv("AITER_ASM_DIR");
+  if (asm_dir == nullptr || *asm_dir == '\0') {
     throw std::runtime_error(
-        "AITER_ASM_DIR is unset, so AITER cannot locate its asm kernels and would abort the "
-        "process rather than report an error. It is set when the aiter Python package is "
+        "AITER_ASM_DIR is unset or empty, so AITER cannot locate its asm kernels and would abort "
+        "the process rather than report an error. It is set when the aiter Python package is "
         "imported; import it before this path, or set FLASHINFER_AITER_ASM_PREFILL=0 to stay "
         "on CK Tile.");
   }
-  const std::string so_path = get_jit_dir() + "/" + kAsmModuleName;
-  return load_and_cache_sym(s_asm_mu, s_asm_cache, 0, so_path, kMhaFwdSymbol, [&so_path]() {
+  return load_variant_sym(s_asm_mu, s_asm_cache, 0, kAsmModuleName, kMhaFwdSymbol, []() {
     return "  Hint: " + std::string(kAsmModuleName) +
            " ships prebuilt in the amd-aiter wheel, so unlike the mha_fwd variants there is no "
            "JIT build to trigger. Its absence means the wheel is incomplete or the JIT dir "
