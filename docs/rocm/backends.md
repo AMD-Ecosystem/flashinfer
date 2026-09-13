@@ -428,13 +428,16 @@ It is worth opening only where it wins, and that differs by architecture.
 Over a 60-cell sweep at bf16 `head_dim` 128 (batch 1 and 4 × 16/32/64 q-heads
 × `seqlen` 256-6144), asm against CK Tile:
 
-* **gfx950** — the per-`seqlen` geomean rises monotonically above 1024. At and
-  above `qo_len` 2048, 23 of 24 cells win or hold: geomean 1.17, worst cell 0.98
-  (batch 1, 16 heads, `seqlen` 2048). That is the shipping threshold.
-* **gfx942** — non-monotonic. 1.34× at `seqlen` 1024 falls to 0.90× at 1536 and
-  recovers, both reproducible against the A/A floor, so no threshold holds and
-  the arm stays unreachable. The same 2048 cut scores geomean 1.02 there with 9
-  of 24 cells regressing.
+* **gfx950** — the per-`seqlen` geomean climbs with length above 1024: 1.01,
+  1.09, 1.15, 1.14, 1.19, 1.19. The one step down (3072) is inside the A/A
+  floor. At and above `qo_len` 2048, 23 of 24 cells win or hold: geomean 1.17,
+  worst cell 0.98 (batch 1, 16 heads, `seqlen` 2048). That is the shipping
+  threshold.
+* **gfx942** — non-monotonic, and the oscillation does not damp with length:
+  1.08 at `seqlen` 2048, 0.97 at 3072, 1.06 at 4096, 0.99 at 6144. Every one of
+  those steps is outside the A/A floor, so no threshold holds and the arm stays
+  unreachable. The same 2048 cut scores geomean 1.02 with 9 of 24 cells
+  regressing.
 
 Measured on an idle node against an A/A floor of 0.987-1.013 (gfx942) and
 0.989-1.012 (gfx950), so the one gfx950 cell at 0.98 is a real if small loss

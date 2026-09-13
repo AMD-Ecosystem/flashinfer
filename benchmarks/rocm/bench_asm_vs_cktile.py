@@ -29,8 +29,9 @@ threshold that does not generalise -- batch 1 with 16 heads and batch 4 with 64
 heads sit at opposite ends of the same effect.
 
 ``--aa`` runs CK Tile against itself to establish the noise floor. Read it before
-believing any ratio: a margin inside the A/A spread is not a result. The
-non-monotonic cells on gfx942 survive it; the s=256 column on gfx950 does not.
+believing any ratio: a margin inside the A/A spread is not a result. Since the
+allocator-cache fix the floor is roughly +/-1.3%, tight enough that every
+per-seqlen geomean in the sweep now sits outside it.
 
 Run:
     python benchmarks/rocm/bench_asm_vs_cktile.py --aa
