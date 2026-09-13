@@ -2756,14 +2756,13 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         _warn_auto_fallback_once(self.device, reason)
                     elif demotable and short_q_threshold is not None:
                         self._backend_short_query_demoted = True
-                        # Deliberately does not claim a native-paging probe
-                        # failed: this branch is also the re-check for a page
-                        # size that was never a native candidate.
-                        reason = (
-                            f"page_size={page_size} takes aiter's flat gather, "
-                            "which does not pay off at query length <= "
-                            f"{short_q_threshold}"
-                        )
+                        # The selector's own wording, so one cause keeps one
+                        # warn-once key: a wrapper cycling short -> long ->
+                        # short reaches the gate from both sites and a second
+                        # phrasing would warn twice. It stays accurate here --
+                        # by this point the page size does gather, whether it
+                        # was never native or the probe just demoted it.
+                        reason = _flat_gather_short_query_reason(short_q_threshold)
                         _warn_auto_fallback_once(self.device, reason)
                     elif demotable:
                         reason = _aiter_batch_ragged_available(
