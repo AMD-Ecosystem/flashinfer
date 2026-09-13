@@ -29,8 +29,15 @@ threshold that does not generalise -- batch 1 with 16 heads and batch 4 with 64
 heads sit at opposite ends of the same effect.
 
 ``--aa`` runs CK Tile against itself to establish the noise floor. Read it before
-believing any ratio: a margin inside the A/A spread is not a result. The
-non-monotonic cells on gfx942 survive it; the s=256 column on gfx950 does not.
+believing any ratio, and compare each cell against its own A/A control rather
+than one global band -- the per-shape floors differ and a margin inside one is
+not a result.
+
+Only the ``batch=1`` rows are reachable through ``single_prefill``, which pins
+``args.batch = 1``. The ``batch=4`` rows characterise no shipping path -- batched
+prefill goes to group-mode ``mha_varlen_fwd`` with the asm arm off, or to
+``mha_batch_prefill`` -- and are kept only to reproduce the mixed aggregate
+published before the threshold was rescoped.
 
 Run:
     python benchmarks/rocm/bench_asm_vs_cktile.py --aa
