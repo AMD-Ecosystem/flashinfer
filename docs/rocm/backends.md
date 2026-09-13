@@ -440,6 +440,11 @@ At a page size AITER cannot page natively, its paged prefill first
 query amortises it, a short one pays it in full. `auto` therefore serves
 short queries with `fa2`, and `backend_fallback_reason` names the threshold.
 
+One exception: once a cudagraph-enabled wrapper has planned AITER's
+flat-gather path, later short-query plans stay on AITER. Demoting would null
+the gather buffers a captured graph still points at. Use a separate wrapper
+per query-length regime if you need both routed correctly under capture.
+
 | arch | routed to `fa2` when `max_q_len` is | AITER slower by |
 | :--- | :--- | :--- |
 | gfx942 | ≤ 16 | 1.35–4.6× |

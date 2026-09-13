@@ -330,9 +330,9 @@ def test_rejects_kv_shorter_than_q_len():
 
 
 def test_kv_len_guard_ignores_a_disagreeing_seq_lens_override():
-    """The guard reads the paged metadata, not seq_lens. An override may legally
-    understate the cache, so trusting it would pass a request the kernel then
-    attends with kv_len < qo_len -- silently wrong, not an error."""
+    """The guard reads the paged metadata, not seq_lens. An override that
+    overstates the cache would let a too-short request through, and the kernel
+    then attends it with kv_len < qo_len -- silently wrong, not an error."""
     device = torch.device("cuda:0")
     batch_size, q_len = 2, 32
     # Metadata says 16 tokens per request; the override claims 512.

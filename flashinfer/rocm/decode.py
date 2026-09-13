@@ -1443,9 +1443,10 @@ class BatchDecodeWithPagedKVCacheWrapper:
             # batch_size==0 has no request to check; .min() on an empty tensor
             # would raise where there is simply nothing to verify.
             if batch_size > 0:
-                # From the paged metadata, not a caller-supplied seq_lens: the
-                # mask compares kv_len against qo_len as the kernel derives it,
-                # so an override that disagrees would slip past into a C++ abort.
+                # From the paged metadata, not a caller-supplied seq_lens: an
+                # override that overstates the cache would pass a request the
+                # kernel then masks against a shorter KV range. The batch paged
+                # path has no kv_len < qo_len guard, so that is silently wrong.
                 kernel_kv_lens = get_seq_lens(
                     indptr_host, last_page_len_host, page_size
                 )
