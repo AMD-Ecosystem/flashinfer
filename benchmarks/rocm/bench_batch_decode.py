@@ -33,8 +33,9 @@ Run:
     python benchmarks/rocm/bench_batch_decode.py --backend fa2
     python benchmarks/rocm/bench_batch_decode.py --backend aiter
     python benchmarks/rocm/bench_batch_decode.py --counters stall
-    # The short-KV / multi-head grid, in passes: the full cross product is
-    # ~106 GiB of KV because every config is built before the first run.
+    # The short-KV / multi-head grid, in passes: every config is built before
+    # the first run, so in one go it is ~67 GiB resident against ~23 and
+    # ~45 GiB for the two passes below.
     # Distinct --label per pass; the timing CSV is opened "w", so a shared
     # label makes the second pass overwrite the first.
     python benchmarks/rocm/bench_batch_decode.py --timing-only --output-dir /out \
@@ -107,9 +108,9 @@ def _int_list(raw: str) -> list[int]:
     return values
 
 
-# Every config is built before the first run, so a wide grid is resident all at
-# once -- the full default sweep is ~100 GiB of KV. Override these to run it in
-# passes on a shared board.
+# Every config is built before the first run, so the whole grid is resident at
+# once: ~55 GiB at the defaults below, ~116 GiB if kv_lens is widened to 16384.
+# Override these to run a wide sweep in passes on a shared board.
 _bench_parser.add_argument(
     "--batches",
     type=_int_list,
@@ -155,10 +156,9 @@ _NUM_KV_HEADS = 8
 _HEAD_DIM = 128
 _DTYPE = torch.bfloat16
 _PAGE_SIZE = 16
-# Defaults stay narrow because every config is built before the first run: the
-# short-KV/multi-head grid this script was extended for is ~106 GiB resident,
-# which fits an idle MI300X and not a shared one. Widen it with the flags, in
-# passes -- see the module docstring.
+# Defaults are unchanged by the short-KV work: reaching 16384 would take the
+# resident set from ~55 to ~116 GiB, which fits an idle MI300X and not a shared
+# one. Widen with the flags, in passes -- see the module docstring.
 _BATCHES = _bench_args.batches or [1, 8, 32, 128, 256]
 _KV_LENS = _bench_args.kv_lens or [1024, 2048, 4096, 8192]
 _QO_HEADS = _bench_args.qo_heads or [32]
