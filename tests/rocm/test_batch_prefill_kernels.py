@@ -941,6 +941,62 @@ def test_ragged_long_then_short_still_demotes():
     assert "ragged KV" in (wrapper.backend_fallback_reason or "")
 
 
+def test_ragged_maskless_plan_after_a_masked_one_drops_the_mask():
+    """Asserts the output, not the backend: the failure is silent wrong numbers.
+
+    The eager path only assigned _custom_mask_buf when a mask was supplied, so a
+    later maskless plan left the old buffer live -- run() picks MaskMode off that
+    buffer, so the second call attended under the first call's mask while the
+    selector, reading the argument, saw no mask and routed to AITER.
+    """
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
+
+    torch.manual_seed(0)
+    batch_size, qo_len, kv_len, heads, head_dim = 2, 256, 512, 8, 128
+    dtype = torch.bfloat16
+    q = torch.randn(batch_size * qo_len, heads, head_dim, device=device, dtype=dtype)
+    k = torch.randn(batch_size * kv_len, heads, head_dim, device=device, dtype=dtype)
+    v = torch.randn(batch_size * kv_len, heads, head_dim, device=device, dtype=dtype)
+    qo_indptr = (
+        torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * qo_len
+    )
+    kv_indptr = (
+        torch.arange(0, batch_size + 1, dtype=torch.int32, device=device) * kv_len
+    )
+    plan_args = dict(
+        qo_indptr=qo_indptr,
+        kv_indptr=kv_indptr,
+        num_qo_heads=heads,
+        num_kv_heads=heads,
+        head_dim_qk=head_dim,
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+
+    # A mask that hides most of the KV, so attending under it is unmistakable.
+    mask = torch.zeros(batch_size * qo_len * kv_len, dtype=torch.bool, device=device)
+    mask[::7] = True
+
+    wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
+    )
+    wrapper.plan(**plan_args, custom_mask=mask)
+    wrapper.run(q, k, v)
+
+    wrapper.plan(**plan_args)
+    got = wrapper.run(q, k, v)
+
+    reference = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
+        workspace, "NHD", backend="fa2"
+    )
+    reference.plan(**plan_args)
+    torch.testing.assert_close(got, reference.run(q, k, v), rtol=2e-2, atol=2e-2)
+
+
 def test_ragged_short_query_keeps_aiter_where_the_arch_does_not_gate():
     """The inverse of the gate, asserted rather than skipped. gfx950 has a shape
     favouring AITER at every query length measured, so gating it would forfeit a

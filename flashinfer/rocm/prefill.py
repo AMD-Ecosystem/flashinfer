@@ -4000,6 +4000,12 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                 self._mask_indptr_buf = mask_indptr.to(
                     self.device, non_blocking=non_blocking
                 )
+            else:
+                # Clear, as the paged wrapper does: run() picks MaskMode.CUSTOM
+                # off this buffer, so a maskless plan after a masked one would
+                # otherwise attend under the previous plan's mask.
+                self._custom_mask_buf = None
+                self._mask_indptr_buf = None
 
         self._cached_q_data_type = q_data_type
         self._cached_kv_data_type = kv_data_type
@@ -4051,7 +4057,10 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                         dtype_q=q_data_type,
                         dtype_kv=kv_data_type,
                         kv_layout=self._kv_layout,
-                        has_custom_mask=packed_custom_mask is not None,
+                        # The buffer, not the argument: run() picks MaskMode off
+                        # the buffer, so keying the selector on anything else
+                        # lets the two disagree about whether a mask is live.
+                        has_custom_mask=self._custom_mask_buf is not None,
                         head_dim_qk=head_dim_qk,
                         head_dim_vo=head_dim_vo,
                         pos_encoding_mode=pos_encoding_mode,
