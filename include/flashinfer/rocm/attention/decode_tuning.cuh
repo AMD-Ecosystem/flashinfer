@@ -42,11 +42,12 @@ constexpr uint32_t BatchDecodeBdx() {
 
 /*! \brief KV chunks a block processes concurrently.
  *
- * The 128 floors the block. At 2-byte KV / HEAD_DIM 128 / GROUP_SIZE 8 that
- * yields bdz 1. Restoring bdz 2 recovers nothing at 64 query heads (1.01-1.03x),
- * whether bought by raising the floor (5-28% slower at all 12 gfx942 cells; on gfx950
- * neutral except one low-batch cell at ~2x) or at +11% smem by halving
- * NUM_STAGES_SMEM. The collapse is not this constant; git log has the numbers.
+ * Targets a 128-thread block; at 2-byte KV / HEAD_DIM 128 that leaves bdz 1 at
+ * GROUP_SIZE 8. Two configurations giving bdz 2 there -- floor 256, and floor
+ * 256 with NUM_STAGES_SMEM halved -- both leave 64-head decode within
+ * 1.01-1.03x, and floor 256 alone costs 5-28% on gfx942. Neither isolates bdz
+ * (both also move smem and block size), so this rules out those settings, not
+ * the hypothesis. git log has the numbers.
  */
 template <typename DTypeKV, uint32_t HEAD_DIM, uint32_t GROUP_SIZE>
 constexpr uint32_t BatchDecodeBdz() {
