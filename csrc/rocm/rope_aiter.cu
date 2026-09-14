@@ -18,14 +18,17 @@
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <c10/hip/HIPGuard.h>
 
+#include "aiter_tensor_compat.h"
+
 // AITER's public header (rope.h) pulls in <torch/extension.h> → full pybind11,
-// which clashes with FlashInfer's -DPy_LIMITED_API. torch::Tensor is at::Tensor,
-// so forward-declare the entry point instead; the linker resolves it against the
-// symbol-visible AITER .so (verified mangling matches at::Tensor& signature).
-void rope_cached_positions_2c_fwd_impl(at::Tensor& output_x, at::Tensor& output_y,
-                                       const at::Tensor& input_x, const at::Tensor& input_y,
-                                       const at::Tensor& cos, const at::Tensor& sin,
-                                       const at::Tensor& positions, const int32_t rotate_style,
+// which clashes with FlashInfer's -DPy_LIMITED_API, so forward-declare the entry
+// point instead; the linker resolves it against the symbol-visible AITER .so.
+// 0.1.21 moved it onto the POD aiter_tensor_t API -- declaring it with at::Tensor
+// compiles and then fails at dlopen on the mangled name.
+void rope_cached_positions_2c_fwd_impl(aiter_tensor_t& output_x, aiter_tensor_t& output_y,
+                                       const aiter_tensor_t& input_x, const aiter_tensor_t& input_y,
+                                       const aiter_tensor_t& cos, const aiter_tensor_t& sin,
+                                       const aiter_tensor_t& positions, const int32_t rotate_style,
                                        const bool reuse_freqs_front_part, const bool nope_first);
 
 void apply_rope_pos_ids_cos_sin_cache_aiter(at::Tensor query, at::Tensor key, at::Tensor query_out,
@@ -77,7 +80,14 @@ void apply_rope_pos_ids_cos_sin_cache_aiter(at::Tensor query, at::Tensor key, at
   at::Tensor q_in_rot = q_in.slice(3, 0, rotary_dim);
   at::Tensor k_in_rot = k_in.slice(3, 0, rotary_dim);
 
-  rope_cached_positions_2c_fwd_impl(q_out_rot, k_out_rot, q_in_rot, k_in_rot, cos, sin, pos,
+  // Named lvalues: the two outputs are non-const references, so a temporary
+  // from to_aiter() would not bind.
+  namespace compat = flashinfer::aiter_compat;
+  auto a_q_out = compat::to_aiter(q_out_rot);
+  auto a_k_out = compat::to_aiter(k_out_rot);
+  rope_cached_positions_2c_fwd_impl(a_q_out, a_k_out, compat::to_aiter(q_in_rot),
+                                    compat::to_aiter(k_in_rot), compat::to_aiter(cos),
+                                    compat::to_aiter(sin), compat::to_aiter(pos),
                                     /*rotate_style=*/is_neox ? 0 : 1,
                                     /*reuse_freqs_front_part=*/true,
                                     /*nope_first=*/false);

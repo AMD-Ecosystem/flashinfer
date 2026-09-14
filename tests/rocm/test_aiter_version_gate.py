@@ -42,7 +42,10 @@ def _doc_references():
         # 0.1.16 declared rmsnorm without gemma_norm, so its mangled name differs.
         ("0.1.16", False),
         ("0.1.20.dev0", False),
-        ("0.1.20", True),
+        # 0.1.21 moved rmsnorm and rope from at::Tensor to the POD aiter_tensor_t,
+        # so the shims no longer link against 0.1.20 at all.
+        ("0.1.20", False),
+        ("0.1.21.dev0", False),
         # A .dev0 *of post3* sorts above 0.1.16, which is what makes the
         # nightly-vs-prerelease distinction non-obvious -- still below 0.1.20.
         ("0.1.16.post3.dev0+g620287969.d20260725", False),

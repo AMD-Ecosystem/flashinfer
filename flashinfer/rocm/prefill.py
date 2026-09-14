@@ -64,7 +64,7 @@ from ..utils import (
 # sizes we try. The second is the newest release we have actually validated against;
 # bumping it must not silently move the support boundary.
 _AITER_NATIVE_PAGING_SINCE = "0.1.10"
-_AITER_LAST_VALIDATED = "0.1.20+rocm10.1.0a20260819.3135022"
+_AITER_LAST_VALIDATED = "0.1.21.post2"
 # Newest AITER carrying the mha_varlen_fwd soft-cap defect. Bump only after
 # re-measuring against an fp32 reference; the wrong answer is silent.
 _AITER_SOFTCAP_DEFECT_THROUGH = "0.1.21"

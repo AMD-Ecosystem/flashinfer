@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Vendored fmha_batch_prefill_args, following the amd-aiter 0.1.20 layout.
+// Vendored fmha_batch_prefill_args, following the amd-aiter 0.1.21 layout
+// (field-for-field identical to 0.1.20's; only the norm and rope APIs moved).
 // Extracted from
 // aiter_meta/3rdparty/composable_kernel/example/ck_tile/01_fmha/fmha_fwd.hpp.
 //

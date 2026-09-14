@@ -54,7 +54,7 @@ def _ensure_aiter_gpu_archs() -> None:
 # an older AITER cannot resolve the shim's symbols at all. The vendored prefill
 # structs travel by value through dlsym'd pointers, where a mismatch corrupts
 # silently -- hence a hard floor rather than a warning.
-AITER_MIN_VERSION = "0.1.20"
+AITER_MIN_VERSION = "0.1.21"
 
 
 def _aiter_installed_version() -> Optional[str]:

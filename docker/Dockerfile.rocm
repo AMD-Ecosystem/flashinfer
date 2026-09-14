@@ -40,7 +40,7 @@ ARG PY_VERSION
 # this image rather than a retargeted wheel. AITER_SOURCE=0 restores the wheel
 # install below for an unblock.
 ARG AITER_SOURCE=1
-ARG AITER_REF=v0.1.20
+ARG AITER_REF=v0.1.21.post2
 ARG AITER_REPO=https://github.com/ROCm/aiter.git
 # Both architectures in one fat binary. Must be explicit: there is no device here
 # for AITER's arch detection to find.
