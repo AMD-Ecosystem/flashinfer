@@ -186,24 +186,15 @@ def reachable_variants() -> Tuple[Variant, ...]:
     return tuple(out)
 
 
-def _is_default(v: Variant) -> bool:
-    """The set the image builds: everything except mha_fwd's LSE arm.
+def selected_variants(only: Optional[Sequence[str]] = None) -> Tuple[Variant, ...]:
+    """Every reachable variant. ``only`` narrows to named families.
 
-    Those four are the most expensive builds in the set (803 s each against 206 s
-    and 140 s), and LSE on *single* prefill serves cascade/merge rather than a
-    plain forward pass -- the Blaze-O1 LUM3 footprint names it unused. Skipping
-    them costs one ~5 min stall to anyone calling single prefill with
-    ``return_lse=True``; it is not an error.
+    Nothing is trimmed. An earlier version skipped mha_fwd's four LSE variants on
+    an estimate of 803 s per build; measured in the image they take 162 s, so the
+    whole set is 23 min at --jobs 2 and a trim saves ~5 min for a guaranteed
+    multi-minute stall on whoever first asks for the missing arm.
     """
-    return not (v.family == "mha_fwd" and v.has_lse)
-
-
-def selected_variants(
-    only: Optional[Sequence[str]] = None, everything: bool = False
-) -> Tuple[Variant, ...]:
     variants = reachable_variants()
-    if not everything:
-        variants = tuple(v for v in variants if _is_default(v))
     if only:
         variants = tuple(v for v in variants if v.family in set(only))
     return variants
@@ -417,11 +408,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--check", action="store_true", help="verify artifacts, build nothing"
     )
     p.add_argument(
-        "--all",
-        action="store_true",
-        help="build all 40 reachable variants, not just the default set",
-    )
-    p.add_argument(
         "--only",
         action="append",
         choices=sorted(_MD_NAME),
@@ -440,7 +426,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         build_one(_decode(a.build_one))
         return 0
 
-    variants = selected_variants(a.only, everything=a.all)
+    variants = selected_variants(a.only)
     if a.list:
         for v in variants:
             print(v.so_name)

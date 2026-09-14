@@ -88,13 +88,11 @@ def test_every_driver_filename_is_one_the_loader_asks_for():
     assert {v.so_name for v in driver.reachable_variants()} == _fi_so_names()
 
 
-def test_the_default_set_is_the_full_set_minus_mha_fwd_lse():
-    selected = driver.selected_variants()
-    skipped = set(driver.reachable_variants()) - set(selected)
-
-    assert len(selected) == 36
-    assert all(v.family == "mha_fwd" and v.has_lse for v in skipped)
-    assert len(skipped) == 4
+def test_nothing_is_trimmed_from_the_built_set():
+    """Measured in the image, the whole set is 23 min at --jobs 2, so a trim buys
+    ~5 min of CI for a guaranteed multi-minute stall on the missing arm."""
+    assert set(driver.selected_variants()) == set(driver.reachable_variants())
+    assert len(driver.selected_variants()) == 40
 
 
 def test_the_blaze_lum3_variant_is_in_the_default_set():
@@ -107,7 +105,7 @@ def test_the_blaze_lum3_variant_is_in_the_default_set():
 
 @pytest.mark.parametrize("family", sorted(_FAMILY_BY_NAME))
 def test_only_restricts_without_renaming(family):
-    picked = driver.selected_variants(only=[family], everything=True)
+    picked = driver.selected_variants(only=[family])
     assert picked
     assert {v.so_name for v in picked} <= _fi_so_names()
     assert all(v.family == family for v in picked)
