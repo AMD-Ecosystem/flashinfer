@@ -55,6 +55,12 @@ RECEIPT_BATCH_PREFILL = 200
 
 GENERATE_PY = "example/ck_tile/01_fmha/generate.py"
 
+# Whole AITER modules aiter_loader.cc dlopens by name, with no variant axes. The
+# wheel shipped these prebuilt; a PREBUILD_KERNELS=0 source install ships none,
+# so the image has to build them or the load throws.
+# tests/rocm/test_prebuild_aiter_attention.py checks this against the loader.
+LOADER_MODULES = ("module_fmha_v3_fwd",)
+
 
 class Variant(NamedTuple):
     """One ``.so``. Mirrors ``VariantKey`` in flashinfer/jit/rocm/aiter_variants.py.
@@ -279,6 +285,33 @@ def _args_of_build(core, family: str) -> Dict[str, object]:
     return args
 
 
+def build_module_by_name(md_name: str) -> Path:
+    """Build one whole AITER module, e.g. the asm prefill arm."""
+    core = _aiter_jit_core()
+    args = core.get_args_of_build(md_name)
+    if not args.get("srcs"):
+        raise RuntimeError(f"aiter's config gave no srcs for {md_name}")
+    core.build_module(
+        md_name,
+        args["srcs"],
+        args["flags_extra_cc"],
+        args["flags_extra_hip"],
+        args["blob_gen_cmd"],
+        args["extra_include"],
+        args["extra_ldflags"],
+        args["verbose"],
+        args["is_python_module"],
+        args["is_standalone"],
+        args.get("torch_exclude", False),
+        args.get("third_party", []),
+    )
+    out = jit_dir(core) / f"{md_name}.so"
+    if not out.is_file():
+        raise RuntimeError(f"build of {md_name} produced no {out}")
+    shutil.rmtree(jit_dir(core) / "build" / md_name, ignore_errors=True)
+    return out
+
+
 def build_one(v: Variant) -> Path:
     """Build a single variant. Returns the artifact path; raises if absent after."""
     core = _aiter_jit_core()
@@ -308,14 +341,14 @@ def build_one(v: Variant) -> Path:
     return out
 
 
-def _run_jobs(variants: Sequence[Variant], jobs: int) -> int:
+def _run_jobs(variants: Sequence[Variant], jobs: int, extra: Sequence[str] = ()) -> int:
     """Build in parallel across *processes*.
 
     Never threads: AITER's build mutates process-global environment and takes a
     process-global lock, so two concurrent builds in one process have the first
     to finish restore the environment under the second.
     """
-    pending = list(variants)
+    pending = list(variants) + list(extra)
     # Child output goes to a file, never a pipe: hipcc is verbose enough to fill
     # a pipe buffer, and a child blocked on a full pipe never exits, so poll()
     # would spin forever. Only read on failure, and only the tail.
@@ -338,12 +371,16 @@ def _drain(pending, running, failed, jobs, total) -> None:
     while pending or running:
         while pending and len(running) < jobs:
             v = pending.pop(0)
-            fd, log_path = tempfile.mkstemp(
-                prefix=f"prebuild-{v.md_name}-", suffix=".log"
-            )
+            name = v if isinstance(v, str) else v.md_name
+            fd, log_path = tempfile.mkstemp(prefix=f"prebuild-{name}-", suffix=".log")
             try:
                 proc = subprocess.Popen(
-                    [sys.executable, __file__, "--build-one", _encode(v)],
+                    [
+                        sys.executable,
+                        __file__,
+                        "--build-one",
+                        v if isinstance(v, str) else _encode(v),
+                    ],
                     stdout=fd,
                     stderr=subprocess.STDOUT,
                 )
@@ -357,17 +394,18 @@ def _drain(pending, running, failed, jobs, total) -> None:
                 continue
             running.remove(entry)
             done += 1
+            label = f"{v}.so" if isinstance(v, str) else v.so_name
             if proc.returncode == 0:
                 print(
-                    f"[{done}/{total}] ok   {v.so_name}  {time.time() - started:.0f}s",
+                    f"[{done}/{total}] ok   {label}  {time.time() - started:.0f}s",
                     flush=True,
                 )
                 os.unlink(log_path)
             else:
-                failed.append(v.so_name)
+                failed.append(label)
                 tail = Path(log_path).read_text(errors="replace").splitlines()[-15:]
                 print(
-                    f"[{done}/{total}] FAIL {v.so_name}  {time.time() - started:.0f}s"
+                    f"[{done}/{total}] FAIL {label}  {time.time() - started:.0f}s"
                     f"  (full log: {log_path})\n" + "\n".join(tail),
                     flush=True,
                 )
@@ -430,7 +468,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     a = p.parse_args(argv)
 
     if a.build_one:
-        build_one(_decode(a.build_one))
+        if "|" in a.build_one:
+            build_one(_decode(a.build_one))
+        else:
+            build_module_by_name(a.build_one)
         return 0
 
     variants = selected_variants(a.only)
@@ -445,7 +486,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if a.jobs < 1:
         p.error("--jobs must be >= 1")
     t0 = time.time()
-    rc = _run_jobs(variants, a.jobs)
+    rc = _run_jobs(variants, a.jobs, extra=list(LOADER_MODULES) if not a.only else [])
     print(
         f"\n{len(variants)} variant(s) in {(time.time() - t0) / 60:.0f} min "
         f"at --jobs {a.jobs}"

@@ -207,3 +207,23 @@ def test_varlen_goes_through_aiters_own_helper():
     src = _DRIVER_PATH.read_text()
     assert "get_mha_varlen_prebuild_variants_by_names" in src
     assert "_md_varlen" in src  # the mirror exists only to name the file we ask for
+
+
+# ---------------------------------------------------------------------------
+# 3. whole modules the loader dlopens by name
+# ---------------------------------------------------------------------------
+
+_LOADER_CC = Path(__file__).resolve().parents[2] / "csrc" / "rocm" / "aiter_loader.cc"
+
+
+def test_the_driver_builds_every_module_the_loader_dlopens():
+    """A PREBUILD_KERNELS=0 source install ships no module_*.so at all, so any
+    name the loader opens has to be in the driver's set or the load throws --
+    which is what happened to module_fmha_v3_fwd when the asm arm landed."""
+    opened = set(re.findall(r'"(module_[a-z0-9_]+)\.so"', _LOADER_CC.read_text()))
+
+    assert opened, "no module_*.so names found in aiter_loader.cc; did the form change?"
+    assert opened <= set(driver.LOADER_MODULES), (
+        f"aiter_loader.cc dlopens {sorted(opened - set(driver.LOADER_MODULES))}, which "
+        "docker/prebuild_aiter_attention.py does not build"
+    )
