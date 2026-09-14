@@ -22,9 +22,10 @@ docker build -t flashinfer-dev:rocm10.0 -f docker/Dockerfile.rocm .
 `ROCM_VERSION`, `UBUNTU_VERSION`, `PY_VERSION`, and `TORCH_VERSION` default to
 10.0, 24.04, 3.12, and 2.12.0. They select the `rocm/pytorch` base image tag,
 so they are not independent knobs — any override has to name a tag that exists
-on Docker Hub. `AITER_VERSION` and `AITER_INDEX` pin the AITER wheel; every
-0.1.20 build is cp312 only, so the interpreter and the AITER pin move together.
-Do not raise `TORCH_VERSION` to 2.13 — it drops a `c10` symbol AITER's prebuilt
+on Docker Hub. `AITER_REF` selects the AITER tag to build from source, and
+`AITER_PREBUILD_JOBS` how many variants compile at once (~23 min at 2 on 32
+cores). `AITER_SOURCE=0` falls back to the `AITER_VERSION`/`AITER_INDEX` wheel
+install. Do not raise `TORCH_VERSION` to 2.13 — it drops a `c10` symbol AITER's
 prefill kernels link against, and they fail to load.
 Pass `--build-arg USERNAME=$USER --build-arg USER_UID=$(id -u) --build-arg
 USER_GID=$(id -g)` to match container file ownership to your host user —

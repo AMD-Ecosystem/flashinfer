@@ -111,29 +111,22 @@ marking a test retires it, so do not reach for it to speed a lane up.
 gfx950 at `-n 1`, so 92% of a first run is compilation. Clearing
 `~/.cache/flashinfer` before timing anything makes the result meaningless.
 
-**AITER is version-pinned.** The development image bundles the wheel, so no
-separate install is needed there. `aiter_utils.AITER_MIN_VERSION` (0.1.20) is
-the hard floor below which the vendored struct layouts stop matching, and
-every 0.1.20 build is cp312 only — which is what fixes the interpreter.
+**AITER is a source build at a pinned tag.** `docker/Dockerfile.rocm` clones
+`v0.1.21.post2` and installs it non-editable with `PREBUILD_KERNELS=0`, so the
+image needs no separate install. `aiter_utils.AITER_MIN_VERSION` (0.1.21) is
+the hard floor: below it the vendored struct layouts stop matching, and 0.1.21
+moved `rmsnorm` and `rope` from `at::Tensor` to the POD `aiter_tensor_t`.
 
-```bash
-pip install amd-aiter==0.1.20+rocm10.1.0a20260819.3135022 \
-  --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/
-```
+Build it by **tag**, never a branch — a clone that loses its tag makes
+`setuptools_scm` invent a `.dev` version that falls under the floor, and every
+AITER path then silently degrades to `fa2`. Use a non-editable install:
+`setup.py develop` ships no `aiter_meta`, which is what the C++ shims compile
+against. `prefill.py` records whatever is validated as `_AITER_LAST_VALIDATED`,
+and [`docs/rocm/backends.md`](docs/rocm/backends.md) has the full recipe.
 
-Spell the version out in full including the local `+rocm...` segment; pip will
-not select a local version from a loose specifier. `prefill.py` records
-whatever is validated as `_AITER_LAST_VALIDATED`, and
-[`docs/rocm/backends.md`](docs/rocm/backends.md) explains the index choice.
-
-A source build (`git clone --recursive https://github.com/ROCm/aiter.git &&
-cd aiter && python3 setup.py develop`) tracks master, which is **many releases
-ahead of the pin with a different C ABI** — symbols the shim expects are
-renamed, hidden rather than `extern "C"`, or absent. Nothing stops you running
-one, but treat it as untested here.
-
-That gap is a trap when working on the C++ shim: read the **installed** tree,
-never a source checkout, before designing against an AITER symbol.
+When working on the C++ shim, read the **installed** tree before designing
+against an AITER symbol — never a source checkout, which is generally at a
+different revision with a different C ABI.
 
 ```bash
 nm -D --defined-only -C <site-packages>/aiter/jit/module_<x>.so | grep '<fn>('

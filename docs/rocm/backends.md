@@ -147,49 +147,50 @@ That says nothing about their ROCm support either way.
 
 ## Installing AITER
 
-Unless you are using the prebuilt Docker image, AITER is a separate
-install. `amd-aiter` is **not** on the top-level `pypi.amd.com/simple`
-index, and the ROCm-versioned channels carry no wheel at or above the
-supported floor, so install from the nightlies index:
+**The supported install is a source build at a pinned tag**, which is what
+`docker/Dockerfile.rocm` performs:
 
 ```bash
-pip install amd-aiter==0.1.20+rocm10.1.0a20260819.3135022 \
-  --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/
+git clone --recursive --depth 1 --shallow-submodules \
+  --branch v0.1.21.post2 https://github.com/ROCm/aiter.git
+cd aiter && PREBUILD_KERNELS=0 GPU_ARCHS="gfx942;gfx950" \
+  pip install --no-build-isolation .
 ```
 
-Use `--extra-index-url`, not `--index-url`, so AITER's own dependencies
-still resolve from PyPI, and spell the version out in full including the
-local `+rocm...` segment — pip will not select a local version from a loose
-specifier. Check afterwards that the install did not pull a CPU-only torch
-over your ROCm one: `python -c "import torch; assert torch.version.hip"`.
+Source rather than a wheel because no `amd-aiter` wheel is built against
+ROCm 10.0; the published ones are retargets of the same revision. A source
+build compiles against the ROCm actually present, and it is the only route to
+a tagged release on this stack.
 
-**`aiter_utils.AITER_MIN_VERSION` (0.1.20) is a hard floor**, enforced
+Three details are load-bearing. Use the **tag**, not a branch: a clone that
+loses its tag makes `setuptools_scm` invent a `.dev` version that falls under
+the floor below, and every AITER path silently degrades to `fa2`. Non-editable,
+not `setup.py develop`: the develop branch installs no `aiter_meta`, and
+`aiter_meta/csrc/include` is what every C++ shim compiles against.
+`PREBUILD_KERNELS=0` because `=1` needs a live GPU — and its prebuilt modules
+are no loss, since FlashInfer builds its own `lib<module>.so` from the same
+sources.
+
+Check afterwards that the install did not pull a CPU-only torch over your ROCm
+one: `python -c "import torch; assert torch.version.hip"`.
+
+**`aiter_utils.AITER_MIN_VERSION` (0.1.21) is a hard floor**, enforced
 before routing. FlashInfer links AITER's C++ symbols by mangled name
 (`csrc/rocm/aiter_loader.cc`) and vendors its argument structs
-(`include/flashinfer/rocm/attention/aiter/`) at the 0.1.20 layout, so an older
-release shifts field offsets instead of failing to load -- and 0.1.20 renamed
-the RMSNorm entry points, so an older one cannot resolve them. Below the floor
-`auto` will not select AITER and an explicit `backend="aiter"` raises.
+(`include/flashinfer/rocm/attention/aiter/`), so an older release shifts field
+offsets instead of failing to load. 0.1.21 also moved `rmsnorm` and the
+cos/sin-cache `rope` from `at::Tensor` to the POD `aiter_tensor_t`, so those
+shims cannot resolve against 0.1.20 at all. Below the floor `auto` will not
+select AITER and an explicit `backend="aiter"` raises.
 
-The development image (`docker/Dockerfile.rocm`) bundles that wheel, on
-CPython 3.12, and needs no separate install -- it is the one supported
-configuration, so in practice this section is only for someone assembling
-their own.
+The development image needs none of this: it performs the build above and
+prebuilds the attention variants, so a container starts with them present. It
+is the one supported configuration, so in practice this section is only for
+someone assembling their own.
 
-Every 0.1.20 wheel is cp312 only, which is what fixes the interpreter. None
-is built against ROCm 10.0 directly; the pin above is the nearest retarget
-of the same source revision (build id `3135022`).
-
-A source build tracks master, which is many releases ahead of the pin
-**with a different C ABI** — symbols the shim expects are renamed, hidden
-rather than `extern "C"`, or absent:
-
-```bash
-git clone --recursive https://github.com/ROCm/aiter.git
-cd aiter && python3 setup.py develop
-```
-
-Nothing stops you running one, but treat it as untested here.
+The interpreter is no longer pinned by the AITER wheel's tags — a source build
+follows whichever Python is present. CPython 3.12 is now a property of the base
+image rather than of AITER.
 
 ### C++-level integration
 
