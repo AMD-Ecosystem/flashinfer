@@ -546,12 +546,37 @@ single-prefill measurement at these query lengths exists to site a threshold on.
 An explicit `backend="aiter"` is honoured throughout — these are routing
 preferences, not wrong answers, so the other side stays measurable.
 
-Worth knowing when choosing a decode backend: `fa2` holds ~5.3 TFLOPS at 64
-query heads on both architectures regardless of shape, where AITER reaches
-37–41. KV traffic is identical at 32 and 64 query heads, so this tracks query
-heads rather than bandwidth. Graph-captured decode resolves `auto` to `fa2`
-unless the wrapper is given `max_seq_len`, so a 70B or 405B decode under capture
-is on the slower kernel until it is.
+### `fa2` decode does not scale past GQA group 4
+
+Worth knowing when choosing a decode backend. At batch 256 / kv 4096 on
+gfx942, all three moving the same 4.3 GB of K+V:
+
+| | achieved | of 5.3 TB/s peak |
+| :--- | :--- | :--- |
+| `fa2`, 32 query heads | 2.21 TB/s | 42% |
+| `fa2`, 64 query heads | 0.61 TB/s | 12% |
+| AITER, 64 query heads | 3.11 TB/s | 59% |
+
+The grid is `(padded_batch_size, num_kv_heads)` — it does not scale with query
+heads. The GQA group is absorbed inside the block as `bdy`, so doubling query
+heads doubles the work per block and adds no workgroups. `BatchDecodeBdz` then
+clamps the block to 128 threads, and at head_dim 128 `bdx` is 16, so a group of
+8 fills the block on its own and leaves `bdz = 1`: the block also loses the
+concurrent KV chunks it had at group 4.
+
+**Raising that clamp to 256 does not help — it was measured on gfx942 and is
+worse**, by 11–28% across batch 32–256 and kv 1024–4096, at 32 and 64 query
+heads alike. Shared memory doubles (9→18 KB at group 8), which costs more
+resident blocks than the extra KV concurrency wins. Not re-measured on gfx950.
+The launch geometry above is arch-independent, being code rather than a
+measurement, and the underlying gap reproduces on both.
+
+Closing it needs the grid to scale with query heads, which is a kernel change
+rather than a tuning constant.
+
+Until then, graph-captured decode resolves `auto` to `fa2` unless the wrapper is
+given `max_seq_len`, so a 70B or 405B decode under capture is on the slower
+kernel. `backend="aiter"` reaches the faster one directly.
 
 ### `fused_add_rmsnorm` and `gemma_fused_add_rmsnorm` at large `hidden_size`
 
