@@ -577,10 +577,13 @@ at group 8; everything below is fp16/bf16.
 | :--- | :--- |
 | grid starvation — too few workgroups at 64 heads | the 64/32-head ratio is flat at ~4.6× from batch 32 to 256, across a 256→2048 block grid. Starvation would shrink it. |
 | the lost `bdz` KV concurrency | restoring `bdz = 2` at group 8 recovers nothing: 1.01–1.03× at every 64-head cell |
-| shared memory costing resident blocks | the same run holds smem flat (10240 B against the 9216 B baseline) and still recovers nothing |
+| shared memory costing resident blocks | *weakly*: the same run is near-flat on smem (10240 B against 9216 B) and still recovers nothing — but the block also grows 128→256 threads, so occupancy is not cleanly isolated |
 
 The second and third were tested together by raising the floor to 256 *and*
-halving `NUM_STAGES_SMEM`, which buys `bdz = 2` without the smem increase.
+halving `NUM_STAGES_SMEM`, which buys `bdz = 2` for +11% smem rather than the
++100% the floor alone costs. The `bdz` result is solid — the concurrency is
+restored and nothing moves. The occupancy one is weaker, since threads per block
+still double.
 
 So the penalty is per-block work that more blocks, more KV concurrency and more
 occupancy all fail to touch. It is ~4.6× for 2× the query heads, and the
@@ -594,7 +597,7 @@ per arm:
 
 | arch | effect of floor 256 |
 | :--- | :--- |
-| gfx942 | 11–28% **slower** at every cell |
+| gfx942 | **slower at all 12 cells**, +5% to +28% |
 | gfx950 | neutral within ±3%, except batch 32 / kv 1024 / 32 heads, which is ~2× faster (0.102 → 0.051 ms) and loses a bimodal baseline (`p5` 0.049 against a 0.102 median) |
 
 Shared memory doubles with `bdz` (9→18 KB at group 8), which on gfx942 costs

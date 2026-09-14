@@ -1000,8 +1000,9 @@ def test_ragged_maskless_plan_after_a_masked_one_drops_the_mask():
 def test_paged_maskless_plan_after_a_masked_one_drops_the_mask():
     """A maskless plan must not attend under the previous plan's mask.
 
-    Guards both halves of that: the mask-buffer clear, numerically, and the
-    per-plan re-resolution a wrapper stuck on fa2 would skip.
+    Numerical only, and deliberately backend-agnostic: a stale buffer is applied
+    by whichever kernel runs, so this must not skip where AITER is absent. The
+    routing half is a separate test, which does need AITER.
     """
     device = torch.device("cuda:0")
     torch.manual_seed(0)
@@ -1043,14 +1044,6 @@ def test_paged_maskless_plan_after_a_masked_one_drops_the_mask():
     mask = torch.zeros(batch_size * qo_len * kv_len, dtype=torch.bool, device=device)
     mask[::7] = True
 
-    # What a fresh wrapper resolves this maskless plan to, so the re-resolution
-    # assertion below calibrates itself instead of assuming AITER is reachable.
-    control = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
-        workspace, "NHD", backend="auto"
-    )
-    control.plan(**plan_args)
-    expected_backend = control.backend
-
     wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
         workspace, "NHD", backend="auto"
     )
@@ -1059,21 +1052,69 @@ def test_paged_maskless_plan_after_a_masked_one_drops_the_mask():
 
     wrapper.plan(**plan_args)
     got = wrapper.run(q, kv_data)
-    resolved = wrapper.backend
 
     reference = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
         workspace, "NHD", backend="fa2"
     )
     reference.plan(**plan_args)
     # reference.plan() rewrites the shared workspace, so materialise `got` first.
-    # Numbers before backend, deliberately: a stale buffer also makes the
-    # selector see a mask and pick fa2, so asserting the backend first would
-    # catch both reverts on the same line and never run this comparison.
     torch.testing.assert_close(got, reference.run(q, kv_data), rtol=2e-2, atol=2e-2)
 
-    assert resolved == expected_backend, (
-        "the masked plan stuck the wrapper: a maskless plan after it must "
-        "re-resolve to what a fresh wrapper picks"
+
+def test_paged_re_resolves_the_backend_after_a_masked_plan():
+    """The routing half: an AITER->fa2->AITER transition, which needs AITER.
+
+    Asserting equality against a control wrapper is vacuous where `auto` picks
+    fa2 anyway -- both sides are fa2 and a stuck wrapper looks identical. This
+    demands the transition itself, so it can only pass by re-resolving.
+    """
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
+
+    torch.manual_seed(0)
+    batch_size, qo_len, kv_len, heads, head_dim, page_size = 2, 256, 512, 8, 128, 1
+    dtype = torch.bfloat16
+    num_pages = (kv_len + page_size - 1) // page_size
+    plan_args = dict(
+        qo_indptr=torch.arange(0, batch_size + 1, dtype=torch.int32, device=device)
+        * qo_len,
+        paged_kv_indptr=torch.arange(
+            0, batch_size + 1, dtype=torch.int32, device=device
+        )
+        * num_pages,
+        paged_kv_indices=torch.arange(
+            0, num_pages * batch_size, dtype=torch.int32, device=device
+        ),
+        paged_kv_last_page_len=torch.full(
+            (batch_size,), page_size, dtype=torch.int32, device=device
+        ),
+        num_qo_heads=heads,
+        num_kv_heads=heads,
+        head_dim_qk=head_dim,
+        page_size=page_size,
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+    mask = torch.zeros(batch_size * qo_len * kv_len, dtype=torch.bool, device=device)
+    mask[::7] = True
+
+    wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
+    )
+    wrapper.plan(**plan_args)
+    if wrapper.backend != "aiter":
+        pytest.skip(f"AITER unavailable here: {wrapper.backend_fallback_reason}")
+
+    wrapper.plan(**plan_args, custom_mask=mask)
+    assert wrapper.backend == "fa2", "AITER cannot honour a custom mask"
+
+    wrapper.plan(**plan_args)
+    assert wrapper.backend == "aiter", (
+        "the masked plan stuck the wrapper: dropping the mask must re-resolve "
+        "back to AITER"
     )
 
 
