@@ -24,8 +24,9 @@ docker build -t flashinfer-dev:rocm10.0 -f docker/Dockerfile.rocm .
 so they are not independent knobs — any override has to name a tag that exists
 on Docker Hub. `AITER_REF` selects the AITER tag to build from source, and
 `AITER_PREBUILD_JOBS` how many variants compile at once (~23 min at 2 on 32
-cores). `AITER_SOURCE=0` falls back to the `AITER_VERSION`/`AITER_INDEX` wheel
-install. Do not raise `TORCH_VERSION` to 2.13 — it drops a `c10` symbol AITER's
+cores). `AITER_SOURCE=0` falls back to the `AITER_VERSION`/`AITER_INDEX` wheel install,
+which is an unblock only: no `amd-aiter` wheel targets ROCm 10, so it installs a
+retarget of another ROCm. Do not raise `TORCH_VERSION` to 2.13 — it drops a `c10` symbol AITER's
 prefill kernels link against, and they fail to load.
 Pass `--build-arg USERNAME=$USER --build-arg USER_UID=$(id -u) --build-arg
 USER_GID=$(id -g)` to match container file ownership to your host user —

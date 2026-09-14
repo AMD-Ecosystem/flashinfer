@@ -47,12 +47,12 @@ ARG AITER_REPO=https://github.com/ROCm/aiter.git
 ARG AITER_GPU_ARCHS="gfx942;gfx950"
 ARG AITER_PREBUILD_JOBS=2
 
-# The wheel path (AITER_SOURCE=0). Pinned to an exact build including the local
-# version segment, because pip will not select a local version from a loose
-# specifier. No +rocm10.0 build of amd-aiter exists; every 0.1.20 wheel shares
-# source build id 3135022, so the +rocm10.1.0a one is the nearest retarget of the
-# same revision.
-ARG AITER_VERSION=0.1.20+rocm10.1.0a20260819.3135022
+# The wheel path (AITER_SOURCE=0), an unblock only. Spelled in full including the
+# local segment: pip will not select a local version from a loose specifier. It
+# must clear AITER_MIN_VERSION or the assertion below rejects it -- and at
+# 0.1.21.post2 the index publishes only +rocm7.14.0 and +rocm7.2.3, no ROCm 10
+# build at all, which is the whole reason the default path builds from source.
+ARG AITER_VERSION=0.1.21.post2+rocm7.14.0.c2a6601
 ARG AITER_INDEX=https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/
 
 # Fail fast if the base image ever stops shipping a HIP-enabled torch.
@@ -216,7 +216,7 @@ if got != want:
 FLOOR = "0.1.21"
 from packaging.version import Version  # noqa: E402
 
-if Version(got).base_version < Version(FLOOR).base_version:
+if Version(got) < Version(FLOOR):
     sys.exit(f"ERROR: amd-aiter {got} is below AITER_MIN_VERSION {FLOOR}")
 
 inc = Path(md.distribution("amd-aiter").locate_file("aiter_meta/csrc/include"))
