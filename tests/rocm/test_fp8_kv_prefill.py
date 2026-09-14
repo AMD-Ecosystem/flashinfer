@@ -428,7 +428,64 @@ def test_every_public_generator_refuses_before_its_uri():
         "gen_pod_module": lambda: m.gen_pod_module(
             dt, dt, dt, 128, 0, False, False, False, torch.int32, 0, False, False
         ),
+        "gen_batch_pod_module": lambda: m.gen_batch_pod_module(
+            dt, dt, dt, 128, 0, False, False, False, torch.int32, 0, False, False
+        ),
+        "gen_customize_single_decode_module": lambda: m.gen_customize_single_decode_module(
+            "sweep_csd", dt, dt, dt, 128, 128, ["v"], ["float"], [], [], "V", "v"
+        ),
+        "gen_customize_single_prefill_module": lambda: m.gen_customize_single_prefill_module(
+            "fa2", "sweep_csp", dt, dt, dt, 128, 128, ["v"], ["float"], [], [], "V", "v"
+        ),
+        "gen_customize_batch_decode_module": lambda: m.gen_customize_batch_decode_module(
+            "sweep_cbd",
+            dt,
+            dt,
+            dt,
+            torch.int32,
+            128,
+            128,
+            ["v"],
+            ["float"],
+            [],
+            [],
+            "V",
+            "v",
+        ),
+        "gen_customize_batch_prefill_module": lambda: m.gen_customize_batch_prefill_module(
+            "fa2",
+            "sweep_cbp",
+            dt,
+            dt,
+            dt,
+            torch.int32,
+            128,
+            128,
+            ["v"],
+            ["float"],
+            [],
+            [],
+            "V",
+            "v",
+        ),
+        "gen_customize_pod_module": lambda: m.gen_customize_pod_module(
+            "sweep_cpod", dt, dt, dt, torch.int32, 128, "V", "V"
+        ),
+        "gen_customize_batch_pod_module": lambda: m.gen_customize_batch_pod_module(
+            "sweep_cbpod", dt, dt, dt, torch.int32, 128, "V", "V"
+        ),
     }
+    # Derived, not hand-listed: a new generator joins the sweep by existing.
+    # gen_customize_* take a uri, so they cannot be called generically above,
+    # but they must still be covered -- assert the enumeration is complete.
+    discovered = {
+        n
+        for n in dir(m)
+        if n.startswith("gen_") and n.endswith("_module") and callable(getattr(m, n))
+    }
+    assert discovered <= set(calls), (
+        f"generators missing from this sweep: {sorted(discovered - set(calls))}"
+    )
     for name, call in calls.items():
         # Named, so a regression says which builder stopped refusing.
         with pytest.raises(NotImplementedError, match="(?i)not supported|fp8"):

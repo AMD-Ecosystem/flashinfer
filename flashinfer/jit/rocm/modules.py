@@ -1408,6 +1408,9 @@ def _gen_customize_pod_like_module(
     use_fp16_qk_reduction: bool,
 ) -> JitSpec:
     """Shared body for single (prefix="pod") and batch (prefix="batch_pod") POD JIT modules."""
+    # Both customize entry points reach the kernel only through here, so this is
+    # the seam that keeps them from bypassing gen_pod_module's refusal.
+    _check_pod_fp8_dtypes(f"{prefix} (customize)", dtype_q, dtype_kv, dtype_o)
     gen_directory = FLASHINFER_GEN_SRC_DIR / uri
 
     kwargs = {
