@@ -573,7 +573,8 @@ def _aiter_flat_gather_short_query(
     ``max_q_len=None`` disarms, which is how a planner says the page size pages
     natively -- that path has no gather and beats fa2 even at one query row.
     """
-    if max_q_len is None:
+    # <= 0 is an empty batch, not a short query -- same reasoning as the ragged twin.
+    if max_q_len is None or max_q_len <= 0:
         return None
     from .arch_caps import _device_arch, aiter_flat_gather_gated_q_len
 
@@ -595,6 +596,39 @@ def _flat_gather_short_query_reason(threshold: int) -> str:
     )
 
 
+def _aiter_ragged_short_query(
+    max_q_len: Optional[int],
+    device: Optional[torch.device] = None,
+) -> Optional[int]:
+    """Is this ragged call too short to be worth AITER's kernel?
+
+    Returns the threshold that gated it, or ``None`` when it is not gated.
+    Separate from :func:`_aiter_flat_gather_short_query` because ragged has no
+    gather to amortise -- what a short query loses here is fixed kernel cost.
+    """
+    # <= 0 is an empty batch, not a short query: gating it would describe no
+    # work at all, and under cudagraph that demotion never re-promotes.
+    if max_q_len is None or max_q_len <= 0:
+        return None
+    from .arch_caps import _device_arch, aiter_ragged_gated_q_len
+
+    gated = aiter_ragged_gated_q_len(_device_arch(device))
+    return gated if gated is not None and max_q_len <= gated else None
+
+
+def _ragged_short_query_reason(threshold: int) -> str:
+    """The ragged short-query decline, built in exactly one place.
+
+    Distinct from the flat-gather reason: that one blames a copy ragged never
+    makes, and the paged demotion site matches its own string by equality.
+    """
+    return (
+        f"query length <= {threshold} on ragged KV (AITER's mha_varlen_fwd "
+        "costs more per call than the in-tree kernel, which a short query "
+        "cannot amortise)"
+    )
+
+
 def _auto_select_prefill_backend(
     device: torch.device,
     *,
@@ -611,6 +645,7 @@ def _auto_select_prefill_backend(
     kv_len: Optional[int] = None,
     allow_fp8: bool = False,
     max_q_len: Optional[int] = None,
+    ragged_q_len: Optional[int] = None,
 ) -> Tuple[str, Optional[str]]:
     """Return ``(backend, reason)``: 'aiter' when the GPU and call parameters satisfy
     AITER's constraints, else 'fa2' plus the reason AITER was declined.
@@ -633,6 +668,15 @@ def _auto_select_prefill_backend(
     # other unmet constraint. Previously an unsupported architecture returned
     # "fa2" silently, which on CDNA4 would mean a user quietly losing the AITER
     # path with nothing to explain it.
+    # The two perf gates name different routes, so arming both is a caller bug:
+    # the reason would describe one while a demotion site matches the other's
+    # string by equality, silently making that demotion permanent.
+    if max_q_len is not None and ragged_q_len is not None:
+        raise ValueError(
+            "max_q_len (paged) and ragged_q_len (ragged) are different routes; "
+            "pass at most one"
+        )
+
     reason: Optional[str] = capability_reason(device, op, "aiter")
     if reason is None:
         if kv_layout != "NHD":
@@ -661,13 +705,21 @@ def _auto_select_prefill_backend(
                 f"logits_soft_cap={logits_soft_cap} with causal head_dim={head_dim_qk} "
                 "(AITER mha_varlen_fwd computes the soft cap incorrectly)"
             )
-        else:
+        # Both perf gates sit last, after every constraint that is a property of
+        # the device rather than the batch -- and only if AITER could have run,
+        # or a box with no amd-aiter would be told "too short" instead of the
+        # install diagnostic below.
+        if reason is None and _aiter_ops_importable():
             threshold = _aiter_flat_gather_short_query(max_q_len, device)
             if threshold is not None:
                 # Names the threshold, not max_q_len: _aiter_auto_warned is keyed
                 # on the reason, so a per-batch value would add an entry and
                 # re-warn for every distinct query length a serving loop sees.
                 reason = _flat_gather_short_query_reason(threshold)
+            else:
+                ragged_threshold = _aiter_ragged_short_query(ragged_q_len, device)
+                if ragged_threshold is not None:
+                    reason = _ragged_short_query_reason(ragged_threshold)
 
     if reason is not None:
         _warn_auto_fallback_once(device, reason)
@@ -3948,6 +4000,12 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                 self._mask_indptr_buf = mask_indptr.to(
                     self.device, non_blocking=non_blocking
                 )
+            else:
+                # Clear, as the paged wrapper does: run() picks MaskMode.CUSTOM
+                # off this buffer, so a maskless plan after a masked one would
+                # otherwise attend under the previous plan's mask.
+                self._custom_mask_buf = None
+                self._mask_indptr_buf = None
 
         self._cached_q_data_type = q_data_type
         self._cached_kv_data_type = kv_data_type
@@ -3983,14 +4041,26 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         if self._jit_module is not None:
             self._cached_module = self._jit_module
         else:
-            if self._backend == "auto":
+            # Re-resolve from scratch on every eager plan. Every argument the
+            # selector weighs is per-plan, so resolving once and keeping the
+            # answer is wrong in both directions: a short query after a long one
+            # stayed on AITER, and so did a plan that added a custom mask, which
+            # AITER cannot honour. Frozen under cudagraph, where switching would
+            # swap a module a captured graph still points at -- there the first
+            # plan decides.
+            if self._backend == "auto" or (
+                resolved_from_auto and not self.is_cuda_graph_enabled
+            ):
                 self._backend, self._backend_fallback_reason = (
                     _auto_select_prefill_backend(
                         self.device,
                         dtype_q=q_data_type,
                         dtype_kv=kv_data_type,
                         kv_layout=self._kv_layout,
-                        has_custom_mask=packed_custom_mask is not None,
+                        # The buffer, not the argument: run() picks MaskMode off
+                        # the buffer, so keying the selector on anything else
+                        # lets the two disagree about whether a mask is live.
+                        has_custom_mask=self._custom_mask_buf is not None,
                         head_dim_qk=head_dim_qk,
                         head_dim_vo=head_dim_vo,
                         pos_encoding_mode=pos_encoding_mode,
@@ -4000,6 +4070,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                         causal=causal,
                         logits_soft_cap=logits_soft_cap,
                         kv_len=self._max_kv_len,
+                        ragged_q_len=self._max_q_len,
                     )
                 )
             if self._backend == "aiter" and _aiter_softcap_defect(

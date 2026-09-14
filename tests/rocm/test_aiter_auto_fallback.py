@@ -369,7 +369,10 @@ def test_paged_prefill_auto_demotes_to_fa2(device, monkeypatch):
 def test_ragged_prefill_auto_demotes_to_fa2(device, monkeypatch):
     _skip_if_op_gated(device, "batch_prefill")
     torch.manual_seed(0)
-    batch_size, qo_len, kv_len = 2, 16, 128
+    batch_size, qo_len, kv_len = 2, 32, 128
+    # qo_len sits above aiter_ragged_gated_q_len (16 on gfx942): at or below it
+    # `auto` declines AITER for the per-call cost, and this would assert on that
+    # reason rather than the bootstrap failure it covers.
     nqo = nkv = 8
     head_dim = 128
     dtype = torch.bfloat16
