@@ -384,6 +384,39 @@ def test_aiter_generator_dtype_allowlist(dtype_q, dtype_kv, dtype_o, allowed):
                 call()
 
 
+def test_every_public_generator_refuses_before_its_uri():
+    """Swept rather than spot-checked: each of these builds a URI by indexing
+    filename_safe_dtype_map, so an unmapped dtype raised a bare KeyError unless
+    the allowlist ran first. float32 is the reachable unmapped case.
+    """
+    from flashinfer.jit.rocm import modules as m
+
+    dt = torch.float32
+    calls = {
+        "gen_single_prefill_module": lambda: m.gen_single_prefill_module(
+            "fa2", dt, dt, dt, 128, 128, 0, False, False, False
+        ),
+        "gen_batch_prefill_module": lambda: m.gen_batch_prefill_module(
+            "fa2", dt, dt, dt, torch.int32, 128, 128, 0, False, False, False
+        ),
+        "gen_single_decode_module": lambda: m.gen_single_decode_module(
+            dt, dt, dt, 128, 128, 0, False, False
+        ),
+        "gen_batch_decode_module": lambda: m.gen_batch_decode_module(
+            dt, dt, dt, torch.int32, 128, 128, 0, False, False
+        ),
+        "gen_batch_decode_aiter_module": lambda: m.gen_batch_decode_aiter_module(
+            dt, dt, dt, 128, 128
+        ),
+        "gen_pod_module": lambda: m.gen_pod_module(
+            dt, dt, dt, 128, 0, False, False, False, torch.int32, 0, False, False
+        ),
+    }
+    for name, call in calls.items():
+        with pytest.raises(NotImplementedError):
+            call()
+
+
 @pytest.mark.parametrize("fp8_dtype", FNUZ_DTYPES)
 def test_pod_refuses_fp8_kv(fp8_dtype):
     """POD sizes its tiles with upstream's CUDA register constant, so it can ask

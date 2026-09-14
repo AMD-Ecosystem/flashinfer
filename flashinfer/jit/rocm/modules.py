@@ -140,6 +140,25 @@ def _check_aiter_dtypes(what: str, dtype_q, dtype_kv, dtype_o) -> None:
         )
 
 
+def _check_aiter_decode_dtypes(what: str, dtype_q, dtype_kv, dtype_o) -> None:
+    """Allowlist for AITER's paged-decode kernel, which is stricter than prefill.
+
+    `batch_decode_aiter.cu` takes fp16/bf16 only -- no fp8 arm at all -- and
+    requires k, v and o to share the query's dtype.
+    """
+    for role, dtype in (("query", dtype_q), ("KV", dtype_kv), ("output", dtype_o)):
+        if dtype not in _WIDE_DTYPES:
+            raise NotImplementedError(
+                f"{what}: AITER paged decode {role} dtype {dtype} is not "
+                "supported; the kernel serves float16 and bfloat16 only."
+            )
+    if not (dtype_q == dtype_kv == dtype_o):
+        raise NotImplementedError(
+            f"{what}: AITER paged decode needs one dtype for query, KV and "
+            f"output; got {dtype_q}, {dtype_kv} and {dtype_o}."
+        )
+
+
 def _check_fa2_fp8_dtypes(
     what: str, dtype_q, dtype_kv, dtype_o, *, kv_must_match_q: bool
 ) -> None:
@@ -332,6 +351,11 @@ def gen_single_decode_module(
     use_sliding_window: bool,
     use_logits_soft_cap: bool,
 ):
+    # Before the URI: it indexes filename_safe_dtype_map, so an unsupported
+    # dtype would raise KeyError rather than this allowlist's message.
+    _check_fa2_fp8_dtypes(
+        "single decode", dtype_q, dtype_kv, dtype_o, kv_must_match_q=False
+    )
     uri = get_single_decode_uri(
         dtype_q,
         dtype_kv,
@@ -478,6 +502,9 @@ def gen_batch_decode_aiter_module(
     # needs no variant store.
     aiter_jit_dir = os.path.join(os.path.dirname(_aiter_mod.__file__), "jit")
 
+    # Before the URI: it indexes filename_safe_dtype_map, so an unsupported
+    # dtype would raise KeyError rather than this allowlist's message.
+    _check_aiter_decode_dtypes("batch decode (aiter)", dtype_q, dtype_kv, dtype_o)
     uri = get_batch_decode_aiter_uri(
         dtype_q, dtype_kv, dtype_o, head_dim_qk, head_dim_vo
     )
@@ -516,6 +543,11 @@ def gen_batch_decode_module(
     use_sliding_window: bool,
     use_logits_soft_cap: bool,
 ):
+    # Before the URI: it indexes filename_safe_dtype_map, so an unsupported
+    # dtype would raise KeyError rather than this allowlist's message.
+    _check_fa2_fp8_dtypes(
+        "batch decode", dtype_q, dtype_kv, dtype_o, kv_must_match_q=False
+    )
     uri = get_batch_decode_uri(
         dtype_q,
         dtype_kv,
