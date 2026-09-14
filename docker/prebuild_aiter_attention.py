@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -300,6 +301,10 @@ def build_one(v: Variant) -> Path:
     out = jit_dir(core) / v.so_name
     if not out.is_file():
         raise RuntimeError(f"build of {v.md_name} produced no {out}")
+    # Drop the CK blob and object tree: ~15 MB per variant, 603 MB over the set,
+    # and nothing reads it again -- AITER decides "already built" from the .so.
+    # Kept on failure, where it is the only diagnostic.
+    shutil.rmtree(jit_dir(core) / "build" / v.md_name, ignore_errors=True)
     return out
 
 
