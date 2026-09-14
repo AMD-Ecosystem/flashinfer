@@ -567,8 +567,9 @@ heads. The GQA group is absorbed inside the block as `bdy`, so doubling query
 heads doubles the work per block and adds no workgroups. `BatchDecodeBdz` then
 *floors* the block at 128 threads, and at head_dim 128 with fp16/bf16 KV `bdx`
 is 16, so a group of 8 fills the block on its own and leaves `bdz = 1`: the
-block also loses the concurrent KV chunks it had at group 4. fp8 KV halves
-`bdx` to 8 and so keeps `bdz = 2` at group 8; this path is fp16/bf16 only.
+block also loses the concurrent KV chunks it had at group 4. The same tuning
+serves fp8 KV, but there `bdx` is 8, so group 8 keeps `bdz = 2` and does not hit
+this collapse — everything below was measured on fp16/bf16.
 
 **That geometry does not fully account for the number.** Doubling per-block
 work alone predicts 1.10 TB/s at 64 heads; the measured 0.61 is a further

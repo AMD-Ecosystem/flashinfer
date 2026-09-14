@@ -42,9 +42,10 @@ constexpr uint32_t BatchDecodeBdx() {
 
 /*! \brief KV chunks a block processes concurrently.
  *
- * The 128 floors the block; at GROUP_SIZE 8 it yields bdz 1. Raising it to 256
- * to buy bdz 2 there measures 11-28% *slower* on gfx942 -- smem doubles and
- * costs more resident blocks than the concurrency wins. Do not re-try blind.
+ * The 128 floors the block. At 2-byte KV / HEAD_DIM 128 / GROUP_SIZE 8 that
+ * yields bdz 1; raising it to 256 to buy bdz 2 measures 11-28% *slower* on
+ * gfx942, the staging term costing more resident blocks than the concurrency
+ * wins. fp8 halves bdx and is unaffected. Do not re-try blind.
  */
 template <typename DTypeKV, uint32_t HEAD_DIM, uint32_t GROUP_SIZE>
 constexpr uint32_t BatchDecodeBdz() {

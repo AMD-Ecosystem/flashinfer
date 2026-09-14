@@ -1058,18 +1058,23 @@ def test_paged_maskless_plan_after_a_masked_one_drops_the_mask():
     wrapper.run(q, kv_data)
 
     wrapper.plan(**plan_args)
-    assert wrapper.backend == expected_backend, (
-        "the masked plan stuck the wrapper: a maskless plan after it must "
-        "re-resolve to what a fresh wrapper picks"
-    )
     got = wrapper.run(q, kv_data)
+    resolved = wrapper.backend
 
     reference = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
         workspace, "NHD", backend="fa2"
     )
     reference.plan(**plan_args)
     # reference.plan() rewrites the shared workspace, so materialise `got` first.
+    # Numbers before backend, deliberately: a stale buffer also makes the
+    # selector see a mask and pick fa2, so asserting the backend first would
+    # catch both reverts on the same line and never run this comparison.
     torch.testing.assert_close(got, reference.run(q, kv_data), rtol=2e-2, atol=2e-2)
+
+    assert resolved == expected_backend, (
+        "the masked plan stuck the wrapper: a maskless plan after it must "
+        "re-resolve to what a fresh wrapper picks"
+    )
 
 
 def test_ragged_short_query_keeps_aiter_where_the_arch_does_not_gate():
