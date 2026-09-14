@@ -164,6 +164,7 @@ class TestCsrcIncludeDir:
         monkeypatch.setattr(builtins, "__import__", _blocked)
 
     def test_aiter_meta_is_preferred_when_present(self):
+        pytest.importorskip("aiter_meta")
         found = aiter_source._aiter_csrc_include_dir()
         assert found.name == "include" and found.parent.name == "csrc"
 
@@ -179,7 +180,7 @@ class TestCsrcIncludeDir:
 
     def test_an_incomplete_aiter_meta_falls_back_too(self, monkeypatch, tmp_path):
         """Present but pointing nowhere useful is the same failure as absent."""
-        import aiter_meta
+        aiter_meta = pytest.importorskip("aiter_meta")
 
         inc = tmp_path / "csrc" / "include"
         inc.mkdir(parents=True)
