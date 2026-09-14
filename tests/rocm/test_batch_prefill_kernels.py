@@ -896,10 +896,49 @@ def test_ragged_short_query_declines_aiter():
     )
     wrapper.plan(**_ragged_short_query_plan_args(device, gated), causal=True)
     assert wrapper.backend == "fa2"
-    assert f"<= {gated}" in (wrapper.backend_fallback_reason or ""), (
-        wrapper.backend_fallback_reason
+    if "ragged KV" not in (wrapper.backend_fallback_reason or ""):
+        # The gate sits last in the elif chain, so an environment decline
+        # (unbuildable variant, a gated row) answers first. Not this test's
+        # subject -- the same escape every sibling here carries.
+        pytest.skip(
+            f"AITER declined for another reason: {wrapper.backend_fallback_reason}"
+        )
+    assert f"<= {gated}" in wrapper.backend_fallback_reason
+
+
+def test_ragged_long_then_short_still_demotes():
+    """The order the gate exists for, and the one a wrapper-scoped gate misses.
+
+    Resolving to aiter on a long prefill takes `_backend` out of "auto", so a
+    gate that only runs inside the auto block never sees the short plan that
+    follows -- a chat turn on a cached prefix served at up to 4.74x fa2's cost.
+    Every other ragged test here plans short first, which is the working order.
+    """
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
+    gated = _ragged_gate_or_skip(device)
+
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+    wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
     )
-    assert "ragged KV" in wrapper.backend_fallback_reason
+
+    long_q = gated * 16
+    wrapper.plan(
+        **_ragged_short_query_plan_args(device, long_q, kv_len=max(2048, long_q * 2)),
+        causal=True,
+    )
+    if wrapper.backend != "aiter":
+        pytest.skip(f"AITER unavailable here: {wrapper.backend_fallback_reason}")
+
+    wrapper.plan(**_ragged_short_query_plan_args(device, gated), causal=True)
+    assert wrapper.backend == "fa2", (
+        "a wrapper already resolved to aiter never re-checked the gate: the "
+        "short plan after a long one is served by AITER"
+    )
+    assert "ragged KV" in (wrapper.backend_fallback_reason or "")
 
 
 def test_ragged_short_query_keeps_aiter_where_the_arch_does_not_gate():
@@ -1007,6 +1046,12 @@ def test_ragged_short_query_does_not_re_promote_under_cudagraph():
 
     short = _ragged_short_query_plan_args(device, gated)
     wrapper.plan(**short, causal=True)
+    if "ragged KV" not in (wrapper.backend_fallback_reason or ""):
+        # Without this the test passes vacuously: an unrelated decline also
+        # leaves fa2 on both plans, and the cudagraph guard is never exercised.
+        pytest.skip(
+            f"AITER declined for another reason: {wrapper.backend_fallback_reason}"
+        )
     assert wrapper.backend == "fa2", "short query should have demoted to fa2"
 
     # Total rows are frozen at init, so the second plan raises max_q_len by

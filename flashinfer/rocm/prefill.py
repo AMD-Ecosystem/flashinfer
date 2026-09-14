@@ -573,7 +573,8 @@ def _aiter_flat_gather_short_query(
     ``max_q_len=None`` disarms, which is how a planner says the page size pages
     natively -- that path has no gather and beats fa2 even at one query row.
     """
-    if max_q_len is None:
+    # <= 0 is an empty batch, not a short query -- same reasoning as the ragged twin.
+    if max_q_len is None or max_q_len <= 0:
         return None
     from .arch_caps import _device_arch, aiter_flat_gather_gated_q_len
 
@@ -605,7 +606,9 @@ def _aiter_ragged_short_query(
     Separate from :func:`_aiter_flat_gather_short_query` because ragged has no
     gather to amortise -- what a short query loses here is fixed kernel cost.
     """
-    if max_q_len is None:
+    # <= 0 is an empty batch, not a short query: gating it would describe no
+    # work at all, and under cudagraph that demotion never re-promotes.
+    if max_q_len is None or max_q_len <= 0:
         return None
     from .arch_caps import _device_arch, aiter_ragged_gated_q_len
 
@@ -695,9 +698,15 @@ def _auto_select_prefill_backend(
             )
         else:
             # Both perf gates sit last, after every constraint that is a
-            # property of the device rather than the batch. Exactly one can
-            # arm: max_q_len comes from the paged planner, ragged_q_len from
-            # the ragged one.
+            # property of the device rather than the batch. They name different
+            # routes, so arming both is a caller bug: the reason would describe
+            # one route while a demotion site matches the other's string by
+            # equality, silently making that demotion permanent.
+            if max_q_len is not None and ragged_q_len is not None:
+                raise ValueError(
+                    "max_q_len (paged) and ragged_q_len (ragged) are different "
+                    "routes; pass at most one"
+                )
             threshold = _aiter_flat_gather_short_query(max_q_len, device)
             if threshold is not None:
                 # Names the threshold, not max_q_len: _aiter_auto_warned is keyed
@@ -4065,6 +4074,25 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                     and self._backend_fallback_reason
                     == _ragged_short_query_reason(ragged_threshold)
                 )
+            elif (
+                self._backend == "aiter"
+                and resolved_from_auto
+                and not self.is_cuda_graph_enabled
+            ):
+                # A wrapper that resolved to aiter on an earlier long-query plan
+                # never re-enters the block above, so a per-batch gate needs its
+                # own re-check here -- long-then-short is the serving order this
+                # gate exists for. The paged wrapper gets this at its probe site.
+                ragged_threshold = _aiter_ragged_short_query(
+                    self._max_q_len, self.device
+                )
+                if ragged_threshold is not None:
+                    self._backend = "fa2"
+                    self._backend_fallback_reason = _ragged_short_query_reason(
+                        ragged_threshold
+                    )
+                    self._backend_short_query_demoted = True
+                    _warn_auto_fallback_once(self.device, self._backend_fallback_reason)
             if self._backend == "aiter" and _aiter_softcap_defect(
                 causal, logits_soft_cap, head_dim_qk, self._max_kv_len, self.device
             ):
