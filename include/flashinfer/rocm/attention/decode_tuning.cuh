@@ -44,9 +44,9 @@ constexpr uint32_t BatchDecodeBdx() {
  *
  * The 128 floors the block. At 2-byte KV / HEAD_DIM 128 / GROUP_SIZE 8 that
  * yields bdz 1; raising it to 256 to buy bdz 2 measures 11-28% *slower* on
- * gfx942, the staging term costing more resident blocks than the concurrency
- * wins. fp8 halves bdx, so group 8 escapes the collapse at this floor -- but a
- * floor change moves it to bdz 4 and was never measured. Do not re-try blind.
+ * gfx942 and roughly neutral on gfx950, and helps neither at 64 query heads.
+ * fp8 halves bdx and was not measured either way. Numbers in git log; do not
+ * re-try blind.
  */
 template <typename DTypeKV, uint32_t HEAD_DIM, uint32_t GROUP_SIZE>
 constexpr uint32_t BatchDecodeBdz() {

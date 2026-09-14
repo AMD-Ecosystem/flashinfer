@@ -576,12 +576,22 @@ work alone predicts 1.10 TB/s at 64 heads; the measured 0.61 is a further
 ~1.8×, and the `bdz` loss is not quantified separately. Treat the mechanism as
 the direction, not a complete model.
 
-**Raising that floor to 256 does not help — it was measured on gfx942 and is
-worse**, by 11–28% across batch 32–256 and kv 1024–4096, at 32 and 64 query
-heads alike. Shared memory doubles (9→18 KB at group 8), which costs more
-resident blocks than the extra KV concurrency wins. Not re-measured on gfx950;
-the launch geometry itself is code rather than a measurement, so it is
-arch-independent.
+**Raising that floor to 256 does not fix it, and what it does instead is
+arch-dependent.** Measured on both, batch 32–256 × kv 1024–4096 × 32/64 query
+heads, cold cache per arm:
+
+| arch | effect of floor 256 |
+| :--- | :--- |
+| gfx942 | 11–28% **slower** at every cell |
+| gfx950 | neutral within ±3%, except batch 32 / kv 1024 / 32 heads, which is ~2× faster (0.102 → 0.051 ms) and loses a bimodal baseline (`p5` 0.049 against a 0.102 median) |
+
+Shared memory doubles with `bdz` (9→18 KB at group 8), which on gfx942 costs
+more resident blocks than the extra KV concurrency wins.
+
+**Neither arch improves at 64 query heads** — gfx950 moves 0.211→0.214 ms at
+batch 32 / kv 1024, and gfx942 regresses. So the floor is not the lever for the
+collapse this section is about, whatever it does elsewhere. A per-arch floor
+would only chase the one low-batch gfx950 cell.
 
 Closing the gap needs the grid to scale with query heads, which is a kernel
 change rather than a tuning constant. Until then `backend="aiter"` reaches the
