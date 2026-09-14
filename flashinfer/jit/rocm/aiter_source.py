@@ -264,7 +264,7 @@ def refresh_aiter_jitspec(spec: JitSpec) -> JitSpec:
     """Regenerate ``build.ninja`` so a changed AITER library path takes effect.
 
     The AITER shim libs live outside the JIT tree, under
-    ``aiter_libs/<arch>__aiter-<version>/``, and reach the module only as an
+    ``aiter_libs/<arch>__aiter-<ver>__rocm-<ver>/``, and reach the module only as an
     ``-L``/``-rpath`` on the link line. ``JitSpec.build()`` writes ``build.ninja``
     only when it is missing, so once a module has been built the recorded link
     line is never revisited -- the module keeps loading whichever AITER lib it

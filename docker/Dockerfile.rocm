@@ -242,13 +242,14 @@ COPY --chown=$USER_UID:$USER_GID docker/prebuild_aiter_attention.py /opt/prebuil
 # The chmod is load-bearing: AITER's get_user_jit_dir() falls back to copying the
 # whole jit tree into $HOME when its own directory is unwritable, so a container
 # run with --user of any other uid would miss every artifact built here -- or die
-# outright when HOME is not writable either. Only the directories go a+w; leaving
-# the .so world-writable would let any uid swap a compiled kernel.
+# outright when HOME is not writable either. Directories go a+wt rather than a+w:
+# write alone lets any uid unlink a kernel and drop in its own, whatever the
+# file's own mode says; the sticky bit leaves that to the owner.
 RUN set -eu; \
-    GPU_ARCHS="$AITER_GPU_ARCHS" \
+    export GPU_ARCHS="$AITER_GPU_ARCHS"; \
     python3 /opt/prebuild_aiter_attention.py --jobs "$AITER_PREBUILD_JOBS"; \
     JIT="$(python3 /opt/prebuild_aiter_attention.py --print-jit-dir)"; \
-    chmod -R a+rX "$JIT"; find "$JIT" -type d -exec chmod a+w {} +
+    chmod -R a+rX "$JIT"; find "$JIT" -type d -exec chmod a+wt {} +
 
 WORKDIR /home/$USERNAME
 
