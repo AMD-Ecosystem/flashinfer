@@ -66,8 +66,9 @@ from ..utils import (
 _AITER_NATIVE_PAGING_SINCE = "0.1.10"
 _AITER_LAST_VALIDATED = "0.1.21.post2"
 # Newest AITER carrying the mha_varlen_fwd soft-cap defect. Bump only after
-# re-measuring against an fp32 reference; the wrong answer is silent.
-_AITER_SOFTCAP_DEFECT_THROUGH = "0.1.21"
+# re-measuring against an fp32 reference; the wrong answer is silent. Message
+# text only -- the gate itself is arch_caps.aiter_softcap_defect_arch.
+_AITER_SOFTCAP_DEFECT_THROUGH = "0.1.21.post2"
 
 # fp8 query dtypes that *could* be an fp8 prefill: E4M3FNUZ on gfx942, OCP
 # E4M3FN on gfx950. Only the arch's own encoding actually works -- the other is
