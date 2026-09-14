@@ -46,6 +46,14 @@ from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 DTYPES = ("bf16", "fp16")
 
+# fp8 is batch-prefill only: prefill.py sends every fp8 query down the native
+# paged route, because the flat-gather route runs varlen, which has no fp8 arm.
+_FAMILY_DTYPES = {
+    "mha_fwd": DTYPES,
+    "mha_varlen_fwd": DTYPES,
+    "mha_batch_prefill": DTYPES + ("fp8bf16",),
+}
+
 # Receipts select which CK-tile instance set the codegen emits. They differ per
 # family and a wrong one ships a *different kernel* under the right filename,
 # with nothing downstream to detect it.
@@ -82,6 +90,11 @@ class Variant(NamedTuple):
     @property
     def so_name(self) -> str:
         return f"{self.md_name}.so"
+
+    @property
+    def qscale_token(self) -> str:
+        """fp8 always arrives with per-tensor descales; bf16/fp16 never do."""
+        return "pertensor" if self.dtype == "fp8bf16" else "nqscale"
 
 
 def _md_mha_fwd(v: Variant) -> str:
@@ -122,7 +135,7 @@ def _md_batch_prefill(v: Variant) -> str:
         + ("_mask" if v.needs_mask else "_nmask")
         + ("_lse" if v.has_lse else "_nlse")
         + "_ndropout"
-        + "_nqscale"
+        + f"_{v.qscale_token}"
         + "_nsink"
     )
 
@@ -173,17 +186,17 @@ def _filter_batch_prefill(v: Variant) -> str:
         + ("_mask*" if v.needs_mask else "_nmask*")
         + ("_lse*" if v.has_lse else "_nlse*")
         + "_ndropout*"
-        + "_nqscale*"
+        + f"_{v.qscale_token}*"
         + "_nsink*"
     )
 
 
 def reachable_variants() -> Tuple[Variant, ...]:
-    """Every ``.so`` the loader can ask for: 8 + 16 + 16 = 40 per architecture."""
+    """Every ``.so`` the loader can ask for: 8 + 16 + 24 = 48 per architecture."""
     out: List[Variant] = []
     for family, has_logits_axis in _HAS_LOGITS_AXIS.items():
         logits_values = (False, True) if has_logits_axis else (False,)
-        for dtype in DTYPES:
+        for dtype in _FAMILY_DTYPES[family]:
             for has_logits_cap in logits_values:
                 for needs_mask in (False, True):
                     for has_lse in (False, True):

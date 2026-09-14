@@ -90,9 +90,9 @@ class VariantKey:
 def so_name(key: VariantKey) -> str:
     """The filename ``aiter_loader.cc`` will ask ``dlopen`` for.
 
-    The quantisation token is always ``nqscale``: the ``pertensor`` arm is fp8,
-    which only the batch-prefill family serves, and that family is not
-    ``servable_from_store`` -- see ``Family.servable_from_store``.
+    The quantisation token is always ``nqscale`` because this table covers only
+    the store route, which has no fp8 arm. The loader can also ask for the fp8
+    ``pertensor`` names; ``docker/prebuild_aiter_attention.py`` builds those.
     """
     name = key.family.prefix + key.dtype
     if key.family.include_logits:
@@ -107,7 +107,7 @@ _DTYPES = ("bf16", "fp16")
 
 
 def reachable_variants() -> Tuple[VariantKey, ...]:
-    """Every ``.so`` the loader can ask for: 8 + 16 + 16 = 40 per architecture.
+    """Every non-fp8 ``.so`` the loader can ask for: 8 + 16 + 16 = 40 per arch.
 
     ``mha_fwd`` contributes only 8 because ``get_aiter_mha_fwd_handle`` refuses
     ``has_logits_cap=true`` -- that template has no ``_logits`` arm, and a

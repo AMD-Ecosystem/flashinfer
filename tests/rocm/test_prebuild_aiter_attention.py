@@ -77,30 +77,63 @@ def _fi_so_names() -> set:
     return {fi_variants.so_name(k) for k in fi_variants.reachable_variants()}
 
 
-def test_the_driver_enumerates_the_same_40_variants_as_flashinfer():
-    assert (
-        len(driver.reachable_variants()) == len(fi_variants.reachable_variants()) == 40
-    )
-
-
-def test_every_driver_filename_is_one_the_loader_asks_for():
-    """A name the loader never asks for is built and then never opened."""
-    assert {v.so_name for v in driver.reachable_variants()} == _fi_so_names()
+def test_the_driver_covers_flashinfers_table_and_the_fp8_arm_it_omits():
+    """flashinfer's table is the store's domain, which has no fp8 arm; the
+    driver writes where the loader looks, so it must carry fp8 as well."""
+    assert len(driver.reachable_variants()) == 48
+    assert _fi_so_names() < {v.so_name for v in driver.reachable_variants()}
 
 
 def test_nothing_is_trimmed_from_the_built_set():
-    """Measured in the image, the whole set is 23 min at --jobs 2, so a trim buys
-    ~5 min of CI for a guaranteed multi-minute stall on the missing arm."""
+    """A trim buys a few minutes of image build for a multi-minute stall on the
+    arm that turns out to be missing."""
     assert set(driver.selected_variants()) == set(driver.reachable_variants())
-    assert len(driver.selected_variants()) == 40
+    assert len(driver.selected_variants()) == 48
 
 
 @pytest.mark.parametrize("family", sorted(_FAMILY_BY_NAME))
 def test_only_restricts_without_renaming(family):
     picked = driver.selected_variants(only=[family])
     assert picked
-    assert {v.so_name for v in picked} <= _fi_so_names()
+    assert {v.so_name for v in picked} <= {
+        v.so_name for v in driver.reachable_variants()
+    }
     assert all(v.family == family for v in picked)
+
+
+# ---------------------------------------------------------------------------
+# 1b. every token the loader can compose is one the driver emits
+# ---------------------------------------------------------------------------
+
+# alibi is the one arm the loader can spell but no call site reaches: all three
+# construction sites hard-code has_alibi false.
+_UNREACHABLE_LOADER_TOKENS = {"_alibi"}
+
+
+def _loader_name_tokens() -> set:
+    """String literals `build_so_name`/`dtype_token` can put in a filename."""
+    text = _LOADER_CC.read_text()
+    start = text.find("const char* dtype_token(")
+    end = text.find("\n}", text.find("std::string build_so_name("))
+    assert start != -1 and end != -1, "aiter_loader.cc: name composition not found"
+    return set(re.findall(r'"([a-z0-9_]+)"', text[start:end]))
+
+
+def test_every_name_token_the_loader_can_emit_is_one_the_driver_builds():
+    """Table-vs-table parity cannot see a token both tables lack -- which is how
+    the fp8/pertensor batch-prefill arm went unbuilt."""
+    segments = set()
+    for v in driver.reachable_variants():
+        segments.update(v.md_name.split("_"))
+
+    tokens = _loader_name_tokens()
+    assert "fp8bf16" in tokens, "loader no longer spells fp8; is this test stale?"
+    missing = {
+        t
+        for t in tokens
+        if t not in _UNREACHABLE_LOADER_TOKENS and t.lstrip("_") not in segments
+    }
+    assert not missing, f"aiter_loader.cc can emit {sorted(missing)}, never built"
 
 
 # ---------------------------------------------------------------------------
