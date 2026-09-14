@@ -37,6 +37,7 @@ __all__ = [
     "aiter_asm_prefill_min_qo_len",
     "aiter_fallback_backend",
     "aiter_flat_gather_gated_q_len",
+    "aiter_ragged_gated_q_len",
     "aiter_softcap_defect_arch",
     "capability_available",
     "capability_reason",
@@ -297,6 +298,30 @@ def aiter_flat_gather_gated_q_len(arch: str) -> Optional[int]:
     on an extrapolation -- re-measure before trusting it there.
     """
     return _AITER_FLAT_GATHER_GATED_Q_LEN.get(normalize_arch(arch))
+
+
+# Ragged prefill has no gather -- mha_varlen_fwd takes already-contiguous KV --
+# so the flat-gather threshold above does not describe it and the two tables are
+# deliberately separate. What a short ragged query loses is the fixed cost of
+# AITER's kernel against fa2's, which only gfx942 pays: measured on amd-aiter
+# 0.1.20 over 5 shapes x 9 query lengths, gfx942 loses every shape at q<=16
+# (1.18-4.74x, first win at q24), while gfx950 has a shape (bs32/kv2048)
+# favouring AITER at every length measured, so no gfx950 threshold serves.
+_AITER_RAGGED_GATED_Q_LEN = {"gfx942": 16, "gfx950": None}
+
+
+def aiter_ragged_gated_q_len(arch: str) -> Optional[int]:
+    """Largest ``max_q_len`` that should avoid AITER's ragged prefill.
+
+    Compare with ``<=``. ``None`` disarms, and here that is the *measured*
+    answer for gfx950 as well as the fallback for an unknown architecture --
+    unlike :func:`aiter_flat_gather_gated_q_len`, whose every known arch gates.
+    An explicit ``None`` row is therefore indistinguishable from a deleted one;
+    ``test_arch_caps`` asserts membership so dropping gfx950 cannot pass.
+
+    Measured over head_dim 128, GQA group 4, kv_len {1024, 2048, 8192}.
+    """
+    return _AITER_RAGGED_GATED_Q_LEN.get(normalize_arch(arch))
 
 
 def aiter_softcap_defect_arch(arch: str) -> bool:

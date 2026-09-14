@@ -595,6 +595,37 @@ def _flat_gather_short_query_reason(threshold: int) -> str:
     )
 
 
+def _aiter_ragged_short_query(
+    max_q_len: Optional[int],
+    device: Optional[torch.device] = None,
+) -> Optional[int]:
+    """Is this ragged call too short to be worth AITER's kernel?
+
+    Returns the threshold that gated it, or ``None`` when it is not gated.
+    Separate from :func:`_aiter_flat_gather_short_query` because ragged has no
+    gather to amortise -- what a short query loses here is fixed kernel cost.
+    """
+    if max_q_len is None:
+        return None
+    from .arch_caps import _device_arch, aiter_ragged_gated_q_len
+
+    gated = aiter_ragged_gated_q_len(_device_arch(device))
+    return gated if gated is not None and max_q_len <= gated else None
+
+
+def _ragged_short_query_reason(threshold: int) -> str:
+    """The ragged short-query decline, built in exactly one place.
+
+    Distinct from the flat-gather reason: that one blames a copy ragged never
+    makes, and the paged demotion site matches its own string by equality.
+    """
+    return (
+        f"query length <= {threshold} on ragged KV (AITER's mha_varlen_fwd "
+        "costs more per call than the in-tree kernel, which a short query "
+        "cannot amortise)"
+    )
+
+
 def _auto_select_prefill_backend(
     device: torch.device,
     *,
@@ -611,6 +642,7 @@ def _auto_select_prefill_backend(
     kv_len: Optional[int] = None,
     allow_fp8: bool = False,
     max_q_len: Optional[int] = None,
+    ragged_q_len: Optional[int] = None,
 ) -> Tuple[str, Optional[str]]:
     """Return ``(backend, reason)``: 'aiter' when the GPU and call parameters satisfy
     AITER's constraints, else 'fa2' plus the reason AITER was declined.
@@ -662,12 +694,20 @@ def _auto_select_prefill_backend(
                 "(AITER mha_varlen_fwd computes the soft cap incorrectly)"
             )
         else:
+            # Both perf gates sit last, after every constraint that is a
+            # property of the device rather than the batch. Exactly one can
+            # arm: max_q_len comes from the paged planner, ragged_q_len from
+            # the ragged one.
             threshold = _aiter_flat_gather_short_query(max_q_len, device)
             if threshold is not None:
                 # Names the threshold, not max_q_len: _aiter_auto_warned is keyed
                 # on the reason, so a per-batch value would add an entry and
                 # re-warn for every distinct query length a serving loop sees.
                 reason = _flat_gather_short_query_reason(threshold)
+            else:
+                ragged_threshold = _aiter_ragged_short_query(ragged_q_len, device)
+                if ragged_threshold is not None:
+                    reason = _ragged_short_query_reason(ragged_threshold)
 
     if reason is not None:
         _warn_auto_fallback_once(device, reason)
@@ -3678,6 +3718,9 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         # so the caller's original request has to be kept separately.
         self._backend_requested = backend
         self._backend_fallback_reason: Optional[str] = None
+        # Per-batch like the paged wrapper's, for the same reason: the ragged
+        # short-query gate keys on max_q_len, so its verdict must not stick.
+        self._backend_short_query_demoted = False
         self._plan_info: Optional[torch.Tensor] = None
         self._cached_module = None
 
@@ -3983,6 +4026,14 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         if self._jit_module is not None:
             self._cached_module = self._jit_module
         else:
+            # A short-query demotion describes one batch, not the device, so it
+            # must not stick. Never under cudagraph: re-promoting swaps
+            # _cached_module and _plan_info, which a captured graph still points
+            # at. Mirrors the paged wrapper.
+            if self._backend_short_query_demoted and not self.is_cuda_graph_enabled:
+                self._backend = self._backend_requested
+                self._backend_short_query_demoted = False
+                self._backend_fallback_reason = None
             if self._backend == "auto":
                 self._backend, self._backend_fallback_reason = (
                     _auto_select_prefill_backend(
@@ -4000,7 +4051,19 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                         causal=causal,
                         logits_soft_cap=logits_soft_cap,
                         kv_len=self._max_kv_len,
+                        ragged_q_len=self._max_q_len,
                     )
+                )
+                # Compare the selector's own reason rather than re-evaluating the
+                # predicate: the gate sits last in the elif chain, so a call
+                # declined earlier for a constant constraint is also "short".
+                ragged_threshold = _aiter_ragged_short_query(
+                    self._max_q_len, self.device
+                )
+                self._backend_short_query_demoted = (
+                    ragged_threshold is not None
+                    and self._backend_fallback_reason
+                    == _ragged_short_query_reason(ragged_threshold)
                 )
             if self._backend == "aiter" and _aiter_softcap_defect(
                 causal, logits_soft_cap, head_dim_qk, self._max_kv_len, self.device

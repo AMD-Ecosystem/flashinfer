@@ -855,6 +855,147 @@ def _short_query_plan_args(device, qo_len, kv_len=256, page_size=1):
     )
 
 
+def _ragged_short_query_plan_args(device, qo_len, kv_len=2048):
+    """Ragged-prefill plan() arguments at a given query length. No page size:
+    mha_varlen_fwd takes contiguous KV, which is why this gate is a separate
+    one from the paged flat-gather gate."""
+    batch_size = 4
+    num_qo_heads, num_kv_heads, head_dim = 8, 8, 128
+    return dict(
+        qo_indptr=torch.arange(0, batch_size + 1, dtype=torch.int32, device=device)
+        * qo_len,
+        kv_indptr=torch.arange(0, batch_size + 1, dtype=torch.int32, device=device)
+        * kv_len,
+        num_qo_heads=num_qo_heads,
+        num_kv_heads=num_kv_heads,
+        head_dim_qk=head_dim,
+    )
+
+
+def _ragged_gate_or_skip(device):
+    """The threshold for this arch, skipping where ragged is deliberately ungated."""
+    from flashinfer.rocm.arch_caps import _device_arch, aiter_ragged_gated_q_len
+
+    gated = aiter_ragged_gated_q_len(_device_arch(device))
+    if gated is None:
+        pytest.skip("this architecture does not gate ragged prefill (gfx950)")
+    return gated
+
+
+def test_ragged_short_query_declines_aiter():
+    """gfx942 loses every measured ragged shape at q<=16 (1.18-4.74x)."""
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
+    gated = _ragged_gate_or_skip(device)
+
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+    wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
+    )
+    wrapper.plan(**_ragged_short_query_plan_args(device, gated), causal=True)
+    assert wrapper.backend == "fa2"
+    assert f"<= {gated}" in (wrapper.backend_fallback_reason or ""), (
+        wrapper.backend_fallback_reason
+    )
+    assert "ragged KV" in wrapper.backend_fallback_reason
+
+
+def test_ragged_short_query_demotion_does_not_stick():
+    """Same per-batch argument as the paged gate: a wrapper that served one
+    short extend must not stay on fa2 for every later long prefill."""
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
+    gated = _ragged_gate_or_skip(device)
+
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+    wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
+    )
+    wrapper.plan(**_ragged_short_query_plan_args(device, gated), causal=True)
+    assert wrapper.backend == "fa2", "short query should have demoted to fa2"
+
+    long_q = gated * 16
+    wrapper.plan(
+        **_ragged_short_query_plan_args(device, long_q, kv_len=max(2048, long_q * 2)),
+        causal=True,
+    )
+    if wrapper.backend == "fa2" and "ragged KV" not in (
+        wrapper.backend_fallback_reason or ""
+    ):
+        pytest.skip(
+            f"AITER declined for another reason: {wrapper.backend_fallback_reason}"
+        )
+    assert wrapper.backend == "aiter", (
+        f"the earlier short-query demotion stuck: a {long_q}-token prefill is "
+        "still on fa2"
+    )
+
+
+def test_ragged_explicit_aiter_survives_the_short_query_gate():
+    """The gate is a routing preference, not a refusal: an explicit backend is
+    honoured so the slow side stays measurable."""
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
+    gated = _ragged_gate_or_skip(device)
+
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+    wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
+        workspace, "NHD", backend="aiter"
+    )
+    wrapper.plan(**_ragged_short_query_plan_args(device, gated), causal=True)
+    assert wrapper.backend == "aiter"
+
+
+def test_ragged_short_query_does_not_re_promote_under_cudagraph():
+    """Re-promoting swaps _cached_module and _plan_info, which a captured graph
+    still points at, and capture is not observable from plan(). So the demotion
+    is allowed to stick here -- the one case where it must."""
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
+    gated = _ragged_gate_or_skip(device)
+
+    batch_size = 4
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+    wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
+        workspace,
+        "NHD",
+        use_cuda_graph=True,
+        qo_indptr_buf=torch.empty(batch_size + 1, dtype=torch.int32, device=device),
+        kv_indptr_buf=torch.empty(batch_size + 1, dtype=torch.int32, device=device),
+        backend="auto",
+    )
+
+    short = _ragged_short_query_plan_args(device, gated)
+    wrapper.plan(**short, causal=True)
+    assert wrapper.backend == "fa2", "short query should have demoted to fa2"
+
+    # Total rows are frozen at init, so the second plan raises max_q_len by
+    # making the batch uneven rather than longer: one long request plus
+    # 1-token fillers, same row count and same batch size.
+    total_rows = int(short["qo_indptr"][-1].item())
+    long_q = total_rows - (batch_size - 1)
+    assert long_q > gated, "filler batch must clear the threshold"
+    uneven = dict(short)
+    uneven["qo_indptr"] = torch.tensor(
+        [0, long_q, long_q + 1, long_q + 2, total_rows],
+        dtype=torch.int32,
+        device=device,
+    )
+    wrapper.plan(**uneven, causal=True)
+    assert wrapper.backend == "fa2", (
+        "re-promoted under cudagraph: a captured graph still points at the "
+        "fa2 module and plan info this would have swapped"
+    )
+
+
 def test_short_query_demotion_does_not_stick():
     """The gate keys on max_q_len, which varies per batch, so its verdict must
     not persist. A serving loop that verifies a 4-token draft and then runs a
