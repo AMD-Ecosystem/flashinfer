@@ -319,15 +319,15 @@ __device__ __forceinline__ void produce_kv_unit(
     b64_t* smem_ptr = smem.base + smem_offset;
     static_assert(GRANULE * sizeof(DTypeKV) == sizeof(uint32_t));
     if (predicate) {
-      // One register load, then convert: vec_cast is a per-element loop. Raw
-      // arrays because gfx950 leaves vec_t<fp8,N> without a device ctor, and
-      // memcpy rather than a cast because -O3 keeps strict aliasing on.
-      // wide is 8-byte aligned because vec_cast reads it through float2.
-      alignas(sizeof(uint32_t)) DTypeKV packed[GRANULE];
-      __builtin_memcpy(packed, gptr, sizeof(uint32_t));
+      // One register load, then convert: vec_cast is a per-element loop. uint32_t
+      // rather than DTypeKV[GRANULE], which gfx950 cannot default-construct;
+      // memcpy rather than a cast, because -O3 keeps strict aliasing on.
+      uint32_t packed;
+      __builtin_memcpy(&packed, gptr, sizeof(packed));
       alignas(sizeof(b64_t)) float wide[GRANULE];
       alignas(sizeof(b64_t)) DTypeKVSmem narrow[GRANULE];
-      vec_cast<float, DTypeKV>::template cast<GRANULE>(wide, packed);
+      vec_cast<float, DTypeKV>::template cast<GRANULE>(wide,
+                                                       reinterpret_cast<const DTypeKV*>(&packed));
       vec_cast<DTypeKVSmem, float>::template cast<GRANULE>(narrow, wide);
       __builtin_memcpy(smem_ptr, narrow, sizeof(b64_t));
     } else if constexpr (fill_mode == SharedMemFillMode::kFillZero) {
