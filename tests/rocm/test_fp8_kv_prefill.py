@@ -408,6 +408,22 @@ def test_pod_refuses_fp8_kv(fp8_dtype):
 
 
 @pytest.mark.parametrize("fp8_dtype", FNUZ_DTYPES)
+def test_single_decode_mismatched_k_v_dtypes_are_refused(fp8_dtype):
+    """The batch wrapper reaches the batch C++ macro, so it cannot cover this.
+
+    Guards both single-decode seams at once: the Python pre-check that saves a
+    cold JIT, and `single_decode.cu`'s own `CHECK_KV_DTYPES_MATCH`.
+    """
+    dev = "cuda:0"
+    nq, nkv, hd, kv_len = 32, 8, 128, 64
+    q = torch.randn(nq, hd, dtype=torch.float16, device=dev)
+    k8 = torch.randn(kv_len, nkv, hd, dtype=torch.float16, device=dev).to(fp8_dtype)
+    v16 = torch.randn(kv_len, nkv, hd, dtype=torch.float16, device=dev)
+    with pytest.raises((ValueError, RuntimeError), match="single KV dtype"):
+        flashinfer.decode.single_decode_with_kv_cache(q, k8, v16)
+
+
+@pytest.mark.parametrize("fp8_dtype", FNUZ_DTYPES)
 def test_decode_mismatched_k_v_dtypes_are_refused(fp8_dtype):
     """Decode specializes on k.dtype and casts both pointers to it. Measured
     before the guard: an fp8 k with an fp16 v returned NaN and no error."""
