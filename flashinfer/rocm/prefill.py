@@ -3730,9 +3730,6 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         # so the caller's original request has to be kept separately.
         self._backend_requested = backend
         self._backend_fallback_reason: Optional[str] = None
-        # Per-batch like the paged wrapper's, for the same reason: the ragged
-        # short-query gate keys on max_q_len, so its verdict must not stick.
-        self._backend_short_query_demoted = False
         self._plan_info: Optional[torch.Tensor] = None
         self._cached_module = None
 
@@ -4038,15 +4035,16 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         if self._jit_module is not None:
             self._cached_module = self._jit_module
         else:
-            # A short-query demotion describes one batch, not the device, so it
-            # must not stick. Never under cudagraph: re-promoting swaps
-            # _cached_module and _plan_info, which a captured graph still points
-            # at. Mirrors the paged wrapper.
-            if self._backend_short_query_demoted and not self.is_cuda_graph_enabled:
-                self._backend = self._backend_requested
-                self._backend_short_query_demoted = False
-                self._backend_fallback_reason = None
-            if self._backend == "auto":
+            # Re-resolve from scratch on every eager plan. Every argument the
+            # selector weighs is per-plan, so resolving once and keeping the
+            # answer is wrong in both directions: a short query after a long one
+            # stayed on AITER, and so did a plan that added a custom mask, which
+            # AITER cannot honour. Frozen under cudagraph, where switching would
+            # swap a module a captured graph still points at -- there the first
+            # plan decides.
+            if self._backend == "auto" or (
+                resolved_from_auto and not self.is_cuda_graph_enabled
+            ):
                 self._backend, self._backend_fallback_reason = (
                     _auto_select_prefill_backend(
                         self.device,
@@ -4066,36 +4064,6 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                         ragged_q_len=self._max_q_len,
                     )
                 )
-                # Compare the selector's own reason rather than re-evaluating the
-                # predicate: the gate sits last in the elif chain, so a call
-                # declined earlier for a constant constraint is also "short".
-                ragged_threshold = _aiter_ragged_short_query(
-                    self._max_q_len, self.device
-                )
-                self._backend_short_query_demoted = (
-                    ragged_threshold is not None
-                    and self._backend_fallback_reason
-                    == _ragged_short_query_reason(ragged_threshold)
-                )
-            elif (
-                self._backend == "aiter"
-                and resolved_from_auto
-                and not self.is_cuda_graph_enabled
-            ):
-                # A wrapper that resolved to aiter on an earlier long-query plan
-                # never re-enters the block above, so a per-batch gate needs its
-                # own re-check here -- long-then-short is the serving order this
-                # gate exists for. The paged wrapper gets this at its probe site.
-                ragged_threshold = _aiter_ragged_short_query(
-                    self._max_q_len, self.device
-                )
-                if ragged_threshold is not None:
-                    self._backend = "fa2"
-                    self._backend_fallback_reason = _ragged_short_query_reason(
-                        ragged_threshold
-                    )
-                    self._backend_short_query_demoted = True
-                    _warn_auto_fallback_once(self.device, self._backend_fallback_reason)
             if self._backend == "aiter" and _aiter_softcap_defect(
                 causal, logits_soft_cap, head_dim_qk, self._max_kv_len, self.device
             ):
