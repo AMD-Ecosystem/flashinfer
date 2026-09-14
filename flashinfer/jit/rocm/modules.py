@@ -129,10 +129,14 @@ def _check_aiter_dtypes(what: str, dtype_q, dtype_kv, dtype_o) -> None:
                 "float16, bfloat16, or the e4m3 fp8 encoding this GPU uses "
                 "(aiter.dtypes.fp8)."
             )
-    if dtype_o not in _WIDE_DTYPES:
+    # The launchers pin the output exactly: `o == q_dtype` for a wide query
+    # (single_prefill_aiter.cu, batch_ragged_prefill_aiter.cu) and bf16 for an
+    # fp8 one (batch_prefill_paged_aiter.cu). Anything looser builds, then fails.
+    expected_o = torch.bfloat16 if dtype_q in _AITER_FP8_DTYPES else dtype_q
+    if dtype_o != expected_o:
         raise NotImplementedError(
-            f"{what}: AITER output dtype {dtype_o} is not supported; it writes "
-            "float16 or bfloat16, and bfloat16 for an fp8 query."
+            f"{what}: AITER writes output dtype {expected_o} for query dtype "
+            f"{dtype_q}; got {dtype_o}."
         )
 
 
