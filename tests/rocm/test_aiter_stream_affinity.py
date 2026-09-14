@@ -19,12 +19,12 @@ import pytest
 import torch
 
 import flashinfer
-from flashinfer.rocm.aiter_utils import is_aiter_supported
+from tests.test_helpers.test_helpers import requires_aiter
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available() or not is_aiter_supported(torch.device("cuda:0")),
-    reason="needs a GPU with a supported AITER",
-)
+# requires_aiter, not is_aiter_supported: the latter answers for the
+# architecture only, so on a box whose AITER is below the ABI floor these ran
+# and failed inside require_aiter instead of skipping.
+pytestmark = requires_aiter
 
 DT = torch.float16
 

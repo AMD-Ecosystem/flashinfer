@@ -279,8 +279,15 @@ class TestAutoBackendSelection:
         assert first == second is not None
 
     def test_a_missing_aiter_package_is_its_own_reason(self, device, monkeypatch):
+        from flashinfer.rocm import aiter_utils
+
         prefill_rocm._aiter_ops_importable.cache_clear()
         monkeypatch.setattr(prefill_rocm, "_aiter_ops_importable", lambda: False)
+        # Pin absence, not just unimportability: with an installed AITER below
+        # the ABI floor the other branch answers first, so this asserted on
+        # whatever the host happened to have -- like the class below, which pins
+        # both branches for exactly this reason.
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: None)
 
         backend, reason = _auto(device)
 
