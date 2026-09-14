@@ -31,6 +31,12 @@ OCP_DTYPES = [torch.float8_e4m3fn, torch.float8_e5m2]
 WORKSPACE = 128 * 1024 * 1024
 
 
+def _skip_without_aiter():
+    """Building an AITER spec imports aiter. The wheel is cp312-only, so a
+    py3.13 image has none and the refusal tests still have to run."""
+    pytest.importorskip("aiter")
+
+
 @pytest.fixture(autouse=True, scope="module")
 def warmup_jit():
     common = ([0], [False, True], [False], [False])  # posenc, swa, softcap, f16qk
@@ -335,22 +341,26 @@ def test_ocp_fp8_kv_is_refused(ocp_dtype):
 
 
 @pytest.mark.parametrize(
-    "dtype_q,dtype_kv,dtype_o,allowed",
+    "dtype_q,dtype_kv,dtype_o,single_allowed,batch_allowed",
     [
-        (torch.int8, torch.int8, torch.int8, False),
-        (torch.uint8, torch.uint8, torch.uint8, False),
-        (torch.float32, torch.float32, torch.float32, False),
-        (torch.float8_e5m2fnuz, torch.float8_e5m2fnuz, torch.bfloat16, False),
-        (torch.float16, torch.bfloat16, torch.float16, False),
-        (torch.float16, torch.float16, torch.int8, False),
-        (torch.float16, torch.float16, torch.float16, True),
-        (torch.bfloat16, torch.bfloat16, torch.bfloat16, True),
-        # AITER's own fp8 prefill, both arch spellings of e4m3: must stay open.
-        (torch.float8_e4m3fnuz, torch.float8_e4m3fnuz, torch.bfloat16, True),
-        (torch.float8_e4m3fn, torch.float8_e4m3fn, torch.bfloat16, True),
+        (torch.int8, torch.int8, torch.int8, False, False),
+        (torch.uint8, torch.uint8, torch.uint8, False, False),
+        (torch.float32, torch.float32, torch.float32, False, False),
+        (torch.float8_e5m2fnuz, torch.float8_e5m2fnuz, torch.bfloat16, False, False),
+        (torch.float16, torch.bfloat16, torch.float16, False, False),
+        (torch.float16, torch.float16, torch.int8, False, False),
+        (torch.float16, torch.float16, torch.float16, True, True),
+        (torch.bfloat16, torch.bfloat16, torch.bfloat16, True, True),
+        # e4m3 in both arch spellings: served by batch_prefill_paged_aiter.cu,
+        # which is the only AITER launcher with an fp8 arm. single_prefill and
+        # batch_ragged are fp16/bf16 only, so the single seam must refuse it.
+        (torch.float8_e4m3fnuz, torch.float8_e4m3fnuz, torch.bfloat16, False, True),
+        (torch.float8_e4m3fn, torch.float8_e4m3fn, torch.bfloat16, False, True),
     ],
 )
-def test_aiter_generator_dtype_allowlist(dtype_q, dtype_kv, dtype_o, allowed):
+def test_aiter_generator_dtype_allowlist(
+    dtype_q, dtype_kv, dtype_o, single_allowed, batch_allowed
+):
     """Equality alone let int8/uint8 through: both are in dtype_map_hip, so they
     built a URI and reached ninja with no kernel behind them."""
     from flashinfer.jit.rocm.modules import (
@@ -358,26 +368,33 @@ def test_aiter_generator_dtype_allowlist(dtype_q, dtype_kv, dtype_o, allowed):
         gen_single_prefill_module,
     )
 
-    calls = (
-        lambda: gen_single_prefill_module(
-            "aiter", dtype_q, dtype_kv, dtype_o, 128, 128, 0, False, False, False
+    cases = (
+        (
+            single_allowed,
+            lambda: gen_single_prefill_module(
+                "aiter", dtype_q, dtype_kv, dtype_o, 128, 128, 0, False, False, False
+            ),
         ),
-        lambda: gen_batch_prefill_module(
-            "aiter",
-            dtype_q,
-            dtype_kv,
-            dtype_o,
-            torch.int32,
-            128,
-            128,
-            0,
-            False,
-            False,
-            False,
+        (
+            batch_allowed,
+            lambda: gen_batch_prefill_module(
+                "aiter",
+                dtype_q,
+                dtype_kv,
+                dtype_o,
+                torch.int32,
+                128,
+                128,
+                0,
+                False,
+                False,
+                False,
+            ),
         ),
     )
-    for call in calls:
+    for allowed, call in cases:
         if allowed:
+            _skip_without_aiter()
             call()
         else:
             with pytest.raises(NotImplementedError, match="(?i)aiter"):
@@ -413,8 +430,14 @@ def test_every_public_generator_refuses_before_its_uri():
         ),
     }
     for name, call in calls.items():
-        with pytest.raises(NotImplementedError):
-            call()
+        # Named, so a regression says which builder stopped refusing.
+        with pytest.raises(NotImplementedError, match="(?i)not supported|fp8"):
+            try:
+                call()
+            except KeyError as exc:  # pragma: no cover - the bug being guarded
+                raise AssertionError(
+                    f"{name} built its URI before validating: KeyError({exc})"
+                ) from exc
 
 
 @pytest.mark.parametrize("fp8_dtype", FNUZ_DTYPES)

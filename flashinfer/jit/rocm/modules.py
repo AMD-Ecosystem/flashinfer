@@ -105,29 +105,38 @@ _FP8_FNUZ_DTYPES = (torch.float8_e4m3fnuz, torch.float8_e5m2fnuz)
 
 _WIDE_DTYPES = (torch.float16, torch.bfloat16)
 
-# AITER prefill serves e4m3 only, and both spellings because aiter.dtypes.fp8 is
-# arch-dependent; it writes bf16 for an fp8 query. Mirrors prefill.py, which
-# cannot be imported here -- it imports this module.
+# Only batch_prefill_paged_aiter.cu has an fp8 arm, and it takes e4m3 in both
+# spellings because aiter.dtypes.fp8 is arch-dependent, writing bf16 out.
+# Mirrors prefill.py, which cannot be imported here -- it imports this module.
 _AITER_FP8_DTYPES = (torch.float8_e4m3fnuz, torch.float8_e4m3fn)
 
 
-def _check_aiter_dtypes(what: str, dtype_q, dtype_kv, dtype_o) -> None:
+def _check_aiter_dtypes(
+    what: str, dtype_q, dtype_kv, dtype_o, *, allow_fp8: bool
+) -> None:
     """Allowlist for an explicit backend="aiter".
 
     Equality alone let a mapped-but-unserved dtype through: int8 and uint8 are
     in dtype_map_hip, so they built a URI and reached ninja with no kernel.
+    `allow_fp8` is false wherever the launcher is fp16/bf16 only.
     """
     if dtype_q != dtype_kv:
         raise NotImplementedError(
             f"{what}: AITER requires equal query and KV dtypes; got "
             f"{dtype_q} and {dtype_kv}."
         )
+    served = _WIDE_DTYPES + (_AITER_FP8_DTYPES if allow_fp8 else ())
     for role, dtype in (("query", dtype_q), ("KV", dtype_kv)):
-        if dtype not in _WIDE_DTYPES + _AITER_FP8_DTYPES:
+        if dtype not in served:
             raise NotImplementedError(
                 f"{what}: AITER {role} dtype {dtype} is not supported. Use "
-                "float16, bfloat16, or the e4m3 fp8 encoding this GPU uses "
-                "(aiter.dtypes.fp8)."
+                + (
+                    "float16, bfloat16, or the e4m3 fp8 encoding this GPU uses "
+                    "(aiter.dtypes.fp8)."
+                    if allow_fp8
+                    else "float16 or bfloat16; AITER serves fp8 from its paged "
+                    "batch-prefill kernel only."
+                )
             )
     # The launchers pin the output exactly: `o == q_dtype` for a wide query
     # (single_prefill_aiter.cu, batch_ragged_prefill_aiter.cu) and bf16 for an
@@ -405,7 +414,9 @@ def gen_single_prefill_module(
     # Before the URI: it indexes filename_safe_dtype_map, so an unsupported
     # dtype would raise KeyError rather than this allowlist's message.
     if backend == "aiter":
-        _check_aiter_dtypes("single prefill", dtype_q, dtype_kv, dtype_o)
+        _check_aiter_dtypes(
+            "single prefill", dtype_q, dtype_kv, dtype_o, allow_fp8=False
+        )
     else:
         _check_fa2_fp8_dtypes(
             "single prefill", dtype_q, dtype_kv, dtype_o, kv_must_match_q=True
@@ -495,6 +506,11 @@ def gen_batch_decode_aiter_module(
     head_dim_qk: int,
     head_dim_vo: int,
 ) -> JitSpec:
+    # First, ahead of both the URI (which indexes filename_safe_dtype_map, so an
+    # unsupported dtype would raise KeyError) and the aiter import (absent on a
+    # py3.13 box, which would mask the refusal with ModuleNotFoundError).
+    _check_aiter_decode_dtypes("batch decode (aiter)", dtype_q, dtype_kv, dtype_o)
+
     import aiter as _aiter_mod
 
     # Batch decode resolves its .so as an absolute path from Python via
@@ -502,9 +518,6 @@ def gen_batch_decode_aiter_module(
     # needs no variant store.
     aiter_jit_dir = os.path.join(os.path.dirname(_aiter_mod.__file__), "jit")
 
-    # Before the URI: it indexes filename_safe_dtype_map, so an unsupported
-    # dtype would raise KeyError rather than this allowlist's message.
-    _check_aiter_decode_dtypes("batch decode (aiter)", dtype_q, dtype_kv, dtype_o)
     uri = get_batch_decode_aiter_uri(
         dtype_q, dtype_kv, dtype_o, head_dim_qk, head_dim_vo
     )
@@ -600,7 +613,7 @@ def gen_batch_prefill_module(
     # Before the URI: it indexes filename_safe_dtype_map, so an unsupported
     # dtype would raise KeyError rather than this allowlist's message.
     if backend == "aiter":
-        _check_aiter_dtypes("batch prefill", dtype_q, dtype_kv, dtype_o)
+        _check_aiter_dtypes("batch prefill", dtype_q, dtype_kv, dtype_o, allow_fp8=True)
     else:
         _check_fa2_fp8_dtypes(
             "batch prefill", dtype_q, dtype_kv, dtype_o, kv_must_match_q=True
@@ -807,7 +820,9 @@ def gen_customize_single_prefill_module(
     # and kv; an explicit backend="aiter" otherwise reaches ninja with a pair
     # no kernel exists for.
     if backend == "aiter":
-        _check_aiter_dtypes("single prefill", dtype_q, dtype_kv, dtype_o)
+        _check_aiter_dtypes(
+            "single prefill", dtype_q, dtype_kv, dtype_o, allow_fp8=False
+        )
     # Not `== "fa2"`: ROCm logs and ignores an explicit "fa3", routing it to
     # the same in-tree kernel, so only AITER compiles its own fp8 dtypes.
     if backend != "aiter":
@@ -1063,7 +1078,7 @@ def gen_customize_batch_prefill_module(
     # and kv; an explicit backend="aiter" otherwise reaches ninja with a pair
     # no kernel exists for.
     if backend == "aiter":
-        _check_aiter_dtypes("batch prefill", dtype_q, dtype_kv, dtype_o)
+        _check_aiter_dtypes("batch prefill", dtype_q, dtype_kv, dtype_o, allow_fp8=True)
     # Not `== "fa2"`: ROCm logs and ignores an explicit "fa3", routing it to
     # the same in-tree kernel, so only AITER compiles its own fp8 dtypes.
     if backend != "aiter":
