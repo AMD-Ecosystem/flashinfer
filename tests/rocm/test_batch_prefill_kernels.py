@@ -902,6 +902,38 @@ def test_ragged_short_query_declines_aiter():
     assert "ragged KV" in wrapper.backend_fallback_reason
 
 
+def test_ragged_short_query_keeps_aiter_where_the_arch_does_not_gate():
+    """The inverse of the gate, asserted rather than skipped. gfx950 has a shape
+    favouring AITER at every query length measured, so gating it would forfeit a
+    win -- and every other ragged test here skips on gfx950, which would let a
+    stray threshold land unnoticed."""
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
+
+    from flashinfer.rocm.arch_caps import _device_arch, aiter_ragged_gated_q_len
+
+    if aiter_ragged_gated_q_len(_device_arch(device)) is not None:
+        pytest.skip("this architecture gates ragged prefill (gfx942)")
+
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+    wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
+    )
+    wrapper.plan(**_ragged_short_query_plan_args(device, 1), causal=True)
+    if wrapper.backend == "fa2" and "ragged KV" not in (
+        wrapper.backend_fallback_reason or ""
+    ):
+        pytest.skip(
+            f"AITER declined for another reason: {wrapper.backend_fallback_reason}"
+        )
+    assert wrapper.backend == "aiter", (
+        "gfx950 is deliberately ungated for ragged prefill; a threshold here "
+        "forfeits the bs32/kv2048 shape that wins at every query length"
+    )
+
+
 def test_ragged_short_query_demotion_does_not_stick():
     """Same per-batch argument as the paged gate: a wrapper that served one
     short extend must not stay on fa2 for every later long prefill."""

@@ -505,18 +505,35 @@ per query-length regime if you need both routed correctly under capture.
 | gfx942 | ≤ 16 | 1.35–4.6× |
 | gfx950 | ≤ 8 | 1.25–4.6× |
 
-Three paths are deliberately **not** gated. Native page sizes have no gather
-and beat `fa2` even at one query row (0.93× on gfx942, 0.54× on gfx950).
-Ragged prefill dispatches through `mha_varlen_fwd` on already-contiguous KV,
-and the sweep that sited the paged gate covers it too. Its crossover is
-shape-dependent on both architectures, and on gfx950 one shape — bs 32 /
-kv 2048 — favours AITER at *every* query length measured, so no threshold
-serves it. gfx942 has no such shape: all five lose at 16 query tokens
-(1.18–4.74×), so a gfx942-only gate is supportable on this data and has not
-been claimed. The per-shape crossovers are in the commit that added this.
-Decode is genuinely one query row, and AITER wins there. An explicit
-`backend="aiter"` is also honoured — this is a routing preference, not a
-wrong answer, so it stays measurable.
+### Short-query ragged prefill avoids AITER on gfx942
+
+Ragged dispatches through `mha_varlen_fwd` on already-contiguous KV, so there is
+no gather to amortise — what a short query loses is fixed kernel cost, and only
+gfx942 pays enough of it to be worth steering. The shape this fires on is a
+short query against a long context, i.e. a chat turn landing on a cached prefix.
+
+| arch | routed to `fa2` when `max_q_len` is | AITER slower by |
+| :--- | :--- | :--- |
+| gfx942 | ≤ 16 | 1.18–4.74× |
+| gfx950 | never gated | bs 32 / kv 2048 favours AITER at every length measured |
+
+Two paths are deliberately **not** gated. Native page sizes have no gather and
+beat `fa2` even at one query row (0.93× on gfx942, 0.54× on gfx950). Decode is
+ungated on measurement rather than assertion: AITER wins every cell at 64 query
+heads (up to 7.7× on gfx950), and the 32-head cells it loses cost 5–26 µs — a
+fixed-cost gap of ~10 µs per call, visible only while both kernels are
+launch-bound, and only in eager mode. A threshold keyed on length would
+mis-route 64- and 128-head decode by up to 7.7×. Numbers in the commit.
+
+An explicit `backend="aiter"` is honoured throughout — these are routing
+preferences, not wrong answers, so the other side stays measurable.
+
+Worth knowing when choosing a decode backend: `fa2` holds ~5.3 TFLOPS at 64
+query heads on both architectures regardless of shape, where AITER reaches
+37–41. KV traffic is identical at 32 and 64 query heads, so this tracks query
+heads rather than bandwidth. Graph-captured decode resolves `auto` to `fa2`
+unless the wrapper is given `max_seq_len`, so a 70B or 405B decode under capture
+is on the slower kernel until it is.
 
 ### `fused_add_rmsnorm` and `gemma_fused_add_rmsnorm` at large `hidden_size`
 
