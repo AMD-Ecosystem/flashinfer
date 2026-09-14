@@ -59,8 +59,11 @@ def test_rmsnorm_aiter_is_correct_on_a_side_stream(hidden):
 
 
 def test_fused_add_rmsnorm_aiter_is_correct_on_a_side_stream():
-    """The in-place path is the exposed one: it stages into a fresh buffer and
-    copies back, so a kernel on the wrong stream can lose the race to the copy."""
+    """Covers the in-place path, which stages into a fresh buffer and copies back.
+
+    Measured: this case still passes with the guard removed. rmsnorm at 4096 and
+    the rope case are the two that actually detect a missing guard.
+    """
     hidden = 1024
     x = torch.randn(256, hidden, device="cuda", dtype=DT)
     res = torch.randn(256, hidden, device="cuda", dtype=DT)
