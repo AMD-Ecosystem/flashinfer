@@ -43,7 +43,9 @@ ARG AITER_SOURCE=1
 ARG AITER_REF=v0.1.21.post2
 ARG AITER_REPO=https://github.com/ROCm/aiter.git
 # Both architectures in one fat binary. Must be explicit: there is no device here
-# for AITER's arch detection to find.
+# for AITER's arch detection to find. Note AITER's get_gfx() reads only the LAST
+# entry, which gates -D__Float4_e2m1fn_x2; no attention source references it, so
+# extending this prebuild to the quant or MoE ops needs that checked first.
 ARG AITER_GPU_ARCHS="gfx942;gfx950"
 ARG AITER_PREBUILD_JOBS=2
 
@@ -236,9 +238,15 @@ COPY --chown=$USER_UID:$USER_GID docker/prebuild_aiter_attention.py /opt/prebuil
 # Compile the attention variants that the first request would otherwise compile
 # in-process, under a process-global lock, minutes at a time. The driver ends in
 # its own --check, so a missing or empty artifact fails the build here.
+#
+# The chmod is load-bearing: AITER's get_user_jit_dir() falls back to copying the
+# whole jit tree into $HOME when its own directory is unwritable, so a container
+# run with --user of any other uid would miss every artifact built here -- or die
+# outright when HOME is not writable either.
 RUN set -eu; \
     GPU_ARCHS="$AITER_GPU_ARCHS" \
-    python3 /opt/prebuild_aiter_attention.py --jobs "$AITER_PREBUILD_JOBS"
+    python3 /opt/prebuild_aiter_attention.py --jobs "$AITER_PREBUILD_JOBS"; \
+    chmod -R a+w "$(python3 -c 'import importlib.util as u, os; print(os.path.join(list(u.find_spec("aiter").submodule_search_locations)[0], "jit"))')"
 
 WORKDIR /home/$USERNAME
 

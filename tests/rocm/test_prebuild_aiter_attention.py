@@ -101,6 +101,20 @@ def test_only_restricts_without_renaming(family):
     assert all(v.family == family for v in picked)
 
 
+def test_check_does_not_demand_what_only_never_builds(tmp_path, monkeypatch):
+    """`--only` skips the whole-module set, so `_check` must skip it too or a
+    healthy restricted build exits 1."""
+    monkeypatch.setattr(driver, "_aiter_jit_core", lambda: object())
+    monkeypatch.setattr(driver, "jit_dir", lambda _core: tmp_path)
+    picked = driver.selected_variants(only=["mha_fwd"])
+    for v in picked:
+        (tmp_path / v.so_name).write_bytes(b"x")
+
+    assert driver.main(["--check", "--only", "mha_fwd"]) == 0
+    # Unrestricted, the same directory is incomplete: the module is absent.
+    assert driver.main(["--check"]) == 1
+
+
 # ---------------------------------------------------------------------------
 # 1b. every token the loader can compose is one the driver emits
 # ---------------------------------------------------------------------------

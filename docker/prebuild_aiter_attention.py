@@ -35,6 +35,7 @@ asserts the receipts and token spellings against the installed ``aiter/ops/mha.p
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import shutil
 import subprocess
@@ -42,7 +43,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple
 
 DTYPES = ("bf16", "fp16")
 
@@ -298,26 +299,49 @@ def _args_of_build(core, family: str) -> Dict[str, object]:
     return args
 
 
+@contextlib.contextmanager
+def _hip_clang_path(args: Dict) -> Iterator[None]:
+    """Export ``HIP_CLANG_PATH`` the way AITER's ``compile_ops`` does.
+
+    Only ``compile_ops`` sets it; calling ``build_module`` directly would leave
+    the mha families on a different clang from their lazy builds.
+    """
+    path = args.get("hip_clang_path")
+    if not path:
+        yield
+        return
+    prev = os.environ.get("HIP_CLANG_PATH")
+    os.environ["HIP_CLANG_PATH"] = path
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop("HIP_CLANG_PATH", None)
+        else:
+            os.environ["HIP_CLANG_PATH"] = prev
+
+
 def build_module_by_name(md_name: str) -> Path:
     """Build one whole AITER module, e.g. the asm prefill arm."""
     core = _aiter_jit_core()
     args = core.get_args_of_build(md_name)
     if not args.get("srcs"):
         raise RuntimeError(f"aiter's config gave no srcs for {md_name}")
-    core.build_module(
-        md_name,
-        args["srcs"],
-        args["flags_extra_cc"],
-        args["flags_extra_hip"],
-        args["blob_gen_cmd"],
-        args["extra_include"],
-        args["extra_ldflags"],
-        args["verbose"],
-        args["is_python_module"],
-        args["is_standalone"],
-        args.get("torch_exclude", False),
-        args.get("third_party", []),
-    )
+    with _hip_clang_path(args):
+        core.build_module(
+            md_name,
+            args["srcs"],
+            args["flags_extra_cc"],
+            args["flags_extra_hip"],
+            args["blob_gen_cmd"],
+            args["extra_include"],
+            args["extra_ldflags"],
+            args["verbose"],
+            args["is_python_module"],
+            args["is_standalone"],
+            args.get("torch_exclude", False),
+            args.get("third_party", []),
+        )
     out = jit_dir(core) / f"{md_name}.so"
     if not out.is_file():
         raise RuntimeError(f"build of {md_name} produced no {out}")
@@ -330,20 +354,21 @@ def build_one(v: Variant) -> Path:
     core = _aiter_jit_core()
     recipe = build_recipe(v, core)
     args = _args_of_build(core, v.family)
-    core.build_module(
-        recipe["md_name"],
-        args["srcs"],
-        args["flags_extra_cc"],
-        args["flags_extra_hip"],
-        recipe["blob_gen_cmd"],
-        args["extra_include"],
-        args["extra_ldflags"],
-        args["verbose"],
-        args["is_python_module"],
-        args["is_standalone"],
-        args.get("torch_exclude", False),
-        args.get("third_party", []),
-    )
+    with _hip_clang_path(args):
+        core.build_module(
+            recipe["md_name"],
+            args["srcs"],
+            args["flags_extra_cc"],
+            args["flags_extra_hip"],
+            recipe["blob_gen_cmd"],
+            args["extra_include"],
+            args["extra_ldflags"],
+            args["verbose"],
+            args["is_python_module"],
+            args["is_standalone"],
+            args.get("torch_exclude", False),
+            args.get("third_party", []),
+        )
     out = jit_dir(core) / v.so_name
     if not out.is_file():
         raise RuntimeError(f"build of {v.md_name} produced no {out}")
@@ -441,11 +466,15 @@ def _decode(s: str) -> Variant:
     return Variant(family, dtype, bool(int(lc)), bool(int(mask)), bool(int(lse)))
 
 
-def _check(variants: Sequence[Variant]) -> int:
-    """Assert every selected artifact is present and non-empty."""
+def _check(variants: Sequence[Variant], extra: Sequence[str]) -> int:
+    """Assert every selected artifact is present and non-empty.
+
+    ``extra`` must be the module set the same invocation builds, or a ``--only``
+    run fails its own check on artifacts it was never asked to produce.
+    """
     core = _aiter_jit_core()
     d = jit_dir(core)
-    names = [v.so_name for v in variants] + [f"{m}.so" for m in LOADER_MODULES]
+    names = [v.so_name for v in variants] + [f"{m}.so" for m in extra]
     missing = [n for n in names if not (d / n).is_file() or (d / n).stat().st_size == 0]
     print(f"{len(names) - len(missing)}/{len(names)} present in {d}")
     if missing:
@@ -485,23 +514,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     variants = selected_variants(a.only)
+    # The whole-module set has no family axis, so --only excludes it.
+    extra = [] if a.only else list(LOADER_MODULES)
     if a.list:
         for v in variants:
             print(v.so_name)
         print(f"\n{len(variants)} variant(s)")
         return 0
     if a.check:
-        return _check(variants)
+        return _check(variants, extra)
 
     if a.jobs < 1:
         p.error("--jobs must be >= 1")
     t0 = time.time()
-    rc = _run_jobs(variants, a.jobs, extra=list(LOADER_MODULES) if not a.only else [])
+    rc = _run_jobs(variants, a.jobs, extra=extra)
     print(
         f"\n{len(variants)} variant(s) in {(time.time() - t0) / 60:.0f} min "
         f"at --jobs {a.jobs}"
     )
-    return rc or _check(variants)
+    return rc or _check(variants, extra)
 
 
 if __name__ == "__main__":
