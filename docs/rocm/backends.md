@@ -602,17 +602,19 @@ per arm:
 | gfx942 | **slower at all 12 cells**, +5% to +28% |
 | gfx950 | neutral within ±3%, except batch 32 / kv 1024 / 32 heads, which is ~2× faster (0.102 → 0.051 ms) and loses a bimodal baseline (`p5` 0.049 against a 0.102 median) |
 
-Shared memory doubles with `bdz` (9→18 KB at group 8), which on gfx942 costs
-more resident blocks than the extra KV concurrency wins.
+The floor-256 arm moves shared memory 9→18 KB at group 8 and the block
+128→256 threads together, so which of the two drives the gfx942 regression is
+not separable from this data.
 
 **Neither arch improves at 64 query heads** — gfx950 moves 0.211→0.214 ms at
 batch 32 / kv 1024, and gfx942 regresses. So the floor is not the lever for the
 collapse this section is about, whatever it does elsewhere. A per-arch floor
 would only chase the one low-batch gfx950 cell.
 
-Closing the gap needs the grid to scale with query heads, which is a kernel
-change rather than a tuning constant. Until then `backend="aiter"` reaches the
-faster kernel directly — see [Batch decode: CUDA-graph capture](#batch-decode-cuda-graph-capture)
+No fix is proposed here: the mechanism is unresolved, and a query-head-scaled
+grid is one untested guess among others rather than a known remedy — grid
+starvation is the hypothesis this section rules *out*. `backend="aiter"` reaches
+the faster kernel today — see [Batch decode: CUDA-graph capture](#batch-decode-cuda-graph-capture)
 for what `auto` does under capture.
 
 ### `fused_add_rmsnorm` and `gemma_fused_add_rmsnorm` at large `hidden_size`
