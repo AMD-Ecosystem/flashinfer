@@ -23,9 +23,9 @@ from flashinfer.jit.rocm import aiter_variants as av
 
 _LOADER = Path(__file__).resolve().parents[2] / "csrc" / "rocm" / "aiter_loader.cc"
 
-# build_so_name(key, "<prefix>", "<suffix>", /*include_logits=*/<bool>)
+# build_so_name(key, "<prefix>", "<infix>", "<suffix>", /*include_logits=*/<bool>)
 _CALL = re.compile(
-    r'build_so_name\(\s*key,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*'
+    r'build_so_name\(\s*key,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*'
     r"(?:/\*\s*include_logits\s*=\s*\*/)?\s*(true|false)",
     re.DOTALL,
 )
@@ -55,12 +55,12 @@ def loader_src() -> str:
 
 def test_every_family_matches_a_cpp_call_site(loader_src):
     found = {
-        (prefix, suffix, flag == "true")
-        for prefix, suffix, flag in _CALL.findall(loader_src)
+        (prefix, infix, suffix, flag == "true")
+        for prefix, infix, suffix, flag in _CALL.findall(loader_src)
     }
     assert found, "no build_so_name call sites parsed; the regex or the C++ moved"
 
-    declared = {(f.prefix, f.suffix, f.include_logits) for f in av.Family}
+    declared = {(f.prefix, f.infix, f.suffix, f.include_logits) for f in av.Family}
     assert declared == found, (
         "the variant table and aiter_loader.cc disagree on .so naming.\n"
         f"  python: {sorted(declared)}\n"

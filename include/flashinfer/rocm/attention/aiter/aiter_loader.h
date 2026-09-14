@@ -10,7 +10,9 @@
 namespace flashinfer::aiter {
 
 struct VariantKey {
-  enum class Dtype : uint8_t { kFp16, kBf16 };
+  // kFp8Bf16 is fp8 in, bf16 out -- AITER has no fp8-out prefill kernel, which
+  // is why the .so segment spells both halves.
+  enum class Dtype : uint8_t { kFp16, kBf16, kFp8Bf16 };
   Dtype dtype;
   // AITER splits the .so on "is there any mask", not on causality: a non-causal
   // sliding window needs the _mask variant too. Set it to causal || windowed.
@@ -18,10 +20,14 @@ struct VariantKey {
   bool has_lse;
   bool has_alibi;
   bool has_logits_cap;
+  // Per-tensor q/k/v descales. Required by the fp8 kernels: the nqscale fp8
+  // variant compiles but resolves to no kernel instance.
+  bool has_qscale = false;
 
   bool operator==(VariantKey const& o) const noexcept {
     return dtype == o.dtype && needs_mask == o.needs_mask && has_lse == o.has_lse &&
-           has_alibi == o.has_alibi && has_logits_cap == o.has_logits_cap;
+           has_alibi == o.has_alibi && has_logits_cap == o.has_logits_cap &&
+           has_qscale == o.has_qscale;
   }
 };
 
@@ -32,6 +38,7 @@ struct VariantKeyHash {
     h = h * 31 + k.has_lse;
     h = h * 31 + k.has_alibi;
     h = h * 31 + k.has_logits_cap;
+    h = h * 31 + k.has_qscale;
     return h;
   }
 };

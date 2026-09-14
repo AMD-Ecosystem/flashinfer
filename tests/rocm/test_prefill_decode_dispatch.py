@@ -62,7 +62,7 @@ class TestAiterNativePageSizes:
     @pytest.mark.parametrize("installed", ["0.1.10", "0.1.11", "1.0.0"])
     def test_at_or_after_the_native_paging_release(self, monkeypatch, installed):
         self._with_version(monkeypatch, installed)
-        assert prefill_rocm._aiter_native_page_sizes() == frozenset({128, 256, 1024})
+        assert prefill_rocm._aiter_native_page_sizes() == frozenset({1, 16, 1024})
 
     def test_before_the_native_paging_release(self, monkeypatch):
         self._with_version(monkeypatch, "0.1.9")
@@ -73,7 +73,7 @@ class TestAiterNativePageSizes:
         wide and plan() probes for real support."""
         self._with_version(monkeypatch, "9.9.9")
 
-        assert prefill_rocm._aiter_native_page_sizes() == frozenset({128, 256, 1024})
+        assert prefill_rocm._aiter_native_page_sizes() == frozenset({1, 16, 1024})
 
     @pytest.mark.parametrize(
         "failure",

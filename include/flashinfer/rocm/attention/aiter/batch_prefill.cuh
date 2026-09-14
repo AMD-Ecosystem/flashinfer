@@ -138,12 +138,15 @@ hipError_t BatchPrefillNativePagedDispatched(
     int32_t k_stride_p, int32_t k_stride_h, int32_t k_batch_stride, int32_t v_stride_p,
     int32_t v_stride_h, int32_t v_batch_stride, float sm_scale, float logits_soft_cap,
     int32_t window_left, bool causal, flashinfer::aiter::VariantKey::Dtype dtype_enum,
-    hipStream_t stream) {
+    // Per-tensor fp8 descales, each a single float on device, or all three null.
+    // The fp8 kernels have no no-scale instance, so fp8 requires them.
+    const float* q_descale, const float* k_descale, const float* v_descale, hipStream_t stream) {
   static_assert(HEAD_DIM_QK == HEAD_DIM_VO, "AITER backend requires HEAD_DIM_QK == HEAD_DIM_VO");
 
   const bool has_lse = (lse_scratch != nullptr);
   const bool has_logits = (logits_soft_cap > 0.0f);
   const bool needs_mask = causal || window_left >= 0;
+  const bool has_qscale = (q_descale != nullptr);
 
   const flashinfer::aiter::BatchPrefillVariantKey key{
       .dtype = dtype_enum,
@@ -151,13 +154,14 @@ hipError_t BatchPrefillNativePagedDispatched(
       .has_lse = has_lse,
       .has_alibi = false,
       .has_logits_cap = has_logits,
+      .has_qscale = has_qscale,
   };
 
   // mask_enum / bias_enum / quant_scale_enum are declared in CK Tile example headers at
   // global scope.  We can't include those headers here (framework-agnostic rule).  Instead
   // cast the integer values matching the enum constants (verified from mask.hpp/bias.hpp):
   //   mask_enum::no_mask=0, mask_enum::mask_top_left=1
-  //   bias_enum::no_bias=0, quant_scale_enum::no_scale=0
+  //   bias_enum::no_bias=0, quant_scale_enum::no_scale=0, quant_scale_enum::pertensor=1
   // The function pointer type uses `int` ABI for these enum class parameters.
   using mha_batch_prefill_fn =
       float (*)(::aiter::mha_batch_prefill_args, ::ck_tile::stream_config const&,
@@ -173,8 +177,12 @@ hipError_t BatchPrefillNativePagedDispatched(
   auto fn = reinterpret_cast<mha_batch_prefill_fn>(
       flashinfer::aiter::get_aiter_mha_batch_prefill_handle(key));
 
-  const char* dtype_str =
-      (dtype_enum == flashinfer::aiter::VariantKey::Dtype::kFp16) ? "fp16" : "bf16";
+  const char* dtype_str = "bf16";
+  if (dtype_enum == flashinfer::aiter::VariantKey::Dtype::kFp16) {
+    dtype_str = "fp16";
+  } else if (dtype_enum == flashinfer::aiter::VariantKey::Dtype::kFp8Bf16) {
+    dtype_str = "fp8bf16";
+  }
 
   ::aiter::mha_batch_prefill_args args{};
 
@@ -182,9 +190,9 @@ hipError_t BatchPrefillNativePagedDispatched(
   args.k_ptr = static_cast<const void*>(paged_k);
   args.v_ptr = static_cast<const void*>(paged_v);
   args.bias_ptr = nullptr;
-  args.q_descale_ptr = nullptr;
-  args.k_descale_ptr = nullptr;
-  args.v_descale_ptr = nullptr;
+  args.q_descale_ptr = static_cast<const void*>(q_descale);
+  args.k_descale_ptr = static_cast<const void*>(k_descale);
+  args.v_descale_ptr = static_cast<const void*>(v_descale);
   args.rand_val_ptr = nullptr;
   args.lse_ptr = static_cast<void*>(lse_scratch);
   args.o_ptr = static_cast<void*>(o);
@@ -260,7 +268,7 @@ hipError_t BatchPrefillNativePagedDispatched(
   sconfig.stream_id_ = stream;
 
   fn(args, sconfig, dtype_str, /*is_group_mode=*/true, args.mask_type, /*bias_type=*/0, has_lse,
-     /*qscale_type=*/0, /*use_ext_asm=*/false);
+     /*qscale_type=*/has_qscale ? 1 : 0, /*use_ext_asm=*/false);
 
   return hipGetLastError();
 }

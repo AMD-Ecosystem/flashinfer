@@ -392,7 +392,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
             _OK_942,
             ArchSupport(Support.SUPPORTED, evidence=_MEASURED_950),
         ),
-        note="Paged and ragged, with sliding window. Page sizes 128/256/1024 are served natively; others take a flat gather.",
+        note="Paged and ragged, with sliding window. fp8 query/KV on the paged route (bf16 out, per-tensor descales, no LSE). Page sizes 1/16/1024 are native; fp16/bf16 are routed there only at 1024 and flat-gather below it, which measured faster.",
         fallback="fa2",
     ),
     # No alternative backend -- hence no fallback=.

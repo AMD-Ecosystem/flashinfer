@@ -10,7 +10,7 @@ import flashinfer
 from flashinfer.jit.core import logger
 from flashinfer.rocm.aiter_utils import is_aiter_supported
 from flashinfer.rocm.prefill import (
-    _aiter_native_page_sizes,
+    _aiter_paged_route_page_sizes,
     _aiter_native_paging_available,
     _aiter_ops_importable,
 )
@@ -781,7 +781,8 @@ def test_batch_prefill_auto_declines_aiter_for_short_query():
     if gated is None:
         pytest.skip("no flat-gather threshold for this architecture")
 
-    # page_size=1 is not in _aiter_native_page_sizes(), so this call gathers.
+    # page_size=1 is outside the bf16 *route* set, so this call gathers -- it
+    # is in the capability set, which is no longer what arms the gate.
     page_size, batch_size, qo_len, kv_len = 1, 4, gated, 256
     num_qo_heads, num_kv_heads, head_dim = 8, 8, 128
     workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
@@ -828,7 +829,7 @@ def test_batch_prefill_auto_declines_aiter_for_short_query():
 
 def _short_query_plan_args(device, qo_len, kv_len=256, page_size=1):
     """Paged-prefill plan() arguments at a given query length, on a page size
-    AITER cannot page natively (so the gather gate is armed)."""
+    that is not *routed* natively for bf16 (so the gather gate is armed)."""
     batch_size = 4
     num_qo_heads, num_kv_heads, head_dim = 8, 8, 128
     num_pages = (kv_len + page_size - 1) // page_size
@@ -969,9 +970,13 @@ def test_short_query_gate_re_checks_when_native_paging_probe_fails(monkeypatch):
     if gated is None:
         pytest.skip("no flat-gather threshold for this architecture")
 
-    native = sorted(prefill_rocm._aiter_native_page_sizes())
-    assert native, "no native page size to disarm the selector with"
-    page_size = native[0]
+    # The *route* set, not the capability set: the selector disarms the gate on
+    # what it routes natively, and bf16 is routed only at 1024 even though it
+    # can page 1 and 16. Picking from the capability set leaves the gate armed,
+    # so the selector returns fa2 and the probe site below never runs.
+    routed = prefill_rocm._aiter_paged_route_page_sizes(torch.bfloat16)
+    assert routed, "no routed page size to disarm the selector with"
+    page_size = max(routed)
 
     # Force the probe to fail so a page size the selector treated as native
     # lands on flat-gather. Patching the probe rather than finding a config
@@ -1120,7 +1125,7 @@ def test_batch_prefill_aiter_flat_gather_bf16(page_size, causal, return_lse):
     torch.testing.assert_close(o, o_ref, rtol=2e-2, atol=2e-2)
 
 
-@pytest.mark.parametrize("page_size", [128, 256])
+@pytest.mark.parametrize("page_size", [1024])
 def test_batch_prefill_aiter_falls_back_when_native_paging_missing(
     page_size, monkeypatch
 ):
@@ -1134,8 +1139,10 @@ def test_batch_prefill_aiter_falls_back_when_native_paging_missing(
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
-    if page_size not in _aiter_native_page_sizes():
-        pytest.skip(f"page_size={page_size} is not native on this amd-aiter build")
+    # bfloat16: the dtype this test actually plans with, and the route set is
+    # dtype-dependent.
+    if page_size not in _aiter_paged_route_page_sizes(torch.bfloat16):
+        pytest.skip(f"page_size={page_size} is not routed natively on this build")
     # Ends in an assert_close against fa2 with causal=True, so it is a numerics
     # test despite being named for the fallback.
     _skip_if_prefill_gated(device)
@@ -1277,9 +1284,9 @@ def test_softcap_guard_survives_a_native_page_size_degrading(backend, monkeypatc
     monkeypatch.setattr(
         "flashinfer.rocm.arch_caps.aiter_softcap_defect_arch", lambda arch: True
     )
-    page_size = 128
-    if page_size not in _aiter_native_page_sizes():
-        pytest.skip(f"page_size={page_size} is not native on this amd-aiter build")
+    page_size = 1024
+    if page_size not in _aiter_paged_route_page_sizes(torch.bfloat16):
+        pytest.skip(f"page_size={page_size} is not routed natively on this build")
 
     def _reject(*args, **kwargs):
         raise RuntimeError(
@@ -1320,9 +1327,9 @@ def test_batch_prefill_aiter_strict_mode_raises(monkeypatch):
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
-    page_size = 128
-    if page_size not in _aiter_native_page_sizes():
-        pytest.skip(f"page_size={page_size} is not native on this amd-aiter build")
+    page_size = 1024
+    if page_size not in _aiter_paged_route_page_sizes(torch.bfloat16):
+        pytest.skip(f"page_size={page_size} is not routed natively on this build")
 
     def _reject(*args, **kwargs):
         raise RuntimeError("no matching kernel found. page_size=128")
@@ -1516,13 +1523,12 @@ def test_paged_softcap_guard_tracks_the_paging_route(monkeypatch):
     monkeypatch.setattr(
         "flashinfer.rocm.arch_caps.aiter_softcap_defect_arch", lambda arch: True
     )
-    kv_len, qo_len, num_heads, head_dim, soft_cap = 512, 37, 4, 128, 8.0
+    kv_len, qo_len, num_heads, head_dim, soft_cap = 1024, 37, 4, 128, 8.0
     # Only page sizes that divide kv_len: a partial trailing page would need a
     # kv_last_page_len this test does not model, and one larger than kv_len
     # floor-divides to zero pages.
-    native = sorted(
-        p for p in _aiter_native_page_sizes() if p <= kv_len and kv_len % p == 0
-    )
+    routed = _aiter_paged_route_page_sizes(torch.float16)
+    native = sorted(p for p in routed if p <= kv_len and kv_len % p == 0)
     if not native:
         pytest.skip(f"no native AITER page size divides kv_len={kv_len}")
 
@@ -1557,9 +1563,7 @@ def test_paged_softcap_guard_tracks_the_paging_route(monkeypatch):
 
     plan(native[0])
 
-    non_native = next(
-        (p for p in (16, 32, 64, 8) if p not in _aiter_native_page_sizes()), None
-    )
+    non_native = next((p for p in (16, 32, 64, 8) if p not in routed), None)
     if non_native is not None:
         with pytest.raises(ValueError, match="logits_soft_cap"):
             plan(non_native)

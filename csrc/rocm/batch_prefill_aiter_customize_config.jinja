@@ -1,5 +1,11 @@
 #pragma once
 
+// Self-contained: this header is included before anything else in the generated
+// .cu, and the fp8 configs name __hip_fp8_* types.
+#include <hip/hip_bf16.h>
+#include <hip/hip_fp16.h>
+#include <hip/hip_fp8.h>
+
 using DTypeQ  = {{ dtype_q }};
 using DTypeKV = {{ dtype_kv }};
 using DTypeO  = {{ dtype_o }};
