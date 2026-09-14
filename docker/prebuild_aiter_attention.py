@@ -432,12 +432,9 @@ def _check(variants: Sequence[Variant]) -> int:
     """Assert every selected artifact is present and non-empty."""
     core = _aiter_jit_core()
     d = jit_dir(core)
-    missing = [
-        v.so_name
-        for v in variants
-        if not (d / v.so_name).is_file() or (d / v.so_name).stat().st_size == 0
-    ]
-    print(f"{len(variants) - len(missing)}/{len(variants)} present in {d}")
+    names = [v.so_name for v in variants] + [f"{m}.so" for m in LOADER_MODULES]
+    missing = [n for n in names if not (d / n).is_file() or (d / n).stat().st_size == 0]
+    print(f"{len(names) - len(missing)}/{len(names)} present in {d}")
     if missing:
         print("missing or empty:\n  " + "\n  ".join(missing))
         return 1
