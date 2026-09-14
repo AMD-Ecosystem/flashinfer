@@ -48,11 +48,12 @@ RECEIPT_BATCH_PREFILL = 200
 
 GENERATE_PY = "example/ck_tile/01_fmha/generate.py"
 
-# Whole AITER modules aiter_loader.cc dlopens by name, with no variant axes. The
-# wheel shipped these prebuilt; a PREBUILD_KERNELS=0 source install ships none,
-# so the image has to build them or the load throws.
-# tests/rocm/test_prebuild_aiter_attention.py checks this against the loader.
-LOADER_MODULES = ("module_fmha_v3_fwd",)
+# Whole AITER modules with no variant axes. The wheel shipped these prebuilt; a
+# PREBUILD_KERNELS=0 source install ships none, so the image builds them or the
+# first caller pays for them -- fmha_v3_fwd throws at dlopen, the other two only
+# stall. mla_asm is aiter.mla's, and aiter_core is on the common attention path.
+# tests/rocm/test_prebuild_aiter_attention.py checks the first against the loader.
+LOADER_MODULES = ("module_fmha_v3_fwd", "module_aiter_core", "module_mla_asm")
 
 
 class Variant(NamedTuple):
