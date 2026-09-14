@@ -553,12 +553,21 @@ single-prefill measurement at these query lengths exists to site a threshold on.
 An explicit `backend="aiter"` is honoured throughout — these are routing
 preferences, not wrong answers, so the other side stays measurable.
 
-Worth knowing when choosing a decode backend: `fa2` holds ~5.3 TFLOPS at 64
-query heads on both architectures regardless of shape, where AITER reaches
-37–41. KV traffic is identical at 32 and 64 query heads, so this tracks query
-heads rather than bandwidth. Graph-captured decode resolves `auto` to `fa2`
-unless the wrapper is given `max_seq_len`, so a 70B or 405B decode under capture
-is on the slower kernel until it is.
+### `fa2` decode does not scale past GQA group 4
+
+At 64 query heads `fa2` decode reaches 12% of peak bandwidth where AITER reaches
+59% — 0.61 against 3.11 TB/s at batch 256 / kv 4096 on MI300X, both moving the
+same 4.3 GB of K+V. It holds ~5.3 TFLOPS there whatever the shape. gfx950 is the
+same picture, AITER ahead in every 64-head cell by up to 7.7×.
+
+Use `backend="aiter"` for a 70B or 405B decode. Under graph capture `auto`
+resolves to `fa2` unless the wrapper is given `max_seq_len` — see
+[Batch decode: CUDA-graph capture](#batch-decode-cuda-graph-capture).
+
+The cause is unresolved. Grid starvation is ruled out (the 64/32-head ratio is
+flat at ~4.6× from batch 32 to 256), and two `BatchDecodeBdz` settings were
+tried and did not help; that constant carries the detail. Settling it needs
+counter profiling of the inner loop, not another tuning constant.
 
 ### `fused_add_rmsnorm` and `gemma_fused_add_rmsnorm` at large `hidden_size`
 

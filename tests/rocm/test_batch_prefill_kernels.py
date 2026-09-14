@@ -997,6 +997,127 @@ def test_ragged_maskless_plan_after_a_masked_one_drops_the_mask():
     torch.testing.assert_close(got, reference.run(q, k, v), rtol=2e-2, atol=2e-2)
 
 
+def test_paged_maskless_plan_after_a_masked_one_drops_the_mask():
+    """A maskless plan must not attend under the previous plan's mask.
+
+    Numerical only, and deliberately backend-agnostic: a stale buffer is applied
+    by whichever kernel runs, so this must not skip where AITER is absent. The
+    routing half is a separate test, which does need AITER.
+    """
+    device = torch.device("cuda:0")
+    torch.manual_seed(0)
+    batch_size, qo_len, kv_len, heads, head_dim, page_size = 2, 256, 512, 8, 128, 1
+    dtype = torch.bfloat16
+    num_pages = (kv_len + page_size - 1) // page_size
+    q = torch.randn(batch_size * qo_len, heads, head_dim, device=device, dtype=dtype)
+    kv_data = torch.randn(
+        num_pages * batch_size,
+        2,
+        page_size,
+        heads,
+        head_dim,
+        device=device,
+        dtype=dtype,
+    )
+    plan_args = dict(
+        qo_indptr=torch.arange(0, batch_size + 1, dtype=torch.int32, device=device)
+        * qo_len,
+        paged_kv_indptr=torch.arange(
+            0, batch_size + 1, dtype=torch.int32, device=device
+        )
+        * num_pages,
+        paged_kv_indices=torch.arange(
+            0, num_pages * batch_size, dtype=torch.int32, device=device
+        ),
+        paged_kv_last_page_len=torch.full(
+            (batch_size,), page_size, dtype=torch.int32, device=device
+        ),
+        num_qo_heads=heads,
+        num_kv_heads=heads,
+        head_dim_qk=head_dim,
+        page_size=page_size,
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+
+    mask = torch.zeros(batch_size * qo_len * kv_len, dtype=torch.bool, device=device)
+    mask[::7] = True
+
+    wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
+    )
+    wrapper.plan(**plan_args, custom_mask=mask)
+    wrapper.run(q, kv_data)
+
+    wrapper.plan(**plan_args)
+    got = wrapper.run(q, kv_data)
+
+    reference = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="fa2"
+    )
+    reference.plan(**plan_args)
+    # reference.plan() rewrites the shared workspace, so materialise `got` first.
+    torch.testing.assert_close(got, reference.run(q, kv_data), rtol=2e-2, atol=2e-2)
+
+
+def test_paged_re_resolves_the_backend_after_a_masked_plan():
+    """The routing half: an AITER->fa2->AITER transition, which needs AITER.
+
+    Asserting equality against a control wrapper is vacuous where `auto` picks
+    fa2 anyway -- both sides are fa2 and a stuck wrapper looks identical. This
+    demands the transition itself, so it can only pass by re-resolving.
+    """
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
+
+    torch.manual_seed(0)
+    batch_size, qo_len, kv_len, heads, head_dim, page_size = 2, 256, 512, 8, 128, 1
+    dtype = torch.bfloat16
+    num_pages = (kv_len + page_size - 1) // page_size
+    plan_args = dict(
+        qo_indptr=torch.arange(0, batch_size + 1, dtype=torch.int32, device=device)
+        * qo_len,
+        paged_kv_indptr=torch.arange(
+            0, batch_size + 1, dtype=torch.int32, device=device
+        )
+        * num_pages,
+        paged_kv_indices=torch.arange(
+            0, num_pages * batch_size, dtype=torch.int32, device=device
+        ),
+        paged_kv_last_page_len=torch.full(
+            (batch_size,), page_size, dtype=torch.int32, device=device
+        ),
+        num_qo_heads=heads,
+        num_kv_heads=heads,
+        head_dim_qk=head_dim,
+        page_size=page_size,
+        q_data_type=dtype,
+        kv_data_type=dtype,
+    )
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+    mask = torch.zeros(batch_size * qo_len * kv_len, dtype=torch.bool, device=device)
+    mask[::7] = True
+
+    wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
+    )
+    wrapper.plan(**plan_args)
+    if wrapper.backend != "aiter":
+        pytest.skip(f"AITER unavailable here: {wrapper.backend_fallback_reason}")
+
+    wrapper.plan(**plan_args, custom_mask=mask)
+    assert wrapper.backend == "fa2", "AITER cannot honour a custom mask"
+
+    wrapper.plan(**plan_args)
+    assert wrapper.backend == "aiter", (
+        "the masked plan stuck the wrapper: dropping the mask must re-resolve "
+        "back to AITER"
+    )
+
+
 def test_ragged_short_query_keeps_aiter_where_the_arch_does_not_gate():
     """The inverse of the gate, asserted rather than skipped. gfx950 has a shape
     favouring AITER at every query length measured, so gating it would forfeit a
