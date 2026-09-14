@@ -732,3 +732,28 @@ class TestAiterFlatGatherQLenGate:
 
     def test_unknown_arch_disarms_rather_than_blocks(self):
         assert arch_caps.aiter_flat_gather_gated_q_len("unknown") is None
+
+
+class TestAiterRaggedQLenGate:
+    """Below this query length AITER's ragged prefill loses to fa2, on gfx942 only.
+
+    No gather here -- mha_varlen_fwd takes contiguous KV -- so what a short query
+    loses is fixed kernel cost. gfx942 loses all five measured shapes at q<=16
+    (1.18-4.74x); gfx950 has one (bs32/kv2048) that favours AITER at every length
+    measured, so no gfx950 threshold serves and the row is None.
+    """
+
+    def test_gfx942_gates_through_16(self):
+        assert arch_caps.aiter_ragged_gated_q_len("gfx942") == 16
+
+    def test_gfx950_is_never_gated(self):
+        assert arch_caps.aiter_ragged_gated_q_len("gfx950") is None
+
+    def test_gfx950_row_is_present_not_merely_absent(self):
+        # The accessor is a bare dict.get, so a deleted gfx950 row answers None
+        # too and the test above would still pass. Assert membership: the None is
+        # a measured verdict, not a gap.
+        assert "gfx950" in arch_caps._AITER_RAGGED_GATED_Q_LEN
+
+    def test_unknown_arch_disarms_rather_than_blocks(self):
+        assert arch_caps.aiter_ragged_gated_q_len("unknown") is None

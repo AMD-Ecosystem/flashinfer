@@ -61,7 +61,12 @@ def _build_paged_kv(
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("batch_size", [1, 4, 17])
 @pytest.mark.parametrize("page_size", [16, 32])
-@pytest.mark.parametrize("num_qo_heads,num_kv_heads", [(8, 8), (16, 4), (32, 8)])
+# (64, 8) is GQA ratio 8, which nothing else here covers -- (16,4) and (32,8)
+# are both ratio 4. It is also where AITER's decode advantage is largest, so an
+# unverified ratio-8 kernel would let a fast-but-wrong result read as a win.
+@pytest.mark.parametrize(
+    "num_qo_heads,num_kv_heads", [(8, 8), (16, 4), (32, 8), (64, 8)]
+)
 @pytest.mark.parametrize("head_dim", [128])
 @pytest.mark.parametrize("max_kv_len", [64, 1024, 2048])
 def test_batch_decode_aiter_vs_fa2(

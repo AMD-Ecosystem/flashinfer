@@ -37,6 +37,7 @@ __all__ = [
     "aiter_asm_prefill_min_qo_len",
     "aiter_fallback_backend",
     "aiter_flat_gather_gated_q_len",
+    "aiter_ragged_gated_q_len",
     "aiter_softcap_defect_arch",
     "capability_available",
     "capability_reason",
@@ -297,6 +298,22 @@ def aiter_flat_gather_gated_q_len(arch: str) -> Optional[int]:
     on an extrapolation -- re-measure before trusting it there.
     """
     return _AITER_FLAT_GATHER_GATED_Q_LEN.get(normalize_arch(arch))
+
+
+# Ragged has no gather, so the table above does not describe it: what a short
+# ragged query loses is AITER's fixed per-call cost, which only gfx942 pays
+# enough of to steer. Measured on amd-aiter 0.1.20; ratio tables in git log.
+_AITER_RAGGED_GATED_Q_LEN = {"gfx942": 16, "gfx950": None}
+
+
+def aiter_ragged_gated_q_len(arch: str) -> Optional[int]:
+    """Largest ``max_q_len`` that should avoid AITER's ragged prefill.
+
+    Compare with ``<=``. ``None`` disarms, and for gfx950 that is the measured
+    verdict rather than a gap -- indistinguishable from a deleted row through
+    this accessor, so ``test_arch_caps`` asserts membership too.
+    """
+    return _AITER_RAGGED_GATED_Q_LEN.get(normalize_arch(arch))
 
 
 def aiter_softcap_defect_arch(arch: str) -> bool:
