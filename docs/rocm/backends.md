@@ -515,15 +515,28 @@ short query against a long context, i.e. a chat turn landing on a cached prefix.
 | arch | routed to `fa2` when `max_q_len` is | AITER slower by |
 | :--- | :--- | :--- |
 | gfx942 | ≤ 16 | 1.18–4.74× |
-| gfx950 | never gated | bs 32 / kv 2048 favours AITER at every length measured |
+| gfx950 | never gated | — |
+
+gfx950 is ungated because one measured shape (bs 32 / kv 2048) favours AITER at
+every query length, so no threshold serves it.
+
+Same cudagraph exception as the paged gate, in the other direction: a
+capture-mode wrapper that demotes on one short batch stays on `fa2` for its
+lifetime, since re-promoting would swap the module a captured graph points at.
+Use a separate wrapper per query-length regime if you need both.
 
 Two paths are deliberately **not** gated. Native page sizes have no gather and
 beat `fa2` even at one query row (0.93× on gfx942, 0.54× on gfx950). Decode is
 ungated on measurement rather than assertion: AITER wins every cell at 64 query
 heads (up to 7.7× on gfx950), and the 32-head cells it loses cost 5–26 µs — a
 fixed-cost gap of ~10 µs per call, visible only while both kernels are
-launch-bound, and only in eager mode. A threshold keyed on length would
-mis-route 64- and 128-head decode by up to 7.7×. Numbers in the commit.
+launch-bound, and only in eager mode. A length-keyed threshold would mis-route
+64-head decode by up to 7.7×; 128-head was not swept, but it sits on the same
+side of the trend. Numbers in the commit.
+
+Single prefill is not gated either. It shares the soft-cap defect with ragged,
+but the sweep behind the table above ran through the ragged wrapper, and no
+single-prefill measurement at these query lengths exists to site a threshold on.
 
 An explicit `backend="aiter"` is honoured throughout — these are routing
 preferences, not wrong answers, so the other side stays measurable.

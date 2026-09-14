@@ -33,8 +33,12 @@ Run:
     python benchmarks/rocm/bench_batch_decode.py --backend fa2
     python benchmarks/rocm/bench_batch_decode.py --backend aiter
     python benchmarks/rocm/bench_batch_decode.py --counters stall
-    python benchmarks/rocm/bench_batch_decode.py --timing-only \
-        --batches 1,8 --kv-lens 128,256 --qo-heads 32,64
+    # The short-KV / multi-head grid, in passes: the full cross product is
+    # ~106 GiB of KV because every config is built before the first run.
+    python benchmarks/rocm/bench_batch_decode.py --timing-only --output-dir /out \
+        --batches 1,8,32,128,256 --kv-lens 128,256,512,1024 --qo-heads 32,64
+    python benchmarks/rocm/bench_batch_decode.py --timing-only --output-dir /out \
+        --batches 1,8,32,128,256 --kv-lens 2048,4096 --qo-heads 32,64
 
 Design note: bench flags are parsed at module level because rocprofv3
 re-executes this script as a subprocess per PMC pass with the same sys.argv.
@@ -89,7 +93,12 @@ _bench_parser.add_argument(
 
 
 def _int_list(raw: str) -> list[int]:
-    return [int(tok) for tok in raw.split(",") if tok.strip()]
+    # Reject empty rather than returning [], which is falsy and would silently
+    # fall back to the default grid on a typo'd override.
+    values = [int(tok) for tok in raw.split(",") if tok.strip()]
+    if not values or any(v <= 0 for v in values):
+        raise argparse.ArgumentTypeError(f"expected positive ints, got {raw!r}")
+    return values
 
 
 # Every config is built before the first run, so a wide grid is resident all at
@@ -140,13 +149,18 @@ _NUM_KV_HEADS = 8
 _HEAD_DIM = 128
 _DTYPE = torch.bfloat16
 _PAGE_SIZE = 16
+# Defaults stay narrow because every config is built before the first run: the
+# short-KV/multi-head grid this script was extended for is ~106 GiB resident,
+# which fits an idle MI300X and not a shared one. Widen it with the flags, in
+# passes -- see the module docstring.
 _BATCHES = _bench_args.batches or [1, 8, 32, 128, 256]
-# Down to 128: a fixed per-call cost is amortised by total KV work, so the
-# fa2/aiter crossover lives below the 1024 both decode sweeps used to start at.
-_KV_LENS = _bench_args.kv_lens or [128, 256, 512, 1024, 2048, 4096, 8192, 16384]
-# AITER's workspace and reduce cost scale with the query head count, so a
-# threshold fitted at 32 does not transfer to the 64- and 128-head models.
+_KV_LENS = _bench_args.kv_lens or [1024, 2048, 4096, 8192]
 _QO_HEADS = _bench_args.qo_heads or [32]
+if any(h % _NUM_KV_HEADS for h in _QO_HEADS):
+    raise SystemExit(
+        f"--qo-heads must be multiples of the fixed {_NUM_KV_HEADS} KV heads; "
+        f"got {_QO_HEADS}"
+    )
 
 _OUTPUT_DIR = _bench_args.output_dir or str(Path(__file__).parent)
 
