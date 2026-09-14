@@ -548,35 +548,44 @@ preferences, not wrong answers, so the other side stays measurable.
 
 ### `fa2` decode does not scale past GQA group 4
 
-Worth knowing when choosing a decode backend. At batch 256 / kv 4096 on
-gfx942, all three moving the same 4.3 GB of K+V:
+Worth knowing when choosing a decode backend. At batch 256 / kv 4096 on MI300X,
+all three moving the same 4.3 GB of K+V:
 
-| | achieved | of 5.3 TB/s peak |
+| | achieved | of MI300X's 5.3 TB/s |
 | :--- | :--- | :--- |
 | `fa2`, 32 query heads | 2.21 TB/s | 42% |
 | `fa2`, 64 query heads | 0.61 TB/s | 12% |
 | AITER, 64 query heads | 3.11 TB/s | 59% |
 
+gfx950 is not immune: the same sweep has AITER beating `fa2` in every 64-head
+cell on MI350X too, by up to 7.7× (#373). Percentages above are against
+MI300X's peak; MI325X and MI355X have more bandwidth, so recompute before
+quoting a utilisation figure there.
+
 The grid is `(padded_batch_size, num_kv_heads)` — it does not scale with query
 heads. The GQA group is absorbed inside the block as `bdy`, so doubling query
 heads doubles the work per block and adds no workgroups. `BatchDecodeBdz` then
-clamps the block to 128 threads, and at head_dim 128 `bdx` is 16, so a group of
-8 fills the block on its own and leaves `bdz = 1`: the block also loses the
-concurrent KV chunks it had at group 4.
+*floors* the block at 128 threads, and at head_dim 128 with fp16/bf16 KV `bdx`
+is 16, so a group of 8 fills the block on its own and leaves `bdz = 1`: the
+block also loses the concurrent KV chunks it had at group 4. fp8 KV halves
+`bdx` to 8 and so keeps `bdz = 2` at group 8; this path is fp16/bf16 only.
 
-**Raising that clamp to 256 does not help — it was measured on gfx942 and is
+**That geometry does not fully account for the number.** Doubling per-block
+work alone predicts 1.10 TB/s at 64 heads; the measured 0.61 is a further
+~1.8×, and the `bdz` loss is not quantified separately. Treat the mechanism as
+the direction, not a complete model.
+
+**Raising that floor to 256 does not help — it was measured on gfx942 and is
 worse**, by 11–28% across batch 32–256 and kv 1024–4096, at 32 and 64 query
 heads alike. Shared memory doubles (9→18 KB at group 8), which costs more
-resident blocks than the extra KV concurrency wins. Not re-measured on gfx950.
-The launch geometry above is arch-independent, being code rather than a
-measurement, and the underlying gap reproduces on both.
+resident blocks than the extra KV concurrency wins. Not re-measured on gfx950;
+the launch geometry itself is code rather than a measurement, so it is
+arch-independent.
 
-Closing it needs the grid to scale with query heads, which is a kernel change
-rather than a tuning constant.
-
-Until then, graph-captured decode resolves `auto` to `fa2` unless the wrapper is
-given `max_seq_len`, so a 70B or 405B decode under capture is on the slower
-kernel. `backend="aiter"` reaches the faster one directly.
+Closing the gap needs the grid to scale with query heads, which is a kernel
+change rather than a tuning constant. Until then `backend="aiter"` reaches the
+faster kernel directly — see [Batch decode: CUDA-graph capture](#batch-decode-cuda-graph-capture)
+for what `auto` does under capture.
 
 ### `fused_add_rmsnorm` and `gemma_fused_add_rmsnorm` at large `hidden_size`
 

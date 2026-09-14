@@ -40,7 +40,12 @@ constexpr uint32_t BatchDecodeBdx() {
   return bdx;
 }
 
-/*! \brief KV chunks a block processes concurrently. */
+/*! \brief KV chunks a block processes concurrently.
+ *
+ * The 128 floors the block; at GROUP_SIZE 8 it yields bdz 1. Raising it to 256
+ * to buy bdz 2 there measures 11-28% *slower* on gfx942 -- smem doubles and
+ * costs more resident blocks than the concurrency wins. Do not re-try blind.
+ */
 template <typename DTypeKV, uint32_t HEAD_DIM, uint32_t GROUP_SIZE>
 constexpr uint32_t BatchDecodeBdz() {
   constexpr uint32_t plane = BatchDecodeBdx<DTypeKV, HEAD_DIM>() * GROUP_SIZE;

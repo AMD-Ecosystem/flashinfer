@@ -998,18 +998,12 @@ def test_ragged_maskless_plan_after_a_masked_one_drops_the_mask():
 
 
 def test_paged_maskless_plan_after_a_masked_one_drops_the_mask():
-    """The paged counterpart, which nothing asserted.
+    """A maskless plan must not attend under the previous plan's mask.
 
-    #366 gave paged its per-plan re-resolution and its mask-buffer clear while
-    wiring up fp8, so this behaviour is correct today by side effect of a change
-    about dtypes. Without a test, the next person to touch that block has
-    nothing telling them the mask lifecycle depends on it.
+    Guards both halves of that: the mask-buffer clear, numerically, and the
+    per-plan re-resolution a wrapper stuck on fa2 would skip.
     """
     device = torch.device("cuda:0")
-    if not is_aiter_supported(device) or not _aiter_ops_importable():
-        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
-    _skip_if_prefill_gated(device)
-
     torch.manual_seed(0)
     batch_size, qo_len, kv_len, heads, head_dim, page_size = 2, 256, 512, 8, 128, 1
     dtype = torch.bfloat16
@@ -1049,6 +1043,14 @@ def test_paged_maskless_plan_after_a_masked_one_drops_the_mask():
     mask = torch.zeros(batch_size * qo_len * kv_len, dtype=torch.bool, device=device)
     mask[::7] = True
 
+    # What a fresh wrapper resolves this maskless plan to, so the re-resolution
+    # assertion below calibrates itself instead of assuming AITER is reachable.
+    control = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
+    )
+    control.plan(**plan_args)
+    expected_backend = control.backend
+
     wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
         workspace, "NHD", backend="auto"
     )
@@ -1056,12 +1058,17 @@ def test_paged_maskless_plan_after_a_masked_one_drops_the_mask():
     wrapper.run(q, kv_data)
 
     wrapper.plan(**plan_args)
+    assert wrapper.backend == expected_backend, (
+        "the masked plan stuck the wrapper: a maskless plan after it must "
+        "re-resolve to what a fresh wrapper picks"
+    )
     got = wrapper.run(q, kv_data)
 
     reference = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
         workspace, "NHD", backend="fa2"
     )
     reference.plan(**plan_args)
+    # reference.plan() rewrites the shared workspace, so materialise `got` first.
     torch.testing.assert_close(got, reference.run(q, kv_data), rtol=2e-2, atol=2e-2)
 
 
