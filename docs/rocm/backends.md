@@ -562,23 +562,35 @@ cell on MI350X too, by up to 7.7× (#373). Percentages above are against
 MI300X's peak; MI325X and MI355X have more bandwidth, so recompute before
 quoting a utilisation figure there.
 
-The grid is `(padded_batch_size, num_kv_heads)` — it does not scale with query
-heads. The GQA group is absorbed inside the block as `bdy`, so doubling query
-heads doubles the work per block and adds no workgroups. `BatchDecodeBdz` then
-*floors* the block at 128 threads, and at head_dim 128 with fp16/bf16 KV `bdx`
-is 16, so a group of 8 fills the block on its own and leaves `bdz = 1`: the
-block also loses the concurrent KV chunks it had at group 4. The same tuning
-serves fp8 KV, but there `bdx` is 8, so group 8 keeps `bdz = 2` and does not hit
-this collapse — everything below was measured on fp16/bf16.
+The cause is **not established**, and three plausible explanations have been
+measured and ruled out. What is recorded here is the ruling-out, so the next
+person starts past it.
 
-**That geometry does not fully account for the number.** Doubling per-block
-work alone predicts 1.10 TB/s at 64 heads; the measured 0.61 is a further
-~1.8×, and the `bdz` loss is not quantified separately. Treat the mechanism as
-the direction, not a complete model.
+The launch geometry, as code: the grid is `(padded_batch_size, num_kv_heads)`
+and does not scale with query heads — the GQA group is absorbed inside the block
+as `bdy`. `BatchDecodeBdz` *floors* the block at 128 threads, and at head_dim 128
+with fp16/bf16 KV `bdx` is 16, so a group of 8 fills the block alone and leaves
+`bdz = 1`, where group 4 gets `bdz = 2`. fp8 KV halves `bdx` and keeps `bdz = 2`
+at group 8; everything below is fp16/bf16.
 
-**Raising that floor to 256 does not fix it, and what it does instead is
-arch-dependent.** Measured on both, batch 32–256 × kv 1024–4096 × 32/64 query
-heads, cold cache per arm:
+| hypothesis | ruled out by |
+| :--- | :--- |
+| grid starvation — too few workgroups at 64 heads | the 64/32-head ratio is flat at ~4.6× from batch 32 to 256, across a 256→2048 block grid. Starvation would shrink it. |
+| the lost `bdz` KV concurrency | restoring `bdz = 2` at group 8 recovers nothing: 1.01–1.03× at every 64-head cell |
+| shared memory costing resident blocks | the same run holds smem flat (10240 B against the 9216 B baseline) and still recovers nothing |
+
+The second and third were tested together by raising the floor to 256 *and*
+halving `NUM_STAGES_SMEM`, which buys `bdz = 2` without the smem increase.
+
+So the penalty is per-block work that more blocks, more KV concurrency and more
+occupancy all fail to touch. It is ~4.6× for 2× the query heads, and the
+residual over the 2× is unexplained. Chasing it further needs counter profiling
+of the inner loop — register pressure, LDS traffic, cache behaviour — not
+another tuning constant.
+
+Raising the floor alone is also **arch-dependent and not worth taking**.
+Measured on both, batch 32–256 × kv 1024–4096 × 32/64 query heads, cold cache
+per arm:
 
 | arch | effect of floor 256 |
 | :--- | :--- |

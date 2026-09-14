@@ -43,10 +43,10 @@ constexpr uint32_t BatchDecodeBdx() {
 /*! \brief KV chunks a block processes concurrently.
  *
  * The 128 floors the block. At 2-byte KV / HEAD_DIM 128 / GROUP_SIZE 8 that
- * yields bdz 1; raising it to 256 to buy bdz 2 measures 11-28% *slower* on
- * gfx942 and roughly neutral on gfx950, and helps neither at 64 query heads.
- * fp8 halves bdx and was not measured either way. Numbers in git log; do not
- * re-try blind.
+ * yields bdz 1. Restoring bdz 2 recovers nothing at 64 query heads (1.01-1.03x),
+ * whether bought by raising the floor (11-28% slower on gfx942, neutral on
+ * gfx950) or at flat smem by halving NUM_STAGES_SMEM. The collapse is not this
+ * constant. Numbers in git log; do not re-try blind.
  */
 template <typename DTypeKV, uint32_t HEAD_DIM, uint32_t GROUP_SIZE>
 constexpr uint32_t BatchDecodeBdz() {
