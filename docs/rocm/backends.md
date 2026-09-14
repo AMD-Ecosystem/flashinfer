@@ -507,7 +507,13 @@ per query-length regime if you need both routed correctly under capture.
 
 Three paths are deliberately **not** gated. Native page sizes have no gather
 and beat `fa2` even at one query row (0.93× on gfx942, 0.54× on gfx950).
-Ragged prefill dispatches through `mha_varlen_fwd` on already-contiguous KV.
+Ragged prefill dispatches through `mha_varlen_fwd` on already-contiguous KV,
+and the sweep that sited the paged gate covers it too. Its crossover is
+shape-dependent on both architectures, and on gfx950 one shape — bs 32 /
+kv 2048 — favours AITER at *every* query length measured, so no threshold
+serves it. gfx942 has no such shape: all five lose at 16 query tokens
+(1.18–4.74×), so a gfx942-only gate is supportable on this data and has not
+been claimed. The per-shape crossovers are in the commit that added this.
 Decode is genuinely one query row, and AITER wins there. An explicit
 `backend="aiter"` is also honoured — this is a routing preference, not a
 wrong answer, so it stays measurable.
