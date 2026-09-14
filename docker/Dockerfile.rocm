@@ -246,7 +246,7 @@ COPY --chown=$USER_UID:$USER_GID docker/prebuild_aiter_attention.py /opt/prebuil
 RUN set -eu; \
     GPU_ARCHS="$AITER_GPU_ARCHS" \
     python3 /opt/prebuild_aiter_attention.py --jobs "$AITER_PREBUILD_JOBS"; \
-    chmod -R a+w "$(python3 -c 'import importlib.util as u, os; print(os.path.join(list(u.find_spec("aiter").submodule_search_locations)[0], "jit"))')"
+    chmod -R a+rwX "$(python3 /opt/prebuild_aiter_attention.py --print-jit-dir)"
 
 WORKDIR /home/$USERNAME
 

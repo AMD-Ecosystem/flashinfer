@@ -370,7 +370,7 @@ def _run_jobs(variants: Sequence[Variant], jobs: int, extra: Sequence[str] = ())
     process-global lock, so two concurrent builds in one process have the first
     to finish restore the environment under the second.
     """
-    pending = list(variants) + list(extra)
+    pending = list(extra) + list(variants)
     # Child output goes to a file, never a pipe: hipcc is verbose enough to fill
     # a pipe buffer, and a child blocked on a full pipe never exits, so poll()
     # would spin forever. Only read on failure, and only the tail.
@@ -381,8 +381,13 @@ def _run_jobs(variants: Sequence[Variant], jobs: int, extra: Sequence[str] = ())
     try:
         _drain(pending, running, failed, jobs, total)
     finally:
-        for _, proc, _, _ in running:
+        for _, proc, _, log_path in running:
             proc.kill()
+            # wait(), not just kill(): AITER's baton is only stale when
+            # kill(pid, 0) fails, which a zombie answers successfully, so an
+            # unreaped child makes the next build for that name hang.
+            proc.wait()
+            os.unlink(log_path)
     if failed:
         print(f"\n{len(failed)} build(s) failed:\n  " + "\n  ".join(failed))
     return 1 if failed else 0
@@ -487,8 +492,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=int(os.environ.get("AITER_PREBUILD_JOBS", "1")),
         help="concurrent build processes",
     )
+    p.add_argument(
+        "--print-jit-dir",
+        action="store_true",
+        help="print the directory artifacts are written to, and exit",
+    )
     p.add_argument("--build-one", help=argparse.SUPPRESS)
     a = p.parse_args(argv)
+
+    if a.print_jit_dir:
+        print(jit_dir(_aiter_jit_core()))
+        return 0
 
     if a.build_one:
         if "|" in a.build_one:
@@ -501,9 +515,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # The whole-module set has no family axis, so --only excludes it.
     extra = [] if a.only else list(LOADER_MODULES)
     if a.list:
-        for v in variants:
-            print(v.so_name)
-        print(f"\n{len(variants)} variant(s)")
+        for name in [v.so_name for v in variants] + [f"{m}.so" for m in extra]:
+            print(name)
+        print(f"\n{len(variants)} variant(s) + {len(extra)} module(s)")
         return 0
     if a.check:
         return _check(variants, extra)
@@ -513,8 +527,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     t0 = time.time()
     rc = _run_jobs(variants, a.jobs, extra=extra)
     print(
-        f"\n{len(variants)} variant(s) in {(time.time() - t0) / 60:.0f} min "
-        f"at --jobs {a.jobs}"
+        f"\n{len(variants)} variant(s) + {len(extra)} module(s) in "
+        f"{(time.time() - t0) / 60:.0f} min at --jobs {a.jobs}"
     )
     return rc or _check(variants, extra)
 
