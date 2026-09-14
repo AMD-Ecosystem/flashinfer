@@ -668,6 +668,15 @@ def _auto_select_prefill_backend(
     # other unmet constraint. Previously an unsupported architecture returned
     # "fa2" silently, which on CDNA4 would mean a user quietly losing the AITER
     # path with nothing to explain it.
+    # The two perf gates name different routes, so arming both is a caller bug:
+    # the reason would describe one while a demotion site matches the other's
+    # string by equality, silently making that demotion permanent.
+    if max_q_len is not None and ragged_q_len is not None:
+        raise ValueError(
+            "max_q_len (paged) and ragged_q_len (ragged) are different routes; "
+            "pass at most one"
+        )
+
     reason: Optional[str] = capability_reason(device, op, "aiter")
     if reason is None:
         if kv_layout != "NHD":
@@ -696,17 +705,11 @@ def _auto_select_prefill_backend(
                 f"logits_soft_cap={logits_soft_cap} with causal head_dim={head_dim_qk} "
                 "(AITER mha_varlen_fwd computes the soft cap incorrectly)"
             )
-        else:
-            # Both perf gates sit last, after every constraint that is a
-            # property of the device rather than the batch. They name different
-            # routes, so arming both is a caller bug: the reason would describe
-            # one route while a demotion site matches the other's string by
-            # equality, silently making that demotion permanent.
-            if max_q_len is not None and ragged_q_len is not None:
-                raise ValueError(
-                    "max_q_len (paged) and ragged_q_len (ragged) are different "
-                    "routes; pass at most one"
-                )
+        # Both perf gates sit last, after every constraint that is a property of
+        # the device rather than the batch -- and only if AITER could have run,
+        # or a box with no amd-aiter would be told "too short" instead of the
+        # install diagnostic below.
+        if reason is None and _aiter_ops_importable():
             threshold = _aiter_flat_gather_short_query(max_q_len, device)
             if threshold is not None:
                 # Names the threshold, not max_q_len: _aiter_auto_warned is keyed

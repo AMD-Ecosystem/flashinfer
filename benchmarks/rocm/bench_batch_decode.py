@@ -35,10 +35,12 @@ Run:
     python benchmarks/rocm/bench_batch_decode.py --counters stall
     # The short-KV / multi-head grid, in passes: the full cross product is
     # ~106 GiB of KV because every config is built before the first run.
+    # Distinct --label per pass; the timing CSV is opened "w", so a shared
+    # label makes the second pass overwrite the first.
     python benchmarks/rocm/bench_batch_decode.py --timing-only --output-dir /out \
-        --batches 1,8,32,128,256 --kv-lens 128,256,512,1024 --qo-heads 32,64
+        --label short --batches 1,8,32,128,256 --kv-lens 128,256,512,1024 --qo-heads 32,64
     python benchmarks/rocm/bench_batch_decode.py --timing-only --output-dir /out \
-        --batches 1,8,32,128,256 --kv-lens 2048,4096 --qo-heads 32,64
+        --label mid --batches 1,8,32,128,256 --kv-lens 2048,4096 --qo-heads 32,64
 
 Design note: bench flags are parsed at module level because rocprofv3
 re-executes this script as a subprocess per PMC pass with the same sys.argv.
@@ -93,10 +95,14 @@ _bench_parser.add_argument(
 
 
 def _int_list(raw: str) -> list[int]:
-    # Reject empty rather than returning [], which is falsy and would silently
-    # fall back to the default grid on a typo'd override.
-    values = [int(tok) for tok in raw.split(",") if tok.strip()]
-    if not values or any(v <= 0 for v in values):
+    # Strict: an empty list is falsy and would fall back to the default grid,
+    # and a dropped field ("1,,8") would silently sweep a different one. Either
+    # way the run is not the grid that was asked for.
+    tokens = raw.split(",")
+    if not tokens or any(not tok.strip() for tok in tokens):
+        raise argparse.ArgumentTypeError(f"expected comma-separated ints, got {raw!r}")
+    values = [int(tok) for tok in tokens]
+    if any(v <= 0 for v in values):
         raise argparse.ArgumentTypeError(f"expected positive ints, got {raw!r}")
     return values
 
@@ -116,7 +122,7 @@ _bench_parser.add_argument(
     type=_int_list,
     default=None,
     metavar="N,N,...",
-    help="KV lengths to sweep. Default: 128,...,16384.",
+    help="KV lengths to sweep. Default: 1024,2048,4096,8192.",
 )
 _bench_parser.add_argument(
     "--qo-heads",
