@@ -50,10 +50,9 @@ def _ensure_aiter_gpu_archs() -> None:
         os.environ["GPU_ARCHS"] = arch
 
 
-# 0.1.20 renamed the RMSNorm entry points and added a gemma_norm parameter, so
-# an older AITER cannot resolve the shim's symbols at all. The vendored prefill
-# structs travel by value through dlsym'd pointers, where a mismatch corrupts
-# silently -- hence a hard floor rather than a warning.
+# 0.1.21 moved rmsnorm and the cos/sin-cache rope from at::Tensor to the POD
+# aiter_tensor_t, so csrc/rocm/{norm,rope}_aiter.cu cannot resolve their mangled
+# symbols against anything older, and the vendored arg structs assume this layout.
 AITER_MIN_VERSION = "0.1.21"
 
 
@@ -98,8 +97,14 @@ def _aiter_importable() -> bool:
     try:
         _ensure_aiter_gpu_archs()
         import aiter  # noqa: F401
-        import aiter_meta  # noqa: F401
         from aiter.jit import core as _core  # noqa: F401
+
+        # Not `import aiter_meta`: an editable AITER ships none, and
+        # jit.rocm.aiter_source._aiter_csrc_include_dir now falls back to
+        # AITER_CSRC_DIR. Requiring it here made that fallback unreachable.
+        from ..jit.rocm.aiter_source import _aiter_csrc_include_dir
+
+        _aiter_csrc_include_dir()
     except Exception:
         return False
     return _aiter_version_supported()

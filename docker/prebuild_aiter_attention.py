@@ -187,12 +187,9 @@ def reachable_variants() -> Tuple[Variant, ...]:
 
 
 def selected_variants(only: Optional[Sequence[str]] = None) -> Tuple[Variant, ...]:
-    """Every reachable variant. ``only`` narrows to named families.
+    """Every reachable variant; ``only`` narrows to named families.
 
-    Nothing is trimmed. An earlier version skipped mha_fwd's four LSE variants on
-    an estimate of 803 s per build; measured in the image they take 162 s, so the
-    whole set is 23 min at --jobs 2 and a trim saves ~5 min for a guaranteed
-    multi-minute stall on whoever first asks for the missing arm.
+    Nothing is trimmed: the whole set costs minutes, a missing arm costs a stall.
     """
     variants = reachable_variants()
     if only:
@@ -267,12 +264,10 @@ def jit_dir(core) -> Path:
 
 
 def _args_of_build(core, family: str) -> Dict[str, object]:
-    """AITER's compile flags for a family, keyed as `compile_ops` keys them.
+    """AITER's compile flags for a family, keyed as ``compile_ops`` keys them.
 
-    The config key carries a ``module_`` prefix; without it ``get_args_of_build``
-    *warns and returns empty args* rather than raising, which drops every include
-    path and fails as a missing header several minutes into the build. Assert
-    rather than trust, so a renamed key is loud.
+    The ``module_`` prefix matters: without it ``get_args_of_build`` warns and
+    returns empty args rather than raising, so assert rather than trust.
     """
     args = core.get_args_of_build(f"module_{family}")
     if not args.get("srcs") or not args.get("extra_include"):
@@ -321,9 +316,20 @@ def _run_jobs(variants: Sequence[Variant], jobs: int) -> int:
     # would spin forever. Only read on failure, and only the tail.
     running: List[Tuple[Variant, subprocess.Popen, float, str]] = []
     failed: List[str] = []
-    done = 0
     total = len(pending)
 
+    try:
+        _drain(pending, running, failed, jobs, total)
+    finally:
+        for _, proc, _, _ in running:
+            proc.kill()
+    if failed:
+        print(f"\n{len(failed)} build(s) failed:\n  " + "\n  ".join(failed))
+    return 1 if failed else 0
+
+
+def _drain(pending, running, failed, jobs, total) -> None:
+    done = 0
     while pending or running:
         while pending and len(running) < jobs:
             v = pending.pop(0)
@@ -360,10 +366,6 @@ def _run_jobs(variants: Sequence[Variant], jobs: int) -> int:
                     f"  (full log: {log_path})\n" + "\n".join(tail),
                     flush=True,
                 )
-
-    if failed:
-        print(f"\n{len(failed)} build(s) failed:\n  " + "\n  ".join(failed))
-    return 1 if failed else 0
 
 
 def _encode(v: Variant) -> str:

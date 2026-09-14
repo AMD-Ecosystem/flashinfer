@@ -85,6 +85,7 @@ void apply_rope_pos_ids_cos_sin_cache_aiter(at::Tensor query, at::Tensor key, at
   namespace compat = flashinfer::aiter_compat;
   auto a_q_out = compat::to_aiter(q_out_rot);
   auto a_k_out = compat::to_aiter(k_out_rot);
+  const compat::StreamGuard stream_guard(at::hip::getCurrentHIPStream());
   rope_cached_positions_2c_fwd_impl(a_q_out, a_k_out, compat::to_aiter(q_in_rot),
                                     compat::to_aiter(k_in_rot), compat::to_aiter(cos),
                                     compat::to_aiter(sin), compat::to_aiter(pos),

@@ -52,6 +52,7 @@ void fused_add_rmsnorm_aiter(at::Tensor input, at::Tensor residual, at::Tensor w
   auto a_residual = flashinfer::aiter_compat::to_aiter(residual);
   auto a_residual_out = flashinfer::aiter_compat::to_aiter(residual_out);
   auto a_weight = flashinfer::aiter_compat::to_aiter(weight2d);
+  const flashinfer::aiter_compat::StreamGuard stream_guard(at::hip::getCurrentHIPStream());
   aiter::add_rmsnorm(a_out, a_input, a_residual, a_residual_out, a_weight, eps,
                      /*gemma_norm=*/false);
   input.copy_(out);
@@ -67,6 +68,7 @@ void rmsnorm_aiter(at::Tensor out, at::Tensor input, at::Tensor weight, double e
   // same way; stage it only when the caller actually aliased.
   auto a_input = flashinfer::aiter_compat::to_aiter(input);
   auto a_weight = flashinfer::aiter_compat::to_aiter(weight2d);
+  const flashinfer::aiter_compat::StreamGuard stream_guard(at::hip::getCurrentHIPStream());
   if (out.data_ptr() == input.data_ptr()) {
     at::Tensor staged = at::empty_like(out);
     auto a_staged = flashinfer::aiter_compat::to_aiter(staged);

@@ -26,8 +26,8 @@ constexpr const char* kAbiPinNote =
     "\n  These symbols and .so names are pinned to amd-aiter 0.1.21.post2, which has no"
     "\n  stable C++ ABI -- 0.1.21 moved rmsnorm and rope from at::Tensor to the POD"
     "\n  aiter_tensor_t. If AITER was changed, that is the likely cause. The supported"
-    "\n  install is the source build docker/Dockerfile.rocm performs at tag v0.1.21.post2,"
-    "\n  or re-pin the symbols in csrc/rocm/aiter_loader.cc.";
+    "\n  install is a source build at tag v0.1.21.post2; docs/rocm/backends.md has the"
+    "\n  exact clone and pip command, or re-pin the symbols in csrc/rocm/aiter_loader.cc.";
 
 // Directories to try, in order, when resolving a variant .so.
 //

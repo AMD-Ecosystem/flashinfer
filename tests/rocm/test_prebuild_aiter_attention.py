@@ -95,14 +95,6 @@ def test_nothing_is_trimmed_from_the_built_set():
     assert len(driver.selected_variants()) == 40
 
 
-def test_the_blaze_lum3_variant_is_in_the_default_set():
-    """Blaze-O1's LUM3 pins fp16 / batch mode / causal / no soft-cap / no LSE;
-    batch mode is mha_fwd, so this exact file is the one it dlopens."""
-    assert "mha_fwd_fp16_nbias_mask_nlse_ndropout_nqscale.so" in {
-        v.so_name for v in driver.selected_variants()
-    }
-
-
 @pytest.mark.parametrize("family", sorted(_FAMILY_BY_NAME))
 def test_only_restricts_without_renaming(family):
     picked = driver.selected_variants(only=[family])

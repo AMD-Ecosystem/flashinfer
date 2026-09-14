@@ -210,6 +210,15 @@ want = want if os.environ["AITER_SOURCE"] == "1" else version
 if got != want:
     sys.exit(f"ERROR: amd-aiter resolved to {got!r}, expected {want!r}")
 
+# The AITER_SOURCE=0 wheel is pinned separately and can fall under the floor the
+# shims need, which no runtime check would catch loudly: every AITER path just
+# stops routing and the image is quietly several times slower on prefill.
+FLOOR = "0.1.21"
+from packaging.version import Version  # noqa: E402
+
+if Version(got).base_version < Version(FLOOR).base_version:
+    sys.exit(f"ERROR: amd-aiter {got} is below AITER_MIN_VERSION {FLOOR}")
+
 inc = Path(md.distribution("amd-aiter").locate_file("aiter_meta/csrc/include"))
 if not inc.is_dir():
     sys.exit(f"ERROR: {inc} is missing; the shims cannot compile against this install")
