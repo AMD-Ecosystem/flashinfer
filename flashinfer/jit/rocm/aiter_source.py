@@ -211,29 +211,17 @@ def _rocm_version() -> str:
         return "unknown"
 
 
-def _aiter_cache_tag() -> str:
-    """A filesystem-safe tag keying the lib cache by arch, AITER version and ROCm.
+def compose_cache_tag(arch: Optional[str] = None) -> str:
+    """``<arch>__aiter-<ver>__rocm-<ver>``, the key both AITER caches use.
 
-    Without the arch component, a lib built for one arch would be silently reused
-    on a machine with a different arch. Without the version component, an AITER
-    upgrade (which can change the C++ ABI the FlashInfer shim links against) would
-    silently reuse the stale .so. The FlashInfer JIT dir already keys by its own
-    version+arch, but this cache sits outside it.
-
-    ROCm is a component because a source-built AITER's version is bare
-    ("0.1.21.post2"), where a wheel's carried "+rocm10.1.0a..." and keyed ROCm by
-    accident. Without it, two ROCm toolchains share one tag.
-
-    Keyed on the *resolved* architecture -- the one actually compiled for -- so
-    the tag cannot disagree with the contents of the directory it names."""
-    arch = resolve_aiter_build_arch()
-    # The tag is joined onto the cache root to create a directory, so
-    # "filesystem-safe" above has to be enforced, not just asserted in prose.
-    # _env_arch_list already rejects anything that is not an architecture name;
-    # this keeps the guarantee true for the other two sources of `arch` (the
-    # device probe and the default) and for any future caller. Loud rather than
-    # silently sanitized: an arch that needs rewriting means the resolver is
-    # wrong, and a quietly renamed cache directory would hide that.
+    Staleness is structural rather than detected: bump the arch, AITER's ABI or
+    the toolchain and the tag names a different directory, so a mismatched
+    artifact is never found. ``arch`` defaults to the *resolved* build arch.
+    """
+    arch = arch or resolve_aiter_build_arch()
+    # The tag becomes a directory name, so enforce that rather than assume it.
+    # Loud rather than silently sanitized: an arch that needs rewriting means the
+    # resolver is wrong, and a quietly renamed cache directory would hide that.
     if not arch or arch != Path(arch).name or arch.startswith("."):
         raise ValueError(
             f"refusing to build a cache directory name from architecture "
@@ -245,6 +233,9 @@ def _aiter_cache_tag() -> str:
         version = _md.version("amd-aiter")
     except Exception:
         version = "unknown"
+    # ROCm is a component because a source-built AITER's version is bare
+    # ("0.1.21.post2") where a wheel's carried "+rocm..." and keyed ROCm by
+    # accident; without it, two toolchains would share one tag.
     tag = f"{arch}__aiter-{version}__rocm-{_rocm_version()}"
     # The version strings come from package metadata and torch, neither of which
     # this module controls, so the composed tag gets the same check the arch did.
@@ -254,6 +245,10 @@ def _aiter_cache_tag() -> str:
             f"not a single safe path component"
         )
     return tag
+
+
+def _aiter_cache_tag() -> str:
+    return compose_cache_tag()
 
 
 @functools.lru_cache(maxsize=1)

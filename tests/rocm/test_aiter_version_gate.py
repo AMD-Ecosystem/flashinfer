@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The amd-aiter ABI floor.
 
-The vendored structs under include/flashinfer/rocm/attention/aiter/ follow the 0.1.20
+The vendored structs under include/flashinfer/rocm/attention/aiter/ follow the 0.1.21
 layout and travel by value through dlsym'd pointers, so an older AITER shifts
 field offsets instead of failing to load. Nothing downstream can detect that,
 which is why the floor is enforced before routing rather than at the call.
@@ -47,7 +47,7 @@ def _doc_references():
         ("0.1.20", False),
         ("0.1.21.dev0", False),
         # A .dev0 *of post3* sorts above 0.1.16, which is what makes the
-        # nightly-vs-prerelease distinction non-obvious -- still below 0.1.20.
+        # nightly-vs-prerelease distinction non-obvious -- still below the floor.
         ("0.1.16.post3.dev0+g620287969.d20260725", False),
         ("0.1.21", True),
         ("0.2.0", True),

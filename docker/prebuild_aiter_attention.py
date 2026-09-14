@@ -3,33 +3,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """Build AITER's attention variant ``.so`` at image-build time, with no GPU.
 
-FlashInfer ``dlopen``s these by composed filename. The wheel prebuilds almost
-none of them, so AITER's lazy JIT compiles each one *inside the serving process*
-on the first request that needs it -- minutes of stall, possibly hours into the
-process's life, under a process-global build lock.
+Without this, AITER's lazy JIT compiles each variant inside the serving process
+on the first request that needs it. Artifacts land in AITER's own ``jit/``
+directory so its bootstraps find them built -- the store route cannot serve
+``mha_batch_prefill``, whose bootstrap doubles as the page-size probe.
 
-Runs during ``docker build``, where there is no device. Everything here is
-therefore stdlib-only and reaches AITER through the flat ``sys.path`` import its
-own ``setup.py`` uses; ``import aiter`` would run arch detection and a triton
-import that both need a GPU. The companion GPU-attached driver
-(``flashinfer.rocm.prebuild_aiter_variants``) produces variants by *calling the
-op*, which is why that one cannot run here.
+Stdlib-only, and reaches AITER by the flat ``sys.path`` import its own
+``setup.py`` uses: ``import aiter`` needs a device. The table here is a
+deliberate copy of ``flashinfer.jit.rocm.aiter_variants``, which pulls torch;
+``tests/rocm/test_prebuild_aiter_attention.py`` holds the two in step.
 
-Artifacts land in AITER's own ``jit/`` directory, so AITER itself finds them
-already built and the bootstraps return without compiling. That is what makes
-``mha_batch_prefill`` worth building by this route and not by the store route:
-its bootstrap doubles as the page-size probe and runs either way, so only a hit
-AITER can see spares the compile. Measured: 101.4 s cold against 0.2 s prebuilt.
-
-    python3 docker/prebuild_aiter_attention.py --list
-    python3 docker/prebuild_aiter_attention.py --jobs 2
-    python3 docker/prebuild_aiter_attention.py --check
-
-This file deliberately carries its own copy of the variant table: importing
-``flashinfer.jit.rocm.aiter_variants`` would pull in torch.
-``tests/rocm/test_prebuild_aiter_attention.py`` asserts the two agree, and
-asserts the receipts and token spellings against the installed ``aiter/ops/mha.py``
--- the only detector for an upstream recipe change.
+    python3 docker/prebuild_aiter_attention.py --list|--check|--jobs 2
 """
 
 from __future__ import annotations

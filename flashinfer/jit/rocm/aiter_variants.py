@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .. import env as jit_env
-from .aiter_source import _rocm_version, resolve_aiter_build_arch
+from .aiter_source import compose_cache_tag
 
 __all__ = [
     "Family",
@@ -209,18 +209,7 @@ def variant_store_dir(arch: Optional[str] = None) -> Path:
     old contents are simply never found and the lookup misses into a rebuild.
     A mismatched artifact is never loaded.
     """
-    try:
-        import importlib.metadata as _md
-
-        aiter_version = _md.version("amd-aiter")
-    except Exception:
-        aiter_version = "unknown"
-    tag = f"{arch or resolve_aiter_build_arch()}__aiter-{aiter_version}__rocm-{_rocm_version()}"
-    # The tag becomes a directory name; refuse anything that is not one
-    # component, the same guard _aiter_cache_tag applies.
-    if not tag or tag != Path(tag).name or tag.startswith("."):
-        raise ValueError(f"refusing to build a cache directory name from {tag!r}")
-    return jit_env.FLASHINFER_CACHE_DIR / "aiter_variants" / tag
+    return jit_env.FLASHINFER_CACHE_DIR / "aiter_variants" / compose_cache_tag(arch)
 
 
 def _explicit_stores() -> List[Path]:

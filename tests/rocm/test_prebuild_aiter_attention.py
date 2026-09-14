@@ -40,6 +40,10 @@ def _load_driver():
     return mod
 
 
+if not _DRIVER_PATH.is_file():
+    # An installed wheel has no docker/ tree; skip rather than fail collection.
+    pytest.skip(f"{_DRIVER_PATH} not present", allow_module_level=True)
+
 driver = _load_driver()
 
 
@@ -216,11 +220,8 @@ def _mha_recipes_source() -> str:
 def _md_tokens(family: str) -> set:
     """Every name token AITER can emit for this family, dtype excluded.
 
-    mha_fwd and batch_prefill append string literals to md_name directly. varlen
-    delegates its whole suffix to `compose_mha_fwd_variant_suffix_and_filter`, so
-    its literals live in mha_recipes.py instead. Both spell the dtype with an
-    f-string, which leaves no literal to find -- hence dtype is stripped by the
-    caller rather than matched here.
+    varlen delegates its suffix to `compose_mha_fwd_variant_suffix_and_filter`,
+    so its literals live in mha_recipes.py rather than the composer body.
     """
     source = (
         _mha_recipes_source() if family == "mha_varlen_fwd" else _composer_body(family)
