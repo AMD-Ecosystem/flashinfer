@@ -530,9 +530,14 @@ beat `fa2` even at one query row (0.93× on gfx942, 0.54× on gfx950). Decode is
 ungated on measurement rather than assertion: AITER wins every cell at 64 query
 heads (up to 7.7× on gfx950), and the 32-head cells it loses cost 5–26 µs — a
 fixed-cost gap of ~10 µs per call, visible only while both kernels are
-launch-bound, and only in eager mode. A length-keyed threshold would mis-route
-64-head decode by up to 7.7×; 128-head was not swept, but it sits on the same
-side of the trend. Numbers in the commit.
+launch-bound. A length-keyed threshold would mis-route 64-head decode by up to
+7.7×; 128-head was not swept, but it sits on the same side of the trend.
+Numbers in the commit.
+
+Those launches were all eager, so the figures describe eager decode. `auto`
+reaches AITER under graph capture too when the wrapper is given `max_seq_len`,
+and an explicit `backend="aiter"` reaches it either way; neither was timed
+here.
 
 Single prefill is not gated either. It shares the soft-cap defect with ragged,
 but the sweep behind the table above ran through the ragged wrapper, and no
