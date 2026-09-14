@@ -548,74 +548,19 @@ preferences, not wrong answers, so the other side stays measurable.
 
 ### `fa2` decode does not scale past GQA group 4
 
-Worth knowing when choosing a decode backend. At batch 256 / kv 4096 on MI300X,
-all three moving the same 4.3 GB of K+V:
+At 64 query heads `fa2` decode reaches 12% of peak bandwidth where AITER reaches
+59% — 0.61 against 3.11 TB/s at batch 256 / kv 4096 on MI300X, both moving the
+same 4.3 GB of K+V. It holds ~5.3 TFLOPS there whatever the shape. gfx950 is the
+same picture, AITER ahead in every 64-head cell by up to 7.7×.
 
-| | achieved | of MI300X's 5.3 TB/s |
-| :--- | :--- | :--- |
-| `fa2`, 32 query heads | 2.21 TB/s | 42% |
-| `fa2`, 64 query heads | 0.61 TB/s | 12% |
-| AITER, 64 query heads | 3.11 TB/s | 59% |
+Use `backend="aiter"` for a 70B or 405B decode. Under graph capture `auto`
+resolves to `fa2` unless the wrapper is given `max_seq_len` — see
+[Batch decode: CUDA-graph capture](#batch-decode-cuda-graph-capture).
 
-gfx950 is not immune: the same sweep has AITER beating `fa2` in every 64-head
-cell on MI350X too, by up to 7.7× (#373). Percentages above are against
-MI300X's peak; MI325X and MI355X have more bandwidth, so recompute before
-quoting a utilisation figure there.
-
-**The cause is not established.** What follows is what has been measured, kept
-separate from what it does and does not license, so the next person is not
-misled about how much was settled.
-
-The launch geometry, as code: the grid is `(padded_batch_size, num_kv_heads)`
-and does not scale with query heads — the GQA group is absorbed inside the block
-as `bdy`. `BatchDecodeBdz` targets a 128-thread block, and at head_dim 128 with
-fp16/bf16 KV `bdx` is 16, so group 8 fills it alone and leaves `bdz = 1` where
-group 4 gets `bdz = 2`. (Only a target: integer truncation gives group 3 a
-96-thread block.) fp8 KV halves `bdx` and keeps `bdz = 2` at group 8; everything
-below is fp16/bf16.
-
-**Ruled out — grid starvation.** The 64/32-head ratio is flat at ~4.6× from
-batch 32 to 256, across a 256→2048 block grid. Too few workgroups would shrink
-with the grid; it does not move.
-
-**Tested and did not help — two configurations that give `bdz = 2` at group 8.**
-Raising the floor to 256, and raising it while halving `NUM_STAGES_SMEM`. Both
-leave 64-head decode within 1.01–1.03× of baseline.
-
-That is weaker than "`bdz` is irrelevant", and deliberately so: **neither arm
-varies `bdz` alone.** The first also doubles shared memory (9216→18432 B) and
-the block (128→256 threads); the second still doubles the block and moves smem
-+11%. So they rule out these configurations, not the hypothesis. An isolated
-`bdz` experiment would need the block size and smem held constant, which this
-tuning cannot express.
-
-What is left is a ~4.6× penalty for 2× the query heads with no established
-mechanism. Settling it needs counter profiling of the inner loop — register
-pressure, LDS traffic, cache behaviour — rather than another tuning constant.
-
-Raising the floor alone is also **arch-dependent and not worth taking**.
-Measured on both, batch 32–256 × kv 1024–4096 × 32/64 query heads, cold cache
-per arm:
-
-| arch | effect of floor 256 |
-| :--- | :--- |
-| gfx942 | **slower at all 12 cells**, +5% to +28% |
-| gfx950 | neutral within ±3%, except batch 32 / kv 1024 / 32 heads, which is ~2× faster (0.102 → 0.051 ms) and loses a bimodal baseline (`p5` 0.049 against a 0.102 median) |
-
-The floor-256 arm moves shared memory 9→18 KB at group 8 and the block
-128→256 threads together, so which of the two drives the gfx942 regression is
-not separable from this data.
-
-**Neither arch improves at 64 query heads** — gfx950 moves 0.211→0.214 ms at
-batch 32 / kv 1024, and gfx942 regresses. So the floor is not the lever for the
-collapse this section is about, whatever it does elsewhere. A per-arch floor
-would only chase the one low-batch gfx950 cell.
-
-No fix is proposed here: the mechanism is unresolved, and a query-head-scaled
-grid is one untested guess among others rather than a known remedy — grid
-starvation is the hypothesis this section rules *out*. `backend="aiter"` reaches
-the faster kernel today — see [Batch decode: CUDA-graph capture](#batch-decode-cuda-graph-capture)
-for what `auto` does under capture.
+The cause is unresolved. Grid starvation is ruled out (the 64/32-head ratio is
+flat at ~4.6× from batch 32 to 256), and two `BatchDecodeBdz` settings were
+tried and did not help; that constant carries the detail. Settling it needs
+counter profiling of the inner loop, not another tuning constant.
 
 ### `fused_add_rmsnorm` and `gemma_fused_add_rmsnorm` at large `hidden_size`
 
