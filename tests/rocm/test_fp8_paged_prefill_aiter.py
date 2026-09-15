@@ -21,6 +21,7 @@ import flashinfer
 from flashinfer.rocm.prefill import (
     FP8_PREFILL_OUT_DTYPE,
     _aiter_paged_route_page_sizes,
+    _native_fp8_dtype,
 )
 from tests.test_helpers.test_helpers import requires_aiter
 
@@ -28,17 +29,19 @@ pytestmark = requires_aiter
 
 NUM_QO_HEADS, NUM_KV_HEADS, HEAD_DIM = 8, 2, 128
 PAGE, KV_LEN, Q_LEN, BATCH = 16, 512, 64, 2
-FP8_MAX = 240.0
 
 
-def _native_fp8_dtype():
-    """This GPU's fp8 encoding. The two are indistinguishable by shape or by the
-    .so name, and the wrong one is read under the wrong bias and returns NaN."""
-    aiter = pytest.importorskip("aiter")
-    try:
-        return aiter.dtypes.fp8
-    except AttributeError:
+def _fp8_dtype():
+    """This GPU's fp8 encoding, from the same probe routing uses.
+
+    The two encodings are indistinguishable by shape or by the .so name, and the
+    wrong one is read under the wrong exponent bias and returns NaN.
+    """
+    pytest.importorskip("aiter")
+    dtype = _native_fp8_dtype()
+    if dtype is None:
         pytest.skip("aiter.dtypes.fp8 is unreadable, so the encoding is unknown")
+    return dtype
 
 
 @pytest.fixture(scope="module")
@@ -71,7 +74,7 @@ def _plan_and_run(workspace, q, kv, backend, **kw):
 
 
 def test_fp8_paged_prefill_matches_a_bf16_reference(workspace):
-    fp8 = _native_fp8_dtype()
+    fp8 = _fp8_dtype()
     if PAGE not in _aiter_paged_route_page_sizes(fp8):
         pytest.skip(f"page_size={PAGE} does not route to the native paged kernel")
 
@@ -92,8 +95,11 @@ def test_fp8_paged_prefill_matches_a_bf16_reference(workspace):
 
     ref = _plan_and_run(workspace, q, kv, "fa2")
 
-    sq = q.abs().amax().float() / FP8_MAX
-    sk = kv.abs().amax().float() / FP8_MAX
+    # From the dtype, not a constant: e4m3fnuz maxes at 240 and e4m3fn at 448,
+    # so a fixed divisor wastes half the range on one of the two architectures.
+    fp8_max = torch.finfo(fp8).max
+    sq = q.abs().amax().float() / fp8_max
+    sk = kv.abs().amax().float() / fp8_max
     got = _plan_and_run(
         workspace,
         (q.float() / sq).to(fp8),
@@ -114,7 +120,7 @@ def test_fp8_paged_prefill_matches_a_bf16_reference(workspace):
 
 def test_fp8_prefill_is_refused_on_fa2(workspace):
     """fa2 has no fp8 kernel, so the refusal must be an error, not a fallback."""
-    fp8 = _native_fp8_dtype()
+    fp8 = _fp8_dtype()
     dev = "cuda:0"
     q = torch.zeros(
         BATCH * Q_LEN, NUM_QO_HEADS, HEAD_DIM, device=dev, dtype=torch.bfloat16

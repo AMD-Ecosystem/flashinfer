@@ -154,6 +154,28 @@ def test_every_name_token_the_loader_can_emit_is_one_the_driver_builds():
     assert not missing, f"aiter_loader.cc can emit {sorted(missing)}, never built"
 
 
+class _FakeCore:
+    """build_recipe reads only CK_DIR off core for the two composed families."""
+
+    CK_DIR = "/nonexistent"
+
+
+def test_the_dockerfile_floor_matches_aiter_min_version():
+    """Two literals, one meaning. If they drift the image builds green against an
+    AITER the library then refuses, and every path degrades to fa2 at run time."""
+    from flashinfer.rocm import aiter_utils
+
+    dockerfile = (
+        Path(__file__).resolve().parents[2] / "docker" / "Dockerfile.rocm"
+    ).read_text()
+    found = re.findall(r'^FLOOR = "([0-9][^"]*)"', dockerfile, re.M)
+    assert found, "docker/Dockerfile.rocm no longer spells FLOOR; is this test stale?"
+    assert found == [aiter_utils.AITER_MIN_VERSION], (
+        f"Dockerfile FLOOR {found} != AITER_MIN_VERSION "
+        f"{aiter_utils.AITER_MIN_VERSION!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. receipts and token spellings match the installed aiter
 # ---------------------------------------------------------------------------
@@ -179,6 +201,14 @@ def test_the_receipt_and_direction_match_aiter(family, direction, receipt):
         "mha_batch_prefill": driver.RECEIPT_BATCH_PREFILL,
     }[family]
     assert from_driver == receipt
+
+    # The receipt was pinned but the -d literal beside it was not: a typo there
+    # emits an empty instance set that still links and still passes --check.
+    # varlen is excluded because it takes its command from AITER's own helper.
+    if family != "mha_varlen_fwd":
+        v = next(x for x in driver.reachable_variants() if x.family == family)
+        cmd = driver.build_recipe(v, _FakeCore())["blob_gen_cmd"][0]
+        assert f"-d {direction} " in cmd, cmd
 
 
 def test_mha_fwd_masks_on_underscore_m_not_underscore_mask():
