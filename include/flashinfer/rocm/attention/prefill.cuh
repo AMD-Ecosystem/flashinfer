@@ -319,15 +319,19 @@ __device__ __forceinline__ void produce_kv_unit(
     b64_t* smem_ptr = smem.base + smem_offset;
     static_assert(GRANULE * sizeof(DTypeKV) == sizeof(uint32_t));
     if (predicate) {
-      // One register load, then convert: vec_cast is a per-element loop. uint32_t
-      // rather than DTypeKV[GRANULE], which gfx950 cannot default-construct;
-      // memcpy rather than a cast, because -O3 keeps strict aliasing on.
-      uint32_t packed;
-      __builtin_memcpy(&packed, gptr, sizeof(packed));
+      // Stage the KV bytes as one dword, or gfx950 issues GRANULE separate
+      // global_load_ubyte. bit_cast, not a reinterpret_cast of the uint32_t
+      // (that puns it) and not a DTypeKV array (gfx950 cannot default-construct
+      // the fnuz types). wide is 8-byte aligned: vec_cast reads it as float2.
+      struct alignas(sizeof(uint32_t)) Staged {
+        DTypeKV e[GRANULE];
+      };
+      uint32_t raw;
+      __builtin_memcpy(&raw, gptr, sizeof(raw));
+      const Staged packed = __builtin_bit_cast(Staged, raw);
       alignas(sizeof(b64_t)) float wide[GRANULE];
       alignas(sizeof(b64_t)) DTypeKVSmem narrow[GRANULE];
-      vec_cast<float, DTypeKV>::template cast<GRANULE>(wide,
-                                                       reinterpret_cast<const DTypeKV*>(&packed));
+      vec_cast<float, DTypeKV>::template cast<GRANULE>(wide, packed.e);
       vec_cast<DTypeKVSmem, float>::template cast<GRANULE>(narrow, wide);
       __builtin_memcpy(smem_ptr, narrow, sizeof(b64_t));
     } else if constexpr (fill_mode == SharedMemFillMode::kFillZero) {
