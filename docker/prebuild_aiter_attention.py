@@ -411,7 +411,9 @@ def _child_env(jobs: int) -> Dict[str, str]:
     try:
         budget = int(env["MAX_JOBS"])
     except (KeyError, ValueError):
-        budget = int((os.cpu_count() or 1) * 0.8)
+        # sched_getaffinity, not cpu_count: the latter reports the host's cores
+        # inside a cgroup-limited `docker build`.
+        budget = int(len(os.sched_getaffinity(0)) * 0.8)
     env["MAX_JOBS"] = str(max(1, budget // max(1, jobs)))
     return env
 
@@ -435,6 +437,9 @@ def _drain(pending, running, failed, jobs, total) -> None:
                     stderr=subprocess.STDOUT,
                     env=_child_env(jobs),
                 )
+            except BaseException:
+                os.unlink(log_path)  # never reached `running`, so nothing else frees it
+                raise
             finally:
                 os.close(fd)  # Popen dup'd it; holding ours would exhaust the table
             running.append((v, proc, time.time(), log_path))
@@ -588,7 +593,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     # Both, not `rc or`: a run that lost one variant should still report every
     # other artifact that linked hollow, rather than one finding per rebuild.
-    return _check(variants, extra) or rc
+    rc = _check(variants, extra) or rc
+    if rc == 0:
+        # AITER makes build/ at import and each build adds to it; only the
+        # per-module subdirectory was removed, so the root shipped in the layer.
+        shutil.rmtree(jit_dir(_aiter_jit_core()) / "build", ignore_errors=True)
+    return rc
 
 
 if __name__ == "__main__":

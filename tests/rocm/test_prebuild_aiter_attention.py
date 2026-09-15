@@ -169,6 +169,7 @@ def _loader_name_tokens() -> set:
     start = text.find("const char* dtype_token(")
     end = text.find("\n}", text.find("std::string build_so_name("))
     assert start != -1 and end != -1, "aiter_loader.cc: name composition not found"
+    assert start < end, "aiter_loader.cc: dtype_token now follows build_so_name"
     tokens = set(re.findall(r'"([a-z0-9_]+)"', text[start:end]))
 
     call_sites = re.findall(r"build_so_name\(key,([^;]*?)\)", text, re.S)

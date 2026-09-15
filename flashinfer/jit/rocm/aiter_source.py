@@ -53,6 +53,10 @@ _ARCH_RE = re.compile(r"^gfx[0-9a-f]+$")
 # trailing newline, which would reach the ninja link line intact.
 _LIB_NAME_RE = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9_.+-]*\Z")
 
+# The assembled cache tag becomes a directory name and reaches a -L/-rpath flag,
+# so it is checked against a positive class, not a list of denied characters.
+_TAG_RE = re.compile(r"\A[A-Za-z0-9._+-]+\Z")
+
 # Guards the env-mutating build in _build_aiter_lib; see ensure_aiter_lib.
 _BUILD_LOCK = threading.Lock()
 
@@ -241,7 +245,7 @@ def compose_cache_tag(arch: Optional[str] = None) -> str:
     # These versions come from package metadata and torch, neither of which this
     # module controls, so the tag gets the same check the arch did -- on the
     # character class the cache-tag test asserts on.
-    if tag != Path(tag).name or tag.startswith(".") or set(tag) & set("/:;, "):
+    if tag != Path(tag).name or tag.startswith(".") or not _TAG_RE.match(tag):
         raise ValueError(
             f"refusing to build a cache directory name from {tag!r}: "
             f"not a single safe path component"
@@ -332,6 +336,9 @@ def _aiter_csrc_include_dir() -> Path:
     # only case where importing aiter (and needing a live GPU for it) is no
     # worse than the RuntimeError below.
     try:
+        from ...rocm.aiter_utils import _ensure_aiter_gpu_archs
+
+        _ensure_aiter_gpu_archs()
         from aiter.jit.core import AITER_CSRC_DIR
 
         inc = Path(AITER_CSRC_DIR) / "include"

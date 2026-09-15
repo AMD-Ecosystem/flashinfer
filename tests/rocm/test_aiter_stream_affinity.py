@@ -13,6 +13,9 @@ where the two happen to coincide.
 
 vLLM and SGLang both drive a rank inside `with torch.cuda.stream(s)`, so this is
 the production configuration, not an exotic one.
+
+Only cases that actually fail with the guard removed live here: A/B'd on gfx950,
+rmsnorm at hidden=4096 and the rope case do, the in-place fused_add path did not.
 """
 
 import pytest
@@ -56,29 +59,6 @@ def test_rmsnorm_aiter_is_correct_on_a_side_stream(hidden):
     got = _on_side_stream(lambda: flashinfer.rmsnorm(x, w, backend="aiter"))
 
     torch.testing.assert_close(got, expected, rtol=1e-2, atol=1e-2)
-
-
-def test_fused_add_rmsnorm_aiter_is_correct_on_a_side_stream():
-    """Covers the in-place path, which stages into a fresh buffer and copies back.
-
-    Measured: this case still passes with the guard removed. rmsnorm at 4096 and
-    the rope case are the two that actually detect a missing guard.
-    """
-    hidden = 1024
-    x = torch.randn(256, hidden, device="cuda", dtype=DT)
-    res = torch.randn(256, hidden, device="cuda", dtype=DT)
-    w = torch.randn(hidden, device="cuda", dtype=DT)
-
-    x_ref, res_ref = x.clone(), res.clone()
-    flashinfer.fused_add_rmsnorm(x_ref, res_ref, w, backend="aiter")
-
-    x_got, res_got = x.clone(), res.clone()
-    _on_side_stream(
-        lambda: flashinfer.fused_add_rmsnorm(x_got, res_got, w, backend="aiter")
-    )
-
-    torch.testing.assert_close(x_got, x_ref, rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(res_got, res_ref, rtol=1e-2, atol=1e-2)
 
 
 def test_rope_aiter_is_correct_on_a_side_stream():
