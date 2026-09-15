@@ -232,6 +232,14 @@ if torch.version.hip is None:
 print(f"amd-aiter {got}; torch {torch.__version__} (hip={torch.version.hip})")
 PY
 
+# AITER copies its jit tree to ~/.aiter when the installed one is not writable.
+# Docker hands an unknown --user uid HOME=/, which is not writable, so that
+# fallback dies rather than copying. A sticky world-writable home lets it land;
+# the installed tree stays read-only and off any writable import path. Set before
+# the prebuild, which resolves the same directory.
+ENV HOME=/home/$USERNAME
+RUN chmod 1777 /home/$USERNAME
+
 # Placed after the install so editing the variant list re-runs only the prebuild.
 COPY --chown=$USER_UID:$USER_GID docker/prebuild_aiter_attention.py /opt/prebuild_aiter_attention.py
 
@@ -242,13 +250,6 @@ COPY --chown=$USER_UID:$USER_GID docker/prebuild_aiter_attention.py /opt/prebuil
 RUN set -eu; \
     export GPU_ARCHS="$AITER_GPU_ARCHS"; \
     python3 /opt/prebuild_aiter_attention.py --jobs "$AITER_PREBUILD_JOBS"
-
-# AITER copies its jit tree to ~/.aiter when the installed one is not writable.
-# Docker hands an unknown --user uid HOME=/, which is not writable, so that
-# fallback dies rather than copying. A sticky world-writable home lets it land;
-# the installed tree stays read-only and off any writable import path.
-ENV HOME=/home/$USERNAME
-RUN chmod 1777 /home/$USERNAME
 
 WORKDIR /home/$USERNAME
 
