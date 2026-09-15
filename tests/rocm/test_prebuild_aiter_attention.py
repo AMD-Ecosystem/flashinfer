@@ -217,35 +217,45 @@ def _mha_recipes_source() -> str:
     return src.read_text()
 
 
-def _md_tokens(family: str) -> set:
-    """Every name token AITER can emit for this family, dtype excluded.
+def _md_token_order(family: str) -> dict:
+    """Name token -> position of its first appearance in AITER's own source.
 
-    varlen delegates its suffix to `compose_mha_fwd_variant_suffix_and_filter`,
-    so its literals live in mha_recipes.py rather than the composer body.
+    findall preserves source order, so the index doubles as the token's slot in
+    the composed name. varlen delegates its suffix to
+    `compose_mha_fwd_variant_suffix_and_filter`, so its literals live in
+    mha_recipes.py rather than in the composer body.
     """
     source = (
         _mha_recipes_source() if family == "mha_varlen_fwd" else _composer_body(family)
     )
-    return set(re.findall(r'"(_[a-z0-9]+)"', source))
+    order = {}
+    for i, tok in enumerate(re.findall(r'"(_[a-z0-9]+)"', source)):
+        order.setdefault(tok, i)
+    return order
 
 
 @pytest.mark.parametrize("family", sorted(_FAMILY_BY_NAME))
 def test_every_md_name_decomposes_into_aiter_token_literals(family):
-    """Catches a renamed or reordered token: each name we compose must be the
-    family base plus a concatenation of literals AITER itself appends."""
-    tokens = _md_tokens(family)
-    assert tokens, f"no md_name += literals found in cmdGenFunc_{family}"
+    """Each composed name must be the family base plus AITER's own literals, in
+    AITER's own order. Membership alone is not enough: a reordered token leaves
+    every filename for that arm undiscoverable while still decomposing."""
+    order = _md_token_order(family)
+    assert order, f"no md_name += literals found in cmdGenFunc_{family}"
 
     for v in driver.reachable_variants():
         if v.family != family:
             continue
         assert v.md_name.startswith(f"{family}_{v.dtype}")
         rest = v.md_name[len(f"{family}_{v.dtype}") :]
+        seen = -1
         while rest:
-            match = max(
-                (t for t in tokens if rest.startswith(t)), key=len, default=None
-            )
+            match = max((t for t in order if rest.startswith(t)), key=len, default=None)
             assert match, f"{v.md_name!r}: no aiter token matches at {rest!r}"
+            assert order[match] >= seen, (
+                f"{v.md_name!r}: {match!r} is out of AITER's order -- it appears "
+                f"at index {order[match]} after a token at {seen}"
+            )
+            seen = order[match]
             rest = rest[len(match) :]
 
 
