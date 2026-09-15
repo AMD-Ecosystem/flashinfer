@@ -6,11 +6,10 @@ Shared plumbing for FlashInfer's C++-level AITER backends (ROCm).
 FlashInfer wraps AITER kernels by compiling a small ``csrc/rocm/*_aiter.cu`` shim
 that calls AITER's C++ entry point directly and links the symbol-visible AITER
 ``.so``. Prefer ``#include``-ing AITER's real header, so a signature change is a
-compile error rather than a load-time ``undefined symbol``. A forward
-declaration is the fallback for headers that still pull in pybind11, which
-clashes with ``-DPy_LIMITED_API`` -- but declare the signature AITER actually
-has: since 0.1.21 rmsnorm and rope take ``aiter_tensor_t&``, and the old
-``at::Tensor`` spelling compiles and then fails at ``dlopen`` on the mangled name.
+compile error rather than a load-time ``undefined symbol``. Since 0.1.21 the
+norm and rope headers are POD-only, so every shim now includes the real one; a
+forward declaration remains the fallback only for a header that still pulls in
+pybind11, which clashes with ``-DPy_LIMITED_API``.
 
 AITER's installed wheel builds its modules with ``-fvisibility=hidden``, so the
 kernel symbols (e.g. ``rope_cached_positions_2c_fwd_impl``) are not linkable. This

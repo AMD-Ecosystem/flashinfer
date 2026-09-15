@@ -18,18 +18,12 @@
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <c10/hip/HIPGuard.h>
 
-#include "aiter_tensor_compat.h"
+// The real header, not a forward declaration: at 0.1.21 rope.h is POD-only and
+// no longer pulls <torch/extension.h>, so a signature change is a compile error
+// here rather than a dlopen failure on the mangled name.
+#include <rope.h>
 
-// AITER's public header (rope.h) pulls in <torch/extension.h> → full pybind11,
-// which clashes with FlashInfer's -DPy_LIMITED_API, so forward-declare the entry
-// point instead; the linker resolves it against the symbol-visible AITER .so.
-// 0.1.21 moved it onto the POD aiter_tensor_t API -- declaring it with at::Tensor
-// compiles and then fails at dlopen on the mangled name.
-void rope_cached_positions_2c_fwd_impl(aiter_tensor_t& output_x, aiter_tensor_t& output_y,
-                                       const aiter_tensor_t& input_x, const aiter_tensor_t& input_y,
-                                       const aiter_tensor_t& cos, const aiter_tensor_t& sin,
-                                       const aiter_tensor_t& positions, const int32_t rotate_style,
-                                       const bool reuse_freqs_front_part, const bool nope_first);
+#include "aiter_tensor_compat.h"
 
 void apply_rope_pos_ids_cos_sin_cache_aiter(at::Tensor query, at::Tensor key, at::Tensor query_out,
                                             at::Tensor key_out, at::Tensor cos_sin_cache,

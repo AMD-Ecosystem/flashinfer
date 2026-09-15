@@ -17,20 +17,12 @@
 #include <c10/core/GradMode.h>
 #include <c10/hip/HIPGuard.h>
 
-#include "aiter_tensor_compat.h"
+// The real header, not a forward declaration: at 0.1.21 rmsnorm_quant.h is
+// POD-only and no longer pulls <torch/extension.h>, so a signature change is a
+// compile error here rather than a dlopen failure on the mangled name.
+#include <rmsnorm_quant.h>
 
-// AITER's public header (rmsnorm_quant.h) pulls in <torch/extension.h> → full
-// pybind11, which clashes with FlashInfer's -DPy_LIMITED_API, so forward-declare
-// the entry points; the linker resolves them against the symbol-visible AITER
-// .so. 0.1.21 moved both onto the POD aiter_tensor_t API -- declaring them with
-// at::Tensor compiles and then fails at dlopen on the mangled name.
-namespace aiter {
-void add_rmsnorm(aiter_tensor_t& out, aiter_tensor_t& input, aiter_tensor_t& residual_in,
-                 aiter_tensor_t& residual_out, aiter_tensor_t& weight, double epsilon,
-                 bool gemma_norm);
-void rmsnorm(aiter_tensor_t& out, aiter_tensor_t& input, aiter_tensor_t& weight, double epsilon,
-             bool gemma_norm);
-}  // namespace aiter
+#include "aiter_tensor_compat.h"
 
 void fused_add_rmsnorm_aiter(at::Tensor input, at::Tensor residual, at::Tensor weight, double eps) {
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(input.device());
