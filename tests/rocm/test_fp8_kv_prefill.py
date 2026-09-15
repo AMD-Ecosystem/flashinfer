@@ -537,8 +537,10 @@ def test_pod_refuses_fp8_kv(fp8_dtype):
 def test_single_decode_mismatched_k_v_dtypes_are_refused(fp8_dtype):
     """The batch wrapper reaches the batch C++ macro, so it cannot cover this.
 
-    Guards both single-decode seams at once: the Python pre-check that saves a
-    cold JIT, and `single_decode.cu`'s own `CHECK_KV_DTYPES_MATCH`.
+    Covers the Python pre-check only, which saves a cold JIT. `_check_kv_dtypes_match`
+    runs before any module is built, so no argument to this entry point reaches
+    `single_decode.cu`'s `CHECK_KV_DTYPES_MATCH` -- that one backstops callers
+    who build the module themselves, which is the point of putting it in C++.
     """
     dev = "cuda:0"
     nq, nkv, hd, kv_len = 32, 8, 128, 64
