@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # ROCm development container for amd-flashinfer.
 #
 # The base image already provides ROCm, Python and a HIP build of PyTorch inside
@@ -248,7 +249,14 @@ COPY --chown=$USER_UID:$USER_GID docker/prebuild_aiter_attention.py /opt/prebuil
 #
 RUN set -eu; \
     export GPU_ARCHS="$AITER_GPU_ARCHS"; \
-    python3 /opt/prebuild_aiter_attention.py --jobs "$AITER_PREBUILD_JOBS"
+    python3 /opt/prebuild_aiter_attention.py --jobs "$AITER_PREBUILD_JOBS"; \
+    JIT="$(python3 /opt/prebuild_aiter_attention.py --print-jit-dir)"; \
+    case "$JIT" in \
+      */site-packages/aiter/jit) echo "prebuilt into $JIT" ;; \
+      *) echo "ERROR: artifacts went to $JIT, not the installed tree; a runtime" \
+         "container resolves a different directory and would rebuild all of them" >&2; \
+         exit 1 ;; \
+    esac
 
 WORKDIR /home/$USERNAME
 

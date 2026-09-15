@@ -129,12 +129,24 @@ _UNREACHABLE_LOADER_TOKENS = {"_alibi"}
 
 
 def _loader_name_tokens() -> set:
-    """String literals `build_so_name`/`dtype_token` can put in a filename."""
+    """Every string literal the loader can put in a filename.
+
+    Two sources, and missing the second is how `_nsink` could have slipped in:
+    the axis tokens inside `build_so_name`/`dtype_token`, and the
+    prefix/infix/suffix literals its three call sites pass in.
+    """
     text = _LOADER_CC.read_text()
     start = text.find("const char* dtype_token(")
     end = text.find("\n}", text.find("std::string build_so_name("))
     assert start != -1 and end != -1, "aiter_loader.cc: name composition not found"
-    return set(re.findall(r'"([a-z0-9_]+)"', text[start:end]))
+    tokens = set(re.findall(r'"([a-z0-9_]+)"', text[start:end]))
+
+    call_sites = re.findall(r"build_so_name\(key,([^;]*?)\)", text, re.S)
+    assert call_sites, "aiter_loader.cc: no build_so_name call sites found"
+    for args in call_sites:
+        for lit in re.findall(r'"([a-z0-9_.]*)"', args):
+            tokens.update(s for s in lit.replace(".so", "").split("_") if s)
+    return tokens
 
 
 def test_every_name_token_the_loader_can_emit_is_one_the_driver_builds():
