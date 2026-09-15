@@ -1962,12 +1962,13 @@ def single_prefill_with_kv_cache(
         lse = torch.empty((q.size(0), q.size(1)), dtype=torch.float32, device=q.device)
 
     if is_float8(q):
-        # FP8 quant enabled, do sanity check:
-        #   1. unsupported feature
-        #   2. dtype check
-        assert window_left == -1
-        # Not an assert: a wide KV cache under an fp8 query reaches here before
-        # any backend is chosen, and no backend serves that pair.
+        # Not asserts: these reach here before any backend is chosen, and no
+        # backend serves either pair -- a sentence beats a bare AssertionError.
+        if window_left != -1:
+            raise NotImplementedError(
+                "single prefill: an fp8 query does not support a sliding window; "
+                f"got window_left={window_left}."
+            )
         if not (q.dtype == k.dtype == v.dtype):
             raise NotImplementedError(
                 f"single prefill: an fp8 query needs an fp8 k and v, got q={q.dtype}, "

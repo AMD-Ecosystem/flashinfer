@@ -343,6 +343,21 @@ def test_fp8_query_with_wide_kv_is_refused(fp8_dtype):
         flashinfer.single_prefill_with_kv_cache(q, k, k, causal=True)
 
 
+@pytest.mark.parametrize("fp8_dtype", OCP_DTYPES)
+def test_fp8_query_with_sliding_window_is_refused(fp8_dtype):
+    """Also a sentence, not `AssertionError: assert window_left == -1`.
+
+    OCP only: an fnuz query is refused earlier -- e4m3fnuz by the fa2 fp8-query
+    rejection, e5m2fnuz by the allowlist -- so OCP is the one spelling that
+    reaches this branch, and it was the last bare assert on the fp8-query path.
+    """
+    dev = "cuda:0"
+    q = torch.randn(32, 8, 128, dtype=torch.float16, device=dev).to(fp8_dtype)
+    k = torch.randn(64, 8, 128, dtype=torch.float16, device=dev).to(fp8_dtype)
+    with pytest.raises(NotImplementedError, match="(?i)sliding window"):
+        flashinfer.single_prefill_with_kv_cache(q, k, k, causal=True, window_left=16)
+
+
 @pytest.mark.parametrize("ocp_dtype", OCP_DTYPES)
 def test_ocp_fp8_kv_is_refused(ocp_dtype):
     """dtype_map_hip sends OCP to the fnuz type, whose bias is one greater."""
