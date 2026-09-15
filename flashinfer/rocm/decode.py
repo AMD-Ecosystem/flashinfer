@@ -35,10 +35,12 @@ from ..jit import (
 )
 from .aiter_utils import handle_aiter_probe_failure
 from ..jit.core import logger
+from ..jit.rocm.modules import _check_fa2_fp8_dtypes
 from ..page import get_seq_lens
 from .prefill import (
     _aiter_bootstrap_lock,
     _auto_select_prefill_backend,
+    _check_kv_dtypes_match,
     get_batch_prefill_jit_module,
     get_batch_prefill_module,
     get_single_prefill_module,
@@ -126,6 +128,9 @@ def _warn_deprecated_plan_positional_args(api_name: str) -> None:
 
 @functools.cache
 def get_single_decode_module(*args):
+    # Before the URI: it indexes filename_safe_dtype_map, so an unsupported
+    # dtype would raise KeyError rather than the allowlist's message.
+    _check_fa2_fp8_dtypes("single decode", *args[:3], kv_must_match_q=False)
     uri = get_single_decode_uri(*args)
     module = gen_single_decode_module(*args).build_and_load()
     run_func = module.run.default
@@ -265,6 +270,9 @@ def get_batch_decode_jit_module(module_name: str, jit_module: Any):
 
 @functools.cache
 def get_batch_decode_module(*args):
+    # Before the URI: it indexes filename_safe_dtype_map, so an unsupported
+    # dtype would raise KeyError rather than the allowlist's message.
+    _check_fa2_fp8_dtypes("batch decode", *args[:3], kv_must_match_q=False)
     uri = get_batch_decode_uri(*args)
     mod = gen_batch_decode_module(*args).build_and_load()
     plan_func = mod.plan.default
@@ -786,6 +794,8 @@ def single_decode_with_kv_cache(
     if rope_theta is None:
         rope_theta = 1e4
     num_qo_heads = q.shape[0]
+
+    _check_kv_dtypes_match(k, v)
 
     lse = None
     if return_lse:

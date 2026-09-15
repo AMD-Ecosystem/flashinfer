@@ -97,6 +97,132 @@ def _generate_additional_params_hip(
 
 generate_additional_params = _generate_additional_params_hip
 
+# dtype_map_hip sends both OCP spellings to the *fnuz* C++ types, whose exponent
+# bias is one greater (E4M3 7 vs 8, E5M2 15 vs 16), so either is silently 2x off.
+_FP8_OCP_DTYPES = (torch.float8_e4m3fn, torch.float8_e5m2)
+_FP8_FNUZ_DTYPES = (torch.float8_e4m3fnuz, torch.float8_e5m2fnuz)
+
+
+_WIDE_DTYPES = (torch.float16, torch.bfloat16)
+
+# Only batch_prefill_paged_aiter.cu has an fp8 arm, and it takes e4m3 in both
+# spellings because aiter.dtypes.fp8 is arch-dependent, writing bf16 out.
+# Mirrors prefill.py, which cannot be imported here -- it imports this module.
+_AITER_FP8_DTYPES = (torch.float8_e4m3fnuz, torch.float8_e4m3fn)
+
+
+def _check_aiter_dtypes(
+    what: str, dtype_q, dtype_kv, dtype_o, *, allow_fp8: bool
+) -> None:
+    """Allowlist for an explicit backend="aiter".
+
+    Equality alone let a mapped-but-unserved dtype through: int8 and uint8 are
+    in dtype_map_hip, so they built a URI and reached ninja with no kernel.
+    `allow_fp8` is false wherever the launcher is fp16/bf16 only.
+    """
+    if dtype_q != dtype_kv:
+        raise NotImplementedError(
+            f"{what}: AITER requires equal query and KV dtypes; got "
+            f"{dtype_q} and {dtype_kv}."
+        )
+    served = _WIDE_DTYPES + (_AITER_FP8_DTYPES if allow_fp8 else ())
+    for role, dtype in (("query", dtype_q), ("KV", dtype_kv)):
+        if dtype not in served:
+            raise NotImplementedError(
+                f"{what}: AITER {role} dtype {dtype} is not supported. Use "
+                + (
+                    "float16, bfloat16, or the e4m3 fp8 encoding this GPU uses "
+                    "(aiter.dtypes.fp8)."
+                    if allow_fp8
+                    else "float16 or bfloat16; AITER serves fp8 from its paged "
+                    "batch-prefill kernel only."
+                )
+            )
+    # The launchers pin the output exactly: `o == q_dtype` for a wide query
+    # (single_prefill_aiter.cu, batch_ragged_prefill_aiter.cu) and bf16 for an
+    # fp8 one (batch_prefill_paged_aiter.cu). Anything looser builds, then fails.
+    expected_o = torch.bfloat16 if dtype_q in _AITER_FP8_DTYPES else dtype_q
+    if dtype_o != expected_o:
+        raise NotImplementedError(
+            f"{what}: AITER writes output dtype {expected_o} for query dtype "
+            f"{dtype_q}; got {dtype_o}."
+        )
+
+
+def _check_aiter_decode_dtypes(what: str, dtype_q, dtype_kv, dtype_o) -> None:
+    """Allowlist for AITER's paged-decode kernel, which is stricter than prefill.
+
+    `batch_decode_aiter.cu` takes fp16/bf16 only -- no fp8 arm at all -- and
+    requires k, v and o to share the query's dtype.
+    """
+    for role, dtype in (("query", dtype_q), ("KV", dtype_kv), ("output", dtype_o)):
+        if dtype not in _WIDE_DTYPES:
+            raise NotImplementedError(
+                f"{what}: AITER paged decode {role} dtype {dtype} is not "
+                "supported; the kernel serves float16 and bfloat16 only."
+            )
+    if not (dtype_q == dtype_kv == dtype_o):
+        raise NotImplementedError(
+            f"{what}: AITER paged decode needs one dtype for query, KV and "
+            f"output; got {dtype_q}, {dtype_kv} and {dtype_o}."
+        )
+
+
+def _check_fa2_fp8_dtypes(
+    what: str, dtype_q, dtype_kv, dtype_o, *, kv_must_match_q: bool
+) -> None:
+    """Refuse dtype combinations the in-tree attention kernels cannot serve.
+
+    An allowlist, so a dtype nobody considered gets a sentence instead of a
+    ninja log. Raised at module-build time rather than from IsInvalid(), which
+    fires host-side only after a multi-minute JIT.
+    """
+    for role, dtype in (("query", dtype_q), ("output", dtype_o)):
+        if dtype not in _WIDE_DTYPES:
+            raise NotImplementedError(
+                f"{what}: {role} dtype {dtype} is not supported on ROCm. The MFMA "
+                "path is f16f16f32, so the query and output must be float16 or "
+                "bfloat16; only the KV cache may be fp8."
+            )
+    if dtype_kv in _FP8_OCP_DTYPES:
+        raise NotImplementedError(
+            f"{what}: fp8 KV dtype {dtype_kv} is an OCP encoding. The HIP kernel "
+            "would read it as the fnuz type of the same shape, whose exponent bias "
+            "is one greater (E4M3 7 vs 8, E5M2 15 vs 16), and be silently 2x wrong. "
+            "Re-quantize as torch.float8_e4m3fnuz or torch.float8_e5m2fnuz."
+        )
+    if dtype_kv not in _WIDE_DTYPES + _FP8_FNUZ_DTYPES:
+        raise NotImplementedError(
+            f"{what}: KV dtype {dtype_kv} is not supported on ROCm. Use float16, "
+            "bfloat16, or an fnuz fp8 cache (torch.float8_e4m3fnuz, "
+            "torch.float8_e5m2fnuz)."
+        )
+    # The MFMA is instantiated from DTypeQ, so a bf16 cache under an fp16 query
+    # is read as fp16. Only the *plain* decode kernel is exempt: it cast_loads q
+    # and k into vec_t<float> separately. use_tensor_cores=True decode builds
+    # the prefill module, so it is bound by this rule like any other prefill.
+    if kv_must_match_q and dtype_kv in _WIDE_DTYPES and dtype_kv != dtype_q:
+        raise NotImplementedError(
+            f"{what}: KV dtype {dtype_kv} differs from query dtype {dtype_q}. A "
+            "2-byte cache must match the query; only an fp8 cache may differ."
+        )
+
+
+def _check_pod_fp8_dtypes(what: str, dtype_q, dtype_kv, dtype_o) -> None:
+    """Refuse any fp8 on POD, which prefill.cuh's tile arithmetic does not cover.
+
+    pod.cuh carries upstream's CUDA register constant (8, against CDNA's 4) and
+    sizes the smem budget off the query dtype, so it can instantiate KernelTraits
+    at a NUM_MMA_KV the prefill dispatchers never produce and nothing has tested.
+    """
+    if dtype_kv in _FP8_FNUZ_DTYPES + _FP8_OCP_DTYPES:
+        raise NotImplementedError(
+            f"{what}: an fp8 KV cache is not supported. Use "
+            "BatchPrefillWithPagedKVCacheWrapper or BatchDecodeWithPagedKVCacheWrapper, "
+            "which serve fp8 KV, and run the two phases unfused."
+        )
+    _check_fa2_fp8_dtypes(what, dtype_q, dtype_kv, dtype_o, kv_must_match_q=True)
+
 
 def get_single_decode_uri(
     dtype_q: torch.dtype,
@@ -235,6 +361,11 @@ def gen_single_decode_module(
     use_sliding_window: bool,
     use_logits_soft_cap: bool,
 ):
+    # Before the URI: it indexes filename_safe_dtype_map, so an unsupported
+    # dtype would raise KeyError rather than this allowlist's message.
+    _check_fa2_fp8_dtypes(
+        "single decode", dtype_q, dtype_kv, dtype_o, kv_must_match_q=False
+    )
     uri = get_single_decode_uri(
         dtype_q,
         dtype_kv,
@@ -281,6 +412,16 @@ def gen_single_prefill_module(
     use_logits_soft_cap: bool,
     use_fp16_qk_reduction: bool,
 ) -> JitSpec:
+    # Before the URI: it indexes filename_safe_dtype_map, so an unsupported
+    # dtype would raise KeyError rather than this allowlist's message.
+    if backend == "aiter":
+        _check_aiter_dtypes(
+            "single prefill", dtype_q, dtype_kv, dtype_o, allow_fp8=False
+        )
+    else:
+        _check_fa2_fp8_dtypes(
+            "single prefill", dtype_q, dtype_kv, dtype_o, kv_must_match_q=True
+        )
     uri = get_single_prefill_uri(
         backend,
         dtype_q,
@@ -366,6 +507,11 @@ def gen_batch_decode_aiter_module(
     head_dim_qk: int,
     head_dim_vo: int,
 ) -> JitSpec:
+    # First, ahead of both the URI (which indexes filename_safe_dtype_map, so an
+    # unsupported dtype would raise KeyError) and the aiter import (absent on a
+    # py3.13 box, which would mask the refusal with ModuleNotFoundError).
+    _check_aiter_decode_dtypes("batch decode (aiter)", dtype_q, dtype_kv, dtype_o)
+
     import aiter as _aiter_mod
 
     # Batch decode resolves its .so as an absolute path from Python via
@@ -411,6 +557,11 @@ def gen_batch_decode_module(
     use_sliding_window: bool,
     use_logits_soft_cap: bool,
 ):
+    # Before the URI: it indexes filename_safe_dtype_map, so an unsupported
+    # dtype would raise KeyError rather than this allowlist's message.
+    _check_fa2_fp8_dtypes(
+        "batch decode", dtype_q, dtype_kv, dtype_o, kv_must_match_q=False
+    )
     uri = get_batch_decode_uri(
         dtype_q,
         dtype_kv,
@@ -460,6 +611,14 @@ def gen_batch_prefill_module(
     use_logits_soft_cap: bool,
     use_fp16_qk_reduction: bool,
 ) -> JitSpec:
+    # Before the URI: it indexes filename_safe_dtype_map, so an unsupported
+    # dtype would raise KeyError rather than this allowlist's message.
+    if backend == "aiter":
+        _check_aiter_dtypes("batch prefill", dtype_q, dtype_kv, dtype_o, allow_fp8=True)
+    else:
+        _check_fa2_fp8_dtypes(
+            "batch prefill", dtype_q, dtype_kv, dtype_o, kv_must_match_q=True
+        )
     uri = get_batch_prefill_uri(
         backend,
         dtype_q,
@@ -563,6 +722,9 @@ def gen_customize_single_decode_module(
     use_sliding_window: bool = False,
     use_logits_soft_cap: bool = False,
 ) -> JitSpec:
+    _check_fa2_fp8_dtypes(
+        "single decode", dtype_q, dtype_kv, dtype_o, kv_must_match_q=False
+    )
     gen_directory = FLASHINFER_GEN_SRC_DIR / uri
     (
         additional_params_decl,
@@ -648,10 +810,26 @@ def gen_customize_single_prefill_module(
     use_fp16_qk_reduction: bool = False,
     fp8_enabled: bool = False,
 ):
-    # Upstream routes fp8 through fa3-only sm90 templates; ROCm has no fp8
-    # prefill kernel, so refuse rather than silently return a bf16/fp16 one.
+    # fp8_enabled selects upstream's fa3-only sm90 fp8-*query* templates. An fp8
+    # KV cache is served by the fa2 kernel and does not come through here.
     if fp8_enabled:
-        raise ValueError("fp8 prefill is not supported on ROCm")
+        raise ValueError(
+            "fp8 queries are not supported on ROCm; an fp8 KV cache is served "
+            "via kv_data_type on the fa2 prefill and decode wrappers"
+        )
+    # AITER compiles its own fp8 dtypes, but its kernels take one dtype for q
+    # and kv; an explicit backend="aiter" otherwise reaches ninja with a pair
+    # no kernel exists for.
+    if backend == "aiter":
+        _check_aiter_dtypes(
+            "single prefill", dtype_q, dtype_kv, dtype_o, allow_fp8=False
+        )
+    # Not `== "fa2"`: ROCm logs and ignores an explicit "fa3", routing it to
+    # the same in-tree kernel, so only AITER compiles its own fp8 dtypes.
+    if backend != "aiter":
+        _check_fa2_fp8_dtypes(
+            "single prefill", dtype_q, dtype_kv, dtype_o, kv_must_match_q=True
+        )
 
     kwargs = {
         "variant_decl": variant_decl,
@@ -803,6 +981,9 @@ def gen_customize_batch_decode_module(
     use_sliding_window: bool = False,
     use_logits_soft_cap: bool = False,
 ):
+    _check_fa2_fp8_dtypes(
+        "batch decode", dtype_q, dtype_kv, dtype_o, kv_must_match_q=False
+    )
     gen_directory = FLASHINFER_GEN_SRC_DIR / uri
     (additional_params_decl, additional_func_params, additional_params_setter) = (
         generate_additional_params(
@@ -887,10 +1068,24 @@ def gen_customize_batch_prefill_module(
     use_fp16_qk_reduction: bool = False,
     fp8_enabled: bool = False,
 ):
-    # Upstream routes fp8 through fa3-only sm90 templates; ROCm has no fp8
-    # prefill kernel, so refuse rather than silently return a bf16/fp16 one.
+    # fp8_enabled selects upstream's fa3-only sm90 fp8-*query* templates. An fp8
+    # KV cache is served by the fa2 kernel and does not come through here.
     if fp8_enabled:
-        raise ValueError("fp8 prefill is not supported on ROCm")
+        raise ValueError(
+            "fp8 queries are not supported on ROCm; an fp8 KV cache is served "
+            "via kv_data_type on the fa2 prefill and decode wrappers"
+        )
+    # AITER compiles its own fp8 dtypes, but its kernels take one dtype for q
+    # and kv; an explicit backend="aiter" otherwise reaches ninja with a pair
+    # no kernel exists for.
+    if backend == "aiter":
+        _check_aiter_dtypes("batch prefill", dtype_q, dtype_kv, dtype_o, allow_fp8=True)
+    # Not `== "fa2"`: ROCm logs and ignores an explicit "fa3", routing it to
+    # the same in-tree kernel, so only AITER compiles its own fp8 dtypes.
+    if backend != "aiter":
+        _check_fa2_fp8_dtypes(
+            "batch prefill", dtype_q, dtype_kv, dtype_o, kv_must_match_q=True
+        )
 
     kwargs = {
         "variant_decl": variant_decl,
@@ -1109,6 +1304,7 @@ def gen_pod_module(
     use_sliding_window_d: bool,
     use_logits_soft_cap_d: bool,
 ) -> JitSpec:
+    _check_pod_fp8_dtypes("POD", dtype_q, dtype_kv, dtype_o)
     uri = get_pod_uri(
         dtype_q,
         dtype_kv,
@@ -1158,6 +1354,7 @@ def gen_batch_pod_module(
     use_sliding_window_d: bool,
     use_logits_soft_cap_d: bool,
 ) -> JitSpec:
+    _check_pod_fp8_dtypes("batch POD", dtype_q, dtype_kv, dtype_o)
     uri = get_batch_pod_uri(
         dtype_q,
         dtype_kv,
@@ -1212,6 +1409,9 @@ def _gen_customize_pod_like_module(
     use_fp16_qk_reduction: bool,
 ) -> JitSpec:
     """Shared body for single (prefix="pod") and batch (prefix="batch_pod") POD JIT modules."""
+    # Both customize entry points reach the kernel only through here, so this is
+    # the seam that keeps them from bypassing gen_pod_module's refusal.
+    _check_pod_fp8_dtypes(f"{prefix} (customize)", dtype_q, dtype_kv, dtype_o)
     gen_directory = FLASHINFER_GEN_SRC_DIR / uri
 
     kwargs = {

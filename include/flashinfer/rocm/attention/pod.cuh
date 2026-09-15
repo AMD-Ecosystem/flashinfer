@@ -151,6 +151,10 @@ hipError_t PODWithKVCacheTensorDispatched(PrefillParams prefill_params,
                                           DecodeParams decode_params,
                                           typename DecodeParams::DTypeO* tmp_v, float* tmp_s,
                                           bool /*enable_pdl*/, hipStream_t stream) {
+  // POD sizes its tiles independently of the prefill dispatchers, so an fp8
+  // KV would reach a geometry nothing has tested. Refused in Python too.
+  static_assert(!is_fp8_kv_v<typename PrefillParams::DTypeKV>,
+                "fp8 KV cache is not supported for POD attention");
   static_assert(std::is_same<typename PrefillParams::DTypeQ, typename DecodeParams::DTypeQ>::value);
   static_assert(
       std::is_same<typename PrefillParams::DTypeKV, typename DecodeParams::DTypeKV>::value);

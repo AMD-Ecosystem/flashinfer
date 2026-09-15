@@ -169,13 +169,13 @@ library's actual routing. Do not edit it by hand; run
 | `silu_and_mul` | `aiter` -- opt-in | ✅ | ✅ | `aiter::silu_and_mul`, linked at the C++ level. Opt-in; matches native in fp16, lower in bf16. |
 | `fused_moe` | `aiter` -- only backend | ✅ | ✅ | `aiter_fused_moe`; bf16/fp16. Weights must be pre-shuffled with `shuffle_moe_weight` or results are silently wrong. |
 | `fused_moe_fp8` | `aiter` -- only backend | ✅ | ✅ | `aiter_fused_moe` with fp8 weights in `moe_fp8_dtype()` plus both scales; activations are quantized per token in the shim. |
-| `single_decode` | `hip` -- only backend | ✅ | ✅ | MHA / GQA / MQA. |
-| `batch_decode` | `hip` -- fallback; auto tries `aiter` first | ✅ | ✅ | MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ) and CUDA-graph capture. |
-| `single_prefill` | `hip` -- fallback; auto tries `aiter` first | ✅ | ✅ | MHA / GQA / MQA, including custom attention masks. |
-| `batch_prefill` | `hip` -- fallback; auto tries `aiter` first | ✅ | ✅ | Paged and ragged; MHA / GQA / MQA, including custom attention masks. |
-| `block_sparse` | `hip` -- only backend | ✅ | ✅ | `BlockSparseAttentionWrapper` and the variable-block variant. Native HIP FA2 only -- `determine_attention_backend` never returns `aiter` here. |
+| `single_decode` | `hip` -- only backend | ✅ | ✅ | MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ, E5M2FNUZ). No fp8 module is prebuilt, so first use pays a cold build. |
+| `batch_decode` | `hip` -- fallback; auto tries `aiter` first | ✅ | ✅ | MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ, E5M2FNUZ) on both the plain and `use_tensor_cores=True` paths, and CUDA-graph capture. |
+| `single_prefill` | `hip` -- fallback; auto tries `aiter` first | ✅ | ✅ | MHA / GQA / MQA, including custom attention masks. fp8 KV-cache (E4M3FNUZ, E5M2FNUZ) with a 2-byte query, JIT-only; the OCP spellings are refused, since they would be read under the fnuz exponent bias. |
+| `batch_prefill` | `hip` -- fallback; auto tries `aiter` first | ✅ | ✅ | Paged and ragged; MHA / GQA / MQA, including custom attention masks. fp8 KV-cache (E4M3FNUZ, E5M2FNUZ) with a 2-byte query, JIT-only -- no fp8 prefill module is prebuilt, so first use pays a cold build. |
+| `block_sparse` | `hip` -- only backend | ✅ | ✅ | `BlockSparseAttentionWrapper` and the variable-block variant. Native HIP FA2 only -- `determine_attention_backend` never returns `aiter` here. Both wrappers build through the batch-prefill module, so the fp8 KV-cache dtypes and refusals are the same as `batch_prefill`. |
 | `cascade` | `hip` -- merge only; levels are auto-routed and can be `aiter` | ✅ | ✅ | Two-level shared-prefix attention. The `hip` backend is the merge kernels only: each level runs through the ordinary prefill/decode entry points at `backend="auto"`, so it can reach AITER, and no cascade wrapper exposes `backend=` to override that. `FLASHINFER_HIP_FUSED_CASCADE=1` threads partial state through the levels of `MultiLevelCascadeAttentionWrapper` only; AITER levels and both shared-prefix wrappers still merge post-hoc. |
-| `pod` | `hip` -- only backend | ✅ | ✅ | `PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream. |
+| `pod` | `hip` -- only backend | ✅ | ✅ | `PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream. An fp8 KV-cache is refused: POD sizes its tiles independently of the prefill dispatchers and no geometry there has been tested. |
 | `rope` | `hip` -- auto picks this | ✅ | ✅ | LLaMA and LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). |
 | `append_paged_kv_cache` | `hip` -- auto picks this | ✅ | ✅ | fp8 KV-cache supported. Sustains 3.62 TB/s against AITER's 2.86 on gfx942, so `auto` picks this. |
 | `rmsnorm` | `hip` -- auto picks this | ✅ | ✅ | What `auto` always picks: level with AITER on speed and more accurate. |

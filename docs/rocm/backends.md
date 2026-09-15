@@ -386,6 +386,13 @@ runs it in CI.
 
 ## Known limitations
 
+**`pos_encoding_mode="ROPE_LLAMA"` on the fa2 prefill kernel is
+non-deterministic.** It returns a different result on every call from identical
+inputs — measured on gfx942, spread 0.2-1.4 over repeats, at every KV dtype
+including plain fp16, and already present at a single KV tile. `"NONE"` is
+bitwise reproducible. No prefill test covers RoPE, which is how it survived;
+treat in-kernel RoPE prefill as unusable and rotate q/k beforehand instead.
+
 AITER constraints fall into two groups. The first errors out under
 `backend="aiter"` and triggers fallback under `backend="auto"`. The second
 is worse: the call runs, but the flag is silently dropped.
@@ -769,9 +776,35 @@ partial case — its own kernels are HIP, but what it calls is not:
   OnlineSoftmax / SamplingFromLogits), the **logits processor** pipeline,
   and **quantization** (`packbits`, `segment_packbits`).
 
-### fp8 on the HIP path
+### fp8 on the HIP path: KV cache only
 
-* Batch decode accepts an fp8 KV-cache (`float8_e4m3fnuz`).
+Single prefill, batch prefill (paged and ragged), single decode, batch decode,
+and decode with `use_tensor_cores=True` all accept an fp8 KV-cache in
+`float8_e4m3fnuz` or `float8_e5m2fnuz`. The prefill-backed paths dequantize
+the cache into a 2-byte LDS tile on the way in; plain decode keeps an fp8 LDS
+tile and converts values to float when consuming them. Either way, the saving
+is HBM traffic and cache capacity, not math.
+
+* **The query and output stay 2-byte.** The prefill/tensor-core MFMA path is
+  f16f16f32, so an fp8 query is refused at module build; plain decode is limited
+  to the same public query and output dtype allowlist.
+* **Only the fnuz spellings.** `torch.float8_e4m3fn` and `torch.float8_e5m2` are
+  OCP encodings, and the HIP types they map to use an exponent bias one greater
+  (E4M3 7 vs 8, E5M2 15 vs 16), so passing one would be silently 2x wrong. Both
+  are refused.
+* **POD refuses fp8 KV.** `pod.cuh` sizes its tiles independently of the prefill
+  dispatchers, so it can ask for a geometry nothing has tested. Run the two
+  phases unfused.
+* **JIT-only.** No fp8 prefill or decode module is prebuilt, so first use pays a
+  cold `hipcc` build.
+* **The dequantize is hardware on gfx942, software on gfx950.** CDNA4 sets
+  `HIP_FP8_TYPE_FNUZ=0`, so the fnuz->float leg is a ~15-op routine rather than
+  a `cvt` instruction. Correctness is verified on both.
+* **Measured as capacity, not speed.** Prefill came out flat and only
+  `use_tensor_cores=True` decode gained. Note the produce path still issues one
+  4-byte load per lane where a 2-byte cache issues 8, so the instruction count
+  does not fall with the byte count -- the flat result is not yet known to be
+  inherent.
 * RoPE has a fused RoPE + fp8-quantize + paged-KV-append path covering
   `float8_e4m3fnuz` and `float8_e5m2fnuz`, alongside LLaMA and LLaMA 3.1
   scaling.
@@ -799,7 +832,9 @@ causal). The constraints, all of them AITER's:
   flat-gather path raise `NotImplementedError` naming fp8 on either backend;
   single prefill raises `NotImplementedError` on fa2 and `RuntimeError` from
   AITER's own dtype check on `backend="aiter"`. What none of them do is reach
-  the fa2 kernel's `static_assert`, which surfaces as a compiler log.
+  a kernel `static_assert`, which surfaces as a compiler log. All of this is
+  about an fp8 *query*; an fp8 KV cache with a 2-byte query is served in tree,
+  on fa2 — see above.
 
 ## Tests
 
