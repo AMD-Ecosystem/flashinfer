@@ -780,11 +780,14 @@ partial case — its own kernels are HIP, but what it calls is not:
 
 Single prefill, batch prefill (paged and ragged), single decode, batch decode,
 and decode with `use_tensor_cores=True` all accept an fp8 KV-cache in
-`float8_e4m3fnuz` or `float8_e5m2fnuz`. The cache is dequantized into a 2-byte LDS tile on the way in,
-so the saving is HBM bandwidth and cache capacity, not math.
+`float8_e4m3fnuz` or `float8_e5m2fnuz`. The prefill-backed paths dequantize
+the cache into a 2-byte LDS tile on the way in; plain decode keeps an fp8 LDS
+tile and converts values to float when consuming them. Either way, the saving
+is HBM traffic and cache capacity, not math.
 
-* **The query and output stay 2-byte.** The MFMA path is f16f16f32, so an fp8
-  query is refused at module build.
+* **The query and output stay 2-byte.** The prefill/tensor-core MFMA path is
+  f16f16f32, so an fp8 query is refused at module build; plain decode is limited
+  to the same public query and output dtype allowlist.
 * **Only the fnuz spellings.** `torch.float8_e4m3fn` and `torch.float8_e5m2` are
   OCP encodings, and the HIP types they map to use an exponent bias one greater
   (E4M3 7 vs 8, E5M2 15 vs 16), so passing one would be silently 2x wrong. Both
