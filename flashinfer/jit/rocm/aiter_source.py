@@ -6,10 +6,11 @@ Shared plumbing for FlashInfer's C++-level AITER backends (ROCm).
 FlashInfer wraps AITER kernels by compiling a small ``csrc/rocm/*_aiter.cu`` shim
 that calls AITER's C++ entry point directly and links the symbol-visible AITER
 ``.so``. Prefer ``#include``-ing AITER's real header, so a signature change is a
-compile error rather than a load-time ``undefined symbol``. Fall back to a
-forward declaration only for headers that still pull in pybind11, which clashes
-with FlashInfer's ``-DPy_LIMITED_API`` build (``rope.h``, ``rmsnorm.h`` as of
-0.1.16); there ``torch::Tensor`` is ``at::Tensor``, so the linker still resolves.
+compile error rather than a load-time ``undefined symbol``. A forward
+declaration is the fallback for headers that still pull in pybind11, which
+clashes with ``-DPy_LIMITED_API`` -- but declare the signature AITER actually
+has: since 0.1.21 rmsnorm and rope take ``aiter_tensor_t&``, and the old
+``at::Tensor`` spelling compiles and then fails at ``dlopen`` on the mangled name.
 
 AITER's installed wheel builds its modules with ``-fvisibility=hidden``, so the
 kernel symbols (e.g. ``rope_cached_positions_2c_fwd_impl``) are not linkable. This
@@ -237,10 +238,9 @@ def compose_cache_tag(arch: Optional[str] = None) -> str:
     # ("0.1.21.post2") where a wheel's carried "+rocm..." and keyed ROCm by
     # accident; without it, two toolchains would share one tag.
     tag = f"{arch}__aiter-{version}__rocm-{_rocm_version()}"
-    # The version strings come from package metadata and torch, neither of which
-    # this module controls, so the composed tag gets the same check the arch did.
-    # Same character class the cache-tag test asserts on: the AITER and ROCm
-    # versions come from package metadata and torch, neither of which we control.
+    # These versions come from package metadata and torch, neither of which this
+    # module controls, so the tag gets the same check the arch did -- on the
+    # character class the cache-tag test asserts on.
     if tag != Path(tag).name or tag.startswith(".") or set(tag) & set("/:;, "):
         raise ValueError(
             f"refusing to build a cache directory name from {tag!r}: "

@@ -176,7 +176,8 @@ standalone install must do the same, or single prefill fails at `dlopen` once a
 call is large enough to take the asm arm:
 
 ```bash
-python3 docker/prebuild_aiter_attention.py --jobs 2   # or: export FLASHINFER_AITER_ASM_PREFILL=0
+GPU_ARCHS="gfx942;gfx950" python3 docker/prebuild_aiter_attention.py --jobs 2
+# or, to skip it: export FLASHINFER_AITER_ASM_PREFILL=0
 ```
 
 `PREBUILD_KERNELS=0` because `=1` needs a live GPU — and its prebuilt modules

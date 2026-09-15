@@ -13,7 +13,7 @@ Stdlib-only, and reaches AITER by the flat ``sys.path`` import its own
 deliberate copy of ``flashinfer.jit.rocm.aiter_variants``, which pulls torch;
 ``tests/rocm/test_prebuild_aiter_attention.py`` holds the two in step.
 
-    python3 docker/prebuild_aiter_attention.py --list|--check|--jobs 2
+    GPU_ARCHS="gfx942;gfx950" python3 docker/prebuild_aiter_attention.py --jobs 2
 """
 
 from __future__ import annotations
@@ -537,8 +537,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     p.add_argument(
         "--jobs",
-        type=int,
-        default=int(os.environ.get("AITER_PREBUILD_JOBS", "1")),
+        # str, validated in main(): an int() here runs while the parser is being
+        # built, so a bad AITER_PREBUILD_JOBS would crash before --help works.
+        default=os.environ.get("AITER_PREBUILD_JOBS", "1"),
         help="concurrent build processes",
     )
     p.add_argument(
@@ -571,6 +572,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if a.check:
         return _check(variants, extra)
 
+    try:
+        a.jobs = int(a.jobs)
+    except ValueError:
+        p.error(f"--jobs/AITER_PREBUILD_JOBS must be an integer, got {a.jobs!r}")
     if a.jobs < 1:
         p.error("--jobs must be >= 1")
     t0 = time.time()
@@ -579,7 +584,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"\n{len(variants)} variant(s) + {len(extra)} module(s) in "
         f"{(time.time() - t0) / 60:.0f} min at --jobs {a.jobs}"
     )
-    return rc or _check(variants, extra)
+    # Both, not `rc or`: a run that lost one variant should still report every
+    # other artifact that linked hollow, rather than one finding per rebuild.
+    return _check(variants, extra) or rc
 
 
 if __name__ == "__main__":
