@@ -232,13 +232,12 @@ if torch.version.hip is None:
 print(f"amd-aiter {got}; torch {torch.__version__} (hip={torch.version.hip})")
 PY
 
-# AITER copies its jit tree to ~/.aiter when the installed one is not writable.
-# Docker hands an unknown --user uid HOME=/, which is not writable, so that
-# fallback dies rather than copying. A sticky world-writable home lets it land;
-# the installed tree stays read-only and off any writable import path. Set before
-# the prebuild, which resolves the same directory.
-ENV HOME=/home/$USERNAME
-RUN chmod 1777 /home/$USERNAME
+# Nothing here is made group- or world-writable. AITER falls back to copying its
+# jit tree to ~/.aiter when the installed one is not writable, so a --user run
+# with a uid that is not $USER_UID needs a writable HOME of its own:
+#   docker run --user "$(id -u)" -e HOME=/work -v "$PWD":/work ...
+# Widening a shared directory instead puts a writable path on Python's import
+# path, which is worse than the copy it avoids (226 MB, 97 ms).
 
 # Placed after the install so editing the variant list re-runs only the prebuild.
 COPY --chown=$USER_UID:$USER_GID docker/prebuild_aiter_attention.py /opt/prebuild_aiter_attention.py

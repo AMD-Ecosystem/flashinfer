@@ -23,7 +23,7 @@ docker build -t flashinfer-dev:rocm10.0 -f docker/Dockerfile.rocm .
 10.0, 24.04, 3.12, and 2.12.0. They select the `rocm/pytorch` base image tag,
 so they are not independent knobs — any override has to name a tag that exists
 on Docker Hub. `AITER_REF` selects the AITER tag to build from source, and
-`AITER_PREBUILD_JOBS` how many variants compile at once (~23 min at 2 on 32
+`AITER_PREBUILD_JOBS` how many variants compile at once (~35 min at 2 on 32
 cores). `AITER_SOURCE=0` falls back to the `AITER_VERSION`/`AITER_INDEX` wheel install,
 which is an unblock only: no `amd-aiter` wheel targets ROCm 10, so it installs a
 retarget of another ROCm. Do not raise `TORCH_VERSION` to 2.13 — it drops a `c10` symbol AITER's
