@@ -472,7 +472,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "single_decode",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="MHA / GQA / MQA.",
+        note="MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ, E5M2FNUZ). No fp8 module is prebuilt, so first use pays a cold build.",
     ),
     Capability(
         "batch_decode",

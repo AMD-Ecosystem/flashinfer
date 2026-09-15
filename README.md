@@ -169,7 +169,7 @@ library's actual routing. Do not edit it by hand; run
 | `silu_and_mul` | `aiter` -- opt-in | ✅ | ✅ | `aiter::silu_and_mul`, linked at the C++ level. Opt-in; matches native in fp16, lower in bf16. |
 | `fused_moe` | `aiter` -- only backend | ✅ | ✅ | `aiter_fused_moe`; bf16/fp16. Weights must be pre-shuffled with `shuffle_moe_weight` or results are silently wrong. |
 | `fused_moe_fp8` | `aiter` -- only backend | ✅ | ✅ | `aiter_fused_moe` with fp8 weights in `moe_fp8_dtype()` plus both scales; activations are quantized per token in the shim. |
-| `single_decode` | `hip` -- only backend | ✅ | ✅ | MHA / GQA / MQA. |
+| `single_decode` | `hip` -- only backend | ✅ | ✅ | MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ, E5M2FNUZ). No fp8 module is prebuilt, so first use pays a cold build. |
 | `batch_decode` | `hip` -- fallback; auto tries `aiter` first | ✅ | ✅ | MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ, E5M2FNUZ) on both the plain and `use_tensor_cores=True` paths, and CUDA-graph capture. |
 | `single_prefill` | `hip` -- fallback; auto tries `aiter` first | ✅ | ✅ | MHA / GQA / MQA, including custom attention masks. fp8 KV-cache (E4M3FNUZ, E5M2FNUZ) with a 2-byte query, JIT-only; the OCP spellings are refused, since they would be read under the fnuz exponent bias. |
 | `batch_prefill` | `hip` -- fallback; auto tries `aiter` first | ✅ | ✅ | Paged and ragged; MHA / GQA / MQA, including custom attention masks. fp8 KV-cache (E4M3FNUZ, E5M2FNUZ) with a 2-byte query, JIT-only -- no fp8 prefill module is prebuilt, so first use pays a cold build. |

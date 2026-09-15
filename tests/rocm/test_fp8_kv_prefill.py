@@ -19,7 +19,7 @@ import math
 import pytest
 import torch
 from attention_reference import naive_attention
-from jit_utils import gen_prefill_attention_modules
+from jit_utils import gen_decode_attention_modules, gen_prefill_attention_modules
 
 import flashinfer
 from flashinfer.jit.core import logger
@@ -40,10 +40,23 @@ def _skip_without_aiter():
 @pytest.fixture(autouse=True, scope="module")
 def warmup_jit():
     common = ([0], [False, True], [False], [False])  # posenc, swa, softcap, f16qk
-    specs = gen_prefill_attention_modules(
-        [torch.float16], [torch.float16] + FNUZ_DTYPES, [64, 128], *common
-    ) + gen_prefill_attention_modules(
-        [torch.bfloat16], [torch.bfloat16] + FNUZ_DTYPES, [128], *common
+    specs = (
+        gen_prefill_attention_modules(
+            [torch.float16], [torch.float16] + FNUZ_DTYPES, [64, 128], *common
+        )
+        + gen_prefill_attention_modules(
+            [torch.bfloat16], [torch.bfloat16] + FNUZ_DTYPES, [128], *common
+        )
+        # Decode too: single decode has its own kernel, which would otherwise
+        # compile serially inside the test body. Only the shapes the tests use.
+        + gen_decode_attention_modules(
+            [torch.float16],
+            [torch.float16] + FNUZ_DTYPES,
+            [64, 128],
+            [0],
+            [False],
+            [False],
+        )
     )
     # Both calls emit the shared helper specs; ninja rejects duplicate rules.
     flashinfer.jit.build_jit_specs(
@@ -541,8 +554,11 @@ def test_single_decode_mismatched_k_v_dtypes_are_refused(fp8_dtype):
 def test_single_decode_fp8_kv_matches_dequantized(fp8_dtype, head_dim):
     """SingleDecodeWithKVCacheKernel is its own kernel, not the batch one, and
     e5m2fnuz only became expressible when this series added it to dtype_map_hip.
-    Tolerance rather than bit-equality: decode accumulates in float and its
-    reduction order is not pinned the way the prefill LDS tile pins prefill's.
+
+    Tolerance, not bit-equality: an fp8 cache selects a different geometry from
+    the 2-byte reference (vec_size 16 vs 8, tile_size_per_bdx 2 vs 1), so this
+    cannot pin the fp8 shape the way the prefill oracle pins prefill's. atol is
+    5x the worst measured delta (6.1e-5) and 6x under a 1% output shift.
     """
     torch.manual_seed(0)
     dev = "cuda:0"
@@ -553,7 +569,7 @@ def test_single_decode_fp8_kv_matches_dequantized(fp8_dtype, head_dim):
 
     got = flashinfer.decode.single_decode_with_kv_cache(q, k8, v8)
     ref = flashinfer.decode.single_decode_with_kv_cache(q, k16, v16)
-    torch.testing.assert_close(got.float(), ref.float(), rtol=2e-3, atol=2e-3)
+    torch.testing.assert_close(got.float(), ref.float(), rtol=1e-3, atol=3e-4)
 
 
 @pytest.mark.parametrize("fp8_dtype", FNUZ_DTYPES)

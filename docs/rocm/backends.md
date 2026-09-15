@@ -758,9 +758,9 @@ partial case — its own kernels are HIP, but what it calls is not:
 
 ### fp8 on the HIP path: KV cache only
 
-Single prefill, batch prefill (paged and ragged), batch decode, and decode with
-`use_tensor_cores=True` all accept an fp8 KV-cache in `float8_e4m3fnuz` or
-`float8_e5m2fnuz`. The cache is dequantized into a 2-byte LDS tile on the way in,
+Single prefill, batch prefill (paged and ragged), single decode, batch decode,
+and decode with `use_tensor_cores=True` all accept an fp8 KV-cache in
+`float8_e4m3fnuz` or `float8_e5m2fnuz`. The cache is dequantized into a 2-byte LDS tile on the way in,
 so the saving is HBM bandwidth and cache capacity, not math.
 
 * **The query and output stay 2-byte.** The MFMA path is f16f16f32, so an fp8
