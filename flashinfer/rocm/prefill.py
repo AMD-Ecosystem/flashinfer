@@ -431,10 +431,9 @@ def _require_aiter_runtime(device: torch.device, op: str = "batch_prefill") -> N
             )
         raise ImportError(
             "The 'aiter' package is required for the AITER backend and is not "
-            f"installed. Install a wheel >= {AITER_MIN_VERSION}; see "
-            "docs/rocm/backends.md for the index and the pinned version. A source "
-            "build tracks master, whose C ABI does not match the structs vendored "
-            "here."
+            f"installed. Build it from source at the pinned tag (>= {AITER_MIN_VERSION}); "
+            "docs/rocm/backends.md has the recipe. Build by tag, never a branch: "
+            "master's C ABI does not match the structs vendored here."
         )
 
 

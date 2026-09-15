@@ -156,9 +156,12 @@ pip install "setuptools>=80" "setuptools-scm>=9.2" "packaging>=24"
 
 git clone --recursive --depth 1 --shallow-submodules \
   --branch v0.1.21.post2 https://github.com/ROCm/aiter.git
-cd aiter && PREBUILD_KERNELS=0 GPU_ARCHS="gfx942;gfx950" \
-  pip install --no-build-isolation .
+( cd aiter && PREBUILD_KERNELS=0 GPU_ARCHS="gfx942;gfx950" \
+  pip install --no-build-isolation . )
 ```
+
+The subshell matters: the prebuild below is a FlashInfer script and has to run
+from the FlashInfer checkout, not from the AITER clone.
 
 Source rather than a wheel because no `amd-aiter` wheel is built against
 ROCm 10.0; the published ones are retargets of the same revision. A source

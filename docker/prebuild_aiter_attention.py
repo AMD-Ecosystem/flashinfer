@@ -295,8 +295,10 @@ def _hip_clang_path(args: Dict) -> Iterator[None]:
     Only ``compile_ops`` sets it; calling ``build_module`` directly would leave
     the mha families on a different clang from their lazy builds.
     """
+    # os.path.exists, as AITER's compile_ops does: a stale MHA_HIP_CLANG_PATH
+    # must be ignored here too, not turned into an invalid compiler path.
     path = args.get("hip_clang_path")
-    if not path:
+    if not path or not os.path.exists(path):
         yield
         return
     prev = os.environ.get("HIP_CLANG_PATH")
