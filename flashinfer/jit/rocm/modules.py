@@ -197,9 +197,10 @@ def _check_fa2_fp8_dtypes(
             "bfloat16, or an fnuz fp8 cache (torch.float8_e4m3fnuz, "
             "torch.float8_e5m2fnuz)."
         )
-    # Prefill only: the MFMA is instantiated from DTypeQ, so a bf16 cache under
-    # an fp16 query is read as fp16. Decode cast_loads q and k into vec_t<float>
-    # separately and accumulates in float, so mixed 2-byte dtypes are fine there.
+    # The MFMA is instantiated from DTypeQ, so a bf16 cache under an fp16 query
+    # is read as fp16. Only the *plain* decode kernel is exempt: it cast_loads q
+    # and k into vec_t<float> separately. use_tensor_cores=True decode builds
+    # the prefill module, so it is bound by this rule like any other prefill.
     if kv_must_match_q and dtype_kv in _WIDE_DTYPES and dtype_kv != dtype_q:
         raise NotImplementedError(
             f"{what}: KV dtype {dtype_kv} differs from query dtype {dtype_q}. A "

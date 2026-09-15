@@ -537,6 +537,26 @@ def test_single_decode_mismatched_k_v_dtypes_are_refused(fp8_dtype):
 
 
 @pytest.mark.parametrize("fp8_dtype", FNUZ_DTYPES)
+@pytest.mark.parametrize("head_dim", [64, 128])
+def test_single_decode_fp8_kv_matches_dequantized(fp8_dtype, head_dim):
+    """SingleDecodeWithKVCacheKernel is its own kernel, not the batch one, and
+    e5m2fnuz only became expressible when this series added it to dtype_map_hip.
+    Tolerance rather than bit-equality: decode accumulates in float and its
+    reduction order is not pinned the way the prefill LDS tile pins prefill's.
+    """
+    torch.manual_seed(0)
+    dev = "cuda:0"
+    nq, nkv, kv_len = 32, 8, 64
+    q = torch.randn(nq, head_dim, dtype=torch.float16, device=dev)
+    k8, k16 = _quantized_pair((kv_len, nkv, head_dim), fp8_dtype)
+    v8, v16 = _quantized_pair((kv_len, nkv, head_dim), fp8_dtype)
+
+    got = flashinfer.decode.single_decode_with_kv_cache(q, k8, v8)
+    ref = flashinfer.decode.single_decode_with_kv_cache(q, k16, v16)
+    torch.testing.assert_close(got.float(), ref.float(), rtol=2e-3, atol=2e-3)
+
+
+@pytest.mark.parametrize("fp8_dtype", FNUZ_DTYPES)
 def test_decode_mismatched_k_v_dtypes_are_refused(fp8_dtype):
     """Decode specializes on k.dtype and casts both pointers to it. Measured
     before the guard: an fp8 k with an fp16 v returned NaN and no error."""
