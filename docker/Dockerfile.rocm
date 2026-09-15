@@ -249,14 +249,14 @@ COPY --chown=$USER_UID:$USER_GID docker/prebuild_aiter_attention.py /opt/prebuil
 #
 RUN set -eu; \
     export GPU_ARCHS="$AITER_GPU_ARCHS"; \
-    python3 /opt/prebuild_aiter_attention.py --jobs "$AITER_PREBUILD_JOBS"; \
     JIT="$(python3 /opt/prebuild_aiter_attention.py --print-jit-dir)"; \
     case "$JIT" in \
-      */site-packages/aiter/jit) echo "prebuilt into $JIT" ;; \
-      *) echo "ERROR: artifacts went to $JIT, not the installed tree; a runtime" \
-         "container resolves a different directory and would rebuild all of them" >&2; \
+      */site-packages/aiter/jit) echo "prebuilding into $JIT" ;; \
+      *) echo "ERROR: AITER resolves its jit dir to $JIT, not the installed tree;" \
+         "a runtime container would look elsewhere and rebuild everything" >&2; \
          exit 1 ;; \
-    esac
+    esac; \
+    python3 /opt/prebuild_aiter_attention.py --jobs "$AITER_PREBUILD_JOBS"
 
 WORKDIR /home/$USERNAME
 

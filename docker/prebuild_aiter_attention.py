@@ -48,11 +48,9 @@ RECEIPT_BATCH_PREFILL = 200
 
 GENERATE_PY = "example/ck_tile/01_fmha/generate.py"
 
-# Whole AITER modules with no variant axes. The wheel shipped these prebuilt; a
-# PREBUILD_KERNELS=0 source install ships none, so the image builds them or the
-# first caller pays for them -- fmha_v3_fwd throws at dlopen, the other two only
-# stall. mla_asm is aiter.mla's, and aiter_core is on the common attention path.
-# tests/rocm/test_prebuild_aiter_attention.py checks the first against the loader.
+# Whole AITER modules, no variant axes. A PREBUILD_KERNELS=0 source install ships
+# none, so the image builds them or the first caller pays: fmha_v3_fwd throws at
+# dlopen, mla_asm and aiter_core only stall.
 LOADER_MODULES = ("module_fmha_v3_fwd", "module_aiter_core", "module_mla_asm")
 
 
@@ -408,8 +406,11 @@ def _child_env(jobs: int) -> Dict[str, str]:
     box N-fold. AITER honours MAX_JOBS when it is already set.
     """
     env = dict(os.environ)
-    if "MAX_JOBS" not in env:
-        env["MAX_JOBS"] = str(max(1, int((os.cpu_count() or 1) * 0.8) // max(1, jobs)))
+    try:
+        budget = int(env["MAX_JOBS"])
+    except (KeyError, ValueError):
+        budget = int((os.cpu_count() or 1) * 0.8)
+    env["MAX_JOBS"] = str(max(1, budget // max(1, jobs)))
     return env
 
 
@@ -484,7 +485,14 @@ def _has_ck_instances(path: Path) -> bool:
 
     Only meaningful for the CK variants: LOADER_MODULES are built -DENABLE_CK=0.
     """
-    return path.read_bytes().count(b"ck_tile") >= _MIN_CK_MARKERS
+    marker, seen, tail = b"ck_tile", 0, b""
+    with path.open("rb") as fh:
+        while chunk := fh.read(1 << 20):
+            seen += (tail + chunk).count(marker)
+            if seen >= _MIN_CK_MARKERS:
+                return True
+            tail = chunk[-(len(marker) - 1) :]
+    return False
 
 
 def _check(variants: Sequence[Variant], extra: Sequence[str]) -> int:

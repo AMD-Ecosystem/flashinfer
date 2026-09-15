@@ -239,7 +239,9 @@ def compose_cache_tag(arch: Optional[str] = None) -> str:
     tag = f"{arch}__aiter-{version}__rocm-{_rocm_version()}"
     # The version strings come from package metadata and torch, neither of which
     # this module controls, so the composed tag gets the same check the arch did.
-    if tag != Path(tag).name or tag.startswith("."):
+    # Same character class the cache-tag test asserts on: the AITER and ROCm
+    # versions come from package metadata and torch, neither of which we control.
+    if tag != Path(tag).name or tag.startswith(".") or set(tag) & set("/:;, "):
         raise ValueError(
             f"refusing to build a cache directory name from {tag!r}: "
             f"not a single safe path component"

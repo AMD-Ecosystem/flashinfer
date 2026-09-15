@@ -99,12 +99,9 @@ def _aiter_importable() -> bool:
         import aiter  # noqa: F401
         from aiter.jit import core as _core  # noqa: F401
 
-        # Not `import aiter_meta`: an editable AITER ships none, and
-        # jit.rocm.aiter_source._aiter_csrc_include_dir now falls back to
-        # AITER_CSRC_DIR. Requiring it here made that fallback unreachable.
-        from ..jit.rocm.aiter_source import _aiter_csrc_include_dir
-
-        _aiter_csrc_include_dir()
+        # Deliberately no header-tree check: this answers "can AITER run?", and
+        # the shim may already be built or AOT-cached. The build path raises with
+        # the real cause when the headers are the thing that is missing.
     except Exception:
         return False
     return _aiter_version_supported()

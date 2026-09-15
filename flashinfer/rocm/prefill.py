@@ -90,6 +90,10 @@ def _aiter_paged_route_page_sizes(dtype: torch.dtype) -> frozenset:
     faster than native at every batch size (docs/rocm/backends.md). Widening
     this for fp16/bf16 is a benchmark, not a one-line edit.
     """
+    # Known, unfixed, and not ours: on gfx950 the native paged kernel faults
+    # (GPU memory fault in FmhaBatchPrefillWithPagedKVCacheKernel) past kv=1024
+    # at page_size=1024, on amd-aiter 0.1.20 and 0.1.21.post2 alike. Not gated
+    # here because the failing kv boundary has not been bounded.
     native = _aiter_native_page_sizes()
     return native if dtype in FP8_PREFILL_DTYPES else native & {1024}
 
