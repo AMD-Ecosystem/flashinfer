@@ -114,8 +114,9 @@ gfx950 at `-n 1`, so 92% of a first run is compilation. Clearing
 **AITER is a source build at a pinned tag.** `docker/Dockerfile.rocm` clones
 `v0.1.21.post2` and installs it non-editable with `PREBUILD_KERNELS=0`, so the
 image needs no separate install. `aiter_utils.AITER_MIN_VERSION` (0.1.21) is
-the hard floor: below it the vendored struct layouts stop matching, and 0.1.21
-moved `rmsnorm` and `rope` from `at::Tensor` to the POD `aiter_tensor_t`.
+the hard floor: 0.1.21 moved `rmsnorm` and `rope` from `at::Tensor` to the POD
+`aiter_tensor_t`, so the shims cannot resolve their symbols against anything
+older. The vendored prefill structs are unchanged from 0.1.20.
 
 Build it by **tag**, never a branch — a clone that loses its tag makes
 `setuptools_scm` invent a `.dev` version that falls under the floor, and every
