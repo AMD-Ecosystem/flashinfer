@@ -50,11 +50,10 @@ def _ensure_aiter_gpu_archs() -> None:
         os.environ["GPU_ARCHS"] = arch
 
 
-# 0.1.20 renamed the RMSNorm entry points and added a gemma_norm parameter, so
-# an older AITER cannot resolve the shim's symbols at all. The vendored prefill
-# structs travel by value through dlsym'd pointers, where a mismatch corrupts
-# silently -- hence a hard floor rather than a warning.
-AITER_MIN_VERSION = "0.1.20"
+# 0.1.21 moved rmsnorm and the cos/sin-cache rope from at::Tensor to the POD
+# aiter_tensor_t, so csrc/rocm/{norm,rope}_aiter.cu cannot resolve their mangled
+# symbols against anything older, and the vendored arg structs assume this layout.
+AITER_MIN_VERSION = "0.1.21"
 
 
 def _aiter_installed_version() -> Optional[str]:
@@ -98,8 +97,11 @@ def _aiter_importable() -> bool:
     try:
         _ensure_aiter_gpu_archs()
         import aiter  # noqa: F401
-        import aiter_meta  # noqa: F401
         from aiter.jit import core as _core  # noqa: F401
+
+        # Deliberately no header-tree check: this answers "can AITER run?", and
+        # the shim may already be built or AOT-cached. The build path raises with
+        # the real cause when the headers are the thing that is missing.
     except Exception:
         return False
     return _aiter_version_supported()

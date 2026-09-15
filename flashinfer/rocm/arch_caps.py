@@ -272,7 +272,8 @@ _MEASURED_950_MLA = (
 # Not a KnownBad row: those gate a whole (op, backend, arch) on toolchain
 # version and would also disable the clean logits_soft_cap=0 path. What varies
 # by architecture is whether the kernel is affected, not at which length.
-# Measured on amd-aiter 0.1.20 over qo_len x kv_len x cap, vs an fp32 reference.
+# Re-measured on 0.1.21.post2 and unchanged: gfx950 wrong at every capped
+# shape, gfx942 clean at every one, cap=0 clean on both.
 _AITER_SOFTCAP_DEFECT_ARCHS = {"gfx942": False, "gfx950": True}
 
 

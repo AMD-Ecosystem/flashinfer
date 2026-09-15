@@ -25,7 +25,8 @@ For the in-repo profiler wrapper, see [`profiler/rocm/rocm_profiler.py`](../../.
   - Explicit `backend="aiter"` + `kv_layout != "NHD"` → `ValueError`. Grep [`rocm/prefill.py`](../../../flashinfer/rocm/prefill.py) for `only supports kv_layout`; single prefill raises at the call, both batch wrappers at `plan()`. Not raised by auto-selection — that path silently falls back to `fa2`.
   - Explicit `backend="aiter"` on non-gfx942/gfx950 → `RuntimeError`.
   - `amd-aiter` not importable → `ImportError`.
-  - **"Native" page sizes** (no flat-gather): `{128, 256, 1024}` — see `_aiter_native_page_sizes()` in [`rocm/prefill.py`](../../../flashinfer/rocm/prefill.py). The `{16, 1024}` arm there is unreachable now that `flashinfer.rocm.aiter_utils.AITER_MIN_VERSION` floors AITER at 0.1.20. It is only a hint: `plan()` probes with `_aiter_native_paging_available()` and degrades to flat-gather if the installed AITER cannot serve the config. **Non-native page sizes are NOT rejected** — they flat-gather. So the "{1, 16, 1024}" guidance from older docs is wrong.
+  - **"Native" page sizes** (no flat-gather): `_aiter_native_page_sizes()` in [`rocm/prefill.py`](../../../flashinfer/rocm/prefill.py) returns `{1, 16, 1024}` for any AITER >= 0.1.10; the `{16, 1024}` arm is the fallback for when `amd-aiter` metadata is unreadable, not dead code. What is *routed* native is narrower still: `_aiter_paged_route_page_sizes()` gives fp8 all three and fp16/bf16 only `{1024}`, because the gather measured equal or faster elsewhere. **Non-native page sizes are NOT rejected** -- they flat-gather.
+  - Measured on amd-aiter 0.1.21.post2, gfx950: native paged prefill at `page_size=1024` runs (62 TFLOPS at `kv=1024`). Beyond `kv=1024` it hits a GPU memory fault in `FmhaBatchPrefillWithPagedKVCacheKernel`, reproducible on 0.1.20 as well -- so bound the paged sweep at `kv=1024` rather than reading the fault as a regression.
   - Auto-selection (no explicit `backend=`) silently falls back to `fa2` for any of: `kv_layout != "NHD"`, custom mask, dtype not in `{fp16, bf16}`, `dtype_q != dtype_kv`, `head_dim_qk != head_dim_vo`, `pos_encoding_mode != "NONE"`, or `amd-aiter` not importable. See `_auto_select_prefill_backend()` in [`rocm/prefill.py`](../../../flashinfer/rocm/prefill.py) for the authoritative list; it returns `(backend, reason)`, and the reason names the constraint that forced the fallback.
 - **Always verify numerical parity before trusting perf numbers.** Compare default-HIP vs AITER outputs with `torch.testing.assert_close(rtol=1e-2, atol=1e-2)` for BF16/FP16 first.
 - **`gcnArchName` is the unambiguous arch marker.** Device strings show `cuda:0` on AMD too. Record `torch.cuda.get_device_properties(0).gcnArchName` and `torch.version.hip` alongside every number — a `gfx942` / ROCm 7.2 result is not comparable to a `gfx950` / ROCm 7.0.2 result.
@@ -82,6 +83,30 @@ Output (under `benchmarks/rocm/`, gitignored):
 - **Empty `_counter_collection.csv`:** `kernel_name_regex` doesn't match the mangled name. Run `rocprofv3 --stats --kernel-trace -- python my_bench.py` first and copy the prefix from `*_kernel_stats.csv`.
 - **Hang or no output:** confirm `which rocprofv3` is on `PATH`; the wrapper uses script `print()` output as a heartbeat — make sure the `if __name__ == "__main__":` block prints something.
 - **Use `--timing-only` first** to verify the kernel path works before involving `rocprofv3`.
+
+## Before tuning: check whether a library already wins
+
+For any op, enumerate the ROCm libraries that already implement it — AITER, CK /
+CK-Tile, hipBLASLt, rocBLAS, MIOpen, Triton — and benchmark each against the
+in-tree `hip`/`fa2`/`native` kernel before writing or tuning one. Route `auto` to
+whichever wins, on evidence, per arch.
+
+Both outcomes are on the record here, so assume neither: AITER prefill beats fa2
+by 3.67x (gfx942) and 4.51x (gfx950), while the in-tree HIP kernel beats AITER on
+`rmsnorm`/`fused_add_rmsnorm` (1.6-1.8x) and on `append_paged_kv_cache`.
+
+Three things that make this measurement wrong more often than the stopwatch:
+
+- **Contract before speed.** A library can be faster and still unusable. CK-Tile's
+  `layernorm2d` reads this API's fp32 `gamma`/`beta` as the input dtype and returns
+  garbage with no error — it was rejected on contract, not on time.
+- **Name the arm.** A library may dispatch internally between its own backends, so
+  "AITER" is not one number. Say which module and codegen path ran.
+- **Both boards.** gfx942 and gfx950 have diverged; a win on one is not a win.
+
+Record the outcome as a `Capability` row in `flashinfer/rocm/arch_caps.py` with an
+`evidence=` string naming board, versions and date, so the next person inherits the
+measurement instead of repeating it.
 
 ## External tuning references
 

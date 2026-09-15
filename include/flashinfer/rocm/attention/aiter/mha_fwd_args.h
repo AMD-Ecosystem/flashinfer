@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Vendored aiter::mha_fwd_args from AITER amd-aiter>=0.1.20.
+// Vendored aiter::mha_fwd_args from AITER amd-aiter>=0.1.21.
 // Extracted from aiter_meta/csrc/include/mha_fwd.h.
 //
 // The floor is a hard minimum, not a recommendation: the block_scale_seqstart_*

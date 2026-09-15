@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .. import env as jit_env
-from .aiter_source import resolve_aiter_build_arch
+from .aiter_source import compose_cache_tag
 
 __all__ = [
     "Family",
@@ -90,9 +90,9 @@ class VariantKey:
 def so_name(key: VariantKey) -> str:
     """The filename ``aiter_loader.cc`` will ask ``dlopen`` for.
 
-    The quantisation token is always ``nqscale``: the ``pertensor`` arm is fp8,
-    which only the batch-prefill family serves, and that family is not
-    ``servable_from_store`` -- see ``Family.servable_from_store``.
+    The quantisation token is always ``nqscale`` because this table covers only
+    the store route, which has no fp8 arm. The loader can also ask for the fp8
+    ``pertensor`` names; ``docker/prebuild_aiter_attention.py`` builds those.
     """
     name = key.family.prefix + key.dtype
     if key.family.include_logits:
@@ -107,7 +107,7 @@ _DTYPES = ("bf16", "fp16")
 
 
 def reachable_variants() -> Tuple[VariantKey, ...]:
-    """Every ``.so`` the loader can ask for: 8 + 16 + 16 = 40 per architecture.
+    """Every non-fp8 ``.so`` the loader can ask for: 8 + 16 + 16 = 40 per arch.
 
     ``mha_fwd`` contributes only 8 because ``get_aiter_mha_fwd_handle`` refuses
     ``has_logits_cap=true`` -- that template has no ``_logits`` arm, and a
@@ -201,21 +201,6 @@ def builds() -> Tuple[BuildSpec, ...]:
 MANIFEST_NAME = "variants_manifest.json"
 
 
-def _rocm_version() -> str:
-    """The ROCm/HIP version the artifacts were compiled against.
-
-    Part of the store tag because these are CK-tile objects that ship between
-    machines in a wheel, unlike the ``aiter_libs`` cache, which never leaves the
-    box that built it.
-    """
-    try:
-        import torch
-
-        return torch.version.hip or "unknown"
-    except Exception:
-        return "unknown"
-
-
 def variant_store_dir(arch: Optional[str] = None) -> Path:
     """``<cache>/aiter_variants/<arch>__aiter-<ver>__rocm-<ver>/``.
 
@@ -224,18 +209,7 @@ def variant_store_dir(arch: Optional[str] = None) -> Path:
     old contents are simply never found and the lookup misses into a rebuild.
     A mismatched artifact is never loaded.
     """
-    try:
-        import importlib.metadata as _md
-
-        aiter_version = _md.version("amd-aiter")
-    except Exception:
-        aiter_version = "unknown"
-    tag = f"{arch or resolve_aiter_build_arch()}__aiter-{aiter_version}__rocm-{_rocm_version()}"
-    # The tag becomes a directory name; refuse anything that is not one
-    # component, the same guard _aiter_cache_tag applies.
-    if not tag or tag != Path(tag).name or tag.startswith("."):
-        raise ValueError(f"refusing to build a cache directory name from {tag!r}")
-    return jit_env.FLASHINFER_CACHE_DIR / "aiter_variants" / tag
+    return jit_env.FLASHINFER_CACHE_DIR / "aiter_variants" / compose_cache_tag(arch)
 
 
 def _explicit_stores() -> List[Path]:

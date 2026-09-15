@@ -64,10 +64,11 @@ from ..utils import (
 # sizes we try. The second is the newest release we have actually validated against;
 # bumping it must not silently move the support boundary.
 _AITER_NATIVE_PAGING_SINCE = "0.1.10"
-_AITER_LAST_VALIDATED = "0.1.20+rocm10.1.0a20260819.3135022"
+_AITER_LAST_VALIDATED = "0.1.21.post2"
 # Newest AITER carrying the mha_varlen_fwd soft-cap defect. Bump only after
-# re-measuring against an fp32 reference; the wrong answer is silent.
-_AITER_SOFTCAP_DEFECT_THROUGH = "0.1.21"
+# re-measuring against an fp32 reference; the wrong answer is silent. Message
+# text only -- the gate itself is arch_caps.aiter_softcap_defect_arch.
+_AITER_SOFTCAP_DEFECT_THROUGH = "0.1.21.post2"
 
 # fp8 query dtypes that *could* be an fp8 prefill: E4M3FNUZ on gfx942, OCP
 # E4M3FN on gfx950. Only the arch's own encoding actually works -- the other is
@@ -89,6 +90,10 @@ def _aiter_paged_route_page_sizes(dtype: torch.dtype) -> frozenset:
     faster than native at every batch size (docs/rocm/backends.md). Widening
     this for fp16/bf16 is a benchmark, not a one-line edit.
     """
+    # Known, unfixed, and not ours: on gfx950 the native paged kernel faults
+    # (GPU memory fault in FmhaBatchPrefillWithPagedKVCacheKernel) past kv=1024
+    # at page_size=1024, on amd-aiter 0.1.20 and 0.1.21.post2 alike. Not gated
+    # here because the failing kv boundary has not been bounded.
     native = _aiter_native_page_sizes()
     return native if dtype in FP8_PREFILL_DTYPES else native & {1024}
 
@@ -426,10 +431,9 @@ def _require_aiter_runtime(device: torch.device, op: str = "batch_prefill") -> N
             )
         raise ImportError(
             "The 'aiter' package is required for the AITER backend and is not "
-            f"installed. Install a wheel >= {AITER_MIN_VERSION}; see "
-            "docs/rocm/backends.md for the index and the pinned version. A source "
-            "build tracks master, whose C ABI does not match the structs vendored "
-            "here."
+            f"installed. Build it from source at the pinned tag (>= {AITER_MIN_VERSION}); "
+            "docs/rocm/backends.md has the recipe. Build by tag, never a branch: "
+            "master's C ABI does not match the structs vendored here."
         )
 
 
