@@ -298,10 +298,11 @@ void* get_aiter_mha_fwd_asm_handle() {
         "on CK Tile.");
   }
   return load_variant_sym(s_asm_mu, s_asm_cache, 0, kAsmModuleName, kMhaFwdSymbol, []() {
-    return "  Hint: " + std::string(kAsmModuleName) +
-           " ships prebuilt in the amd-aiter wheel, so unlike the mha_fwd variants there is no "
-           "JIT build to trigger. Its absence means the wheel is incomplete or the JIT dir "
-           "points elsewhere." +
+    return "  Hint: unlike the mha_fwd variants there is no JIT build to trigger for " +
+           std::string(kAsmModuleName) +
+           ". The supported source install (PREBUILD_KERNELS=0) ships no AITER modules, so it "
+           "must be built by docker/prebuild_aiter_attention.py; set "
+           "FLASHINFER_AITER_ASM_PREFILL=0 to stay on CK Tile instead." +
            kAbiPinNote;
   });
 }

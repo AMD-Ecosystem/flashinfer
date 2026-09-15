@@ -8,10 +8,9 @@ The in-tree fa2 kernel rejects 8-bit types at compile time and the flat-gather
 route runs mha_varlen_fwd, which has no fp8 arm -- so AITER's native paged
 kernel is the whole of fp8 prefill support, and nothing else here exercised it.
 
-It is also the only end-to-end check on the eight fp8 variants
-docker/prebuild_aiter_attention.py composes: a CK ``--filter`` that matched no
-instances still links, still passes the driver's own --check, and fails only
-here, at dispatch.
+It is also the only end-to-end check on the four fp8 variants
+docker/prebuild_aiter_attention.py composes. The driver's ``--check`` now
+rejects an artifact carrying no CK instances, but only this exercises one.
 """
 
 import pytest

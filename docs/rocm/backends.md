@@ -170,6 +170,15 @@ loses its tag makes `setuptools_scm` invent a `.dev` version that falls under
 the floor below, and every AITER path silently degrades to `fa2`. Non-editable,
 not `setup.py develop`: the develop branch installs no `aiter_meta`, and
 `aiter_meta/csrc/include` is what every C++ shim compiles against.
+`PREBUILD_KERNELS=0` leaves the install with **no AITER modules at all**, which
+the image compensates for by running `docker/prebuild_aiter_attention.py`. A
+standalone install must do the same, or single prefill fails at `dlopen` once a
+call is large enough to take the asm arm:
+
+```bash
+python3 docker/prebuild_aiter_attention.py --jobs 2   # or: export FLASHINFER_AITER_ASM_PREFILL=0
+```
+
 `PREBUILD_KERNELS=0` because `=1` needs a live GPU — and its prebuilt modules
 are no loss, since FlashInfer builds its own `lib<module>.so` from the same
 sources.
