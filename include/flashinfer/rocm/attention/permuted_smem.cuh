@@ -204,42 +204,45 @@ struct smem_t {
   }
 
   /*!
-   * \brief Loads a fragment from shared memory and performs an in-register transpose across a quad.
-   * \details This function is designed to prepare the B-matrix operand for a CDNA3 MFMA
-   *          instruction.
-   *          It performs two actions in sequence for a quad of 4 threads:
-   *          1. Each thread loads a row-oriented fragment (e.g., 4 `half` values) from shared
-   *             memory.
-   *          2. It then calls `transpose_intra_quad_fragments` to perform an in-register transpose
-   *             of this data among the 4 threads.
+   * \brief Row within the 16x16 tile that `lane` must address for
+   *        `load_matrix_m16n16_trans`. NOT the `load_fragment` layout.
+   */
+  static __device__ __forceinline__ uint32_t trans_frag_row(uint32_t lane) {
+    if constexpr (mma::kHasTransposingLdsRead) {
+      return 4 * (lane / 16) + (lane % 16) / 4;
+    } else {
+      return lane % 16;
+    }
+  }
+
+  /*! \brief Column, in `BasePtrTy` units, matching `trans_frag_row`. */
+  static __device__ __forceinline__ uint32_t trans_frag_col(uint32_t lane) {
+    if constexpr (mma::kHasTransposingLdsRead) {
+      return lane % 4;
+    } else {
+      return lane / 16;
+    }
+  }
+
+  /*!
+   * \brief Loads a 16x16 tile transposed, giving the column-oriented B operand an
+   *        MFMA needs from row-oriented shared memory.
    *
-   *          The result is that each thread's registers are populated with a column-oriented
-   *          fragment, which is the required layout for the B-operand in a
-   *          row-major(A) x col-major(B) MFMA.
-   *
-   *          Visual Representation:
-   *          If `[a,b,c,d]` are the 4 `half` values loaded by Thread 0:
-   *
-   *          Data in Shared Memory (conceptually):
-   *          Row 0: [a, b, c, d]
-   *          Row 1: [e, f, g, h]
-   *          Row 2: [i, j, k, l]
-   *          Row 3: [m, n, o, p]
-   *
-   *          After this function, registers hold:
-   *          Thread 0: [a, e, i, m] (Column 0)
-   *          Thread 1: [b, f, j, n] (Column 1)
-   *          Thread 2: [c, g, k, o] (Column 2)
-   *          Thread 3: [d, h, l, p] (Column 3)
-   *
-   * \tparam T The type of the register fragment (e.g., uint32_t).
-   * \param offset The starting offset in shared memory for the quad to begin loading.
-   * \param frag A pointer to the thread's local registers to store the resulting column fragment.
+   * \note Seed `offset` with `trans_frag_row`/`trans_frag_col`, not the
+   *       `load_fragment` layout: CDNA4 does this in one `ds_read_b64_tr_b16`
+   *       and CDNA3 in six `ds_bpermute_b32`, and the two want different
+   *       per-lane addresses. Seeding the obvious way is silently wrong on CDNA4.
    */
   template <typename T = uint32_t>
   __device__ __forceinline__ void load_matrix_m16n16_trans(uint32_t offset, T* frag) {
-    load_fragment(offset, frag);
-    mma::transpose_mma_tile(frag);
+    static_assert(sizeof(T) == 4, "Only 32-bit fragment loading supported");
+    if constexpr (mma::kHasTransposingLdsRead) {
+      static_assert(sizeof(BasePtrTy) == 8, "The transposing read consumes one 64-bit slot");
+      mma::load_transposed_fragment(reinterpret_cast<uint32_t*>(frag), base + offset);
+    } else {
+      load_fragment(offset, frag);
+      mma::transpose_mma_tile(frag);
+    }
   }
 
   template <typename T = uint32_t>
