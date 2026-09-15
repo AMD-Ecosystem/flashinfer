@@ -151,6 +151,9 @@ That says nothing about their ROCm support either way.
 `docker/Dockerfile.rocm` performs:
 
 ```bash
+# --no-build-isolation means pip installs no build requirements for you.
+pip install "setuptools>=80" "setuptools-scm>=9.2" "packaging>=24"
+
 git clone --recursive --depth 1 --shallow-submodules \
   --branch v0.1.21.post2 https://github.com/ROCm/aiter.git
 cd aiter && PREBUILD_KERNELS=0 GPU_ARCHS="gfx942;gfx950" \
