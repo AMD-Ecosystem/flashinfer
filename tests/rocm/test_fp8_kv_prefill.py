@@ -42,7 +42,7 @@ def warmup_jit():
     common = ([0], [False, True], [False], [False])  # posenc, swa, softcap, f16qk
     specs = (
         gen_prefill_attention_modules(
-            [torch.float16], [torch.float16] + FNUZ_DTYPES, [64, 128], *common
+            [torch.float16], [torch.float16] + FNUZ_DTYPES, [64, 128, 256], *common
         )
         + gen_prefill_attention_modules(
             [torch.bfloat16], [torch.bfloat16] + FNUZ_DTYPES, [128], *common
@@ -84,7 +84,7 @@ def _assert_matches(got, ref):
 
 @pytest.mark.parametrize("q_dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("fp8_dtype", FNUZ_DTYPES)
-@pytest.mark.parametrize("head_dim", [64, 128])
+@pytest.mark.parametrize("head_dim", [64, 128, 256])
 @pytest.mark.parametrize("qo_len,kv_len", [(1, 64), (37, 128), (77, 396), (577, 2048)])
 @pytest.mark.parametrize("causal", [False, True])
 def test_single_prefill_fp8_kv_matches_dequantized(
