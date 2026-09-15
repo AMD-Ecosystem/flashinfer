@@ -178,14 +178,20 @@ def _filter_batch_prefill(v: Variant) -> str:
 
 
 def reachable_variants() -> Tuple[Variant, ...]:
-    """Every ``.so`` the loader can ask for: 8 + 16 + 24 = 48 per architecture."""
+    """Every ``.so`` the loader can ask for: 8 + 16 + 20 = 44 per architecture.
+
+    fp8 contributes 4, not 8: AITER ships no LSE instance of the fp8 kernel at
+    any page size, and prefill.py raises on the combination rather than
+    dispatching it.
+    """
     out: List[Variant] = []
     for family, has_logits_axis in _HAS_LOGITS_AXIS.items():
         logits_values = (False, True) if has_logits_axis else (False,)
         for dtype in _FAMILY_DTYPES[family]:
+            lse_values = (False,) if dtype == "fp8bf16" else (False, True)
             for has_logits_cap in logits_values:
                 for needs_mask in (False, True):
-                    for has_lse in (False, True):
+                    for has_lse in lse_values:
                         out.append(
                             Variant(family, dtype, has_logits_cap, needs_mask, has_lse)
                         )
@@ -394,6 +400,19 @@ def _run_jobs(variants: Sequence[Variant], jobs: int, extra: Sequence[str] = ())
     return 1 if failed else 0
 
 
+def _child_env(jobs: int) -> Dict[str, str]:
+    """Divide ninja's parallelism across the children rather than per child.
+
+    Left alone, each child sets MAX_JOBS from ~80% of *all* host CPUs and a
+    free-memory snapshot it took independently, so --jobs N oversubscribes the
+    box N-fold. AITER honours MAX_JOBS when it is already set.
+    """
+    env = dict(os.environ)
+    if "MAX_JOBS" not in env:
+        env["MAX_JOBS"] = str(max(1, int((os.cpu_count() or 1) * 0.8) // max(1, jobs)))
+    return env
+
+
 def _drain(pending, running, failed, jobs, total) -> None:
     done = 0
     while pending or running:
@@ -411,6 +430,7 @@ def _drain(pending, running, failed, jobs, total) -> None:
                     ],
                     stdout=fd,
                     stderr=subprocess.STDOUT,
+                    env=_child_env(jobs),
                 )
             finally:
                 os.close(fd)  # Popen dup'd it; holding ours would exhaust the table
@@ -456,6 +476,17 @@ def _decode(s: str) -> Variant:
     return Variant(family, dtype, bool(int(lc)), bool(int(mask)), bool(int(lse)))
 
 
+_MIN_CK_MARKERS = 200
+
+
+def _has_ck_instances(path: Path) -> bool:
+    """Does this artifact carry CK-tile kernel instances, or only a dispatcher?
+
+    Only meaningful for the CK variants: LOADER_MODULES are built -DENABLE_CK=0.
+    """
+    return path.read_bytes().count(b"ck_tile") >= _MIN_CK_MARKERS
+
+
 def _check(variants: Sequence[Variant], extra: Sequence[str]) -> int:
     """Assert every selected artifact is present and non-empty.
 
@@ -469,6 +500,15 @@ def _check(variants: Sequence[Variant], extra: Sequence[str]) -> int:
     print(f"{len(names) - len(missing)}/{len(names)} present in {d}")
     if missing:
         print("missing or empty:\n  " + "\n  ".join(missing))
+        return 1
+    # A --filter that selected no instances still compiles and links, so presence
+    # is not enough: the result is a dispatcher with no kernel behind it.
+    hollow = [v.so_name for v in variants if not _has_ck_instances(d / v.so_name)]
+    if hollow:
+        print(
+            f"{len(hollow)} artifact(s) carry no CK instances -- the filter "
+            "selected nothing:\n  " + "\n  ".join(hollow)
+        )
         return 1
     return 0
 

@@ -84,15 +84,28 @@ def _fi_so_names() -> set:
 def test_the_driver_covers_flashinfers_table_and_the_fp8_arm_it_omits():
     """flashinfer's table is the store's domain, which has no fp8 arm; the
     driver writes where the loader looks, so it must carry fp8 as well."""
-    assert len(driver.reachable_variants()) == 48
+    assert len(driver.reachable_variants()) == 44
     assert _fi_so_names() < {v.so_name for v in driver.reachable_variants()}
+
+
+def test_fp8_carries_no_lse_arm():
+    """AITER ships no LSE instance of the fp8 kernel, and prefill.py raises on
+    the combination -- building it yields a dispatcher with no kernel behind it."""
+    fp8 = [v for v in driver.reachable_variants() if v.dtype == "fp8bf16"]
+    assert len(fp8) == 4
+    assert not [v for v in fp8 if v.has_lse]
+    # The guard this mirrors, so a change there shows up here.
+    prefill = (
+        Path(__file__).resolve().parents[2] / "flashinfer" / "rocm" / "prefill.py"
+    ).read_text()
+    assert "fp8 prefill cannot produce LSE" in prefill
 
 
 def test_nothing_is_trimmed_from_the_built_set():
     """A trim buys a few minutes of image build for a multi-minute stall on the
     arm that turns out to be missing."""
     assert set(driver.selected_variants()) == set(driver.reachable_variants())
-    assert len(driver.selected_variants()) == 48
+    assert len(driver.selected_variants()) == 44
 
 
 @pytest.mark.parametrize("family", sorted(_FAMILY_BY_NAME))
@@ -112,11 +125,28 @@ def test_check_does_not_demand_what_only_never_builds(tmp_path, monkeypatch):
     monkeypatch.setattr(driver, "jit_dir", lambda _core: tmp_path)
     picked = driver.selected_variants(only=["mha_fwd"])
     for v in picked:
-        (tmp_path / v.so_name).write_bytes(b"x")
+        # Enough markers to clear the instance check; that is a separate test.
+        (tmp_path / v.so_name).write_bytes(b"ck_tile" * driver._MIN_CK_MARKERS)
 
     assert driver.main(["--check", "--only", "mha_fwd"]) == 0
     # Unrestricted, the same directory is incomplete: the module is absent.
     assert driver.main(["--check"]) == 1
+
+
+def test_check_rejects_an_artifact_with_no_ck_instances(tmp_path, monkeypatch):
+    """A --filter that selected nothing still compiles and links. Measured on a
+    real one: 20 `ck_tile` markers with no instances, 1701 with them."""
+    monkeypatch.setattr(driver, "_aiter_jit_core", lambda: object())
+    monkeypatch.setattr(driver, "jit_dir", lambda _core: tmp_path)
+    picked = driver.selected_variants(only=["mha_fwd"])
+    for v in picked:
+        (tmp_path / v.so_name).write_bytes(b"ck_tile" * driver._MIN_CK_MARKERS)
+
+    assert driver.main(["--check", "--only", "mha_fwd"]) == 0
+
+    hollow = tmp_path / picked[0].so_name
+    hollow.write_bytes(b"ck_tile" * (driver._MIN_CK_MARKERS - 1))
+    assert driver.main(["--check", "--only", "mha_fwd"]) == 1
 
 
 # ---------------------------------------------------------------------------
