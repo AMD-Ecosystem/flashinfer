@@ -17,17 +17,12 @@
 #include <c10/core/GradMode.h>
 #include <c10/hip/HIPGuard.h>
 
-// AITER's public header (rmsnorm_quant.h) pulls in <torch/extension.h> → full
-// pybind11, which clashes with FlashInfer's -DPy_LIMITED_API. torch::Tensor is
-// at::Tensor, so forward-declare the entry points; the linker resolves them
-// against the symbol-visible AITER .so. 0.1.20 renamed these from the global
-// rmsnorm2d/rmsnorm2d_with_add and moved them into namespace aiter.
-namespace aiter {
-void add_rmsnorm(at::Tensor& out, at::Tensor& input, at::Tensor& residual_in,
-                 at::Tensor& residual_out, at::Tensor& weight, double epsilon, bool gemma_norm);
-void rmsnorm(at::Tensor& out, at::Tensor& input, at::Tensor& weight, double epsilon,
-             bool gemma_norm);
-}  // namespace aiter
+// The real header, not a forward declaration: at 0.1.21 rmsnorm_quant.h is
+// POD-only and no longer pulls <torch/extension.h>, so a signature change is a
+// compile error here rather than a dlopen failure on the mangled name.
+#include <rmsnorm_quant.h>
+
+#include "aiter_tensor_compat.h"
 
 void fused_add_rmsnorm_aiter(at::Tensor input, at::Tensor residual, at::Tensor weight, double eps) {
   const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(input.device());
@@ -42,7 +37,16 @@ void fused_add_rmsnorm_aiter(at::Tensor input, at::Tensor residual, at::Tensor w
   // several rows per block for small n, so a write lands on a row still unread.
   at::Tensor out = at::empty_like(input);
   at::Tensor residual_out = at::empty_like(residual);
-  aiter::add_rmsnorm(out, input, residual, residual_out, weight2d, eps, /*gemma_norm=*/false);
+  // Named lvalues: every POD parameter is a non-const reference, so a temporary
+  // from to_aiter() would not bind.
+  auto a_out = flashinfer::aiter_compat::to_aiter(out);
+  auto a_input = flashinfer::aiter_compat::to_aiter(input);
+  auto a_residual = flashinfer::aiter_compat::to_aiter(residual);
+  auto a_residual_out = flashinfer::aiter_compat::to_aiter(residual_out);
+  auto a_weight = flashinfer::aiter_compat::to_aiter(weight2d);
+  const flashinfer::aiter_compat::StreamGuard stream_guard(at::hip::getCurrentHIPStream());
+  aiter::add_rmsnorm(a_out, a_input, a_residual, a_residual_out, a_weight, eps,
+                     /*gemma_norm=*/false);
   input.copy_(out);
   residual.copy_(residual_out);
 }
@@ -54,11 +58,16 @@ void rmsnorm_aiter(at::Tensor out, at::Tensor input, at::Tensor weight, double e
   at::Tensor weight2d = weight.reshape({1, -1});
   // rmsnorm(x, w, out=x) is a documented idiom, and that alias corrupts the
   // same way; stage it only when the caller actually aliased.
+  auto a_input = flashinfer::aiter_compat::to_aiter(input);
+  auto a_weight = flashinfer::aiter_compat::to_aiter(weight2d);
+  const flashinfer::aiter_compat::StreamGuard stream_guard(at::hip::getCurrentHIPStream());
   if (out.data_ptr() == input.data_ptr()) {
     at::Tensor staged = at::empty_like(out);
-    aiter::rmsnorm(staged, input, weight2d, eps, /*gemma_norm=*/false);
+    auto a_staged = flashinfer::aiter_compat::to_aiter(staged);
+    aiter::rmsnorm(a_staged, a_input, a_weight, eps, /*gemma_norm=*/false);
     out.copy_(staged);
     return;
   }
-  aiter::rmsnorm(out, input, weight2d, eps, /*gemma_norm=*/false);
+  auto a_out = flashinfer::aiter_compat::to_aiter(out);
+  aiter::rmsnorm(a_out, a_input, a_weight, eps, /*gemma_norm=*/false);
 }

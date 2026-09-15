@@ -12,9 +12,12 @@ does not stall, it fails, and ``backend="auto"`` silently drops to fa2.
     python -m flashinfer.rocm.prebuild_aiter_variants --arch gfx942
     python -m flashinfer.rocm.prebuild_aiter_variants --only mha_batch_prefill
 
-**This needs a GPU.** The only supported way to make AITER emit a variant is to
-call the op, which launches a kernel -- so it cannot be a ``docker build`` step
-and has to run as a GPU-attached job whose output the image copies in.
+**This driver needs a GPU**, because it produces variants by calling the op,
+which launches a kernel. AITER's build machinery itself does not: ``aiter``'s
+own ``setup.py`` reaches it by a flat ``sys.path`` import of ``jit.core`` that
+never runs ``aiter/__init__.py``, so a driver written that way can be a
+``docker build`` step. This one cannot, and runs as a GPU-attached job whose
+output the image copies in.
 
 One build at a time, deliberately. ``_aiter_env_scope`` mutates process-global
 environment that AITER reads, so two concurrent builds in one process have the

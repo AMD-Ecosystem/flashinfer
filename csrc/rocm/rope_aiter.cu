@@ -18,15 +18,12 @@
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <c10/hip/HIPGuard.h>
 
-// AITER's public header (rope.h) pulls in <torch/extension.h> → full pybind11,
-// which clashes with FlashInfer's -DPy_LIMITED_API. torch::Tensor is at::Tensor,
-// so forward-declare the entry point instead; the linker resolves it against the
-// symbol-visible AITER .so (verified mangling matches at::Tensor& signature).
-void rope_cached_positions_2c_fwd_impl(at::Tensor& output_x, at::Tensor& output_y,
-                                       const at::Tensor& input_x, const at::Tensor& input_y,
-                                       const at::Tensor& cos, const at::Tensor& sin,
-                                       const at::Tensor& positions, const int32_t rotate_style,
-                                       const bool reuse_freqs_front_part, const bool nope_first);
+// The real header, not a forward declaration: at 0.1.21 rope.h is POD-only and
+// no longer pulls <torch/extension.h>, so a signature change is a compile error
+// here rather than a dlopen failure on the mangled name.
+#include <rope.h>
+
+#include "aiter_tensor_compat.h"
 
 void apply_rope_pos_ids_cos_sin_cache_aiter(at::Tensor query, at::Tensor key, at::Tensor query_out,
                                             at::Tensor key_out, at::Tensor cos_sin_cache,
@@ -77,7 +74,15 @@ void apply_rope_pos_ids_cos_sin_cache_aiter(at::Tensor query, at::Tensor key, at
   at::Tensor q_in_rot = q_in.slice(3, 0, rotary_dim);
   at::Tensor k_in_rot = k_in.slice(3, 0, rotary_dim);
 
-  rope_cached_positions_2c_fwd_impl(q_out_rot, k_out_rot, q_in_rot, k_in_rot, cos, sin, pos,
+  // Named lvalues: the two outputs are non-const references, so a temporary
+  // from to_aiter() would not bind.
+  namespace compat = flashinfer::aiter_compat;
+  auto a_q_out = compat::to_aiter(q_out_rot);
+  auto a_k_out = compat::to_aiter(k_out_rot);
+  const compat::StreamGuard stream_guard(at::hip::getCurrentHIPStream());
+  rope_cached_positions_2c_fwd_impl(a_q_out, a_k_out, compat::to_aiter(q_in_rot),
+                                    compat::to_aiter(k_in_rot), compat::to_aiter(cos),
+                                    compat::to_aiter(sin), compat::to_aiter(pos),
                                     /*rotate_style=*/is_neox ? 0 : 1,
                                     /*reuse_freqs_front_part=*/true,
                                     /*nope_first=*/false);

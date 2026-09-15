@@ -134,9 +134,9 @@ def _require_aiter_mla(device: torch.device) -> None:
         from .aiter_utils import AITER_MIN_VERSION
 
         raise ImportError(
-            "The 'aiter' package is required for MLA on ROCm. Install a wheel >= "
-            f"{AITER_MIN_VERSION}; see docs/rocm/backends.md for the index and the "
-            "pinned version. A source build tracks master, whose C ABI does not "
+            "The 'aiter' package is required for MLA on ROCm. Build it from source "
+            f"at the pinned tag (>= {AITER_MIN_VERSION}); see docs/rocm/backends.md "
+            "for the recipe. Build by tag, never a branch: master's C ABI does not "
             "match the structs vendored here."
         ) from exc
 

@@ -100,17 +100,17 @@ and this release is tested on.**
 | PyTorch+ROCm | 2.12.0 |
 | Python | 3.12 |
 | OS | Ubuntu 24.04 |
-| `amd-aiter` | 0.1.20 |
+| `amd-aiter` | 0.1.21.post2 (source build) |
 
 Nothing rejects another combination at install time, and older ROCm and torch
 releases have worked here before — but they are untested, uncovered by the
 matrix below, and not what a bug report will be reproduced against.
 
 The pins move together, which is why the supported configuration is an image
-rather than a list of versions: every `amd-aiter` 0.1.20 wheel is cp312 only,
-fixing the interpreter; torch must stay at 2.12, since 2.13 drops a `c10`
-symbol those wheels' prebuilt prefill kernels need; and its ROCm 10.0 build
-exists only in the base image.
+rather than a list of versions: `amd-aiter` is built from source against the
+image's own ROCm, since no wheel targets ROCm 10.0; torch must stay at 2.12,
+since 2.13 drops a `c10` symbol AITER's prefill kernels need; and its ROCm 10.0
+build exists only in the base image.
 
 ## Support matrix
 

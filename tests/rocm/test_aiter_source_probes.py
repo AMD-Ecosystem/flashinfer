@@ -53,24 +53,70 @@ class TestCacheTag:
 
         assert tag.startswith("gfx942__aiter-")
 
+    def test_the_tag_carries_the_rocm_version(self, monkeypatch):
+        """A source-built AITER's version is bare, so ROCm is no longer keyed by
+        the wheel's "+rocm..." local segment and has to be its own component."""
+        monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: "gfx942")
+        monkeypatch.setattr(aiter_source, "_rocm_version", lambda: "7.15.26333")
+
+        assert aiter_source._aiter_cache_tag().endswith("__rocm-7.15.26333")
+
+    def test_two_rocm_toolchains_do_not_share_a_tag(self, monkeypatch):
+        monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: "gfx942")
+
+        monkeypatch.setattr(aiter_source, "_rocm_version", lambda: "7.15.26333")
+        first = aiter_source._aiter_cache_tag()
+        monkeypatch.setattr(aiter_source, "_rocm_version", lambda: "6.4.43483")
+        second = aiter_source._aiter_cache_tag()
+
+        assert first != second
+
     def test_an_unreadable_version_still_produces_a_tag(self, monkeypatch):
         """A cache key with no version is still better than failing the build."""
         import importlib.metadata
 
         monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: "gfx942")
+        monkeypatch.setattr(aiter_source, "_rocm_version", lambda: "unknown")
         monkeypatch.setattr(
             importlib.metadata,
             "version",
             lambda name: (_ for _ in ()).throw(RuntimeError("no metadata")),
         )
 
-        assert aiter_source._aiter_cache_tag() == "gfx942__aiter-unknown"
+        assert aiter_source._aiter_cache_tag() == "gfx942__aiter-unknown__rocm-unknown"
+
+    def test_an_absent_torch_still_produces_a_tag(self, monkeypatch):
+        """`_rocm_version` runs on the import path of a CPU-only smoke test."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _no_torch(name, *args, **kwargs):
+            if name == "torch":
+                raise ImportError("no torch")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _no_torch)
+
+        assert aiter_source._rocm_version() == "unknown"
 
     @pytest.mark.parametrize("arch", ["", ".", "..", "a/b", ".hidden"])
     def test_an_unsafe_arch_never_becomes_a_directory_name(self, monkeypatch, arch):
         """The tag is used as a path component; a traversal or a dotfile here
         would put the cache somewhere nobody looks."""
         monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: arch)
+
+        with pytest.raises(ValueError, match="single safe path component"):
+            aiter_source._aiter_cache_tag()
+
+    @pytest.mark.parametrize("rocm", ["../..", "a/b", "7.15/26333"])
+    def test_an_unsafe_rocm_version_never_becomes_a_directory_name(
+        self, monkeypatch, rocm
+    ):
+        """`torch.version.hip` is not this module's to trust; the arch guard
+        alone would let a separator through in the ROCm component."""
+        monkeypatch.setattr(aiter_source, "resolve_aiter_build_arch", lambda: "gfx942")
+        monkeypatch.setattr(aiter_source, "_rocm_version", lambda: rocm)
 
         with pytest.raises(ValueError, match="single safe path component"):
             aiter_source._aiter_cache_tag()
@@ -83,12 +129,71 @@ class TestCsrcIncludeDir:
         yield
         aiter_source._aiter_csrc_include_dir.cache_clear()
 
-    def test_a_missing_header_tree_names_the_package(self, monkeypatch):
-        import aiter_meta
+    @staticmethod
+    def _fake_aiter_core(monkeypatch, csrc_dir):
+        """Put aiter.jit.core in sys.modules so the fallback resolves without a
+        real `import aiter`, which runs arch detection and needs a device."""
+        import sys
+        import types
 
+        pkg = types.ModuleType("aiter")
+        pkg.__path__ = []
+        jit = types.ModuleType("aiter.jit")
+        jit.__path__ = []
+        core = types.ModuleType("aiter.jit.core")
+        core.AITER_CSRC_DIR = str(csrc_dir)
+        for name, mod in (
+            ("aiter", pkg),
+            ("aiter.jit", jit),
+            ("aiter.jit.core", core),
+        ):
+            monkeypatch.setitem(sys.modules, name, mod)
+
+    @staticmethod
+    def _no_aiter_meta(monkeypatch):
+        """`setup.py develop` ships no aiter_meta at all, so the import raises."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _blocked(name, *args, **kwargs):
+            if name == "aiter_meta":
+                raise ImportError("no module named aiter_meta")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _blocked)
+
+    def test_aiter_meta_is_preferred_when_present(self):
+        pytest.importorskip("aiter_meta")
+        found = aiter_source._aiter_csrc_include_dir()
+        assert found.name == "include" and found.parent.name == "csrc"
+
+    def test_an_absent_aiter_meta_falls_back_to_aiter_csrc_dir(
+        self, monkeypatch, tmp_path
+    ):
+        inc = tmp_path / "csrc" / "include"
+        inc.mkdir(parents=True)
+        self._no_aiter_meta(monkeypatch)
+        self._fake_aiter_core(monkeypatch, tmp_path / "csrc")
+
+        assert aiter_source._aiter_csrc_include_dir() == inc
+
+    def test_an_incomplete_aiter_meta_falls_back_too(self, monkeypatch, tmp_path):
+        """Present but pointing nowhere useful is the same failure as absent."""
+        aiter_meta = pytest.importorskip("aiter_meta")
+
+        inc = tmp_path / "csrc" / "include"
+        inc.mkdir(parents=True)
         monkeypatch.setattr(aiter_meta, "__path__", ["/nonexistent"])
+        self._fake_aiter_core(monkeypatch, tmp_path / "csrc")
 
-        with pytest.raises(RuntimeError, match="aiter_meta/csrc/include"):
+        assert aiter_source._aiter_csrc_include_dir() == inc
+
+    def test_neither_route_working_names_both(self, monkeypatch, tmp_path):
+        self._no_aiter_meta(monkeypatch)
+        self._fake_aiter_core(monkeypatch, tmp_path / "absent")
+
+        with pytest.raises(RuntimeError, match="aiter_meta.*AITER_CSRC_DIR"):
             aiter_source._aiter_csrc_include_dir()
 
 
