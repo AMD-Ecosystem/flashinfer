@@ -239,17 +239,16 @@ COPY --chown=$USER_UID:$USER_GID docker/prebuild_aiter_attention.py /opt/prebuil
 # in-process, under a process-global lock, minutes at a time. The driver ends in
 # its own --check, so a missing or empty artifact fails the build here.
 #
-# The chmod is load-bearing: AITER's get_user_jit_dir() falls back to copying the
-# whole jit tree into $HOME when its own directory is unwritable, so a container
-# run with --user of any other uid would miss every artifact built here -- or die
-# outright when HOME is not writable either. Directories go a+wt rather than a+w:
-# write alone lets any uid unlink a kernel and drop in its own, whatever the
-# file's own mode says; the sticky bit leaves that to the owner.
 RUN set -eu; \
     export GPU_ARCHS="$AITER_GPU_ARCHS"; \
-    python3 /opt/prebuild_aiter_attention.py --jobs "$AITER_PREBUILD_JOBS"; \
-    JIT="$(python3 /opt/prebuild_aiter_attention.py --print-jit-dir)"; \
-    chmod -R a+rX "$JIT"; find "$JIT" -type d -exec chmod a+wt {} +
+    python3 /opt/prebuild_aiter_attention.py --jobs "$AITER_PREBUILD_JOBS"
+
+# AITER copies its jit tree to ~/.aiter when the installed one is not writable.
+# Docker hands an unknown --user uid HOME=/, which is not writable, so that
+# fallback dies rather than copying. A sticky world-writable home lets it land;
+# the installed tree stays read-only and off any writable import path.
+ENV HOME=/home/$USERNAME
+RUN chmod 1777 /home/$USERNAME
 
 WORKDIR /home/$USERNAME
 
