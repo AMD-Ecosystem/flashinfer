@@ -509,18 +509,62 @@ per query-length regime if you need both routed correctly under capture.
 | gfx942 | ≤ 16 | 1.35–4.6× |
 | gfx950 | ≤ 8 | 1.25–4.6× |
 
-Three paths are deliberately **not** gated. Native page sizes have no gather
-and beat `fa2` even at one query row (0.93× on gfx942, 0.54× on gfx950).
-Ragged prefill dispatches through `mha_varlen_fwd` on already-contiguous KV,
-and the sweep that sited the paged gate covers it too. Its crossover is
-shape-dependent on both architectures, and on gfx950 one shape — bs 32 /
-kv 2048 — favours AITER at *every* query length measured, so no threshold
-serves it. gfx942 has no such shape: all five lose at 16 query tokens
-(1.18–4.74×), so a gfx942-only gate is supportable on this data and has not
-been claimed. The per-shape crossovers are in the commit that added this.
-Decode is genuinely one query row, and AITER wins there. An explicit
-`backend="aiter"` is also honoured — this is a routing preference, not a
-wrong answer, so it stays measurable.
+### Short-query ragged prefill avoids AITER on gfx942
+
+Ragged dispatches through `mha_varlen_fwd` on already-contiguous KV, so there is
+no gather to amortise — what a short query loses is fixed kernel cost, and only
+gfx942 pays enough of it to be worth steering. The shape this fires on is a
+short query against a long context, i.e. a chat turn landing on a cached prefix.
+
+| arch | routed to `fa2` when `max_q_len` is | AITER slower by |
+| :--- | :--- | :--- |
+| gfx942 | ≤ 16 | 1.18–4.74× |
+| gfx950 | never gated | — |
+
+gfx950 is ungated because one measured shape (bs 32 / kv 2048) favours AITER at
+every query length, so no threshold serves it.
+
+Same cudagraph exception as the paged gate, in the other direction: a
+capture-mode wrapper that demotes on one short batch stays on `fa2` for its
+lifetime, since re-promoting would swap the module a captured graph points at.
+Use a separate wrapper per query-length regime if you need both.
+
+Two paths are deliberately **not** gated. Native page sizes have no gather and
+beat `fa2` even at one query row (0.93× on gfx942, 0.54× on gfx950). Decode is
+ungated on measurement rather than assertion: AITER wins every cell at 64 query
+heads (up to 7.7× on gfx950), and the 32-head cells it loses cost 5–26 µs — a
+fixed-cost gap of ~10 µs per call, visible only while both kernels are
+launch-bound. A length-keyed threshold would mis-route 64-head decode by up to
+7.7×; 128-head was not swept, but it sits on the same side of the trend.
+Numbers in the commit.
+
+Those launches were all eager, so the figures describe eager decode. `auto`
+reaches AITER under graph capture too when the wrapper is given `max_seq_len`,
+and an explicit `backend="aiter"` reaches it either way; neither was timed
+here.
+
+Single prefill is not gated either. It shares the soft-cap defect with ragged,
+but the sweep behind the table above ran through the ragged wrapper, and no
+single-prefill measurement at these query lengths exists to site a threshold on.
+
+An explicit `backend="aiter"` is honoured throughout — these are routing
+preferences, not wrong answers, so the other side stays measurable.
+
+### `fa2` decode does not scale past GQA group 4
+
+At 64 query heads `fa2` decode reaches 12% of peak bandwidth where AITER reaches
+59% — 0.61 against 3.11 TB/s at batch 256 / kv 4096 on MI300X, both moving the
+same 4.3 GB of K+V. It holds ~5.3 TFLOPS there whatever the shape. gfx950 is the
+same picture, AITER ahead in every 64-head cell by up to 7.7×.
+
+Use `backend="aiter"` for a 70B or 405B decode. Under graph capture `auto`
+resolves to `fa2` unless the wrapper is given `max_seq_len` — see
+[Batch decode: CUDA-graph capture](#batch-decode-cuda-graph-capture).
+
+The cause is unresolved. Grid starvation is ruled out (the 64/32-head ratio is
+flat at ~4.6× from batch 32 to 256), and two `BatchDecodeBdz` settings were
+tried and did not help; that constant carries the detail. Settling it needs
+counter profiling of the inner loop, not another tuning constant.
 
 ### `fused_add_rmsnorm` and `gemma_fused_add_rmsnorm` at large `hidden_size`
 

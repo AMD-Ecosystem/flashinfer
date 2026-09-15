@@ -221,6 +221,45 @@ class TestAutoBackendSelection:
             pytest.skip(f"AITER unavailable here for another reason: {reason}")
         assert (backend, reason) == ("aiter", None)
 
+    def test_short_ragged_query_declines_aiter_where_the_arch_gates(self, device):
+        """Ragged has no gather, so this is fixed kernel cost rather than a copy.
+        Only gfx942 is gated; gfx950's row is None and must fall through."""
+        from flashinfer.rocm.arch_caps import _device_arch, aiter_ragged_gated_q_len
+
+        gated = aiter_ragged_gated_q_len(_device_arch(device))
+        if gated is None:
+            backend, reason = _auto(device, ragged_q_len=1)
+            if backend == "fa2":
+                pytest.skip(f"AITER unavailable here for another reason: {reason}")
+            assert (backend, reason) == ("aiter", None)
+            return
+
+        backend, reason = _auto(device, ragged_q_len=gated)
+        assert backend == "fa2"
+        if "ragged KV" not in (reason or ""):
+            pytest.skip(f"AITER declined for another reason: {reason}")
+        assert f"<= {gated}" in reason, reason
+
+    def test_ragged_query_above_the_threshold_keeps_aiter(self, device):
+        from flashinfer.rocm.arch_caps import _device_arch, aiter_ragged_gated_q_len
+
+        gated = aiter_ragged_gated_q_len(_device_arch(device))
+        if gated is None:
+            pytest.skip("this architecture does not gate ragged prefill")
+
+        backend, reason = _auto(device, ragged_q_len=gated + 1)
+        if backend == "fa2" and "ragged KV" not in (reason or ""):
+            pytest.skip(f"AITER unavailable here for another reason: {reason}")
+        assert (backend, reason) == ("aiter", None)
+
+    def test_the_two_perf_gates_do_not_share_a_reason(self, device):
+        """The paged reason blames a gather ragged never makes, and the paged
+        demotion site matches its string by equality -- so a shared string would
+        both misreport and cross-trigger."""
+        assert prefill_rocm._ragged_short_query_reason(
+            16
+        ) != prefill_rocm._flat_gather_short_query_reason(16)
+
     def test_max_q_len_none_disarms_the_gate(self, device):
         """None is how the paged planner says the page size pages natively --
         that route has no gather and beats fa2 even at one query row, so it must
