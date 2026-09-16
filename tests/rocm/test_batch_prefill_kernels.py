@@ -4,6 +4,7 @@
 
 import pytest
 import torch
+from attention_reference import naive_attention
 from jit_utils import gen_prefill_attention_modules
 
 import flashinfer
@@ -49,6 +50,12 @@ def warmup_jit():
             [False],  # use_sliding_windows
             [False, True],  # use_logits_soft_caps
             [False],  # use_fp16_qk_reductions
+        ),
+        verbose=False,
+    )
+    flashinfer.jit.build_jit_specs(
+        gen_prefill_attention_modules(
+            [torch.float16], [torch.float16], [64], [0], [False], [False], [False]
         ),
         verbose=False,
     )
@@ -1962,3 +1969,112 @@ def test_paged_softcap_guard_tracks_the_paging_route(monkeypatch):
     if non_native is not None:
         with pytest.raises(ValueError, match="logits_soft_cap"):
             plan(non_native)
+
+
+@pytest.mark.parametrize("head_dim", [64, 128, 256])
+@pytest.mark.parametrize("num_qo_heads", [4, 32])
+@pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.parametrize("mode", ["ragged", "paged"])
+def test_batch_prefill_matches_independent_reference(
+    mode, head_dim, num_qo_heads, causal
+):
+    """Batch fa2 prefill against a torch reference, at kv_len % CTA_TILE_KV != 0.
+
+    The independent batch oracle that already exists covers only bf16 + causal +
+    head_dim 128 (test_batch_prefill_bf16_custom_mask); every other batch test
+    compares against single_prefill_with_kv_cache("fa2"), which reads V through the
+    same path, so a uniform V-layout error cancels. This adds head_dim 64/256,
+    non-causal and fp16.
+    """
+    torch.manual_seed(0)
+    device = "cuda:0"
+    batch_size, qo_len, kv_len, num_kv_heads, page_size = 3, 37, 97, 4, 16
+
+    q = torch.randn(
+        batch_size * qo_len, num_qo_heads, head_dim, device=device, dtype=torch.float16
+    )
+    k = torch.randn(
+        batch_size * kv_len, num_kv_heads, head_dim, device=device, dtype=torch.float16
+    )
+    v = torch.randn(
+        batch_size * kv_len, num_kv_heads, head_dim, device=device, dtype=torch.float16
+    )
+    q_indptr = (
+        torch.arange(0, batch_size + 1, device=device, dtype=torch.int32) * qo_len
+    )
+    workspace_buffer = torch.empty(128 * 1024 * 1024, dtype=torch.int8, device=device)
+
+    if mode == "ragged":
+        kv_indptr = (
+            torch.arange(0, batch_size + 1, device=device, dtype=torch.int32) * kv_len
+        )
+        wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
+            workspace_buffer, "NHD", backend="fa2"
+        )
+        wrapper.plan(
+            q_indptr, kv_indptr, num_qo_heads, num_kv_heads, head_dim, causal=causal
+        )
+        o = wrapper.run(q, k, v)
+    else:
+        pages_per_seq = (kv_len + page_size - 1) // page_size
+        padded = pages_per_seq * page_size
+        kv_data = torch.zeros(
+            batch_size * pages_per_seq,
+            2,
+            page_size,
+            num_kv_heads,
+            head_dim,
+            device=device,
+            dtype=torch.float16,
+        )
+        for src, slot in ((k, 0), (v, 1)):
+            buf = torch.zeros(
+                batch_size,
+                padded,
+                num_kv_heads,
+                head_dim,
+                device=device,
+                dtype=torch.float16,
+            )
+            buf[:, :kv_len] = src.view(batch_size, kv_len, num_kv_heads, head_dim)
+            kv_data[:, slot] = buf.view(
+                batch_size * pages_per_seq, page_size, num_kv_heads, head_dim
+            )
+        kv_indptr = (
+            torch.arange(0, batch_size + 1, device=device, dtype=torch.int32)
+            * pages_per_seq
+        )
+        kv_indices = torch.arange(
+            0, batch_size * pages_per_seq, device=device, dtype=torch.int32
+        )
+        last_len = torch.full(
+            (batch_size,),
+            kv_len - (pages_per_seq - 1) * page_size,
+            device=device,
+            dtype=torch.int32,
+        )
+        wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+            workspace_buffer, "NHD", backend="fa2"
+        )
+        wrapper.plan(
+            q_indptr,
+            kv_indptr,
+            kv_indices,
+            last_len,
+            num_qo_heads,
+            num_kv_heads,
+            head_dim,
+            page_size,
+            causal=causal,
+        )
+        o = wrapper.run(q, kv_data)
+
+    for i in range(batch_size):
+        qs = slice(i * qo_len, (i + 1) * qo_len)
+        ks = slice(i * kv_len, (i + 1) * kv_len)
+        # fp32 reference: naive_attention does not upcast, and an fp16 one would
+        # eat the tolerance budget.
+        o_ref, _ = naive_attention(
+            q[qs].float(), k[ks].float(), v[ks].float(), causal=causal
+        )
+        torch.testing.assert_close(o[qs].float(), o_ref.float(), rtol=1e-2, atol=1e-2)

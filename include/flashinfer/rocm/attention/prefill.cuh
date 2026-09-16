@@ -1016,10 +1016,9 @@ __device__ __forceinline__ void compute_sfm_v(
 
 #pragma unroll
   for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
-    // v_col_idx: current column j of *v_smem_offset_r before each advance_offset_by_column.
-    // Reset per KV row: each row's V fragment starts at column tid.x / WARP_THREAD_COLS.
-    // Needed by k128B_16Row; ignored by k128B.
-    uint32_t v_col_idx = tid.x / KTraits::WARP_THREAD_COLS;
+    // Current column j of *v_smem_offset_r before each advance_offset_by_column,
+    // reset per KV row. Needed by k128B_16Row; ignored by k128B.
+    uint32_t v_col_idx = v_smem->trans_frag_col(tid.x);
 #pragma unroll
     for (uint32_t mma_d = 0; mma_d < KTraits::NUM_MMA_D_VO; ++mma_d) {
       uint32_t b_frag[INT32_ELEMS_PER_THREAD];
@@ -1520,7 +1519,8 @@ __device__ __forceinline__ void SinglePrefillWithKVCacheDevice(
   uint32_t k_smem_offset_r = k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
       get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + lane_idx % 16, (lane_idx / 16));
   uint32_t v_smem_offset_r = v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(
-      get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + lane_idx % 16, lane_idx / 16);
+      get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + v_smem.trans_frag_row(lane_idx),
+      v_smem.trans_frag_col(lane_idx));
   uint32_t k_smem_offset_w = k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
                warp_idx * KV_THR_LAYOUT_ROW + lane_idx / KV_THR_LAYOUT_COL,
                lane_idx % KV_THR_LAYOUT_COL),
@@ -1932,7 +1932,8 @@ __global__ __launch_bounds__(KTraits::NUM_THREADS) void BatchPrefillWithRaggedKV
       get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + lane_idx % 16, (lane_idx / 16));
 
   uint32_t v_smem_offset_r = v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(
-      get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + lane_idx % 16, lane_idx / 16);
+      get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + v_smem.trans_frag_row(lane_idx),
+      v_smem.trans_frag_col(lane_idx));
 
   uint32_t k_smem_offset_w = k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
                warp_idx * KV_THR_LAYOUT_ROW + lane_idx / KV_THR_LAYOUT_COL,
@@ -2200,7 +2201,8 @@ __device__ __forceinline__ void BatchPrefillWithPagedKVCacheDevice(
   uint32_t k_smem_offset_r = k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
       get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + lane_idx % 16, (lane_idx / 16));
   uint32_t v_smem_offset_r = v_smem.template get_permuted_offset<UPCAST_STRIDE_V>(
-      get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + lane_idx % 16, lane_idx / 16);
+      get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + v_smem.trans_frag_row(lane_idx),
+      v_smem.trans_frag_col(lane_idx));
 
   uint32_t k_smem_offset_w = k_smem.template get_permuted_offset<UPCAST_STRIDE_K>(
                warp_idx * KV_THR_LAYOUT_ROW + lane_idx / KV_THR_LAYOUT_COL,
