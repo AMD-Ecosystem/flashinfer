@@ -11,12 +11,15 @@ collection still pulls in the suite's torch-importing conftest, so CI runs this
 file with ``--noconftest`` (see ``.github/workflows/arch-caps-conformance.yml``).
 """
 
+import argparse
+import builtins
 import importlib.util
 import json
 import re
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -1405,3 +1408,361 @@ class TestMain:
         ac.main()
 
         assert seen["a"].fail_under == pytest.approx(90.5)
+
+
+class TestSubprocessAndTomlFailures:
+    def test_a_failed_command_names_it_and_quotes_stderr(self, repo):
+        with pytest.raises(ac.ToolError, match="cat-file"):
+            ac._run(str(repo), "cat-file", "-p", "0" * 40)
+
+    def test_tomli_is_the_fallback_when_tomllib_is_absent(self, tmp_path, monkeypatch):
+        """`requires-python` allows 3.10, where tomllib does not exist."""
+        loaded = {}
+
+        def fake_load(fh):
+            loaded["bytes"] = fh.read()
+            return {"from": "tomli"}
+
+        monkeypatch.setitem(sys.modules, "tomli", types.SimpleNamespace(load=fake_load))
+        _hide_tomllib(monkeypatch)
+
+        path = tmp_path / "m.toml"
+        path.write_text('k = "v"\n', encoding="utf-8")
+        assert ac._load_toml(path) == {"from": "tomli"}
+        assert loaded["bytes"] == b'k = "v"\n'
+
+    def test_neither_toml_reader_is_a_tool_error(self, tmp_path, monkeypatch):
+        monkeypatch.delitem(sys.modules, "tomli", raising=False)
+        _hide_tomllib(monkeypatch, also="tomli")
+
+        path = tmp_path / "m.toml"
+        path.write_text("", encoding="utf-8")
+        with pytest.raises(ac.ToolError, match="needs tomli"):
+            ac._load_toml(path)
+
+
+def _hide_tomllib(monkeypatch, also=None):
+    """Make `import tomllib` (and optionally one more) raise ModuleNotFoundError.
+
+    Assigning None in sys.modules raises plain ImportError, which the tool does
+    not catch, so the import hook itself has to be replaced.
+    """
+    hidden = {"tomllib"} | ({also} if also else set())
+    real = builtins.__import__
+
+    def fake(name, *args, **kwargs):
+        if name in hidden:
+            raise ModuleNotFoundError(f"No module named {name!r}")
+        return real(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "tomllib", raising=False)
+    monkeypatch.setattr(builtins, "__import__", fake)
+
+
+class TestBaseResolutionFailure:
+    def test_an_upstream_base_error_becomes_a_tool_error(self, repo, monkeypatch):
+        def boom(*_a, **_k):
+            raise ac.upstream_base.UpstreamBaseError("no common ancestor")
+
+        monkeypatch.setattr(ac.upstream_base, "select", boom)
+        with pytest.raises(ac.ToolError):
+            ac._resolve_base_detail(str(repo), None)
+
+    def test_a_missing_base_object_does_not_get_the_unshallow_hint(
+        self, repo, monkeypatch
+    ):
+        """An explicit base needs the object present, not reachable."""
+
+        def boom(*_a, **_k):
+            raise ac.upstream_base.MissingBaseObject("base object is not in this clone")
+
+        monkeypatch.setattr(ac.upstream_base, "select", boom)
+        # _select directly: --upstream-ref is validated earlier and never gets here.
+        with pytest.raises(ac.ToolError, match="base object is not in this clone"):
+            ac._select(str(repo), "HEAD", None)
+
+
+class TestNameStatusParsing:
+    def test_a_truncated_rename_record_is_rejected(self, repo, monkeypatch):
+        """A half-written -z record must not be read as a path."""
+        # No trailing NUL: the record promises an old and a new path, and only
+        # the old one arrived.
+        truncated = types.SimpleNamespace(stdout="R100\0flashinfer/old.py")
+        monkeypatch.setattr(ac, "_run", lambda *a, **k: truncated)
+
+        with pytest.raises(ac.ToolError, match="truncated name-status rename record"):
+            ac._diff_status(str(repo), "HEAD")
+
+
+def _write_coverage_config(root):
+    """`score` reads the tree's pyproject.toml; a throwaway root has none."""
+    (root / "pyproject.toml").write_text(
+        '[tool.coverage.run]\nsource = ["."]\n', encoding="utf-8"
+    )
+
+
+class TestCoverageDataFailures:
+    def test_an_unreadable_data_file_names_itself(self, tmp_path):
+        data = tmp_path / "corrupt.coverage"
+        data.write_bytes(b"not a coverage database")
+
+        with pytest.raises(ac.ToolError, match="cannot read coverage data"):
+            ac._executed(data, tmp_path, ["flashinfer/a.py"])
+
+    def test_a_measured_file_we_do_not_own_is_skipped(self, tmp_path):
+        import coverage
+
+        data = coverage.CoverageData(basename=str(tmp_path / "d.coverage"))
+        data.add_lines({str(tmp_path / "flashinfer/mine.py"): [1, 2]})
+        data.add_lines({"/elsewhere/not_ours.py": [1]})
+        data.write()
+
+        out, foreign = ac._executed(
+            tmp_path / "d.coverage", tmp_path, ["flashinfer/mine.py"]
+        )
+        assert set(out) == {"flashinfer/mine.py"}
+        assert foreign == set()
+
+    def test_an_unanalysable_owned_file_names_itself(self, tmp_path):
+        """`analysis2` raises NoSource when the file the data names is gone."""
+        import coverage
+
+        _write_coverage_config(tmp_path)
+        data_file = tmp_path / "d.coverage"
+        data = coverage.CoverageData(basename=str(data_file))
+        data.add_lines({str(tmp_path / "flashinfer/gone.py"): [1]})
+        data.write()
+
+        owned = {"flashinfer/gone.py": ac.Owned("flashinfer/gone.py", "A", None)}
+        with pytest.raises(ac.ToolError, match="cannot analyse flashinfer/gone.py"):
+            ac.score(tmp_path, owned, data_file, None)
+
+    def test_no_owned_line_executed_is_an_error_not_a_zero(self, tmp_path):
+        """`source` is a directory, so a wrong PYTHONPATH scores a clean 0%."""
+        import coverage
+
+        _write_coverage_config(tmp_path)
+        (tmp_path / "flashinfer").mkdir()
+        (tmp_path / "flashinfer/mine.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+
+        data_file = tmp_path / "d.coverage"
+        data = coverage.CoverageData(basename=str(data_file))
+        data.add_lines({"/elsewhere/other.py": [1]})
+        data.write()
+
+        owned = {"flashinfer/mine.py": ac.Owned("flashinfer/mine.py", "A", None)}
+        with pytest.raises(ac.ToolError, match="no owned line was recorded"):
+            ac.score(tmp_path, owned, data_file, None)
+
+
+class TestStaleSourcesEdgeCases:
+    def test_a_missing_data_file_reports_nothing_stale(self, tmp_path):
+        assert (
+            ac._stale_sources(tmp_path, tmp_path / "absent", ["flashinfer/a.py"]) == []
+        )
+
+    def test_an_owned_path_that_does_not_exist_is_skipped(self, tmp_path):
+        data = tmp_path / "d.coverage"
+        data.write_text("x", encoding="utf-8")
+        assert ac._stale_sources(tmp_path, data, ["flashinfer/vanished.py"]) == []
+
+
+class TestArchDetection:
+    def test_the_env_var_wins(self, monkeypatch):
+        monkeypatch.setenv("FLASHINFER_ROCM_ARCH_LIST", "gfx950")
+        assert ac._detect_arch() == "gfx950"
+
+    def test_the_enumerator_output_is_sorted_and_gfx000_dropped(self, monkeypatch):
+        monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+        monkeypatch.setattr(
+            ac.subprocess,
+            "run",
+            lambda *a, **k: types.SimpleNamespace(stdout="gfx950\ngfx000\ngfx942\n"),
+        )
+        assert ac._detect_arch() == "gfx942,gfx950"
+
+    def test_a_missing_enumerator_reads_as_unknown(self, monkeypatch):
+        monkeypatch.delenv("FLASHINFER_ROCM_ARCH_LIST", raising=False)
+
+        def boom(*_a, **_k):
+            raise OSError("rocm_agent_enumerator: not found")
+
+        monkeypatch.setattr(ac.subprocess, "run", boom)
+        assert ac._detect_arch() == "unknown"
+
+
+class TestRunEntryPoints:
+    """`run()`'s guards, which sit between argparse and any measurement."""
+
+    def _args(self, repo, **over):
+        defaults = dict(
+            upstream_ref=None,
+            run=False,
+            out_dir=str(repo),
+            data_file=str(repo / ".coverage"),
+            json_out=None,
+            fail_under=None,
+            no_baseline=True,
+            show_files=False,
+            pytest_args=[],
+        )
+        defaults.update(over)
+        return argparse.Namespace(**defaults)
+
+    def _ported_repo(self, repo):
+        _git(repo, "tag", "v0.5.3")
+        _write(repo, "flashinfer/a.py", "def f():\n    return 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "port work")
+        _git(repo, "tag", "v0.5.3+amd.1")
+
+    def test_a_missing_manifest_is_named(self, repo, monkeypatch):
+        self._ported_repo(repo)
+        (repo / ac._MANIFEST).unlink()
+        monkeypatch.chdir(repo)
+
+        with pytest.raises(ac.ToolError, match=re.escape(ac._MANIFEST)):
+            ac.run(self._args(repo))
+
+    def test_a_tree_owning_nothing_is_named(self, repo, monkeypatch):
+        """An unported checkout must say so rather than divide by zero."""
+        _git(repo, "tag", "v0.5.3")
+        _git(repo, "tag", "v0.5.3+amd.1")
+        monkeypatch.chdir(repo)
+
+        with pytest.raises(ac.ToolError, match="no owned files found"):
+            ac.run(self._args(repo))
+
+    def test_a_missing_data_file_points_at_the_run_recipe(self, repo, monkeypatch):
+        self._ported_repo(repo)
+        monkeypatch.chdir(repo)
+
+        with pytest.raises(ac.ToolError, match="no coverage data at"):
+            ac.run(self._args(repo))
+
+    def test_run_invokes_pytest_and_scores_what_it_wrote(self, repo, monkeypatch):
+        self._ported_repo(repo)
+        monkeypatch.chdir(repo)
+        called = {}
+
+        def fake_pytest(_repo, out_dir, data_file, args):
+            called["args"] = list(args)
+            data_file.write_text("x", encoding="utf-8")
+            return out_dir / "junit.xml"
+
+        score = ac.Score(
+            path="flashinfer/a.py",
+            tier="A",
+            reason="",
+            owned={1, 2},
+            covered={1},
+            import_time=set(),
+            excluded=0,
+        )
+        monkeypatch.setattr(ac, "_run_pytest", fake_pytest)
+        monkeypatch.setattr(ac, "score", lambda *a, **k: ([score], set()))
+
+        assert ac.run(self._args(repo, run=True, pytest_args=["-n", "1"])) == ac.EXIT_OK
+        assert called["args"] == ["-n", "1"]
+
+    def test_a_baseline_already_on_disk_is_reused(self, repo, monkeypatch):
+        self._ported_repo(repo)
+        monkeypatch.chdir(repo)
+        (repo / ".coverage").write_text("x", encoding="utf-8")
+        baseline = repo / "import-baseline.coverage"
+        baseline.write_text("b", encoding="utf-8")
+
+        def refuse(*_a, **_k):
+            raise AssertionError("re-captured a baseline that was already on disk")
+
+        score = ac.Score(
+            path="flashinfer/a.py",
+            tier="A",
+            reason="",
+            owned={1, 2},
+            covered={1},
+            import_time=set(),
+            excluded=0,
+        )
+        monkeypatch.setattr(ac, "_capture_baseline", refuse)
+        seen = {}
+
+        def fake_score(_repo, _owned, _data, baseline_arg):
+            seen["baseline"] = baseline_arg
+            return [score], set()
+
+        monkeypatch.setattr(ac, "score", fake_score)
+
+        assert ac.run(self._args(repo, no_baseline=False)) == ac.EXIT_OK
+        assert seen["baseline"] == baseline
+
+    def test_a_baseline_is_captured_when_none_is_on_disk(self, repo, monkeypatch):
+        self._ported_repo(repo)
+        monkeypatch.chdir(repo)
+        (repo / ".coverage").write_text("x", encoding="utf-8")
+        captured = repo / "import-baseline.coverage"
+
+        def fake_capture(_repo, path):
+            path.write_text("b", encoding="utf-8")
+            return path
+
+        score = ac.Score(
+            path="flashinfer/a.py",
+            tier="A",
+            reason="",
+            owned={1, 2},
+            covered={1},
+            import_time=set(),
+            excluded=0,
+        )
+        monkeypatch.setattr(ac, "_capture_baseline", fake_capture)
+        seen = {}
+
+        def fake_score(_repo, _owned, _data, baseline_arg):
+            seen["baseline"] = baseline_arg
+            return [score], set()
+
+        monkeypatch.setattr(ac, "score", fake_score)
+
+        assert ac.run(self._args(repo, no_baseline=False)) == ac.EXIT_OK
+        assert seen["baseline"] == captured
+
+    def test_fail_under_returns_the_ratchet_code(self, repo, monkeypatch, capsys):
+        self._ported_repo(repo)
+        monkeypatch.chdir(repo)
+        (repo / ".coverage").write_text("x", encoding="utf-8")
+
+        score = ac.Score(
+            path="flashinfer/a.py",
+            tier="A",
+            reason="",
+            owned={1, 2},
+            covered={1},
+            import_time=set(),
+            excluded=0,
+        )
+        monkeypatch.setattr(ac, "score", lambda *a, **k: ([score], set()))
+
+        assert ac.run(self._args(repo, fail_under=90.0)) == ac.EXIT_RATCHET
+        assert "under --fail-under 90.0" in capsys.readouterr().out
+
+
+class TestReachShardHygiene:
+    def test_a_previous_runs_shards_are_removed_before_pytest(
+        self, tmp_path, monkeypatch
+    ):
+        """Left in place they would be counted as this run's reach."""
+        stale = tmp_path / "jit-reach.gw0.json"
+        stale.write_text("{}", encoding="utf-8")
+        data = tmp_path / ".coverage"
+
+        def fake_run(_cmd, **_kwargs):
+            assert not stale.exists(), "the stale shard survived into the pytest run"
+            (tmp_path / "junit.xml").write_text("<testsuite/>", encoding="utf-8")
+            data.write_text("x", encoding="utf-8")
+            return types.SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(ac.subprocess, "run", fake_run)
+        ac._run_pytest(tmp_path, tmp_path, data, [])
+
+        assert not stale.exists()
