@@ -119,6 +119,195 @@ class TestRaggedCudaGraphBuffers:
             )
 
 
+def _paged_plan_args(device, **over):
+    args = dict(
+        qo_indptr=_indptr([0, 4], device),
+        paged_kv_indptr=_indptr([0, 2], device),
+        paged_kv_indices=_indptr([0, 1], device),
+        paged_kv_last_page_len=_indptr([8], device),
+        num_qo_heads=8,
+        num_kv_heads=8,
+        head_dim_qk=128,
+        page_size=16,
+    )
+    args.update(over)
+    return args
+
+
+def _ragged_plan_args(device, **over):
+    args = dict(
+        qo_indptr=_indptr([0, 4], device),
+        kv_indptr=_indptr([0, 8], device),
+        num_qo_heads=8,
+        num_kv_heads=8,
+        head_dim_qk=128,
+    )
+    args.update(over)
+    return args
+
+
+class TestAiterConstraints:
+    """`backend="aiter"` is a promise the wrapper must refuse when it cannot keep it.
+
+    Each check sits immediately before ``get_batch_prefill_module``, so these
+    cost no JIT. Under ``auto`` the same conditions fall back to fa2 instead;
+    that path is covered by ``test_aiter_auto_fallback.py``.
+    """
+
+    def test_paged_rejects_a_pos_encoding_mode_it_cannot_do(self, workspace):
+        wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
+            workspace, backend="aiter"
+        )
+        with pytest.raises(ValueError, match="does not support pos_encoding_mode"):
+            wrapper.plan(
+                **_paged_plan_args(workspace.device, pos_encoding_mode="ROPE_LLAMA")
+            )
+
+    def test_paged_rejects_a_kv_layout_it_cannot_do(self, workspace):
+        wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
+            workspace, kv_layout="HND", backend="aiter"
+        )
+        with pytest.raises(ValueError, match="only supports kv_layout='NHD'"):
+            wrapper.plan(**_paged_plan_args(workspace.device))
+
+    def test_ragged_rejects_a_pos_encoding_mode_it_cannot_do(self, workspace):
+        wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
+            workspace, backend="aiter"
+        )
+        with pytest.raises(ValueError, match="does not support pos_encoding_mode"):
+            wrapper.plan(
+                **_ragged_plan_args(workspace.device, pos_encoding_mode="ROPE_LLAMA")
+            )
+
+    def test_ragged_rejects_a_kv_layout_it_cannot_do(self, workspace):
+        wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
+            workspace, kv_layout="HND", backend="aiter"
+        )
+        with pytest.raises(ValueError, match="only supports kv_layout='NHD'"):
+            wrapper.plan(**_ragged_plan_args(workspace.device))
+
+
+class TestPagedCudaGraphPlan:
+    """Shapes are fixed at capture; a later plan must not silently exceed them."""
+
+    def _graph_wrapper(self, workspace, rows=8, batch=1, indices=4):
+        device = workspace.device
+        return flashinfer.BatchPrefillWithPagedKVCacheWrapper(
+            workspace,
+            use_cuda_graph=True,
+            qo_indptr_buf=_indptr([0] + [rows] * batch, device),
+            paged_kv_indptr_buf=_indptr([0] + [indices] * batch, device),
+            paged_kv_indices_buf=_indptr(list(range(indices)), device),
+            paged_kv_last_page_len_buf=_indptr([8] * batch, device),
+        )
+
+    def test_more_rows_than_the_first_plan_saw_is_rejected(self, workspace):
+        device = workspace.device
+        wrapper = self._graph_wrapper(workspace)
+        wrapper._max_total_num_rows = 4
+
+        with pytest.raises(ValueError, match="cannot exceed the number of rows"):
+            wrapper.plan(**_paged_plan_args(device, qo_indptr=_indptr([0, 8], device)))
+
+    def test_a_different_batch_size_is_rejected(self, workspace):
+        device = workspace.device
+        wrapper = self._graph_wrapper(workspace, batch=1)
+
+        with pytest.raises(ValueError, match="batch size should be fixed"):
+            wrapper.plan(
+                **_paged_plan_args(
+                    device,
+                    qo_indptr=_indptr([0, 4, 8], device),
+                    paged_kv_indptr=_indptr([0, 2, 4], device),
+                    paged_kv_last_page_len=_indptr([8, 8], device),
+                )
+            )
+
+    def test_more_indices_than_the_buffer_holds_is_rejected(self, workspace):
+        device = workspace.device
+        wrapper = self._graph_wrapper(workspace, indices=2)
+
+        with pytest.raises(ValueError, match="exceeds the allocated buffer size"):
+            wrapper.plan(
+                **_paged_plan_args(
+                    device,
+                    paged_kv_indptr=_indptr([0, 6], device),
+                    paged_kv_indices=_indptr(list(range(6)), device),
+                )
+            )
+
+
+class TestRaggedCudaGraphPlan:
+    def _graph_wrapper(self, workspace, rows=8, batch=1):
+        device = workspace.device
+        return flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
+            workspace,
+            use_cuda_graph=True,
+            qo_indptr_buf=_indptr([0] + [rows] * batch, device),
+            kv_indptr_buf=_indptr([0] + [rows * 2] * batch, device),
+        )
+
+    def test_a_plan_within_the_captured_shape_copies_into_the_buffers(self, workspace):
+        device = workspace.device
+        wrapper = self._graph_wrapper(workspace)
+
+        wrapper.plan(**_ragged_plan_args(device, qo_indptr=_indptr([0, 8], device)))
+
+        assert wrapper._max_total_num_rows == 8
+        assert wrapper._qo_indptr_buf.tolist() == [0, 8]
+
+    def test_more_rows_than_the_first_plan_saw_is_rejected(self, workspace):
+        device = workspace.device
+        wrapper = self._graph_wrapper(workspace)
+        wrapper._max_total_num_rows = 4
+
+        with pytest.raises(ValueError, match="cannot exceed the number of rows"):
+            wrapper.plan(**_ragged_plan_args(device, qo_indptr=_indptr([0, 8], device)))
+
+    def test_a_different_batch_size_is_rejected(self, workspace):
+        device = workspace.device
+        wrapper = self._graph_wrapper(workspace, batch=1)
+
+        with pytest.raises(ValueError, match="batch size should be fixed"):
+            wrapper.plan(
+                **_ragged_plan_args(
+                    device,
+                    qo_indptr=_indptr([0, 4, 8], device),
+                    kv_indptr=_indptr([0, 8, 16], device),
+                )
+            )
+
+    @pytest.mark.parametrize("absent", ["custom_mask_buf", "mask_indptr_buf"])
+    def test_a_custom_mask_without_its_capture_buffer_is_rejected(
+        self, workspace, absent
+    ):
+        """The mask buffers are optional at construction, so plan() is the only
+        place a custom mask can discover they were never allocated."""
+        device = workspace.device
+        bufs = dict(
+            custom_mask_buf=torch.zeros(4096, dtype=torch.uint8, device=device),
+            mask_indptr_buf=_indptr([0, 64], device),
+        )
+        bufs[absent] = None
+        wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
+            workspace,
+            use_cuda_graph=True,
+            qo_indptr_buf=_indptr([0, 8], device),
+            kv_indptr_buf=_indptr([0, 16], device),
+            **bufs,
+        )
+
+        with pytest.raises(ValueError, match=f"{absent} must be initialized"):
+            wrapper.plan(
+                **_ragged_plan_args(
+                    device,
+                    qo_indptr=_indptr([0, 8], device),
+                    kv_indptr=_indptr([0, 16], device),
+                    custom_mask=torch.ones(8 * 16, dtype=torch.bool, device=device),
+                )
+            )
+
+
 class TestBackendSelection:
     def test_an_unknown_backend_is_rejected_by_the_ragged_wrapper(self, workspace):
         with pytest.raises(ValueError, match="backend must be one of"):
