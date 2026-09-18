@@ -425,5 +425,5 @@ def main() -> int:
         return EXIT_ERROR
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     sys.exit(main())
