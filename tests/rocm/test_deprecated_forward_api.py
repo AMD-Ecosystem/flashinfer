@@ -4,10 +4,10 @@
 """The deprecated ``begin_forward``/``forward``/``end_forward`` aliases.
 
 Upstream kept them and callers still reach them, but nothing here exercised
-them: each ``forward`` copies eight or nine keyword arguments onto ``self``
-before delegating, so a dropped assignment is a silently ignored argument
-rather than an error. Each case asserts the alias agrees with the modern call,
-which is what makes the copy meaningful rather than merely executed.
+them: each ``forward`` copies its keyword arguments onto ``self`` before
+delegating, so a dropped assignment is a silently ignored argument rather than
+an error. Every copied field is overridden to a value ``plan()`` did not leave
+behind, since a shared default makes the assignment unobservable.
 """
 
 import pytest
@@ -31,6 +31,71 @@ def device():
 @pytest.fixture(scope="module")
 def workspace(device):
     return torch.empty(_WORKSPACE_BYTES, dtype=torch.uint8, device=device)
+
+
+# Every field the prefill `forward` aliases copy, each set to something plan()
+# does not leave behind, so a dropped assignment cannot pass on a shared default.
+_OVERRIDES = dict(
+    causal=True,
+    pos_encoding_mode="ROPE_LLAMA",
+    use_fp16_qk_reduction=True,
+    window_left=4,
+    logits_soft_cap=30.0,
+    sm_scale=0.125,
+    rope_scale=2.0,
+    rope_theta=2e4,
+)
+
+
+def _assert_prefill_overrides_copied(wrapper):
+    assert wrapper._causal is True
+    assert wrapper._pos_encoding_mode == "ROPE_LLAMA"
+    assert wrapper._use_fp16_qk_reduction is True
+    assert wrapper._window_left == 4
+    assert wrapper._logits_soft_cap == 30.0
+    assert wrapper._sm_scale == 0.125
+    assert wrapper._rope_scale == 2.0
+    assert wrapper._rope_theta == 2e4
+
+
+# The decode aliases copy a different set: no causal, no fp16 qk reduction.
+_DECODE_OVERRIDES = dict(
+    pos_encoding_mode="ROPE_LLAMA",
+    window_left=4,
+    logits_soft_cap=30.0,
+    sm_scale=0.125,
+    rope_scale=2.0,
+    rope_theta=2e4,
+)
+
+
+def _assert_decode_overrides_copied(wrapper):
+    assert wrapper._pos_encoding_mode == "ROPE_LLAMA"
+    assert wrapper._window_left == 4
+    assert wrapper._logits_soft_cap == 30.0
+    assert wrapper._sm_scale == 0.125
+    assert wrapper._rope_scale == 2.0
+    assert wrapper._rope_theta == 2e4
+
+
+def _planned_decode(workspace, device, pages=2):
+    ints = lambda v: torch.tensor(v, dtype=torch.int32, device=device)  # noqa: E731
+    q = torch.randn(1, _NUM_HEADS, _HEAD_DIM, dtype=torch.float16, device=device)
+    kv = torch.randn(
+        pages, 2, _PAGE_SIZE, _NUM_HEADS, _HEAD_DIM, dtype=torch.float16, device=device
+    )
+    wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(workspace)
+    wrapper.plan(
+        ints([0, pages]),
+        ints(list(range(pages))),
+        ints([_PAGE_SIZE]),
+        _NUM_HEADS,
+        _NUM_HEADS,
+        _HEAD_DIM,
+        _PAGE_SIZE,
+        q_data_type=torch.float16,
+    )
+    return q, kv, wrapper
 
 
 def _paged_case(device, qo_len=8, kv_len=32):
@@ -100,10 +165,9 @@ class TestPagedPrefillAliases:
         wrapper.begin_forward(**plan_args, causal=False, sm_scale=0.5)
         assert (wrapper._causal, wrapper._sm_scale) == (False, 0.5)
 
-        wrapper.forward(q, kv, causal=True, sm_scale=0.125, rope_theta=2e4)
+        wrapper.forward(q, kv, **_OVERRIDES)
 
-        assert (wrapper._causal, wrapper._sm_scale) == (True, 0.125)
-        assert wrapper._rope_theta == 2e4
+        _assert_prefill_overrides_copied(wrapper)
 
 
 class TestRaggedPrefillAliases:
@@ -127,10 +191,9 @@ class TestRaggedPrefillAliases:
         )
         wrapper.begin_forward(**plan_args, causal=False, sm_scale=0.5)
 
-        wrapper.forward(q, k, v, causal=True, sm_scale=0.125, rope_theta=2e4)
+        wrapper.forward(q, k, v, **_OVERRIDES)
 
-        assert (wrapper._causal, wrapper._sm_scale) == (True, 0.125)
-        assert wrapper._rope_theta == 2e4
+        _assert_prefill_overrides_copied(wrapper)
 
     def test_forward_return_lse_matches_run_return_lse(self, workspace, device):
         q, k, v, plan_args = _ragged_case(device)
@@ -145,8 +208,8 @@ class TestRaggedPrefillAliases:
         torch.testing.assert_close(got_o, want_o, rtol=1e-3, atol=1e-3)
         torch.testing.assert_close(got_lse, want_lse, rtol=1e-3, atol=1e-3)
 
-        wrapper.forward_return_lse(q, k, v, causal=True, sm_scale=0.125)
-        assert (wrapper._causal, wrapper._sm_scale) == (True, 0.125)
+        wrapper.forward_return_lse(q, k, v, **_OVERRIDES)
+        _assert_prefill_overrides_copied(wrapper)
 
 
 class TestDecodeAliases:
@@ -181,10 +244,23 @@ class TestDecodeAliases:
 
         torch.testing.assert_close(got, expected, rtol=1e-3, atol=1e-3)
 
-        # plan() left sm_scale unset, so the copy is the only way it can arrive.
-        wrapper.forward(q, kv, sm_scale=0.125, rope_theta=2e4)
-        assert (wrapper._sm_scale, wrapper._rope_theta) == (0.125, 2e4)
+        # plan() left these unset, so the copy is the only way they can arrive.
+        wrapper.forward(q, kv, **_DECODE_OVERRIDES)
+        _assert_decode_overrides_copied(wrapper)
         wrapper.end_forward()
+
+    def test_forward_return_lse_matches_run_return_lse(self, workspace, device):
+        """The decode LSE alias was reachable from no test at all."""
+        q, kv, wrapper = _planned_decode(workspace, device)
+
+        want_o, want_lse = wrapper.run_return_lse(q, kv)
+        got_o, got_lse = wrapper.forward_return_lse(q, kv)
+
+        torch.testing.assert_close(got_o, want_o, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(got_lse, want_lse, rtol=1e-3, atol=1e-3)
+
+        wrapper.forward_return_lse(q, kv, **_DECODE_OVERRIDES)
+        _assert_decode_overrides_copied(wrapper)
 
 
 class TestBatchDecodeScaling:
