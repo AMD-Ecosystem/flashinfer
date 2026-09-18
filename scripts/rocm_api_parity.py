@@ -509,5 +509,5 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return EXIT_DIVERGED if findings else EXIT_OK
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     sys.exit(main())
