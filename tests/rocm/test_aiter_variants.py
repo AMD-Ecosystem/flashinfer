@@ -15,7 +15,9 @@ still import torch, transitively through ``flashinfer.jit``.
 
 import os
 import re
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -956,3 +958,312 @@ class TestCopilotReviewThree:
         monkeypatch.setenv("AITER_JIT_DIR", str(tmp_path / "custom-aiter"))
         with pytest.raises(RuntimeError, match="AITER_JIT_DIR is set"):
             drv.prebuild([], device_idx=0)
+
+
+class TestPrebuildOrchestration:
+    """The build loop's bookkeeping, with AITER's compiler stubbed out.
+
+    A real pass over these specs is one to three hours, so nothing here compiles
+    anything. What is worth guarding is the part that decides: which specs are
+    skipped, that a half-produced spec is a failure rather than a published
+    store, and that one bad spec does not lose the whole run.
+    """
+
+    @pytest.fixture
+    def harness(self, tmp_path, monkeypatch):
+        import threading
+
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        store = tmp_path / "store"
+        store.mkdir()
+        jit = tmp_path / "jit"
+        jit.mkdir()
+
+        # The baton is process-global and a test has no business waiting on it.
+        monkeypatch.setattr(drv, "_BUILD_LOCK", threading.Lock())
+        monkeypatch.setattr(drv, "_aiter_env_scope", lambda *a, **k: nullcontext())
+        monkeypatch.setattr(drv, "_write_manifest", lambda *a, **k: None)
+
+        built = []
+
+        def fake_build(spec, device_idx, head_dim):
+            built.append(spec)
+            for key in spec.produces:
+                (jit / av.so_name(key)).write_bytes(b"\x7fELF stub")
+
+        monkeypatch.setattr(drv, "_run_build", fake_build)
+        monkeypatch.setattr(drv, "_locate", lambda keys, search: _present(jit, keys))
+        return SimpleNamespace(drv=drv, store=store, jit=jit, built=built)
+
+    def _specs(self, n=2):
+        return [s for s in av.builds() if s.family is av.Family.MHA_FWD][:n]
+
+    def test_each_spec_is_built_and_published(self, harness, monkeypatch):
+        specs = self._specs()
+
+        built, skipped, failures = harness.drv._prebuild_specs(
+            specs, harness.store, "gfx950", 0, 128, False
+        )
+
+        assert (built, skipped, failures) == (len(specs), 0, [])
+        for spec in specs:
+            for key in spec.produces:
+                assert (harness.store / av.so_name(key)).is_file()
+
+    def test_a_spec_already_in_the_store_is_skipped(self, harness, monkeypatch):
+        """A rerun after a partial failure resumes rather than restarting."""
+        specs = self._specs()
+        for key in specs[0].produces:
+            (harness.store / av.so_name(key)).write_bytes(b"\x7fELF")
+
+        built, skipped, failures = harness.drv._prebuild_specs(
+            specs, harness.store, "gfx950", 0, 128, False
+        )
+
+        assert (built, skipped, failures) == (1, 1, [])
+        assert harness.built == specs[1:]
+
+    def test_force_rebuilds_what_is_already_there(self, harness, monkeypatch):
+        """The bootstraps short-circuit on a store hit, so --force must clear it."""
+        specs = self._specs(1)
+        for key in specs[0].produces:
+            (harness.store / av.so_name(key)).write_bytes(b"\x7fELF old")
+
+        built, skipped, _ = harness.drv._prebuild_specs(
+            specs, harness.store, "gfx950", 0, 128, True
+        )
+
+        assert (built, skipped) == (1, 0)
+        assert harness.built == specs
+
+    def test_a_half_produced_spec_fails_instead_of_publishing(
+        self, harness, monkeypatch
+    ):
+        """Publishing half a varlen build records a store the caller trusts."""
+        specs = [s for s in av.builds() if s.family is av.Family.MHA_VARLEN_FWD][:1]
+        assert len(specs[0].produces) == 2, "this case needs a two-output spec"
+        monkeypatch.setattr(
+            harness.drv, "_locate", lambda keys, search: _present(harness.jit, keys)[:1]
+        )
+
+        built, skipped, failures = harness.drv._prebuild_specs(
+            specs, harness.store, "gfx950", 0, 128, False
+        )
+
+        assert (built, skipped) == (0, 0)
+        assert len(failures) == 1 and "RuntimeError" in failures[0]
+        assert list(harness.store.glob("*.so")) == []
+
+    def test_one_failing_spec_does_not_end_the_run(self, harness, monkeypatch):
+        """32 builds is a multi-hour job; aborting on the first loses the rest."""
+        specs = self._specs(2)
+        real = harness.drv._run_build
+
+        def flaky(spec, device_idx, head_dim):
+            if spec is specs[0]:
+                raise RuntimeError("compiler said no")
+            real(spec, device_idx, head_dim)
+
+        monkeypatch.setattr(harness.drv, "_run_build", flaky)
+
+        built, skipped, failures = harness.drv._prebuild_specs(
+            specs, harness.store, "gfx950", 0, 128, False
+        )
+
+        assert (built, skipped) == (1, 0)
+        assert len(failures) == 1 and "compiler said no" in failures[0]
+
+    def test_a_manifest_write_failure_is_collected_not_raised(
+        self, harness, monkeypatch
+    ):
+        """Losing a multi-hour run's counts to a manifest write is the outcome
+        the per-spec collection exists to avoid."""
+
+        def boom(*_a, **_k):
+            raise OSError("read-only store")
+
+        monkeypatch.setattr(harness.drv, "_write_manifest", boom)
+
+        built, _, failures = harness.drv._prebuild_specs(
+            self._specs(1), harness.store, "gfx950", 0, 128, False
+        )
+
+        assert built == 1, "the build still counted"
+        assert any(f.startswith("manifest:") for f in failures)
+
+
+def _present(root, keys):
+    return [
+        root / av.so_name(key) for key in keys if (root / av.so_name(key)).is_file()
+    ]
+
+
+class TestPrebuildDispatch:
+    """`_run_build` picks a bootstrap per family, and the paged one retries sizes."""
+
+    @pytest.fixture
+    def bootstraps(self, monkeypatch):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+        from flashinfer.rocm import prefill as pf
+
+        calls = []
+        for name in (
+            "_aiter_bootstrap_single_prefill_mha_fwd",
+            "_aiter_bootstrap_batch_ragged_prefill",
+            "_aiter_bootstrap_batch_prefill",
+        ):
+            monkeypatch.setattr(
+                pf,
+                name,
+                lambda *a, _n=name, **k: calls.append((_n, a)),
+            )
+        return SimpleNamespace(drv=drv, pf=pf, calls=calls)
+
+    @pytest.mark.parametrize(
+        "family,bootstrap",
+        [
+            (av.Family.MHA_FWD, "_aiter_bootstrap_single_prefill_mha_fwd"),
+            (av.Family.MHA_VARLEN_FWD, "_aiter_bootstrap_batch_ragged_prefill"),
+            (av.Family.MHA_BATCH_PREFILL, "_aiter_bootstrap_batch_prefill"),
+        ],
+    )
+    def test_each_family_reaches_its_own_bootstrap(self, bootstraps, family, bootstrap):
+        spec = next(s for s in av.builds() if s.family is family)
+        bootstraps.drv._run_build(spec, 0, 128)
+        assert [name for name, _ in bootstraps.calls] == [bootstrap]
+
+    def test_the_paged_build_tries_the_next_page_size(self, bootstraps, monkeypatch):
+        """An installed AITER can reject a size the predicate names; stopping at
+        the smallest would fail the family when a larger one would have built."""
+        tried = []
+
+        def picky(dtype, logits, mask, lse, page_size, head_dim, device_idx):
+            tried.append(page_size)
+            if page_size != 16:
+                raise RuntimeError(f"no matching kernel for {page_size}")
+
+        monkeypatch.setattr(bootstraps.pf, "_aiter_native_page_sizes", lambda: (1, 16))
+        monkeypatch.setattr(bootstraps.pf, "_aiter_bootstrap_batch_prefill", picky)
+        spec = next(s for s in av.builds() if s.family is av.Family.MHA_BATCH_PREFILL)
+
+        bootstraps.drv._build_batch_prefill(spec, "bf16", 128, 0)
+        assert tried == [1, 16], "it must not stop at the first failure"
+
+    def test_every_page_size_failing_names_them_all(self, bootstraps, monkeypatch):
+        def never(*_a, **_k):
+            raise RuntimeError("no matching kernel found")
+
+        monkeypatch.setattr(bootstraps.pf, "_aiter_native_page_sizes", lambda: (1, 16))
+        monkeypatch.setattr(bootstraps.pf, "_aiter_bootstrap_batch_prefill", never)
+        spec = next(s for s in av.builds() if s.family is av.Family.MHA_BATCH_PREFILL)
+
+        with pytest.raises(RuntimeError, match="no page size produced a paged kernel"):
+            bootstraps.drv._build_batch_prefill(spec, "bf16", 128, 0)
+
+    def test_the_dtype_names_map_to_torch_dtypes(self):
+        import torch
+
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        assert drv._dtype("bf16") is torch.bfloat16
+        assert drv._dtype("fp16") is torch.float16
+        with pytest.raises(KeyError):
+            drv._dtype("fp8")
+
+
+class TestPrebuildGuards:
+    def test_a_host_without_a_gpu_leaves_the_device_alone(self, monkeypatch):
+        """`--list` has to work on a build box."""
+        import torch
+
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+        monkeypatch.setattr(
+            torch.cuda,
+            "set_device",
+            lambda _i: pytest.fail("set_device on a host with no GPU"),
+        )
+        drv._select_device(3)
+
+    def test_an_unimportable_aiter_stops_the_run(self, monkeypatch):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+        from flashinfer.rocm import prefill as pf
+
+        _isolate_variant_env(monkeypatch)
+        monkeypatch.setattr(pf, "_aiter_ops_importable", lambda: False)
+        with pytest.raises(RuntimeError, match="nothing can be prebuilt"):
+            drv.prebuild([], arch="gfx950")
+
+
+class TestManifest:
+    def test_it_records_the_tag_and_what_is_present(self, tmp_path):
+        import json as _json
+
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        (tmp_path / "b.so").write_bytes(b"\x7fELF")
+        (tmp_path / "a.so").write_bytes(b"\x7fELF")
+        (tmp_path / "notes.txt").write_text("ignored")
+
+        drv._write_manifest(tmp_path, "gfx950")
+        payload = _json.loads((tmp_path / av.MANIFEST_NAME).read_text())
+
+        assert payload["rocm_arch_list"] == "gfx950"
+        assert payload["variants"] == ["a.so", "b.so"]
+        assert payload["aiter_version"] != "unknown"
+        assert payload["rocm_version"] != "unknown"
+
+    def test_a_store_directory_it_cannot_stat_is_not_ours(self, tmp_path, monkeypatch):
+        """`prune` only touches directories this uid owns; an unstatable one is
+        skipped rather than assumed."""
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        current = tmp_path / "gfx950__aiter-1__rocm-2"
+        other = tmp_path / "gfx950__aiter-0__rocm-2"
+        for d in (current, other):
+            d.mkdir()
+        monkeypatch.setattr(drv, "variant_store_dir", lambda arch=None: current)
+
+        # is_dir() stats too, and it runs first, so only the second stat of
+        # that path -- the one mine() makes -- is refused.
+        real_stat = Path.stat
+        seen = {}
+
+        def refuse(self, *a, **k):
+            if self == other:
+                seen[self] = seen.get(self, 0) + 1
+                if seen[self] > 1:
+                    raise OSError("store removed between glob and stat")
+            return real_stat(self, *a, **k)
+
+        monkeypatch.setattr(Path, "stat", refuse)
+        assert drv.prune() == []
+
+    def test_an_unreadable_aiter_version_reads_as_unknown(self, tmp_path, monkeypatch):
+        import importlib.metadata as _md
+        import json as _json
+
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        def boom(_name):
+            raise _md.PackageNotFoundError("amd-aiter")
+
+        monkeypatch.setattr(_md, "version", boom)
+        drv._write_manifest(tmp_path, "gfx950")
+
+        payload = _json.loads((tmp_path / av.MANIFEST_NAME).read_text())
+        assert payload["aiter_version"] == "unknown"
+
+
+class TestCommandLine:
+    def test_prune_exits_zero_without_building(self, tmp_path, monkeypatch, capsys):
+        from flashinfer.rocm import prebuild_aiter_variants as drv
+
+        monkeypatch.setattr(drv, "variant_store_dir", lambda arch=None: tmp_path / "s")
+        monkeypatch.setattr(
+            drv, "prebuild", lambda *a, **k: pytest.fail("--prune must not build")
+        )
+        assert drv.main(["--prune"]) == 0
+        assert "no stale stores" in capsys.readouterr().out
