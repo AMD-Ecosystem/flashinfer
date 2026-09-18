@@ -3,10 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Negative cases for the batch-prefill wrappers' argument guards.
 
-Most checks here reject a call before any kernel runs. Two do not, and are
-marked: the cuda-graph plan cases need a plan that reaches
-``get_batch_prefill_module``, and the custom-mask case runs ``segment_packbits``
-before the guard it asserts on. The positive paths live in
+Most checks here reject a call before any kernel runs -- the cuda-graph plan
+guards included, which raise well before ``get_batch_prefill_module``. Two do
+not: ``test_a_plan_within_the_captured_shape_copies_into_the_buffers`` runs a
+plan to completion, and the custom-mask case runs ``segment_packbits`` before
+the guard it asserts on. Both pin ``backend="fa2"`` so neither can trigger an
+AITER variant build. The positive paths live in
 ``test_batch_prefill_kernels.py``; without these, a guard that stopped guarding
 would be invisible -- the wrapper would accept the bad argument and the failure
 would surface as wrong output or a CUDA-graph replay crash much later.
@@ -260,6 +262,9 @@ class TestRaggedCudaGraphPlan:
         return flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
             workspace,
             use_cuda_graph=True,
+            # fa2, not auto: the copy under test happens before backend
+            # resolution, and auto can spend minutes building an AITER variant.
+            backend="fa2",
             qo_indptr_buf=_indptr([0] + [rows] * batch, device),
             kv_indptr_buf=_indptr([0] + [rows * 2] * batch, device),
         )

@@ -163,7 +163,12 @@ class TestAiterAvailabilityProbes:
         assert aiter_utils._aiter_version_supported() is False
 
     def test_an_aiter_below_the_floor_says_so(self, device, monkeypatch):
-        """The device check runs first, so this needs the real GPU."""
+        """require_capability runs first, so the arch must be one the table
+        covers -- otherwise ArchCapabilityError matches a different message.
+        Not `aiter_device`: this stubs importability itself, so requiring a real
+        AITER install would skip a case that can run without one."""
+        if not is_aiter_supported(device):
+            pytest.skip("require_capability refuses before the version check")
         monkeypatch.setattr(aiter_utils, "_aiter_importable", lambda: False)
         monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: "0.1.10")
         monkeypatch.setattr(aiter_utils, "_aiter_version_supported", lambda: False)

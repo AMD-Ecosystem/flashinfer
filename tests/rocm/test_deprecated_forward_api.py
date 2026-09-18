@@ -226,7 +226,9 @@ class TestBatchDecodeScaling:
         # Each wrapper needs its own workspace: planning the second into the
         # first's buffer makes the result depend on these four lines' order,
         # and no assertion here could detect that.
-        other = torch.empty_like(workspace)
+        # 16 MB, not empty_like's 128 MB: this is a 2-page, 4-head decode
+        # and the card is shared.
+        other = torch.empty(16 * 1024 * 1024, dtype=torch.uint8, device=device)
         small, q, kv = self._planned(workspace, device, sm_scale=0.05)
         big, _, _ = self._planned(other, device, sm_scale=0.5)
 

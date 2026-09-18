@@ -55,12 +55,12 @@ class TestStaticParity:
         """The guard is only worth having if removing a kwarg fails it."""
         root = _make_shadow_tree(tmp_path)
         target = root / "flashinfer/rocm/decode.py"
-        text = target.read_text()
+        text = target.read_text(encoding="utf-8")
         dropped = "        kv_cache_sf: Optional[torch.Tensor] = None,\n"
         assert dropped in text
         # Every occurrence: the audit reads the implementation, and leaving it
         # while stripping the @overload stubs would not change what binds.
-        target.write_text(text.replace(dropped, ""))
+        target.write_text(text.replace(dropped, ""), encoding="utf-8")
 
         findings, _ = parity.audit(root)
         assert any(
@@ -71,7 +71,7 @@ class TestStaticParity:
         """Mis-binds are the failure the ordering check exists for."""
         root = _make_shadow_tree(tmp_path)
         target = root / "flashinfer/rocm/mla.py"
-        text = target.read_text()
+        text = target.read_text(encoding="utf-8")
         pair = (
             "        use_cuda_graph: bool = False,\n"
             "        qo_indptr: Optional[torch.Tensor] = None,\n"
@@ -81,7 +81,7 @@ class TestStaticParity:
             "        qo_indptr: Optional[torch.Tensor] = None,\n"
             "        use_cuda_graph: bool = False,\n"
         )
-        target.write_text(text.replace(pair, swapped, 1))
+        target.write_text(text.replace(pair, swapped, 1), encoding="utf-8")
 
         findings, _ = parity.audit(root)
         assert any(f.kind == "misbind" for f in findings), findings
@@ -106,7 +106,7 @@ def _make_shadow_tree(tmp_path):
     ):
         dst = root / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text((_REPO_ROOT / rel).read_text())
+        dst.write_text((_REPO_ROOT / rel).read_text(encoding="utf-8"), encoding="utf-8")
     return root
 
 
@@ -143,7 +143,7 @@ def test_rocm_api_all_matches_the_re_exported_imports():
     """
     import ast
 
-    source = (_REPO_ROOT / "flashinfer" / "rocm" / "api.py").read_text()
+    source = (_REPO_ROOT / "flashinfer" / "rocm" / "api.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
 
     re_exported = []
@@ -198,7 +198,7 @@ def _make_synthetic_tree(tmp_path, **overrides):
     for rel, text in bodies.items():
         dst = root / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text(text)
+        dst.write_text(text, encoding="utf-8")
     return root
 
 
@@ -215,9 +215,9 @@ def _drop_legacy_entry(tmp_path):
     """
     root = _make_shadow_tree(tmp_path)
     target = root / "flashinfer/rocm/decode.py"
-    text = target.read_text()
+    text = target.read_text(encoding="utf-8")
     assert '    "o_data_type",\n' in text
-    target.write_text(text.replace('    "o_data_type",\n', "", 1))
+    target.write_text(text.replace('    "o_data_type",\n', "", 1), encoding="utf-8")
     return root
 
 
@@ -381,7 +381,7 @@ class TestCommandLine:
 
     def test_a_tool_error_exits_two(self, tmp_path, capsys):
         root = _make_shadow_tree(tmp_path)
-        (root / "flashinfer/rocm/mla.py").write_text("def broken(\n")
+        (root / "flashinfer/rocm/mla.py").write_text("def broken(\n", encoding="utf-8")
 
         assert parity.main(["--root", str(root)]) == parity.EXIT_ERROR
         assert "cannot parse" in capsys.readouterr().err

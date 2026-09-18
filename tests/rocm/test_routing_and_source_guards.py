@@ -106,6 +106,12 @@ class TestAiterSourceLocator:
 
         aiter_source._aiter_csrc_include_dir.cache_clear()
         request.addfinalizer(aiter_source._aiter_csrc_include_dir.cache_clear)
+        # Clearing the cache makes the next real caller re-resolve, and the
+        # second discovery route sets GPU_ARCHS with no restore of its own.
+        # setenv-then-delenv is the repo idiom: delenv alone records no undo
+        # for a variable that started unset.
+        monkeypatch.setenv("GPU_ARCHS", "")
+        monkeypatch.delenv("GPU_ARCHS")
 
         # The locator is lru_cached, so anything earlier in the session that
         # resolved it would make the blocked imports below unreachable. Clear it

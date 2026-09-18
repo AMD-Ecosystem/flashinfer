@@ -12,6 +12,7 @@ file with ``--noconftest`` (see ``.github/workflows/arch-caps-conformance.yml``)
 """
 
 import argparse
+import ast
 import builtins
 import importlib.util
 import json
@@ -1460,7 +1461,8 @@ def _hide_tomllib(monkeypatch, also=None):
             raise ModuleNotFoundError(f"No module named {name!r}")
         return real(name, *args, **kwargs)
 
-    monkeypatch.delitem(sys.modules, "tomllib", raising=False)
+    for name in hidden:
+        monkeypatch.delitem(sys.modules, name, raising=False)
     monkeypatch.setattr(builtins, "__import__", fake)
 
 
@@ -1470,8 +1472,13 @@ class TestBaseResolutionFailure:
             raise ac.upstream_base.UpstreamBaseError("no common ancestor")
 
         monkeypatch.setattr(ac.upstream_base, "select", boom)
-        with pytest.raises(ac.ToolError):
-            ac._resolve_base_detail(str(repo), None)
+        # _select directly, and matching the message: via _resolve_base_detail the
+        # tag lookup raises its own ToolError first, so `select` is never called
+        # and a bare pytest.raises(ToolError) passes without covering this arm.
+        with pytest.raises(ac.ToolError) as excinfo:
+            ac._select(str(repo), "HEAD", None)
+
+        assert "no common ancestor" in str(excinfo.value)
 
     def test_a_missing_base_object_does_not_get_the_unshallow_hint(
         self, repo, monkeypatch
@@ -1589,7 +1596,11 @@ class TestArchDetection:
         monkeypatch.setattr(
             ac.subprocess,
             "run",
-            lambda *a, **k: types.SimpleNamespace(stdout="gfx950\ngfx000\ngfx942\n"),
+            # returncode/stderr too: ac.subprocess *is* the stdlib module, so
+            # this stub answers any caller for the test's duration.
+            lambda *a, **k: types.SimpleNamespace(
+                stdout="gfx950\ngfx000\ngfx942\n", returncode=0, stderr=""
+            ),
         )
         assert ac._detect_arch() == "gfx942,gfx950"
 
@@ -1762,8 +1773,6 @@ class TestReachShardHygiene:
 
 
 def _is_main_call(node) -> bool:
-    import ast
-
     return (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
@@ -1777,8 +1786,6 @@ def _delegates_to_main(stmt) -> bool:
     Deliberately strict: anything it accepts is dropped from the coverage
     denominator body and all, so `main() or do_real_work()` must be rejected.
     """
-    import ast
-
     inner = stmt
     if isinstance(inner, ast.Expr):
         inner = inner.value
@@ -1848,8 +1855,6 @@ class TestMainGuardExclusion:
         assert not pattern.match('    if __name__ == "__main__":')
 
     def test_every_owned_main_guard_only_delegates(self):
-        import ast
-
         repo = _REPO_ROOT
         try:
             base, _ = ac._resolve_base_detail(str(repo), None)
@@ -1876,6 +1881,11 @@ class TestMainGuardExclusion:
                     isinstance(test, ast.Compare)
                     and isinstance(test.left, ast.Name)
                     and test.left.id == "__name__"
+                    # The comparator too, or this is stricter than the regex it
+                    # bounds: `__mp_main__` is a real guard the pattern skips.
+                    and len(test.comparators) == 1
+                    and isinstance(test.comparators[0], ast.Constant)
+                    and test.comparators[0].value == "__main__"
                 ):
                     checked.append(rel)
                     if len(node.body) != 1:
@@ -1903,8 +1913,6 @@ class TestMainGuardExclusion:
         ],
     )
     def test_the_supported_spellings_are_accepted(self, code):
-        import ast
-
         assert _delegates_to_main(ast.parse(code).body[0])
 
     @pytest.mark.parametrize(
@@ -1927,6 +1935,4 @@ class TestMainGuardExclusion:
     def test_a_body_doing_real_work_is_rejected(self, code):
         """Guards the guard: each of these would otherwise leave the
         denominator with its body, untested code included."""
-        import ast
-
         assert not _delegates_to_main(ast.parse(code).body[0])
