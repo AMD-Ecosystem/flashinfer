@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from flashinfer.rocm import aiter_utils, norm, page
-from flashinfer.rocm.aiter_utils import is_aiter_supported
+from flashinfer.rocm.aiter_utils import _aiter_importable, is_aiter_supported
 
 _HIDDEN = 128
 
@@ -31,8 +31,10 @@ def aiter_device(device):
 
     Without AITER that raises first, with a different message, so the case
     would fail on a mismatched `match=` rather than testing its own guard.
+    Both halves of require_aiter are needed: is_aiter_supported covers only
+    HIP and the arch, never whether the package imports.
     """
-    if not is_aiter_supported(device):
+    if not (is_aiter_supported(device) and _aiter_importable()):
         pytest.skip("require_aiter refuses before the guard under test")
     return device
 

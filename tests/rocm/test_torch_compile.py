@@ -339,9 +339,12 @@ class TestRegistrationInProcess:
         tc = self._tc()
         monkeypatch.setattr(tc, "_USE_TORCH_CUSTOM_OPS", True)
 
-        def f(x):
-            return x
+        # Annotated: an unannotated parameter fails infer_schema, which
+        # register_custom_op catches, so the op would silently not register.
+        def f(x: torch.Tensor) -> torch.Tensor:
+            return x + 1
 
         name = self._unique("direct")
         assert tc.register_custom_op(name, f, mutates_args=())
+        assert torch._C._dispatch_has_kernel(name), "the op did not register"
         assert tc.register_fake_op(name, f) is f

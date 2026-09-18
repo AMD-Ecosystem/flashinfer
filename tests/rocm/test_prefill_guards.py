@@ -27,6 +27,17 @@ def workspace():
     return torch.empty(_WORKSPACE_BYTES, dtype=torch.uint8, device="cuda:0")
 
 
+@pytest.fixture(scope="module")
+def aiter_workspace(workspace):
+    """For the explicit `backend="aiter"` cases, whose wrapper constructor calls
+    `_require_aiter_runtime` before the guard under test can be reached."""
+    from flashinfer.rocm.aiter_utils import _aiter_importable, is_aiter_supported
+
+    if not (is_aiter_supported(workspace.device) and _aiter_importable()):
+        pytest.skip("the aiter runtime check refuses before the guard under test")
+    return workspace
+
+
 def _indptr(values, device):
     return torch.tensor(values, dtype=torch.int32, device=device)
 
@@ -156,37 +167,41 @@ class TestAiterConstraints:
     that path is covered by ``test_aiter_auto_fallback.py``.
     """
 
-    def test_paged_rejects_a_pos_encoding_mode_it_cannot_do(self, workspace):
+    def test_paged_rejects_a_pos_encoding_mode_it_cannot_do(self, aiter_workspace):
         wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
-            workspace, backend="aiter"
+            aiter_workspace, backend="aiter"
         )
         with pytest.raises(ValueError, match="does not support pos_encoding_mode"):
             wrapper.plan(
-                **_paged_plan_args(workspace.device, pos_encoding_mode="ROPE_LLAMA")
+                **_paged_plan_args(
+                    aiter_workspace.device, pos_encoding_mode="ROPE_LLAMA"
+                )
             )
 
-    def test_paged_rejects_a_kv_layout_it_cannot_do(self, workspace):
+    def test_paged_rejects_a_kv_layout_it_cannot_do(self, aiter_workspace):
         wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
-            workspace, kv_layout="HND", backend="aiter"
+            aiter_workspace, kv_layout="HND", backend="aiter"
         )
         with pytest.raises(ValueError, match="only supports kv_layout='NHD'"):
-            wrapper.plan(**_paged_plan_args(workspace.device))
+            wrapper.plan(**_paged_plan_args(aiter_workspace.device))
 
-    def test_ragged_rejects_a_pos_encoding_mode_it_cannot_do(self, workspace):
+    def test_ragged_rejects_a_pos_encoding_mode_it_cannot_do(self, aiter_workspace):
         wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
-            workspace, backend="aiter"
+            aiter_workspace, backend="aiter"
         )
         with pytest.raises(ValueError, match="does not support pos_encoding_mode"):
             wrapper.plan(
-                **_ragged_plan_args(workspace.device, pos_encoding_mode="ROPE_LLAMA")
+                **_ragged_plan_args(
+                    aiter_workspace.device, pos_encoding_mode="ROPE_LLAMA"
+                )
             )
 
-    def test_ragged_rejects_a_kv_layout_it_cannot_do(self, workspace):
+    def test_ragged_rejects_a_kv_layout_it_cannot_do(self, aiter_workspace):
         wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
-            workspace, kv_layout="HND", backend="aiter"
+            aiter_workspace, kv_layout="HND", backend="aiter"
         )
         with pytest.raises(ValueError, match="only supports kv_layout='NHD'"):
-            wrapper.plan(**_ragged_plan_args(workspace.device))
+            wrapper.plan(**_ragged_plan_args(aiter_workspace.device))
 
 
 class TestPagedCudaGraphPlan:

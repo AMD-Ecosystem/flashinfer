@@ -52,6 +52,12 @@ class TestRopeRouting:
 
 class TestMlaPlanGuards:
     def _wrapper(self, device):
+        # The constructor calls _require_aiter_mla, which refuses before either
+        # plan() guard is reached; is_aiter_supported alone misses the import.
+        from flashinfer.rocm.aiter_utils import _aiter_importable, is_aiter_supported
+
+        if not (is_aiter_supported(device) and _aiter_importable()):
+            pytest.skip("the aiter MLA check refuses before the guard under test")
         workspace = torch.empty(64 * 1024 * 1024, dtype=torch.uint8, device=device)
         return flashinfer.mla.BatchMLAPagedAttentionWrapper(workspace, backend="aiter")
 

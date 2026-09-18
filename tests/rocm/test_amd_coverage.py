@@ -1761,11 +1761,21 @@ class TestReachShardHygiene:
         assert not stale.exists()
 
 
-def _delegates_to_main(stmt) -> bool:
-    """True for a statement whose whole effect is calling `main(...)`.
+def _is_main_call(node) -> bool:
+    import ast
 
-    The owned scripts spell it three ways -- `main()`, `sys.exit(main())` and
-    `raise SystemExit(main())` -- so the shape is what matters, not the text.
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "main"
+    )
+
+
+def _delegates_to_main(stmt) -> bool:
+    """True only for the exact forms the owned guards use.
+
+    Deliberately strict: anything it accepts is dropped from the coverage
+    denominator body and all, so `main() or do_real_work()` must be rejected.
     """
     import ast
 
@@ -1773,22 +1783,36 @@ def _delegates_to_main(stmt) -> bool:
     if isinstance(inner, ast.Expr):
         inner = inner.value
     elif isinstance(inner, ast.Raise):
+        if inner.cause is not None:
+            return False
         inner = inner.exc
-    # Unwrap one exit wrapper: sys.exit(X) / SystemExit(X).
-    if isinstance(inner, ast.Call) and inner.args:
+    else:
+        return False
+
+    # Exactly one positional arg, no keywords: sys.exit(X) / SystemExit(X).
+    if isinstance(inner, ast.Call) and not _is_main_call(inner):
         func = inner.func
-        is_sys_exit = isinstance(func, ast.Attribute) and func.attr == "exit"
+        is_sys_exit = (
+            isinstance(func, ast.Attribute)
+            and func.attr == "exit"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "sys"
+        )
         is_systemexit = isinstance(func, ast.Name) and func.id == "SystemExit"
-        if is_sys_exit or is_systemexit:
-            inner = inner.args[0]
-    # `main() or 0` delegates too; take the first operand.
-    if isinstance(inner, ast.BoolOp) and inner.values:
-        inner = inner.values[0]
-    return (
-        isinstance(inner, ast.Call)
-        and isinstance(inner.func, ast.Name)
-        and inner.func.id == "main"
-    )
+        if not (is_sys_exit or is_systemexit):
+            return False
+        if len(inner.args) != 1 or inner.keywords:
+            return False
+        inner = inner.args[0]
+
+    # `main() or 0` only: a second *call* would run when main() returns falsey.
+    if isinstance(inner, ast.BoolOp):
+        return (
+            len(inner.values) == 2
+            and _is_main_call(inner.values[0])
+            and isinstance(inner.values[1], ast.Constant)
+        )
+    return _is_main_call(inner)
 
 
 class TestMainGuardExclusion:
@@ -1869,12 +1893,40 @@ class TestMainGuardExclusion:
         # A classifier change that emptied `owned` would pass vacuously.
         assert checked, "no owned __main__ guard was found to check"
 
-    def test_a_body_doing_real_work_is_rejected(self):
-        """Guards the guard: the shape check has to fail on something."""
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "main()",
+            "sys.exit(main())",
+            "raise SystemExit(main())",
+            "sys.exit(main() or 0)",
+        ],
+    )
+    def test_the_supported_spellings_are_accepted(self, code):
         import ast
 
-        assert _delegates_to_main(ast.parse("sys.exit(main())").body[0])
-        assert _delegates_to_main(ast.parse("raise SystemExit(main())").body[0])
-        assert _delegates_to_main(ast.parse("main()").body[0])
-        assert not _delegates_to_main(ast.parse("sys.exit(run_it())").body[0])
-        assert not _delegates_to_main(ast.parse("print(x)").body[0])
+        assert _delegates_to_main(ast.parse(code).body[0])
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Runs when main() is falsey, and the body is excluded regardless.
+            "sys.exit(main() or do_real_work())",
+            "main() or do_real_work()",
+            # A second argument is a second call the exclusion would hide.
+            "sys.exit(main(), do_real_work())",
+            # Not sys.exit: an arbitrary object's .exit may do anything.
+            "os.exit(main())",
+            "thing.exit(main())",
+            "sys.exit(run_it())",
+            "print(x)",
+            "raise SystemExit(main()) from err",
+            "x = main()",
+        ],
+    )
+    def test_a_body_doing_real_work_is_rejected(self, code):
+        """Guards the guard: each of these would otherwise leave the
+        denominator with its body, untested code included."""
+        import ast
+
+        assert not _delegates_to_main(ast.parse(code).body[0])
