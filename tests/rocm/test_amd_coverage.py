@@ -1773,10 +1773,14 @@ class TestReachShardHygiene:
 
 
 def _is_main_call(node) -> bool:
+    """A bare `main()`. No arguments: `main(do_real_work())` executes work the
+    exclusion would drop along with the rest of the body."""
     return (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "main"
+        and not node.args
+        and not node.keywords
     )
 
 
@@ -1923,6 +1927,10 @@ class TestMainGuardExclusion:
             "main() or do_real_work()",
             # A second argument is a second call the exclusion would hide.
             "sys.exit(main(), do_real_work())",
+            # An argument is a second expression the exclusion would hide.
+            "sys.exit(main(do_real_work()))",
+            "main(do_real_work())",
+            "main(argv=do_real_work())",
             # Not sys.exit: an arbitrary object's .exit may do anything.
             "os.exit(main())",
             "thing.exit(main())",

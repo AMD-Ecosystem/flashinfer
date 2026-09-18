@@ -1042,6 +1042,21 @@ class TestPrebuildOrchestration:
         for key in specs[0].produces:
             (harness.store / av.so_name(key)).write_bytes(b"\x7fELF old")
 
+        # Assert the clearing inside the build: the fake build overwrites the
+        # artifact anyway, so a counted rebuild stays green with the unlink
+        # removed. Being gone *before* the build is what also stops a stale
+        # copy surviving a forced build that fails.
+        inner = harness.drv._run_build
+
+        def checked(spec, device_idx, head_dim):
+            for key in spec.produces:
+                assert not (harness.store / av.so_name(key)).exists(), (
+                    "--force must clear the old artifact before rebuilding"
+                )
+            return inner(spec, device_idx, head_dim)
+
+        monkeypatch.setattr(harness.drv, "_run_build", checked)
+
         built, skipped, _ = harness.drv._prebuild_specs(
             specs, harness.store, "gfx950", 0, 128, True
         )
