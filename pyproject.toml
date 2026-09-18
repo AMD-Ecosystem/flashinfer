@@ -258,7 +258,7 @@ precision = 2
 exclude_also = [
     "^\\s*if IS_CUDA:\\s*$",
     "^\\s*elif IS_CUDA:\\s*$",
-    "^if __name__ == [\"']__main__[\"']:\\s*$",
+    "^if __name__ == [\"']__main__[\"']:\\s*(#.*)?$",
 ]
 
 [tool.coverage.html]

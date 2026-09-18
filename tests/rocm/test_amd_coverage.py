@@ -1684,7 +1684,16 @@ class TestRunEntryPoints:
         def fake_pytest(_repo, out_dir, data_file, args):
             called["args"] = list(args)
             data_file.write_text("x", encoding="utf-8")
-            return out_dir / "junit.xml"
+            # Written, not just named: the real _run_pytest raises unless the
+            # junit file exists, so returning a missing path drives run()
+            # through _junit_counts' None branch, a shape production cannot
+            # produce.
+            junit = out_dir / "junit.xml"
+            junit.write_text(
+                '<testsuite tests="1" failures="0" errors="0" skipped="0"/>',
+                encoding="utf-8",
+            )
+            return junit
 
         score = _one_score()
         monkeypatch.setattr(ac, "_run_pytest", fake_pytest)
@@ -1854,9 +1863,17 @@ class TestMainGuardExclusion:
 
         assert pattern.match('if __name__ == "__main__":')
         assert pattern.match("if __name__ == '__main__':")
+        # A trailing comment must still match, or a guard carrying
+        # `# pragma: no cover` is excluded by the pragma and not by this rule --
+        # two mechanisms for one job, and deleting the pragma silently returns
+        # the body to the denominator.
+        assert pattern.match('if __name__ == "__main__":  # pragma: no cover')
         # Anchored at column 0 on purpose: an indented guard is not module-level
         # and the body check below only walks the top level.
         assert not pattern.match('    if __name__ == "__main__":')
+        assert not pattern.match('if __name__ == "__mp_main__":')
+        # A body on the same line is not excluded, so it must not be claimed.
+        assert not pattern.match('if __name__ == "__main__": main()')
 
     def test_every_owned_main_guard_only_delegates(self):
         repo = _REPO_ROOT
@@ -1875,9 +1892,11 @@ class TestMainGuardExclusion:
             path = repo / rel
             if not path.exists():
                 continue
+            source = path.read_text(encoding="utf-8")
+            lines = source.splitlines()
             # Top-level only, so this agrees with the column-0 anchor in the
             # pattern above; an indented guard is excluded by neither.
-            for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            for node in ast.parse(source).body:
                 if not isinstance(node, ast.If):
                     continue
                 test = node.test
@@ -1892,6 +1911,12 @@ class TestMainGuardExclusion:
                     and test.comparators[0].value == "__main__"
                 ):
                     checked.append(rel)
+                    # The regex must claim every guard this walk inspects, or
+                    # the two scopes differ and one of them is unbounded.
+                    assert self._pattern().match(lines[node.lineno - 1]), (
+                        f"{rel}:{node.lineno} is checked here but the "
+                        f"exclude_also pattern does not match it"
+                    )
                     if len(node.body) != 1:
                         offenders.append(f"{rel}: {len(node.body)} statements")
                     elif not _delegates_to_main(node.body[0]):

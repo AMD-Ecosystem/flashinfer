@@ -7,8 +7,8 @@ Most checks here reject a call before any kernel runs -- the cuda-graph plan
 guards included, which raise well before ``get_batch_prefill_module``. Two do
 not: ``test_a_plan_within_the_captured_shape_copies_into_the_buffers`` runs a
 plan to completion, and the custom-mask case runs ``segment_packbits`` before
-the guard it asserts on. Both pin ``backend="fa2"`` so neither can trigger an
-AITER variant build. The positive paths live in
+the guard it asserts on. Every cuda-graph wrapper here pins ``backend="fa2"``
+so that no case can reach an AITER variant build. The positive paths live in
 ``test_batch_prefill_kernels.py``; without these, a guard that stopped guarding
 would be invisible -- the wrapper would accept the bad argument and the failure
 would surface as wrong output or a CUDA-graph replay crash much later.
@@ -214,6 +214,7 @@ class TestPagedCudaGraphPlan:
         return flashinfer.BatchPrefillWithPagedKVCacheWrapper(
             workspace,
             use_cuda_graph=True,
+            backend="fa2",
             qo_indptr_buf=_indptr([0] + [rows] * batch, device),
             paged_kv_indptr_buf=_indptr([0] + [indices] * batch, device),
             paged_kv_indices_buf=_indptr(list(range(indices)), device),
@@ -316,6 +317,7 @@ class TestRaggedCudaGraphPlan:
         wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
             workspace,
             use_cuda_graph=True,
+            backend="fa2",
             qo_indptr_buf=_indptr([0, 8], device),
             kv_indptr_buf=_indptr([0, 16], device),
             **bufs,
@@ -348,9 +350,12 @@ class TestBackendSelection:
 
 
 class TestSinglePrefillAiterConstraints:
-    def test_a_pos_encoding_mode_aiter_cannot_do_is_refused(self, workspace):
+    """Same gate as TestAiterConstraints: single_prefill calls
+    _require_aiter_runtime before either guard below."""
+
+    def test_a_pos_encoding_mode_aiter_cannot_do_is_refused(self, aiter_workspace):
         q, k, v = (
-            torch.randn(8, 4, 128, dtype=torch.float16, device=workspace.device)
+            torch.randn(8, 4, 128, dtype=torch.float16, device=aiter_workspace.device)
             for _ in range(3)
         )
         with pytest.raises(ValueError, match="does not support pos_encoding_mode"):
@@ -358,9 +363,9 @@ class TestSinglePrefillAiterConstraints:
                 q, k, v, backend="aiter", pos_encoding_mode="ROPE_LLAMA"
             )
 
-    def test_a_kv_layout_aiter_cannot_do_is_refused(self, workspace):
+    def test_a_kv_layout_aiter_cannot_do_is_refused(self, aiter_workspace):
         q, k, v = (
-            torch.randn(8, 4, 128, dtype=torch.float16, device=workspace.device)
+            torch.randn(8, 4, 128, dtype=torch.float16, device=aiter_workspace.device)
             for _ in range(3)
         )
         with pytest.raises(ValueError, match="only supports kv_layout='NHD'"):
