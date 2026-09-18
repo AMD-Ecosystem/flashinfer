@@ -1412,8 +1412,13 @@ class TestMain:
 
 class TestSubprocessAndTomlFailures:
     def test_a_failed_command_names_it_and_quotes_stderr(self, repo):
-        with pytest.raises(ac.ToolError, match="cat-file"):
+        with pytest.raises(ac.ToolError, match="cat-file") as exc:
             ac._run(str(repo), "cat-file", "-p", "0" * 40)
+
+        # Dropping proc.stderr from the message would leave the command name,
+        # so the quoted reason has to be asserted separately. `fatal:` is git's
+        # stable prefix and LC_ALL=C in _run keeps it in English.
+        assert "fatal:" in str(exc.value)
 
     def test_tomli_is_the_fallback_when_tomllib_is_absent(self, tmp_path, monkeypatch):
         """`requires-python` allows 3.10, where tomllib does not exist."""
@@ -1756,16 +1761,46 @@ class TestReachShardHygiene:
         assert not stale.exists()
 
 
+def _delegates_to_main(stmt) -> bool:
+    """True for a statement whose whole effect is calling `main(...)`.
+
+    The owned scripts spell it three ways -- `main()`, `sys.exit(main())` and
+    `raise SystemExit(main())` -- so the shape is what matters, not the text.
+    """
+    import ast
+
+    inner = stmt
+    if isinstance(inner, ast.Expr):
+        inner = inner.value
+    elif isinstance(inner, ast.Raise):
+        inner = inner.exc
+    # Unwrap one exit wrapper: sys.exit(X) / SystemExit(X).
+    if isinstance(inner, ast.Call) and inner.args:
+        func = inner.func
+        is_sys_exit = isinstance(func, ast.Attribute) and func.attr == "exit"
+        is_systemexit = isinstance(func, ast.Name) and func.id == "SystemExit"
+        if is_sys_exit or is_systemexit:
+            inner = inner.args[0]
+    # `main() or 0` delegates too; take the first operand.
+    if isinstance(inner, ast.BoolOp) and inner.values:
+        inner = inner.values[0]
+    return (
+        isinstance(inner, ast.Call)
+        and isinstance(inner.func, ast.Name)
+        and inner.func.id == "main"
+    )
+
+
 class TestMainGuardExclusion:
     """`exclude_also` drops `if __name__ == "__main__":` *and its body*.
 
-    That is only honest while every owned guard body is the single
-    `sys.exit(main())` the config comment claims. A multi-statement body would
-    quietly leave the denominator -- untested error handling included -- and
-    raise the percentage with no new test behind it.
+    That is only honest while every owned guard body is a single statement that
+    does nothing but delegate to the separately tested `main()`. Anything else
+    -- a second statement, or one statement doing real work -- quietly leaves
+    the denominator and raises the percentage with no new test behind it.
     """
 
-    def test_every_owned_main_guard_is_one_statement(self):
+    def test_every_owned_main_guard_only_delegates(self):
         import ast
 
         repo = _REPO_ROOT
@@ -1774,7 +1809,7 @@ class TestMainGuardExclusion:
             str(repo), base, ac._load_toml(repo / ac._MANIFEST)
         )
 
-        offenders = []
+        checked, offenders = [], []
         for rel in owned:
             path = repo / rel
             if not path.exists():
@@ -1788,11 +1823,28 @@ class TestMainGuardExclusion:
                     and isinstance(test.left, ast.Name)
                     and test.left.id == "__name__"
                 ):
+                    checked.append(rel)
                     if len(node.body) != 1:
                         offenders.append(f"{rel}: {len(node.body)} statements")
+                    elif not _delegates_to_main(node.body[0]):
+                        offenders.append(
+                            f"{rel}: {ast.unparse(node.body[0])!r} is not a main() call"
+                        )
 
         assert not offenders, (
-            "an owned `__main__` body grew past one statement, so the "
-            "exclude_also rule in pyproject.toml is now dropping real code "
-            "from the coverage denominator:\n  " + "\n  ".join(offenders)
+            "an owned `__main__` body stopped being a bare `main()` delegation, "
+            "so the exclude_also rule in pyproject.toml is now dropping real "
+            "code from the coverage denominator:\n  " + "\n  ".join(offenders)
         )
+        # A classifier change that emptied `owned` would pass vacuously.
+        assert checked, "no owned __main__ guard was found to check"
+
+    def test_a_body_doing_real_work_is_rejected(self):
+        """Guards the guard: the shape check has to fail on something."""
+        import ast
+
+        assert _delegates_to_main(ast.parse("sys.exit(main())").body[0])
+        assert _delegates_to_main(ast.parse("raise SystemExit(main())").body[0])
+        assert _delegates_to_main(ast.parse("main()").body[0])
+        assert not _delegates_to_main(ast.parse("sys.exit(run_it())").body[0])
+        assert not _delegates_to_main(ast.parse("print(x)").body[0])

@@ -1167,8 +1167,15 @@ class TestPrebuildDispatch:
         monkeypatch.setattr(bootstraps.pf, "_aiter_bootstrap_batch_prefill", never)
         spec = next(s for s in av.builds() if s.family is av.Family.MHA_BATCH_PREFILL)
 
-        with pytest.raises(RuntimeError, match="no page size produced a paged kernel"):
+        with pytest.raises(
+            RuntimeError, match="no page size produced a paged kernel"
+        ) as exc:
             bootstraps.drv._build_batch_prefill(spec, "bf16", 128, 0)
+
+        # The prefix alone would stay green if the aggregation dropped an entry,
+        # and which sizes were tried is the whole diagnostic.
+        assert "page_size=1:" in str(exc.value)
+        assert "page_size=16:" in str(exc.value)
 
     def test_the_dtype_names_map_to_torch_dtypes(self):
         import torch
