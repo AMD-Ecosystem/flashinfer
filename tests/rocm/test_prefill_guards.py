@@ -321,3 +321,60 @@ class TestBackendSelection:
             workspace, backend="trtllm-gen"
         )
         assert wrapper.backend == "fa2"
+
+
+class TestSinglePrefillAiterConstraints:
+    def test_a_pos_encoding_mode_aiter_cannot_do_is_refused(self, workspace):
+        q, k, v = (
+            torch.randn(8, 4, 128, dtype=torch.float16, device=workspace.device)
+            for _ in range(3)
+        )
+        with pytest.raises(ValueError, match="does not support pos_encoding_mode"):
+            flashinfer.single_prefill_with_kv_cache(
+                q, k, v, backend="aiter", pos_encoding_mode="ROPE_LLAMA"
+            )
+
+    def test_a_kv_layout_aiter_cannot_do_is_refused(self, workspace):
+        q, k, v = (
+            torch.randn(8, 4, 128, dtype=torch.float16, device=workspace.device)
+            for _ in range(3)
+        )
+        with pytest.raises(ValueError, match="only supports kv_layout='NHD'"):
+            flashinfer.single_prefill_with_kv_cache(
+                q, k, v, backend="aiter", kv_layout="HND"
+            )
+
+
+class TestMaskIndptr:
+    def test_mismatched_indptr_lengths_are_refused(self, workspace):
+        """A custom mask is laid out per (qo, kv) pair, so the two indptrs must
+        describe the same number of requests."""
+        from flashinfer.rocm.prefill import _compute_mask_indptr
+
+        device = workspace.device
+        with pytest.raises(ValueError, match="qo_indptr and kv_indptr"):
+            _compute_mask_indptr(_indptr([0, 4, 8], device), _indptr([0, 8], device))
+
+    def test_it_accumulates_the_per_request_mask_sizes(self, workspace):
+        from flashinfer.rocm.prefill import _compute_mask_indptr
+
+        device = workspace.device
+        got = _compute_mask_indptr(
+            _indptr([0, 2, 5], device), _indptr([0, 3, 7], device)
+        )
+        # 2*3 = 6, then 3*4 = 12
+        assert got.tolist() == [0, 6, 18]
+
+    def test_a_ragged_plan_with_a_short_kv_indptr_is_refused(self, workspace):
+        device = workspace.device
+        wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
+            workspace, backend="fa2"
+        )
+        with pytest.raises(ValueError, match="kv_indptr length"):
+            wrapper.plan(
+                **_ragged_plan_args(
+                    device,
+                    qo_indptr=_indptr([0, 4, 8], device),
+                    kv_indptr=_indptr([0, 8], device),
+                )
+            )

@@ -253,9 +253,12 @@ precision = 2
 # The port re-indented upstream code under `if IS_CUDA:`, so git blames it on us
 # even though no ROCm box can run it. Bare guards only -- a compound condition
 # may still be reachable. `exclude_also` adds to coverage's defaults.
+# A script's `__main__` guard cannot run under pytest, which imports it. The
+# body is one `sys.exit(main())` per script and `main()` is tested directly.
 exclude_also = [
     "^\\s*if IS_CUDA:\\s*$",
     "^\\s*elif IS_CUDA:\\s*$",
+    "^if __name__ == [\"']__main__[\"']:\\s*$",
 ]
 
 [tool.coverage.html]

@@ -185,3 +185,65 @@ class TestDecodeAliases:
         wrapper.forward(q, kv, sm_scale=0.125, rope_theta=2e4)
         assert (wrapper._sm_scale, wrapper._rope_theta) == (0.125, 2e4)
         wrapper.end_forward()
+
+
+class TestBatchDecodeScaling:
+    """`q_scale`/`k_scale` fold into `sm_scale`; `v_scale` rescales the output.
+
+    Three separate copies of the `v_scale` block exist in `run()` -- one per
+    routing arm -- and none was exercised. A dropped multiply there changes the
+    numbers and raises nothing.
+    """
+
+    def _planned(self, workspace, device, pages=2, sm_scale=None):
+        ints = lambda v: torch.tensor(v, dtype=torch.int32, device=device)  # noqa: E731
+        kv = torch.randn(
+            pages,
+            2,
+            _PAGE_SIZE,
+            _NUM_HEADS,
+            _HEAD_DIM,
+            dtype=torch.float16,
+            device=device,
+        )
+        q = torch.randn(1, _NUM_HEADS, _HEAD_DIM, dtype=torch.float16, device=device)
+        wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(workspace)
+        wrapper.plan(
+            ints([0, pages]),
+            ints(list(range(pages))),
+            ints([_PAGE_SIZE]),
+            _NUM_HEADS,
+            _NUM_HEADS,
+            _HEAD_DIM,
+            _PAGE_SIZE,
+            q_data_type=torch.float16,
+            sm_scale=sm_scale,
+        )
+        return wrapper, q, kv
+
+    def test_q_and_k_scales_fold_into_sm_scale(self, workspace, device):
+        """sm_scale is a plan() argument; the two scales multiply it at run()."""
+        small, q, kv = self._planned(workspace, device, sm_scale=0.05)
+        folded = small.run(q, kv, q_scale=2.0, k_scale=5.0)
+
+        big, _, _ = self._planned(workspace, device, sm_scale=0.5)
+        expected = big.run(q, kv)
+
+        torch.testing.assert_close(folded, expected, rtol=1e-2, atol=1e-2)
+
+    def test_v_scale_rescales_the_output(self, workspace, device):
+        wrapper, q, kv = self._planned(workspace, device)
+
+        base = wrapper.run(q, kv)
+        scaled = wrapper.run(q, kv, v_scale=2.0)
+
+        torch.testing.assert_close(scaled, base * 2.0, rtol=1e-2, atol=1e-2)
+
+    def test_a_caller_supplied_lse_buffer_is_shape_checked(self, workspace, device):
+        wrapper, q, kv = self._planned(workspace, device)
+        wrong = torch.empty(
+            (q.size(0), q.size(1) + 1), dtype=torch.float32, device=device
+        )
+
+        with pytest.raises(Exception, match="lse"):
+            wrapper.run(q, kv, return_lse=True, lse=wrong)
