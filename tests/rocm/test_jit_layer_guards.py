@@ -79,13 +79,8 @@ class TestDeviceArchProbe:
 
 
 class TestJitCacheWheelLookup:
-    def test_a_wheel_without_the_accessor_is_ignored(self, monkeypatch):
-        import sys
-        import types
-
-        stub = types.ModuleType("amd_flashinfer_jit_cache")
-        monkeypatch.setitem(sys.modules, "amd_flashinfer_jit_cache", stub)
-        assert av._wheel_store() is None
+    """Only the raising-accessor arm lives here; the absent-accessor, wrong-tag
+    and no-wheel arms are TestWheelStore's in test_aiter_variants.py."""
 
     def test_an_accessor_that_raises_is_ignored(self, monkeypatch):
         import sys
@@ -100,24 +95,6 @@ class TestJitCacheWheelLookup:
         monkeypatch.setitem(sys.modules, "amd_flashinfer_jit_cache", stub)
         assert av._wheel_store() is None
 
-    def test_an_accessor_naming_a_missing_directory_is_ignored(
-        self, tmp_path, monkeypatch
-    ):
-        import sys
-        import types
-
-        stub = types.ModuleType("amd_flashinfer_jit_cache")
-        stub.get_aiter_variant_dir = lambda: str(tmp_path / "absent")
-        monkeypatch.setitem(sys.modules, "amd_flashinfer_jit_cache", stub)
-        assert av._wheel_store() is None
-
-        # Distinguish this arm from the `except Exception` above it: the same
-        # accessor pointed at a directory that *does* exist must be accepted.
-        present = tmp_path / av.variant_store_dir().name
-        present.mkdir(parents=True)
-        stub.get_aiter_variant_dir = lambda: str(tmp_path)
-        assert av._wheel_store() == present
-
 
 class TestCompilationContext:
     def test_the_target_set_is_handed_out_as_a_copy(self):
@@ -130,9 +107,12 @@ class TestCompilationContext:
 
     def test_has_arch_agrees_with_the_target_set(self):
         ctx = compilation_context.CompilationContext()
-        known = next(iter(ctx.get_target_archs()))
+        archs = ctx.get_target_archs()
+        # Tests are independent, so this cannot lean on the sibling's assertion;
+        # bare next(iter(...)) on an empty set raises StopIteration instead.
+        assert archs, "no target archs resolved"
 
-        assert ctx.has_arch(known)
+        assert ctx.has_arch(next(iter(archs)))
         assert not ctx.has_arch("gfx000")
 
 

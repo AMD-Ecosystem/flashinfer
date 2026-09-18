@@ -1075,7 +1075,7 @@ class TestFailUnderAgainstNoPercentage:
             pytest_args=[],
         )
         defaults.update(over)
-        return __import__("argparse").Namespace(**defaults)
+        return argparse.Namespace(**defaults)
 
     def _repo_with_no_executable_lines(self, repo, monkeypatch):
         """Every owned statement is import-time, so the denominator is zero."""
@@ -1800,11 +1800,39 @@ class TestMainGuardExclusion:
     the denominator and raises the percentage with no new test behind it.
     """
 
+    @staticmethod
+    def _pattern():
+        report = (
+            ac._load_toml(_REPO_ROOT / "pyproject.toml")
+            .get("tool", {})
+            .get("coverage", {})
+            .get("report", {})
+        )
+        found = [p for p in report.get("exclude_also", []) if "__main__" in p]
+        assert len(found) == 1, f"expected one __main__ exclusion, got {found}"
+        return re.compile(found[0])
+
+    def test_the_exclusion_pattern_is_configured_and_matches(self):
+        """Without this, deleting the pattern from pyproject.toml would silently
+        put 7 guards back in the denominator and no test would fail."""
+        pattern = self._pattern()
+
+        assert pattern.match('if __name__ == "__main__":')
+        assert pattern.match("if __name__ == '__main__':")
+        # Anchored at column 0 on purpose: an indented guard is not module-level
+        # and the body check below only walks the top level.
+        assert not pattern.match('    if __name__ == "__main__":')
+
     def test_every_owned_main_guard_only_delegates(self):
         import ast
 
         repo = _REPO_ROOT
-        base, _ = ac._resolve_base_detail(str(repo), None)
+        try:
+            base, _ = ac._resolve_base_detail(str(repo), None)
+        except ac.ToolError as exc:
+            # Same clone-topology skip as test_shipped_manifest_actually_classifies:
+            # a shallow clone reaches neither the release tag nor the fork point.
+            pytest.skip(f"no upstream base in this clone: {exc}")
         owned, _, _, _ = ac.classify(
             str(repo), base, ac._load_toml(repo / ac._MANIFEST)
         )
@@ -1814,7 +1842,9 @@ class TestMainGuardExclusion:
             path = repo / rel
             if not path.exists():
                 continue
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            # Top-level only, so this agrees with the column-0 anchor in the
+            # pattern above; an indented guard is excluded by neither.
+            for node in ast.parse(path.read_text(encoding="utf-8")).body:
                 if not isinstance(node, ast.If):
                     continue
                 test = node.test

@@ -981,6 +981,9 @@ class TestPrebuildOrchestration:
 
         if not torch.cuda.is_available():
             pytest.skip("the build loop synchronizes a device")
+        # _prebuild_specs imports this inside the blanket `except`, so without
+        # the skip its absence arrives as a bookkeeping failure, not an error.
+        pytest.importorskip("aiter.jit.core")
 
         from flashinfer.rocm import prebuild_aiter_variants as drv
 
@@ -1156,7 +1159,7 @@ class TestPrebuildDispatch:
         monkeypatch.setattr(bootstraps.pf, "_aiter_bootstrap_batch_prefill", picky)
         spec = next(s for s in av.builds() if s.family is av.Family.MHA_BATCH_PREFILL)
 
-        bootstraps.drv._build_batch_prefill(spec, "bf16", 128, 0)
+        bootstraps.drv._build_batch_prefill(spec, bootstraps.drv._dtype("bf16"), 128, 0)
         assert tried == [1, 16], "it must not stop at the first failure"
 
     def test_every_page_size_failing_names_them_all(self, bootstraps, monkeypatch):
@@ -1170,7 +1173,9 @@ class TestPrebuildDispatch:
         with pytest.raises(
             RuntimeError, match="no page size produced a paged kernel"
         ) as exc:
-            bootstraps.drv._build_batch_prefill(spec, "bf16", 128, 0)
+            bootstraps.drv._build_batch_prefill(
+                spec, bootstraps.drv._dtype("bf16"), 128, 0
+            )
 
         # The prefix alone would stay green if the aggregation dropped an entry,
         # and which sizes were tried is the whole diagnostic.

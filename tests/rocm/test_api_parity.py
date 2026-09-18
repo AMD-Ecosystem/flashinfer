@@ -87,11 +87,7 @@ class TestStaticParity:
         assert any(f.kind == "misbind" for f in findings), findings
 
     def test_a_stale_legacy_positional_copy_is_reported(self, tmp_path):
-        root = _make_shadow_tree(tmp_path)
-        target = root / "flashinfer/rocm/decode.py"
-        text = target.read_text()
-        assert '    "o_data_type",\n' in text
-        target.write_text(text.replace('    "o_data_type",\n', "", 1))
+        root = _drop_legacy_entry(tmp_path)
 
         findings, _ = parity.audit(root)
         assert any(f.kind == "stale-copy" for f in findings), findings

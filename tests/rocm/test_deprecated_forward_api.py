@@ -223,10 +223,14 @@ class TestBatchDecodeScaling:
 
     def test_q_and_k_scales_fold_into_sm_scale(self, workspace, device):
         """sm_scale is a plan() argument; the two scales multiply it at run()."""
+        # Each wrapper needs its own workspace: planning the second into the
+        # first's buffer makes the result depend on these four lines' order,
+        # and no assertion here could detect that.
+        other = torch.empty_like(workspace)
         small, q, kv = self._planned(workspace, device, sm_scale=0.05)
-        folded = small.run(q, kv, q_scale=2.0, k_scale=5.0)
+        big, _, _ = self._planned(other, device, sm_scale=0.5)
 
-        big, _, _ = self._planned(workspace, device, sm_scale=0.5)
+        folded = small.run(q, kv, q_scale=2.0, k_scale=5.0)
         expected = big.run(q, kv)
 
         torch.testing.assert_close(folded, expected, rtol=1e-2, atol=1e-2)

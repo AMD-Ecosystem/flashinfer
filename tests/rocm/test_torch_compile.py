@@ -331,8 +331,13 @@ class TestRegistrationInProcess:
         assert tc.register_fake_op("flashinfer_test::no_such_op")(sentinel) is sentinel
 
     def test_the_decorator_accepts_a_function_directly(self, monkeypatch):
-        """Both call shapes are used in-tree: bare and with parentheses."""
+        """Both call shapes are used in-tree: bare and with parentheses.
+
+        The flag has to be on: with it off both calls take the _guard_compile
+        passthrough and the torch.library arm this covers is never entered.
+        """
         tc = self._tc()
+        monkeypatch.setattr(tc, "_USE_TORCH_CUSTOM_OPS", True)
 
         def f(x):
             return x

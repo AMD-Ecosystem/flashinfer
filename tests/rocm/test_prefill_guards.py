@@ -253,10 +253,12 @@ class TestRaggedCudaGraphPlan:
         device = workspace.device
         wrapper = self._graph_wrapper(workspace)
 
-        wrapper.plan(**_ragged_plan_args(device, qo_indptr=_indptr([0, 8], device)))
+        # Plan a shorter shape than the buffer was captured with: planning [0, 8]
+        # into a buffer built as [0, 8] passes whether or not the copy happens.
+        wrapper.plan(**_ragged_plan_args(device, qo_indptr=_indptr([0, 6], device)))
 
-        assert wrapper._max_total_num_rows == 8
-        assert wrapper._qo_indptr_buf.tolist() == [0, 8]
+        assert wrapper._max_total_num_rows == 6
+        assert wrapper._qo_indptr_buf.tolist() == [0, 6]
 
     def test_more_rows_than_the_first_plan_saw_is_rejected(self, workspace):
         device = workspace.device
