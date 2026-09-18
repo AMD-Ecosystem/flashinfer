@@ -358,3 +358,14 @@ class TestRegistrationInProcess:
         assert tc.register_custom_op(name, f, mutates_args=())
         assert self._registered(name), "the op did not register"
         assert tc.register_fake_op(name, f) is f
+
+        # register_fake_op returns f on success, on a suppressed failure, and
+        # if `return decorator(fn)` regressed to `return fn`, so the identity
+        # above proves nothing on its own. opcheck drives the registered fake.
+        namespace, _, stem = name.partition("::")
+        op = getattr(getattr(torch.ops, namespace), stem)
+        torch.library.opcheck(
+            op,
+            (torch.randn(4, device="cuda"),),
+            test_utils=("test_faketensor",),
+        )

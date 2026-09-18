@@ -1825,12 +1825,18 @@ def _delegates_to_main(stmt) -> bool:
             return False
         inner = inner.args[0]
 
-    # `main() or 0` only: a second *call* would run when main() returns falsey.
+    # `main() or 0` exactly. `and 0` discards a failing status and `or 1`
+    # invents one, so the operator and the literal both have to be pinned.
     if isinstance(inner, ast.BoolOp):
+        if not isinstance(inner.op, ast.Or) or len(inner.values) != 2:
+            return False
+        tail = inner.values[1]
         return (
-            len(inner.values) == 2
-            and _is_main_call(inner.values[0])
-            and isinstance(inner.values[1], ast.Constant)
+            _is_main_call(inner.values[0])
+            and isinstance(tail, ast.Constant)
+            # not bool: False == 0 would otherwise sneak through.
+            and type(tail.value) is int
+            and tail.value == 0
         )
     return _is_main_call(inner)
 
@@ -1952,6 +1958,11 @@ class TestMainGuardExclusion:
             "main() or do_real_work()",
             # A second argument is a second call the exclusion would hide.
             "sys.exit(main(), do_real_work())",
+            # `and 0` reports success when main() failed; `or 1` the reverse.
+            "sys.exit(main() and 0)",
+            "sys.exit(main() or 1)",
+            "sys.exit(main() and 1)",
+            "sys.exit(main() or False)",
             # An argument is a second expression the exclusion would hide.
             "sys.exit(main(do_real_work()))",
             "main(do_real_work())",
