@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from typing import Optional
 
 import pytest
 import torch
@@ -246,3 +247,85 @@ def test_torch_compile_without_custom_ops_fails():
     )
     result = _run_snippet(snippet, {"FLASHINFER_USE_TORCH_CUSTOM_OPS": "0"})
     assert result.returncode == 0, f"unexpected failure:\n{result.stderr}"
+
+
+class TestRegistrationInProcess:
+    """The decorators themselves, with the module-level flag patched.
+
+    The subprocess cases above prove the env var is honoured at import; they
+    cannot reach the decorator bodies, because the flag is off in the parent and
+    the subprocess's coverage is its own. Patching the already-imported constant
+    is what exercises the arms a serving process with the flag on would take.
+    """
+
+    @staticmethod
+    def _tc():
+        from flashinfer.rocm import torch_compile as tc
+
+        return tc
+
+    def test_a_traced_call_is_refused_while_registration_is_off(self, monkeypatch):
+        """Silently entering the extension under torch.compile is the failure
+        the guard exists to prevent."""
+        tc = self._tc()
+        wrapped = tc._guard_compile(lambda x: x + 1, "flashinfer::demo")
+
+        assert wrapped(1) == 2
+        monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+        with pytest.raises(RuntimeError, match="custom ops are not enabled"):
+            wrapped(1)
+
+    def test_with_the_flag_on_an_inferable_signature_registers(self, monkeypatch):
+        tc = self._tc()
+        monkeypatch.setattr(tc, "_USE_TORCH_CUSTOM_OPS", True)
+        name = "flashinfer_test::inferable"
+
+        @tc.register_custom_op(name, mutates_args=())
+        def op(x: torch.Tensor) -> torch.Tensor:
+            return x + 1
+
+        # The name is unique to this test, so the registration can simply stand.
+        assert torch._C._dispatch_has_kernel(name)
+
+    def test_a_signature_torch_cannot_infer_falls_back_to_the_guard(self, monkeypatch):
+        """`Optional[torch.Generator]` is the real case: every sampling op takes
+        one, which is why their fake ops never register."""
+        tc = self._tc()
+        monkeypatch.setattr(tc, "_USE_TORCH_CUSTOM_OPS", True)
+
+        with pytest.warns(UserWarning, match="falling back to compile guard"):
+
+            @tc.register_custom_op("flashinfer_test::ungeneratable", mutates_args=())
+            def op(
+                x: torch.Tensor, generator: Optional[torch.Generator]
+            ) -> torch.Tensor:
+                return x + 1
+
+        assert op(torch.zeros(1), None).item() == 1
+        monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+        with pytest.raises(RuntimeError, match="custom ops are not enabled"):
+            op(torch.zeros(1), None)
+
+    def test_register_fake_op_is_inert_while_the_flag_is_off(self):
+        tc = self._tc()
+        sentinel = object()
+        assert tc.register_fake_op("flashinfer_test::absent")(sentinel) is sentinel
+
+    def test_register_fake_op_swallows_a_failure_with_the_flag_on(self, monkeypatch):
+        """An op that never registered has no fake to attach; that must not end
+        the import."""
+        tc = self._tc()
+        monkeypatch.setattr(tc, "_USE_TORCH_CUSTOM_OPS", True)
+        sentinel = object()
+
+        assert tc.register_fake_op("flashinfer_test::no_such_op")(sentinel) is sentinel
+
+    def test_the_decorator_accepts_a_function_directly(self, monkeypatch):
+        """Both call shapes are used in-tree: bare and with parentheses."""
+        tc = self._tc()
+
+        def f(x):
+            return x
+
+        assert tc.register_custom_op("flashinfer_test::direct", f, mutates_args=())
+        assert tc.register_fake_op("flashinfer_test::direct", f) is f
