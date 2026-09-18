@@ -443,13 +443,13 @@ class TestAllowlistMechanics:
 class TestLegacyPositionalTuple:
     def test_an_unparsable_file_is_a_tool_error(self, tmp_path):
         broken = tmp_path / "broken.py"
-        broken.write_text("def f(\n")
+        broken.write_text("def f(\n", encoding="utf-8")
         with pytest.raises(parity.ToolError, match="cannot parse"):
             parity._legacy_positional_tuple(broken, "_ANY")
 
     def test_other_module_level_assignments_are_skipped(self, tmp_path):
         source = tmp_path / "mod.py"
-        source.write_text('OTHER = ("x",)\n' + _LEGACY_CONST)
+        source.write_text('OTHER = ("x",)\n' + _LEGACY_CONST, encoding="utf-8")
         assert parity._legacy_positional_tuple(
             source, "_BATCH_DECODE_PLAN_LEGACY_POS_ARGS"
         ) == ("alpha", "beta")

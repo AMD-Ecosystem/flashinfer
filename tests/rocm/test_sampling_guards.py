@@ -103,7 +103,7 @@ def device():
     return torch.device("cuda:0")
 
 
-def _nan_probs(device):
+def _with_nan(device):
     probs = torch.full((2, 8), 0.125, device=device)
     probs[1, 3] = float("nan")
     return probs
@@ -114,23 +114,23 @@ class TestCheckNan:
 
     def test_sampling_from_logits_rejects_nan(self, device):
         with pytest.raises(ValueError, match="logits contains NaN"):
-            sampling_from_logits(_nan_probs(device), check_nan=True)
+            sampling_from_logits(_with_nan(device), check_nan=True)
 
     def test_sampling_from_probs_rejects_nan(self, device):
         with pytest.raises(ValueError, match="probs contains NaN"):
-            sampling_from_probs(_nan_probs(device), check_nan=True)
+            sampling_from_probs(_with_nan(device), check_nan=True)
 
     def test_top_p_rejects_nan(self, device):
         with pytest.raises(ValueError, match="probs contains NaN"):
-            top_p_sampling_from_probs(_nan_probs(device), 0.9, check_nan=True)
+            top_p_sampling_from_probs(_with_nan(device), 0.9, check_nan=True)
 
     def test_top_k_rejects_nan(self, device):
         with pytest.raises(ValueError, match="probs contains NaN"):
-            top_k_sampling_from_probs(_nan_probs(device), 4, check_nan=True)
+            top_k_sampling_from_probs(_with_nan(device), 4, check_nan=True)
 
     def test_min_p_rejects_nan(self, device):
         with pytest.raises(ValueError, match="probs contains NaN"):
-            min_p_sampling_from_probs(_nan_probs(device), 0.1, check_nan=True)
+            min_p_sampling_from_probs(_with_nan(device), 0.1, check_nan=True)
 
 
 _JOINT_ENTRY_POINTS = pytest.mark.parametrize(
@@ -154,5 +154,5 @@ class TestFilterApplyOrder:
     def test_the_joint_arm_checks_nan_too(self, device, entry_point):
         with pytest.raises(ValueError, match="contains NaN"):
             entry_point(
-                _nan_probs(device), 4, 0.9, filter_apply_order="joint", check_nan=True
+                _with_nan(device), 4, 0.9, filter_apply_order="joint", check_nan=True
             )

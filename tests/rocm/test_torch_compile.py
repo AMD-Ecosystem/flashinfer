@@ -266,6 +266,16 @@ class TestRegistrationInProcess:
         return tc
 
     @staticmethod
+    def _registered(name):
+        """Resolve through torch.ops rather than torch._C._dispatch_has_kernel.
+
+        The public surface answers both directions -- AttributeError before
+        registration, an OpOverloadPacket after -- with no private API.
+        """
+        namespace, _, stem = name.partition("::")
+        return hasattr(getattr(torch.ops, namespace), stem)
+
+    @staticmethod
     def _unique(stem):
         """`torch.library` registration is process-global and permanent.
 
@@ -295,7 +305,7 @@ class TestRegistrationInProcess:
         def op(x: torch.Tensor) -> torch.Tensor:
             return x + 1
 
-        assert torch._C._dispatch_has_kernel(name)
+        assert self._registered(name)
 
     def test_a_signature_torch_cannot_infer_falls_back_to_the_guard(self, monkeypatch):
         """`Optional[torch.Generator]` is the real case: every sampling op takes
@@ -346,5 +356,5 @@ class TestRegistrationInProcess:
 
         name = self._unique("direct")
         assert tc.register_custom_op(name, f, mutates_args=())
-        assert torch._C._dispatch_has_kernel(name), "the op did not register"
+        assert self._registered(name), "the op did not register"
         assert tc.register_fake_op(name, f) is f

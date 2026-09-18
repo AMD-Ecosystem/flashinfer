@@ -1241,10 +1241,10 @@ class TestManifest:
 
         (tmp_path / "b.so").write_bytes(b"\x7fELF")
         (tmp_path / "a.so").write_bytes(b"\x7fELF")
-        (tmp_path / "notes.txt").write_text("ignored")
+        (tmp_path / "notes.txt").write_text("ignored", encoding="utf-8")
 
         drv._write_manifest(tmp_path, "gfx950")
-        payload = _json.loads((tmp_path / av.MANIFEST_NAME).read_text())
+        payload = _json.loads((tmp_path / av.MANIFEST_NAME).read_text(encoding="utf-8"))
 
         assert payload["rocm_arch_list"] == "gfx950"
         assert payload["variants"] == ["a.so", "b.so"], "only .so files, sorted"
@@ -1275,13 +1275,16 @@ class TestManifest:
                     raise OSError("store removed between glob and stat")
             return real_stat(self, *a, **k)
 
-        monkeypatch.setattr(Path, "stat", refuse)
-        assert drv.prune() == []
-        # Without this a refactor that makes is_dir() stop calling stat would
-        # raise on mine()'s *first* call and the test would pass for the wrong
-        # reason; a refactor that reuses one stat result fails loudly instead.
-        assert seen[other] >= 2, "prune no longer stats the candidate twice"
-        monkeypatch.undo()  # the check below stats it again
+        # Scoped, not monkeypatch.undo(): undo() reverts variant_store_dir too,
+        # and leaves the patch live if an assertion above it fails.
+        with pytest.MonkeyPatch.context() as stat_patch:
+            stat_patch.setattr(Path, "stat", refuse)
+            assert drv.prune() == []
+            # Without this a refactor that makes is_dir() stop calling stat
+            # would raise on mine()'s *first* call and the test would pass for
+            # the wrong reason; one that reuses a stat result fails loudly.
+            assert seen[other] >= 2, "prune no longer stats the candidate twice"
+
         assert other.is_dir(), "a store we could not stat is not ours to remove"
 
     def test_an_unreadable_aiter_version_reads_as_unknown(self, tmp_path, monkeypatch):
@@ -1296,7 +1299,7 @@ class TestManifest:
         monkeypatch.setattr(_md, "version", boom)
         drv._write_manifest(tmp_path, "gfx950")
 
-        payload = _json.loads((tmp_path / av.MANIFEST_NAME).read_text())
+        payload = _json.loads((tmp_path / av.MANIFEST_NAME).read_text(encoding="utf-8"))
         assert payload["aiter_version"] == "unknown"
 
 
