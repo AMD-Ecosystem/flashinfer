@@ -92,9 +92,16 @@ class TestMlaPlanGuards:
 
 
 class TestAiterSourceLocator:
-    def test_a_missing_csrc_include_is_a_named_error(self, monkeypatch):
+    def test_a_missing_csrc_include_is_a_named_error(self, request, monkeypatch):
         """Both discovery routes failing must say which two were tried."""
         import sys
+
+        aiter_source._aiter_csrc_include_dir.cache_clear()
+        request.addfinalizer(aiter_source._aiter_csrc_include_dir.cache_clear)
+
+        # The locator is lru_cached, so anything earlier in the session that
+        # resolved it would make the blocked imports below unreachable. Clear it
+        # on the way in and out; the next caller simply resolves it again.
 
         # Both routes go through an `import`, so blocking the packages is what
         # drives the function into its `except Exception: pass` and the raise.
