@@ -4,7 +4,9 @@
 """The last uncovered refusals: RoPE, MLA, the AOT driver and the AITER source
 locator.
 
-Every case rejects before a kernel or a build, so the file costs no JIT.
+The refusals reject before a kernel or a build. ``TestSingleDecodeScaling`` is
+the exception -- scaling is arithmetic around a real launch, so those three
+cases compile and run the single-decode module.
 """
 
 import os

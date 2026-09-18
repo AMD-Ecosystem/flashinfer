@@ -1478,8 +1478,14 @@ class TestBaseResolutionFailure:
 
         monkeypatch.setattr(ac.upstream_base, "select", boom)
         # _select directly: --upstream-ref is validated earlier and never gets here.
-        with pytest.raises(ac.ToolError, match="base object is not in this clone"):
+        with pytest.raises(ac.ToolError) as excinfo:
             ac._select(str(repo), "HEAD", None)
+
+        # MissingBaseObject subclasses UpstreamBaseError, so matching only the
+        # message would pass against the other arm too. The absent hint is the
+        # whole difference between them.
+        assert "base object is not in this clone" in str(excinfo.value)
+        assert "unshallow" not in str(excinfo.value)
 
 
 class TestNameStatusParsing:
@@ -1503,6 +1509,7 @@ def _write_coverage_config(root):
 
 class TestCoverageDataFailures:
     def test_an_unreadable_data_file_names_itself(self, tmp_path):
+        pytest.importorskip("coverage")  # _executed imports it internally
         data = tmp_path / "corrupt.coverage"
         data.write_bytes(b"not a coverage database")
 
@@ -1510,7 +1517,7 @@ class TestCoverageDataFailures:
             ac._executed(data, tmp_path, ["flashinfer/a.py"])
 
     def test_a_measured_file_we_do_not_own_is_skipped(self, tmp_path):
-        import coverage
+        coverage = pytest.importorskip("coverage")
 
         data = coverage.CoverageData(basename=str(tmp_path / "d.coverage"))
         data.add_lines({str(tmp_path / "flashinfer/mine.py"): [1, 2]})
@@ -1525,7 +1532,7 @@ class TestCoverageDataFailures:
 
     def test_an_unanalysable_owned_file_names_itself(self, tmp_path):
         """`analysis2` raises NoSource when the file the data names is gone."""
-        import coverage
+        coverage = pytest.importorskip("coverage")
 
         _write_coverage_config(tmp_path)
         data_file = tmp_path / "d.coverage"
@@ -1539,7 +1546,7 @@ class TestCoverageDataFailures:
 
     def test_no_owned_line_executed_is_an_error_not_a_zero(self, tmp_path):
         """`source` is a directory, so a wrong PYTHONPATH scores a clean 0%."""
-        import coverage
+        coverage = pytest.importorskip("coverage")
 
         _write_coverage_config(tmp_path)
         (tmp_path / "flashinfer").mkdir()
@@ -1589,6 +1596,19 @@ class TestArchDetection:
 
         monkeypatch.setattr(ac.subprocess, "run", boom)
         assert ac._detect_arch() == "unknown"
+
+
+def _one_score():
+    """One owned file, one of two statements covered -- 50%."""
+    return ac.Score(
+        path="flashinfer/a.py",
+        tier="A",
+        reason="",
+        owned={1, 2},
+        covered={1},
+        import_time=set(),
+        excluded=0,
+    )
 
 
 class TestRunEntryPoints:
@@ -1650,15 +1670,7 @@ class TestRunEntryPoints:
             data_file.write_text("x", encoding="utf-8")
             return out_dir / "junit.xml"
 
-        score = ac.Score(
-            path="flashinfer/a.py",
-            tier="A",
-            reason="",
-            owned={1, 2},
-            covered={1},
-            import_time=set(),
-            excluded=0,
-        )
+        score = _one_score()
         monkeypatch.setattr(ac, "_run_pytest", fake_pytest)
         monkeypatch.setattr(ac, "score", lambda *a, **k: ([score], set()))
 
@@ -1675,15 +1687,7 @@ class TestRunEntryPoints:
         def refuse(*_a, **_k):
             raise AssertionError("re-captured a baseline that was already on disk")
 
-        score = ac.Score(
-            path="flashinfer/a.py",
-            tier="A",
-            reason="",
-            owned={1, 2},
-            covered={1},
-            import_time=set(),
-            excluded=0,
-        )
+        score = _one_score()
         monkeypatch.setattr(ac, "_capture_baseline", refuse)
         seen = {}
 
@@ -1706,15 +1710,7 @@ class TestRunEntryPoints:
             path.write_text("b", encoding="utf-8")
             return path
 
-        score = ac.Score(
-            path="flashinfer/a.py",
-            tier="A",
-            reason="",
-            owned={1, 2},
-            covered={1},
-            import_time=set(),
-            excluded=0,
-        )
+        score = _one_score()
         monkeypatch.setattr(ac, "_capture_baseline", fake_capture)
         seen = {}
 
@@ -1732,15 +1728,7 @@ class TestRunEntryPoints:
         monkeypatch.chdir(repo)
         (repo / ".coverage").write_text("x", encoding="utf-8")
 
-        score = ac.Score(
-            path="flashinfer/a.py",
-            tier="A",
-            reason="",
-            owned={1, 2},
-            covered={1},
-            import_time=set(),
-            excluded=0,
-        )
+        score = _one_score()
         monkeypatch.setattr(ac, "score", lambda *a, **k: ([score], set()))
 
         assert ac.run(self._args(repo, fail_under=90.0)) == ac.EXIT_RATCHET
@@ -1766,3 +1754,45 @@ class TestReachShardHygiene:
         ac._run_pytest(tmp_path, tmp_path, data, [])
 
         assert not stale.exists()
+
+
+class TestMainGuardExclusion:
+    """`exclude_also` drops `if __name__ == "__main__":` *and its body*.
+
+    That is only honest while every owned guard body is the single
+    `sys.exit(main())` the config comment claims. A multi-statement body would
+    quietly leave the denominator -- untested error handling included -- and
+    raise the percentage with no new test behind it.
+    """
+
+    def test_every_owned_main_guard_is_one_statement(self):
+        import ast
+
+        repo = _REPO_ROOT
+        base, _ = ac._resolve_base_detail(str(repo), None)
+        owned, _, _, _ = ac.classify(
+            str(repo), base, ac._load_toml(repo / ac._MANIFEST)
+        )
+
+        offenders = []
+        for rel in owned:
+            path = repo / rel
+            if not path.exists():
+                continue
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not isinstance(node, ast.If):
+                    continue
+                test = node.test
+                if (
+                    isinstance(test, ast.Compare)
+                    and isinstance(test.left, ast.Name)
+                    and test.left.id == "__name__"
+                ):
+                    if len(node.body) != 1:
+                        offenders.append(f"{rel}: {len(node.body)} statements")
+
+        assert not offenders, (
+            "an owned `__main__` body grew past one statement, so the "
+            "exclude_also rule in pyproject.toml is now dropping real code "
+            "from the coverage denominator:\n  " + "\n  ".join(offenders)
+        )

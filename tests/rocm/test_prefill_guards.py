@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Negative cases for the batch-prefill wrappers' argument guards.
 
-Every check here rejects a call before any kernel runs, so the whole file costs
-one workspace allocation and no JIT. The positive paths live in
+Most checks here reject a call before any kernel runs. Two do not, and are
+marked: the cuda-graph plan cases need a plan that reaches
+``get_batch_prefill_module``, and the custom-mask case runs ``segment_packbits``
+before the guard it asserts on. The positive paths live in
 ``test_batch_prefill_kernels.py``; without these, a guard that stopped guarding
 would be invisible -- the wrapper would accept the bad argument and the failure
 would surface as wrong output or a CUDA-graph replay crash much later.

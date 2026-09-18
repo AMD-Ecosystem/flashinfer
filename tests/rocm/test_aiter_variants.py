@@ -967,11 +967,20 @@ class TestPrebuildOrchestration:
     anything. What is worth guarding is the part that decides: which specs are
     skipped, that a half-produced spec is a failure rather than a published
     store, and that one bad spec does not lose the whole run.
+
+    Not GPU-free despite that: the loop calls ``torch.cuda.synchronize`` and
+    imports ``aiter.jit.core`` inside the try, and the blanket ``except`` would
+    turn their absence into a bookkeeping failure rather than an error.
     """
 
     @pytest.fixture
     def harness(self, tmp_path, monkeypatch):
         import threading
+
+        import torch
+
+        if not torch.cuda.is_available():
+            pytest.skip("the build loop synchronizes a device")
 
         from flashinfer.rocm import prebuild_aiter_variants as drv
 
@@ -1211,9 +1220,10 @@ class TestManifest:
         payload = _json.loads((tmp_path / av.MANIFEST_NAME).read_text())
 
         assert payload["rocm_arch_list"] == "gfx950"
-        assert payload["variants"] == ["a.so", "b.so"]
-        assert payload["aiter_version"] != "unknown"
-        assert payload["rocm_version"] != "unknown"
+        assert payload["variants"] == ["a.so", "b.so"], "only .so files, sorted"
+        # Presence, not content: both degrade to "unknown" on a host without
+        # amd-aiter or a HIP torch, and the degraded arm has its own test.
+        assert {"aiter_version", "rocm_version"} <= payload.keys()
 
     def test_a_store_directory_it_cannot_stat_is_not_ours(self, tmp_path, monkeypatch):
         """`prune` only touches directories this uid owns; an unstatable one is
@@ -1240,6 +1250,12 @@ class TestManifest:
 
         monkeypatch.setattr(Path, "stat", refuse)
         assert drv.prune() == []
+        # Without this a refactor that makes is_dir() stop calling stat would
+        # raise on mine()'s *first* call and the test would pass for the wrong
+        # reason; a refactor that reuses one stat result fails loudly instead.
+        assert seen[other] >= 2, "prune no longer stats the candidate twice"
+        monkeypatch.undo()  # the check below stats it again
+        assert other.is_dir(), "a store we could not stat is not ours to remove"
 
     def test_an_unreadable_aiter_version_reads_as_unknown(self, tmp_path, monkeypatch):
         import importlib.metadata as _md

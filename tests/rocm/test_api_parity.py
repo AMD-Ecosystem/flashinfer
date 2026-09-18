@@ -210,6 +210,21 @@ def _kinds(findings):
     return sorted(f.kind for f in findings)
 
 
+def _drop_legacy_entry(tmp_path):
+    """Shadow tree with one legacy-positional name removed from the ROCm copy.
+
+    Asserting the literal is present first: a reformat of the tuple would make
+    the replace a silent no-op and the failure would read as "main() returned 0"
+    rather than "the mutation did not apply".
+    """
+    root = _make_shadow_tree(tmp_path)
+    target = root / "flashinfer/rocm/decode.py"
+    text = target.read_text()
+    assert '    "o_data_type",\n' in text
+    target.write_text(text.replace('    "o_data_type",\n', "", 1))
+    return root
+
+
 class TestSyntheticDivergence:
     """One case per ``Finding`` kind the audit can emit.
 
@@ -355,18 +370,14 @@ class TestCommandLine:
         assert "clean" in capsys.readouterr().out
 
     def test_divergence_exits_one_and_prints_each_finding(self, tmp_path, capsys):
-        root = _make_shadow_tree(tmp_path)
-        target = root / "flashinfer/rocm/decode.py"
-        target.write_text(target.read_text().replace('    "o_data_type",\n', "", 1))
+        root = _drop_legacy_entry(tmp_path)
 
         assert parity.main(["--root", str(root)]) == parity.EXIT_DIVERGED
         out = capsys.readouterr().out
         assert "stale-copy" in out and "divergence(s)" in out
 
     def test_json_output_is_machine_readable(self, tmp_path, capsys):
-        root = _make_shadow_tree(tmp_path)
-        target = root / "flashinfer/rocm/decode.py"
-        target.write_text(target.read_text().replace('    "o_data_type",\n', "", 1))
+        root = _drop_legacy_entry(tmp_path)
 
         assert parity.main(["--json", "--root", str(root)]) == parity.EXIT_DIVERGED
         payload = json.loads(capsys.readouterr().out)

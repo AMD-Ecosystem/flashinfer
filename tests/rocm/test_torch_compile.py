@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import uuid
 from typing import Optional
 
 import pytest
@@ -264,6 +265,16 @@ class TestRegistrationInProcess:
 
         return tc
 
+    @staticmethod
+    def _unique(stem):
+        """`torch.library` registration is process-global and permanent.
+
+        CLAUDE.md's documented command is `pytest -n auto --reruns 2`, so a
+        flake re-runs this test in the same process; a fixed name would then
+        raise "already registered" and replace the real failure.
+        """
+        return f"flashinfer_test::{stem}_{uuid.uuid4().hex[:8]}"
+
     def test_a_traced_call_is_refused_while_registration_is_off(self, monkeypatch):
         """Silently entering the extension under torch.compile is the failure
         the guard exists to prevent."""
@@ -278,13 +289,12 @@ class TestRegistrationInProcess:
     def test_with_the_flag_on_an_inferable_signature_registers(self, monkeypatch):
         tc = self._tc()
         monkeypatch.setattr(tc, "_USE_TORCH_CUSTOM_OPS", True)
-        name = "flashinfer_test::inferable"
+        name = self._unique("inferable")
 
         @tc.register_custom_op(name, mutates_args=())
         def op(x: torch.Tensor) -> torch.Tensor:
             return x + 1
 
-        # The name is unique to this test, so the registration can simply stand.
         assert torch._C._dispatch_has_kernel(name)
 
     def test_a_signature_torch_cannot_infer_falls_back_to_the_guard(self, monkeypatch):
@@ -295,7 +305,7 @@ class TestRegistrationInProcess:
 
         with pytest.warns(UserWarning, match="falling back to compile guard"):
 
-            @tc.register_custom_op("flashinfer_test::ungeneratable", mutates_args=())
+            @tc.register_custom_op(self._unique("ungeneratable"), mutates_args=())
             def op(
                 x: torch.Tensor, generator: Optional[torch.Generator]
             ) -> torch.Tensor:
@@ -327,5 +337,6 @@ class TestRegistrationInProcess:
         def f(x):
             return x
 
-        assert tc.register_custom_op("flashinfer_test::direct", f, mutates_args=())
-        assert tc.register_fake_op("flashinfer_test::direct", f) is f
+        name = self._unique("direct")
+        assert tc.register_custom_op(name, f, mutates_args=())
+        assert tc.register_fake_op(name, f) is f

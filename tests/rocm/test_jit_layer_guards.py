@@ -111,6 +111,13 @@ class TestJitCacheWheelLookup:
         monkeypatch.setitem(sys.modules, "amd_flashinfer_jit_cache", stub)
         assert av._wheel_store() is None
 
+        # Distinguish this arm from the `except Exception` above it: the same
+        # accessor pointed at a directory that *does* exist must be accepted.
+        present = tmp_path / av.variant_store_dir().name
+        present.mkdir(parents=True)
+        stub.get_aiter_variant_dir = lambda: str(tmp_path)
+        assert av._wheel_store() == present
+
 
 class TestCompilationContext:
     def test_the_target_set_is_handed_out_as_a_copy(self):
@@ -161,14 +168,16 @@ class TestCudaOnlyModuleGate:
 
 
 class TestUpstreamBaseIO:
-    def test_an_unreadable_base_file_names_itself(self, tmp_path):
+    def test_an_unreadable_base_file_names_itself(self, tmp_path, monkeypatch):
         import importlib.util
         import sys
 
         target = Path(__file__).resolve().parents[2] / "scripts" / "upstream_base.py"
         spec = importlib.util.spec_from_file_location("_fi_upstream_base", target)
         module = importlib.util.module_from_spec(spec)
-        sys.modules["_fi_upstream_base"] = module
+        # setitem, not assignment: a hand-loaded module left in sys.modules
+        # outlives the test for the rest of the worker.
+        monkeypatch.setitem(sys.modules, "_fi_upstream_base", module)
         spec.loader.exec_module(module)
 
         # A directory where the file should be: an OSError that is not

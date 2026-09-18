@@ -245,5 +245,8 @@ class TestBatchDecodeScaling:
             (q.size(0), q.size(1) + 1), dtype=torch.float32, device=device
         )
 
-        with pytest.raises(Exception, match="lse"):
+        # The concrete type and the shape wording: `Exception` plus "lse" is
+        # also satisfied by a TypeError naming the keyword, which would pass
+        # against the check having been deleted.
+        with pytest.raises(ValueError, match="lse.*expected.*shape|shape.*lse"):
             wrapper.run(q, kv, return_lse=True, lse=wrong)

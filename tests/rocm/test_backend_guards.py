@@ -13,6 +13,7 @@ import pytest
 import torch
 
 from flashinfer.rocm import aiter_utils, norm, page
+from flashinfer.rocm.aiter_utils import is_aiter_supported
 
 _HIDDEN = 128
 
@@ -24,16 +25,28 @@ def device():
     return torch.device("cuda:0")
 
 
+@pytest.fixture
+def aiter_device(device):
+    """Every `backend="aiter"` refusal sits behind `require_aiter`.
+
+    Without AITER that raises first, with a different message, so the case
+    would fail on a mismatched `match=` rather than testing its own guard.
+    """
+    if not is_aiter_supported(device):
+        pytest.skip("require_aiter refuses before the guard under test")
+    return device
+
+
 class TestRmsnormRouting:
-    def test_aiter_refuses_a_3d_input(self, device):
+    def test_aiter_refuses_a_3d_input(self, aiter_device):
         """AITER's rmsnorm is 2-D only; native handles the 3-D case."""
-        x = torch.randn(2, 4, _HIDDEN, dtype=torch.float16, device=device)
-        w = torch.randn(_HIDDEN, dtype=torch.float16, device=device)
+        x = torch.randn(2, 4, _HIDDEN, dtype=torch.float16, device=aiter_device)
+        w = torch.randn(_HIDDEN, dtype=torch.float16, device=aiter_device)
         with pytest.raises(ValueError, match="only supports 2D inputs"):
             norm.maybe_rmsnorm(None, x, w, 1e-6, "aiter")
 
-    def test_aiter_refuses_a_weight_on_another_device(self, device):
-        x = torch.randn(4, _HIDDEN, dtype=torch.float16, device=device)
+    def test_aiter_refuses_a_weight_on_another_device(self, aiter_device):
+        x = torch.randn(4, _HIDDEN, dtype=torch.float16, device=aiter_device)
         w = torch.randn(_HIDDEN, dtype=torch.float16, device="cpu")
         with pytest.raises(ValueError, match="input and weight on the same device"):
             norm.maybe_rmsnorm(None, x, w, 1e-6, "aiter")
@@ -51,9 +64,9 @@ class TestRmsnormRouting:
 
 
 class TestFusedAddRmsnormRouting:
-    def test_aiter_refuses_tensors_on_different_devices(self, device):
-        x = torch.randn(4, _HIDDEN, dtype=torch.float16, device=device)
-        residual = torch.randn(4, _HIDDEN, dtype=torch.float16, device=device)
+    def test_aiter_refuses_tensors_on_different_devices(self, aiter_device):
+        x = torch.randn(4, _HIDDEN, dtype=torch.float16, device=aiter_device)
+        residual = torch.randn(4, _HIDDEN, dtype=torch.float16, device=aiter_device)
         w = torch.randn(_HIDDEN, dtype=torch.float16, device="cpu")
         with pytest.raises(ValueError, match="input, residual and weight on the"):
             norm.maybe_fused_add_rmsnorm(x, residual, w, 1e-6, "aiter")
@@ -90,12 +103,12 @@ def _append_args(device, batch=2, pages=4):
 
 
 class TestPagedAppendRouting:
-    def test_aiter_refuses_a_mismatched_indptr_length(self, device):
+    def test_aiter_refuses_a_mismatched_indptr_length(self, aiter_device):
         """kv_last_page_len never reaches the shim, so this invariant has
         nowhere else to live."""
-        args = _append_args(device)
+        args = _append_args(aiter_device)
         args["kv_last_page_len"] = torch.tensor(
-            [16, 16, 16], dtype=torch.int32, device=device
+            [16, 16, 16], dtype=torch.int32, device=aiter_device
         )
         with pytest.raises(ValueError, match="kv_last_page_len.numel\\(\\)\\+1"):
             page.maybe_append_paged_kv_cache(**args, backend="aiter")
