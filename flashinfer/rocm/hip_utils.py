@@ -346,7 +346,8 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
         (
             # Both names for ROCm 10: a stock install reports "10.0"/"10.1" via
             # .info/version, while a pip-SDK build short-circuits to hipconfig,
-            # which gives the HIP version instead -- 7.15 for 10.0, 7.16 for 10.1.
+            # which gives the HIP version instead. 7.16 is measured on ROCm
+            # 10.1.0rc3; the stock spellings are carried over from 10.0.
             [
                 "10.1",
                 "10.0",
@@ -379,10 +380,17 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
         ),
     ]
 
-    # Build the compatibility matrix
-    ROCM_COMPAT_MATRIX = {
-        version: archs for versions, archs in _ROCM_ARCH_GROUPS for version in versions
-    }
+    # Build the compatibility matrix. The groups are hand-edited to add a
+    # release, so a version landing in two of them is the likely slip -- and the
+    # later group would just win, narrowing the arch list with no error.
+    ROCM_COMPAT_MATRIX = {}
+    for versions, archs in _ROCM_ARCH_GROUPS:
+        for version in versions:
+            if version in ROCM_COMPAT_MATRIX:
+                raise RuntimeError(
+                    f"ROCm version {version!r} appears in two _ROCM_ARCH_GROUPS entries"
+                )
+            ROCM_COMPAT_MATRIX[version] = archs
 
     # Get architecture list from parameter, env var, or default
     if arch_list is None:

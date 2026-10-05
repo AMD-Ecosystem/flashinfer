@@ -361,6 +361,21 @@ class TestValidateRocmArch:
         with self._patch_rocm_version(version):
             assert validate_rocm_arch(arch_list="gfx942,gfx950") == "gfx942,gfx950"
 
+    @pytest.mark.parametrize("version", ["10.2.0", "7.17.0"])
+    def test_the_next_release_is_not_matched_by_accident(self, version):
+        """Negative control for the pair above.
+
+        The lookup is exact-match on major.minor. A refactor to a prefix or
+        major-only match would keep every positive case green while silently
+        accepting an untested toolchain, so assert the adjacent versions still
+        raise -- 5.0.0 is too far away to catch that.
+        """
+        with (
+            self._patch_rocm_version(version),
+            pytest.raises(RuntimeError, match="not recognized in the ROCm"),
+        ):
+            validate_rocm_arch(arch_list="gfx942")
+
     def test_raises_when_rocm_not_detected(self):
         with (
             self._patch_rocm_version(None),

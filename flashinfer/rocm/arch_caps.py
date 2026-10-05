@@ -155,6 +155,11 @@ class KnownBad:
     No row carries one today. The mechanism stays for the next defect.
 
     Bounds are half-open: ``rocm_min`` inclusive, ``rocm_max`` exclusive.
+
+    Write the bound in the spelling the machine will report, not the marketing
+    one: on a pip-SDK build ``get_system_rocm_version`` returns the HIP version,
+    so a ROCm 10.1 box compares as ``"7.16"`` and never falls inside a window
+    written ``rocm_min="10.0"``.
     """
 
     rocm_min: Optional[str] = None

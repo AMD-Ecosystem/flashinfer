@@ -96,7 +96,7 @@ and this release is tested on.**
 | | Supported |
 | :--- | :--- |
 | GPUs | gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI350X, MI355X) |
-| ROCm | 10.0 |
+| ROCm | 10.0. 10.1 is accepted by the arch check but is not what `docker/Dockerfile.rocm` builds and has no CI lane |
 | PyTorch+ROCm | 2.12.0 |
 | Python | 3.12 |
 | OS | Ubuntu 24.04 |
