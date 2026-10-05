@@ -353,6 +353,14 @@ class TestValidateRocmArch:
             result = validate_rocm_arch(arch_list="gfx942,gfx950")
             assert result == "gfx942,gfx950"
 
+    @pytest.mark.parametrize(
+        "version", ["10.1.0", "7.16.26385", "10.0.0", "7.15.26333"]
+    )
+    def test_rocm_10_under_either_name(self, version):
+        """A pip-SDK build reports HIP (7.15/7.16); a stock install reports ROCm."""
+        with self._patch_rocm_version(version):
+            assert validate_rocm_arch(arch_list="gfx942,gfx950") == "gfx942,gfx950"
+
     def test_raises_when_rocm_not_detected(self):
         with (
             self._patch_rocm_version(None),

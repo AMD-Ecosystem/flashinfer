@@ -344,11 +344,13 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
     # Add new tuple for adding a new version group
     _ROCM_ARCH_GROUPS = [
         (
-            # Both names for ROCm 10: a stock install reports "10.0" via
+            # Both names for ROCm 10: a stock install reports "10.0"/"10.1" via
             # .info/version, while a pip-SDK build short-circuits to hipconfig,
-            # which gives the HIP version instead.
+            # which gives the HIP version instead -- 7.15 for 10.0, 7.16 for 10.1.
             [
+                "10.1",
                 "10.0",
+                "7.16",
                 "7.15",
                 "7.14",
                 "7.13",
