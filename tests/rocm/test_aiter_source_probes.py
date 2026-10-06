@@ -247,9 +247,14 @@ class TestCkIncludePaths:
 
     def test_no_ck_tree_adds_no_include(self, monkeypatch, tmp_path):
         """Not an error: a ROCm that ships ck_tile still compiles the bridge."""
+        import sys
+
         self._fake_aiter(monkeypatch, tmp_path, tmp_path / "absent")
 
         assert aiter_source.aiter_ck_include_paths() == ()
+        # The is_dir() arm, not the import failing into the except arm.
+        core = sys.modules["aiter.jit.core"]
+        assert str(tmp_path / "absent") == core.CK_3RDPARTY_DIR
 
     def test_unimportable_aiter_adds_no_include(self):
         import sys

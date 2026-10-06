@@ -636,6 +636,29 @@ def test_aiter_softcap_is_exact_wherever_the_table_allows_it(qo_len, kv_len, cap
     )
 
 
+def test_single_prefill_auto_passes_the_query_length(monkeypatch):
+    """The selector's single route must see qo_len, not the head count."""
+    from flashinfer.rocm import prefill as rocm_prefill
+
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        raise _Stop
+
+    monkeypatch.setattr(rocm_prefill, "_auto_select_prefill_backend", spy)
+    q = torch.randn(7, 32, 128, dtype=torch.bfloat16, device="cuda:0")
+    k = torch.randn(300, 8, 128, dtype=torch.bfloat16, device="cuda:0")
+    with pytest.raises(_Stop):
+        rocm_prefill.single_prefill_with_kv_cache(
+            q, k, k, causal=True, logits_soft_cap=30.0, backend="auto"
+        )
+    assert seen["single_q_len"] == 7 and seen["kv_len"] == 300
+
+
 def _softcap_q_gate_or_skip(device, route):
     """The soft-cap short-query threshold here, skipping where none applies."""
     from flashinfer.rocm.arch_caps import (
@@ -661,7 +684,7 @@ def _softcap_q_gate_or_skip(device, route):
 
 @pytest.mark.parametrize("offset,expect", [(0, "fa2"), (1, "aiter")])
 def test_auto_keeps_short_softcapped_single_prefill_on_fa2(offset, expect):
-    """gfx950/ROCm 10.1: AITER's soft-capped kernel loses up to 18x below the gate."""
+    """Short soft-capped single prefill stays on fa2; one past the gate goes to AITER."""
     from flashinfer.rocm.prefill import (
         _auto_select_prefill_backend,
         _softcap_short_query_reason,
