@@ -65,12 +65,6 @@ from ..utils import (
 # bumping it must not silently move the support boundary.
 _AITER_NATIVE_PAGING_SINCE = "0.1.10"
 _AITER_LAST_VALIDATED = "0.1.21.post2"
-# Where the mha_varlen_fwd soft-cap defect was measured. It is in the toolchain's
-# codegen, not AITER's source: the same AITER is clean when ROCm 10.1 builds it.
-# Message text only -- the gate itself is arch_caps.aiter_softcap_defect_arch.
-_AITER_SOFTCAP_DEFECT_SCOPE = (
-    "amd-aiter through 0.1.21.post2 on any ROCm but 10.1, which builds it correctly"
-)
 
 # fp8 query dtypes that *could* be an fp8 prefill: E4M3FNUZ on gfx942, OCP
 # E4M3FN on gfx950. Only the arch's own encoding actually works -- the other is
@@ -463,6 +457,13 @@ def _aiter_needs_mask(causal: bool, window_left: int, kv_len: Optional[int]) -> 
     return causal or window_left >= 0
 
 
+def _softcap_defect_scope(device: Optional[torch.device]) -> str:
+    """Detected vs measured-clean toolchain, for soft-cap decline messages."""
+    from .arch_caps import _device_arch, aiter_softcap_defect_detail
+
+    return aiter_softcap_defect_detail(_device_arch(device))
+
+
 def _softcap_varlen_armed(
     causal: bool, logits_soft_cap: Optional[float], head_dim: int, kv_len: Optional[int]
 ) -> bool:
@@ -770,7 +771,8 @@ def _auto_select_prefill_backend(
         ):
             reason = (
                 f"logits_soft_cap={logits_soft_cap} with causal head_dim={head_dim_qk} "
-                "(AITER mha_varlen_fwd computes the soft cap incorrectly)"
+                "(AITER mha_varlen_fwd computes the soft cap incorrectly; "
+                f"{_softcap_defect_scope(device)})"
             )
         # Both perf gates sit last, after every constraint that is a property of
         # the device rather than the batch -- and only if AITER could have run,
@@ -2085,8 +2087,8 @@ def single_prefill_with_kv_cache(
         ):
             raise ValueError(
                 "AITER miscomputes logits_soft_cap for causal head_dim=128 prefill "
-                "on this GPU and ROCm "
-                f"({_AITER_SOFTCAP_DEFECT_SCOPE}); "
+                "on this GPU and toolchain "
+                f"({_softcap_defect_scope(q.device)}); "
                 "use backend='fa2' or backend='auto' instead."
             )
         # logits_soft_cap > 0 forces the varlen .so (mha_fwd template has no _logits
@@ -2987,8 +2989,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
             ):
                 raise ValueError(
                     "AITER miscomputes logits_soft_cap for causal head_dim=128 prefill "
-                    "on this GPU and ROCm "
-                    f"({_AITER_SOFTCAP_DEFECT_SCOPE}); "
+                    "on this GPU and toolchain "
+                    f"({_softcap_defect_scope(self.device)}); "
                     "use backend='fa2' or backend='auto' instead."
                 )
             if self._backend == "aiter" and pos_encoding_mode != "NONE":
@@ -3077,17 +3079,17 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     if softcap_now and not demotable:
                         raise ValueError(
                             "AITER miscomputes logits_soft_cap for causal head_dim=128 "
-                            "prefill on this GPU and ROCm "
-                            f"({_AITER_SOFTCAP_DEFECT_SCOPE}); this page size fell back "
-                            "to the flat-gather kernel. Use backend='fa2'."
+                            "prefill on this GPU and toolchain "
+                            f"({_softcap_defect_scope(self.device)}); this page size "
+                            "fell back to the flat-gather kernel. Use backend='fa2'."
                         )
                     if softcap_now:
                         reason = (
                             "aiter native paging was unavailable for page_size="
                             f"{page_size}, and the flat-gather kernel miscomputes "
                             "logits_soft_cap for causal head_dim=128 "
-                            "on this GPU and ROCm "
-                            f"({_AITER_SOFTCAP_DEFECT_SCOPE})"
+                            "on this GPU and toolchain "
+                            f"({_softcap_defect_scope(self.device)})"
                         )
                         _warn_auto_fallback_once(self.device, reason)
                     elif demotable and short_q_threshold is not None:
@@ -4199,8 +4201,8 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             ):
                 raise ValueError(
                     "AITER miscomputes logits_soft_cap for causal head_dim=128 prefill "
-                    "on this GPU and ROCm "
-                    f"({_AITER_SOFTCAP_DEFECT_SCOPE}); "
+                    "on this GPU and toolchain "
+                    f"({_softcap_defect_scope(self.device)}); "
                     "use backend='fa2' or backend='auto' instead."
                 )
             if self._backend == "aiter" and pos_encoding_mode != "NONE":

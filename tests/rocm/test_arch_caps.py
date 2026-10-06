@@ -705,32 +705,59 @@ class TestAiterSoftcapDefectArchs:
     def test_gfx942_is_not_affected(self):
         assert arch_caps.aiter_softcap_defect_arch("gfx942") is False
 
-    @pytest.mark.parametrize(
-        "rocm",
-        ["10.0.0", "7.15.26333", "10.2.0", "7.17.0", "7.16", "7.16.26384", ""],
-    )
-    def test_gfx950_is_affected_unless_measured_clean(self, rocm):
-        """10.0 measured wrong; 10.2, a pre-release 7.16 build, and an unreadable
-        version stay gated until measured."""
-        assert arch_caps.aiter_softcap_defect_arch("gfx950", rocm=rocm) is True
+    CLEAN = ("7.16.26385", "0.1.21.post2")
 
     @pytest.mark.parametrize(
-        "rocm", ["10.1", "10.1.0", "10.1.2", "7.16.26385", "7.16.27000"]
+        "rocm,aiter",
+        [
+            ("10.0.0", "0.1.21.post2"),  # measured wrong
+            ("7.15.26333", "0.1.21.post2"),
+            ("7.16.26384", "0.1.21.post2"),  # any other build, either side
+            ("7.16.27000", "0.1.21.post2"),
+            ("7.16", "0.1.21.post2"),
+            ("10.1.0", "0.1.21.post2"),  # the non-TheRock spelling was not measured
+            ("10.2.0", "0.1.21.post2"),
+            ("7.16.26385", "0.1.21"),
+            ("7.16.26385", "0.1.22"),
+            ("", "0.1.21.post2"),
+            ("7.16.26385", ""),
+        ],
     )
-    def test_gfx950_is_clean_on_rocm_10_1(self, rocm):
-        assert arch_caps.aiter_softcap_defect_arch("gfx950", rocm=rocm) is False
+    def test_gfx950_is_affected_unless_the_toolchain_was_measured(self, rocm, aiter):
+        assert arch_caps.aiter_softcap_defect_arch("gfx950", rocm, aiter) is True
+
+    def test_gfx950_is_clean_on_the_measured_toolchain(self):
+        assert arch_caps.aiter_softcap_defect_arch("gfx950", *self.CLEAN) is False
 
     @pytest.mark.parametrize(
-        "live,expected", [("7.16.26385", False), ("10.0.0", True), (None, True)]
+        "live,torch_hip,expected",
+        [
+            (CLEAN, None, False),
+            (CLEAN, "7.16.26385", False),
+            (CLEAN, "7.15.26333", True),  # caches are keyed on torch's HIP
+            (("10.0.0", "0.1.21.post2"), None, True),
+            ((None, "0.1.21.post2"), None, True),
+            (("7.16.26385", None), None, True),
+        ],
     )
-    def test_default_reads_the_live_toolchain(self, as_toolchain, live, expected):
-        as_toolchain(live)
+    def test_default_reads_the_live_toolchain(
+        self, monkeypatch, as_toolchain, live, torch_hip, expected
+    ):
+        as_toolchain(*live)
+        monkeypatch.setattr(arch_caps, "_torch_hip", lambda: torch_hip)
         assert arch_caps.aiter_softcap_defect_arch("gfx950") is expected
 
     def test_arch_qualifiers_are_normalized(self):
         defect = arch_caps.aiter_softcap_defect_arch
-        assert defect("gfx950:sramecc+:xnack-", rocm="10.0.0") is True
-        assert defect("gfx950:sramecc+:xnack-", rocm="10.1.0") is False
+        assert defect("gfx950:sramecc+:xnack-", "10.0.0", "0.1.21.post2") is True
+        assert defect("gfx950:sramecc+:xnack-", *self.CLEAN) is False
+
+    def test_detail_names_detected_and_measured(self, monkeypatch, as_toolchain):
+        as_toolchain(None, "0.1.21.post2")
+        monkeypatch.setattr(arch_caps, "_torch_hip", lambda: None)
+        detail = arch_caps.aiter_softcap_defect_detail("gfx950")
+        assert "detected ROCm unknown" in detail
+        assert "ROCm 7.16.26385 + amd-aiter 0.1.21.post2" in detail
 
     def test_unknown_arch_disarms_rather_than_blocks(self):
         assert arch_caps.aiter_softcap_defect_arch("unknown") is False

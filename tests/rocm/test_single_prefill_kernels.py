@@ -344,8 +344,8 @@ _SOFTCAP_ROUTING = [
     (True, 8.0, 64, 512, True),  # other head dims unaffected
     (True, 8.0, 256, 512, True),
     # The capped causal head_dim=128 cases depend on arch and toolchain: gfx950
-    # is wrong at every length before ROCm 10.1, gfx942 never. None = derive
-    # from the table.
+    # is wrong at every length unless arch_caps lists the toolchain as measured
+    # clean, gfx942 never. None = derive from the table.
     (True, 8.0, 128, 128, None),
     (True, 8.0, 128, 512, None),
     (True, 8.0, 128, 2048, None),

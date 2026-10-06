@@ -21,6 +21,8 @@ which owns *whether the AITER package is importable*.
 """
 
 import os
+import sys
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import lru_cache
@@ -39,6 +41,7 @@ __all__ = [
     "aiter_flat_gather_gated_q_len",
     "aiter_ragged_gated_q_len",
     "aiter_softcap_defect_arch",
+    "aiter_softcap_defect_detail",
     "aiter_softcap_gated_q_len",
     "capability_available",
     "capability_reason",
@@ -157,9 +160,8 @@ class KnownBad:
 
     Bounds are half-open: ``rocm_min`` inclusive, ``rocm_max`` exclusive.
 
-    Bounds compare against ``get_system_rocm_version()``: ROCm 10.1 is ``"7.16"``
-    on a TheRock build (above 7.15, below every 10.x bound) but ``"10.1"`` where
-    .info/version is read, so a window on one spelling misses the other.
+    Bounds compare against ``get_system_rocm_version()``, which spells ROCm 10.1
+    ``"7.16"`` on TheRock and ``"10.1"`` elsewhere; a window must list both.
     """
 
     rocm_min: Optional[str] = None
@@ -281,11 +283,9 @@ _MEASURED_950_MLA = (
 # gfx942 clean at every one, cap=0 clean on both.
 _AITER_SOFTCAP_DEFECT_ARCHS = {"gfx942": False, "gfx950": True}
 
-# Half-open ROCm windows (both spellings, see KnownBad) in which a gated arch
-# measured clean with the same AITER: the defect is in the toolchain's codegen.
-# The TheRock window starts at the measured 10.1.0 build, not at 7.16, so an
-# earlier nightly on that line stays gated. Anything else waits for a re-measure.
-_AITER_SOFTCAP_CLEAN_ROCM = {"gfx950": (("10.1", "10.2"), ("7.16.26385", "7.17"))}
+# Exact (ROCm, amd-aiter) builds on which a gated arch measured clean -- the
+# defect is in toolchain codegen. Anything not listed stays gated until measured.
+_AITER_SOFTCAP_CLEAN_TOOLCHAINS = {"gfx950": (("7.16.26385", "0.1.21.post2"),)}
 
 
 # A non-native page size makes AITER gather the whole KV cache before
@@ -344,22 +344,47 @@ def aiter_softcap_gated_q_len(arch: str, route: str) -> Optional[int]:
     return _AITER_SOFTCAP_GATED_Q_LEN.get(normalize_arch(arch), {}).get(route)
 
 
-def aiter_softcap_defect_arch(arch: str, rocm: Optional[str] = None) -> bool:
-    """Does AITER miscompute a causal soft cap on ``arch`` under ``rocm``?
+def _torch_hip() -> Optional[str]:
+    """``torch.version.hip`` if torch is already imported; never imports it."""
+    return getattr(getattr(sys.modules.get("torch"), "version", None), "hip", None)
 
-    ``rocm`` defaults to the live toolchain. An unrecognised architecture answers
-    ``False``; an unmeasured or undetectable ROCm keeps a gated one gated.
+
+def aiter_softcap_defect_arch(
+    arch: str, rocm: Optional[str] = None, aiter: Optional[str] = None
+) -> bool:
+    """Does AITER miscompute a causal soft cap on ``arch`` with this toolchain?
+
+    ``rocm`` / ``aiter`` default to the live versions; the live path also needs
+    torch's HIP to agree, since AITER variant caches are keyed on it. Unknown
+    arch answers ``False``; an unmeasured or unreadable toolchain stays gated.
     """
     arch = normalize_arch(arch)
     if not _AITER_SOFTCAP_DEFECT_ARCHS.get(arch, False):
         return False
-    if rocm is None:
-        rocm = _live_versions()[0]
-    if not rocm:
+    torch_hip = _torch_hip() if rocm is None else None
+    if rocm is None or aiter is None:
+        live_rocm, live_aiter = _live_versions()
+        rocm = live_rocm if rocm is None else rocm
+        aiter = live_aiter if aiter is None else aiter
+    if not rocm or not aiter:
         return True
-    return not any(
-        _compare(rocm, low) >= 0 and _compare(rocm, high) < 0
-        for low, high in _AITER_SOFTCAP_CLEAN_ROCM.get(arch, ())
+    for clean_rocm, clean_aiter in _AITER_SOFTCAP_CLEAN_TOOLCHAINS.get(arch, ()):
+        if _compare(rocm, clean_rocm) == 0 and aiter == clean_aiter:
+            if torch_hip is None or _compare(torch_hip, clean_rocm) == 0:
+                return False
+    return True
+
+
+def aiter_softcap_defect_detail(arch: str) -> str:
+    """The live toolchain against the measured-clean ones, for error messages."""
+    rocm, aiter = _live_versions()
+    clean = ", ".join(
+        f"ROCm {r} + amd-aiter {a}"
+        for r, a in _AITER_SOFTCAP_CLEAN_TOOLCHAINS.get(normalize_arch(arch), ())
+    )
+    return (
+        f"detected ROCm {rocm or 'unknown'}, torch HIP {_torch_hip() or 'unknown'}, "
+        f"amd-aiter {aiter or 'unknown'}; measured correct only on {clean or 'none'}"
     )
 
 
@@ -629,6 +654,9 @@ def _index(caps: Tuple[Capability, ...]) -> Mapping[Tuple[str, str], Capability]
 _BY_KEY = _index(CAPABILITIES)
 
 
+_LIVE_VERSIONS_LOCK = threading.Lock()
+
+
 @lru_cache(maxsize=1)
 def _live_versions() -> Tuple[Optional[str], Optional[str]]:
     """``(rocm_version, aiter_version)``, either ``None`` when undetectable.
@@ -646,7 +674,9 @@ def _live_versions() -> Tuple[Optional[str], Optional[str]]:
 
         from .hip_utils import get_system_rocm_version
 
-        with contextlib.redirect_stdout(io.StringIO()):
+        # redirect_stdout swaps the process-wide sys.stdout; two unserialised
+        # first calls can restore each other's StringIO and leave it in place.
+        with _LIVE_VERSIONS_LOCK, contextlib.redirect_stdout(io.StringIO()):
             rocm = get_system_rocm_version()
     except Exception:
         pass
