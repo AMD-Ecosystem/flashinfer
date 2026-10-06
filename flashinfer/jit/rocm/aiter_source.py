@@ -352,6 +352,39 @@ def _aiter_csrc_include_dir() -> Path:
     )
 
 
+@functools.lru_cache(maxsize=1)
+def aiter_ck_include_paths() -> List[str]:
+    """``[<include>]`` of the composable_kernel tree AITER builds against, else ``[]``.
+
+    The prefill bridge passes ``ck_tile::stream_config`` into AITER, so it should
+    compile against AITER's CK; ``[]`` leaves ``ck_tile`` to ROCm's own headers,
+    which the ROCm 10.1 pip SDK does not ship.
+    """
+    candidates = []
+    try:
+        from ...rocm.aiter_utils import _ensure_aiter_gpu_archs
+
+        _ensure_aiter_gpu_archs()
+        from aiter.jit.core import CK_3RDPARTY_DIR  # honours CK_DIR / AITER_META_DIR
+
+        candidates.append(Path(CK_3RDPARTY_DIR) / "include")
+    except Exception:
+        pass
+    try:
+        import aiter_meta
+
+        candidates += [
+            Path(p) / "3rdparty" / "composable_kernel" / "include"
+            for p in aiter_meta.__path__
+        ]
+    except ImportError:
+        pass
+    for inc in candidates:
+        if (inc / "ck_tile").is_dir():
+            return [str(inc)]
+    return []
+
+
 def ensure_aiter_lib(module: Union[str, AiterModule]) -> Path:
     """
     Build (once, cached) a symbol-visible AITER module and return the path to the

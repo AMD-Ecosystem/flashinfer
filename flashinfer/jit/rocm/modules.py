@@ -10,6 +10,7 @@ import torch
 
 from ..core import JitSpec, gen_jit_spec, logger
 from ..env import FLASHINFER_CSRC_DIR, FLASHINFER_GEN_SRC_DIR
+from .aiter_source import aiter_ck_include_paths
 from .aiter_variants import export_variant_store as _export_variant_store
 from ..utils import (
     dtype_map_hip,
@@ -956,6 +957,7 @@ def gen_customize_single_prefill_module(
             source_paths,
             extra_cflags=[f'-DFLASHINFER_AITER_JIT_DIR=\\"{aiter_jit_dir}\\"'],
             extra_ldflags=["-ldl"],
+            extra_include_paths=aiter_ck_include_paths(),
         )
     elif backend == "fa3":
         raise ValueError("FA3 backend not currently supported for ROCm")
@@ -1223,6 +1225,7 @@ def gen_customize_batch_prefill_module(
             source_paths,
             extra_cflags=[f'-DFLASHINFER_AITER_JIT_DIR=\\"{aiter_jit_dir}\\"'],
             extra_ldflags=["-ldl"],
+            extra_include_paths=aiter_ck_include_paths(),
         )
     elif backend == "fa3":
         raise ValueError("FA3 backend not currently supported for ROCm")

@@ -197,6 +197,62 @@ class TestCsrcIncludeDir:
             aiter_source._aiter_csrc_include_dir()
 
 
+class TestCkIncludePaths:
+    """The prefill bridge's ck_tile must come from the CK tree AITER builds with."""
+
+    @pytest.fixture(autouse=True)
+    def _uncached(self):
+        aiter_source.aiter_ck_include_paths.cache_clear()
+        yield
+        aiter_source.aiter_ck_include_paths.cache_clear()
+
+    @staticmethod
+    def _fake(monkeypatch, ck_3rdparty_dir, meta_dir):
+        import sys
+        import types
+
+        pkg = types.ModuleType("aiter")
+        pkg.__path__ = []
+        jit = types.ModuleType("aiter.jit")
+        jit.__path__ = []
+        core = types.ModuleType("aiter.jit.core")
+        core.CK_3RDPARTY_DIR = str(ck_3rdparty_dir)
+        meta = types.ModuleType("aiter_meta")
+        meta.__path__ = [str(meta_dir)]
+        for name, mod in (
+            ("aiter", pkg),
+            ("aiter.jit", jit),
+            ("aiter.jit.core", core),
+            ("aiter_meta", meta),
+        ):
+            monkeypatch.setitem(sys.modules, name, mod)
+
+    @staticmethod
+    def _ck(root):
+        inc = root / "include"
+        (inc / "ck_tile").mkdir(parents=True)
+        return inc
+
+    def test_aiters_own_ck_dir_wins_over_aiter_meta(self, monkeypatch, tmp_path):
+        own = self._ck(tmp_path / "ck_dir")
+        self._ck(tmp_path / "meta" / "3rdparty" / "composable_kernel")
+        self._fake(monkeypatch, tmp_path / "ck_dir", tmp_path / "meta")
+
+        assert aiter_source.aiter_ck_include_paths() == [str(own)]
+
+    def test_aiter_meta_is_the_fallback(self, monkeypatch, tmp_path):
+        meta = self._ck(tmp_path / "meta" / "3rdparty" / "composable_kernel")
+        self._fake(monkeypatch, tmp_path / "absent", tmp_path / "meta")
+
+        assert aiter_source.aiter_ck_include_paths() == [str(meta)]
+
+    def test_no_ck_tree_adds_no_include(self, monkeypatch, tmp_path):
+        """Not an error: a ROCm that ships ck_tile still compiles the bridge."""
+        self._fake(monkeypatch, tmp_path / "absent", tmp_path / "meta")
+
+        assert aiter_source.aiter_ck_include_paths() == []
+
+
 class TestFindBuiltSo:
     """AITER writes its output to whichever of several directories its own JIT
     chose; a miss here reads as 'the build produced nothing'."""
