@@ -59,8 +59,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zsh \
     && rm -rf /var/lib/apt/lists/*
 # python-is-python3 points `python` at /usr/bin/python3; every documented command
-# uses `python`, so it has to be the interpreter that holds torch.
-RUN python -c "import torch"
+# uses `python`, so it must be the same interpreter as python3, with HIP torch.
+RUN python -c "import os, sys, torch, shutil; p3 = os.path.realpath(shutil.which('python3')); sys.exit(f'ERROR: python is {sys.executable}, python3 is {p3}' if os.path.realpath(sys.executable) != p3 else 'ERROR: torch has no HIP' if torch.version.hip is None else 0)"
 
 # flashinfer resolves ROCm through ROCM_PATH/ROCM_HOME and invokes
 # $ROCM_HOME/bin/amdclang++ by absolute path; hipcc finds its own clang under
@@ -106,8 +106,7 @@ RUN sed -i 's/^\(UID_MAX\s*\).*$/\11000000000/' /etc/login.defs && \
     sed -i 's/^\(GID_MAX\s*\).*$/\11000000000/' /etc/login.defs && \
     group="$(getent group $USER_GID | cut -d: -f1 || true)" && \
     if [ -z "$group" ]; then groupadd --gid $USER_GID $USERNAME; \
-    elif [ $USER_GID -lt 1000 ]; then \
-        echo "ERROR: GID $USER_GID is system group '$group'" >&2; exit 1; \
+    elif [ $USER_GID -eq 0 ]; then echo "ERROR: USER_GID 0 is root" >&2; exit 1; \
     else echo "[user] primary group: existing '$group' (GID $USER_GID)"; fi && \
     useradd --uid $USER_UID --gid $USER_GID -m $USERNAME && \
     echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME && \
