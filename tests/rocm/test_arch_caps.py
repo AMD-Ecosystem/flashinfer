@@ -757,7 +757,11 @@ class TestAiterSoftcapDefectArchs:
         monkeypatch.setattr(arch_caps, "_torch_hip", lambda: None)
         detail = arch_caps.aiter_softcap_defect_detail("gfx950")
         assert "detected ROCm unknown" in detail
-        assert "ROCm 7.16.26385 + amd-aiter 0.1.21.post2" in detail
+        assert "HIP 7.16.26385 (system and torch) + amd-aiter 0.1.21.post2" in detail
+        monkeypatch.setattr(arch_caps, "_AITER_SOFTCAP_CLEAN_TOOLCHAINS", {})
+        assert "no toolchain measured correct" in arch_caps.aiter_softcap_defect_detail(
+            "gfx950"
+        )
 
     def test_unknown_arch_disarms_rather_than_blocks(self):
         assert arch_caps.aiter_softcap_defect_arch("unknown") is False

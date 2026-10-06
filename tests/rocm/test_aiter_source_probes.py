@@ -201,7 +201,11 @@ class TestCkIncludePaths:
     """The prefill bridge's ck_tile must come from the CK tree AITER builds with."""
 
     @pytest.fixture(autouse=True)
-    def _uncached(self):
+    def _uncached(self, monkeypatch):
+        # The probe exports GPU_ARCHS first; keep it off this worker's environment.
+        monkeypatch.setattr(
+            "flashinfer.rocm.aiter_utils._ensure_aiter_gpu_archs", lambda: None
+        )
         aiter_source.aiter_ck_include_paths.cache_clear()
         yield
         aiter_source.aiter_ck_include_paths.cache_clear()

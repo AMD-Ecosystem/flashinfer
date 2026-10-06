@@ -158,10 +158,8 @@ class KnownBad:
 
     No row carries one today. The mechanism stays for the next defect.
 
-    Bounds are half-open: ``rocm_min`` inclusive, ``rocm_max`` exclusive.
-
-    Bounds compare against ``get_system_rocm_version()``, which spells ROCm 10.1
-    ``"7.16"`` on TheRock and ``"10.1"`` elsewhere; a window must list both.
+    Bounds are half-open and compare against ``get_system_rocm_version()``, which
+    spells ROCm 10.1 ``"7.16"`` on TheRock: one row per spelling.
     """
 
     rocm_min: Optional[str] = None
@@ -284,8 +282,8 @@ _MEASURED_950_MLA = (
 _AITER_SOFTCAP_DEFECT_ARCHS = {"gfx942": False, "gfx950": True}
 
 # Exact (HIP, amd-aiter) builds on which a gated arch measured clean -- the defect
-# is in toolchain codegen. HIP spelling only: the live check also requires
-# torch.version.hip to equal it. Anything not listed stays gated until measured.
+# is in toolchain codegen. HIP spelling only: once torch is loaded the live check
+# requires torch.version.hip to equal it. Anything else stays gated until measured.
 _AITER_SOFTCAP_CLEAN_TOOLCHAINS = {"gfx950": (("7.16.26385", "0.1.21.post2"),)}
 
 
@@ -379,14 +377,18 @@ def aiter_softcap_defect_arch(
 def aiter_softcap_defect_detail(arch: str) -> str:
     """The live toolchain against the measured-clean ones, for error messages."""
     rocm, aiter = _live_versions()
-    clean = ", ".join(
-        f"ROCm {r} + amd-aiter {a}"
+    clean = " or ".join(
+        f"HIP {r} (system and torch) + amd-aiter {a}"
         for r, a in _AITER_SOFTCAP_CLEAN_TOOLCHAINS.get(normalize_arch(arch), ())
     )
     return (
         f"detected ROCm {rocm or 'unknown'}, torch HIP {_torch_hip() or 'unknown'}, "
-        f"amd-aiter {aiter or 'unknown'}; measured correct only on {clean or 'none'}, "
-        "with torch HIP equal to that ROCm"
+        f"amd-aiter {aiter or 'unknown'}; "
+        + (
+            f"measured correct only on {clean}"
+            if clean
+            else "no toolchain measured correct"
+        )
     )
 
 

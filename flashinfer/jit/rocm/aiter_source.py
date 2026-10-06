@@ -361,8 +361,11 @@ def aiter_ck_include_paths() -> Tuple[str, ...]:
     which the ROCm 10.1 pip SDK does not ship.
     """
     try:
-        # Both callers import aiter first, so this is already loaded; it is the
-        # exact tree AITER compiles against (CK_DIR, AITER_META_DIR, develop root).
+        from ...rocm.aiter_utils import _ensure_aiter_gpu_archs
+
+        # Usually loaded by the callers' `import aiter` (not under
+        # AITER_TRITON_ONLY); the exact tree AITER compiles against.
+        _ensure_aiter_gpu_archs()
         from aiter.jit.core import CK_3RDPARTY_DIR
     except Exception:
         return ()
