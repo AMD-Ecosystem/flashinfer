@@ -22,13 +22,13 @@ The development image carries a matched ROCm, PyTorch, Python and AITER set,
 so it is the shortest path to a working environment:
 
 ```bash
-docker build -t flashinfer-dev:rocm10.0 -f docker/Dockerfile.rocm . \
+docker build -t flashinfer-dev:rocm10.1 -f docker/Dockerfile.rocm . \
   --build-arg USERNAME=$USER --build-arg USER_UID=$(id -u) \
   --build-arg USER_GID=$(id -g)
 docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
   --group-add video --group-add "$(getent group render | cut -d: -f3)" \
   --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --shm-size=64G \
-  -v "$PWD":/workspace -w /workspace flashinfer-dev:rocm10.0
+  -v "$PWD":/workspace -w /workspace flashinfer-dev:rocm10.1
 ```
 
 The image carries no source — `-v "$PWD":/workspace` is what puts it there.
@@ -47,10 +47,9 @@ has the full recipe: the `docker run` GPU flags, the wheel build, and the
 ahead-of-time kernel build.
 
 **Bringing your own environment?** The image is the supported path because of
-torch: `repo.radeon.com` publishes no `rocm-rel-` directory for ROCm 10.0, so
-no pip command installs the torch 2.12 build this release is tested against —
-it comes from the base image
-(`rocm/pytorch:rocm10.0_ubuntu24.04_py3.12_pytorch_release_2.12.0`). Whatever
+torch: `repo.radeon.com` publishes no `rocm-rel-` directory for ROCm 10.1, so
+the torch 2.12 build this release is tested against comes from the base image
+(`rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.12.0`). Whatever
 you assemble, check you did not land on a CPU-only wheel:
 
 ```bash
@@ -90,13 +89,14 @@ python examples/single_prefill_example.py
 
 ## Supported hardware and toolchain
 
-**One configuration is supported: the one `docker/Dockerfile.rocm` builds
-and this release is tested on.**
+**One configuration is supported: the one `docker/Dockerfile.rocm` builds.**
+On ROCm 10.1 the test suite has so far run on gfx950 only, in another image on
+the same base; gfx942 is built for but not yet run.
 
 | | Supported |
 | :--- | :--- |
 | GPUs | gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI350X, MI355X) |
-| ROCm | 10.0. 10.1 is accepted by the arch check but is not what `docker/Dockerfile.rocm` builds and has no CI lane |
+| ROCm | 10.1 |
 | PyTorch+ROCm | 2.12.0 |
 | Python | 3.12 |
 | OS | Ubuntu 24.04 |
@@ -108,8 +108,8 @@ matrix below, and not what a bug report will be reproduced against.
 
 The pins move together, which is why the supported configuration is an image
 rather than a list of versions: `amd-aiter` is built from source against the
-image's own ROCm, since no wheel targets ROCm 10.0; torch must stay at 2.12,
-since 2.13 drops a `c10` symbol AITER's prefill kernels need; and its ROCm 10.0
+image's own ROCm, since no wheel targets ROCm 10; torch must stay at 2.12,
+since 2.13 drops a `c10` symbol AITER's prefill kernels need; and its ROCm 10.1
 build exists only in the base image.
 
 ## Support matrix

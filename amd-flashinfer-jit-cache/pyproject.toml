@@ -1,7 +1,7 @@
 [build-system]
-# NOTE: torch is intentionally NOT listed here. It is not pip-installable for the
-# supported stack -- repo.radeon.com publishes no rocm-rel- directory for ROCm
-# 10.0 -- so it comes from the base image that docker/Dockerfile.rocm builds on.
+# NOTE: torch is intentionally NOT listed here. repo.radeon.com publishes no
+# rocm-rel- directory for ROCm 10.1, so the supported stack's torch comes from
+# the base image that docker/Dockerfile.rocm builds on.
 # See the Quick start in README.md.
 requires = ["setuptools>=80", "setuptools_scm>=8", "packaging>=24", "wheel", "ninja"]
 build-backend = "build_backend"
@@ -29,9 +29,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 # Runtime dependencies
-# NOTE: torch is intentionally NOT listed here. It is not pip-installable for the
-# supported stack -- repo.radeon.com publishes no rocm-rel- directory for ROCm
-# 10.0 -- so it comes from the base image that docker/Dockerfile.rocm builds on.
+# NOTE: torch is intentionally NOT listed here. repo.radeon.com publishes no
+# rocm-rel- directory for ROCm 10.1, so the supported stack's torch comes from
+# the base image that docker/Dockerfile.rocm builds on.
 # See the Quick start in README.md.
 dependencies = []
 
