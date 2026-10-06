@@ -159,7 +159,8 @@ class KnownBad:
     No row carries one today. The mechanism stays for the next defect.
 
     Bounds are half-open (``rocm_min`` inclusive, ``rocm_max`` exclusive) against
-    ``get_system_rocm_version()``, which spells ROCm 10.1 ``"7.16"`` on TheRock.
+    ``get_system_rocm_version()``, which spells ROCm 10.1 ``"7.16"`` on TheRock:
+    one row per spelling.
     """
 
     rocm_min: Optional[str] = None
@@ -382,8 +383,8 @@ def aiter_softcap_defect_detail(arch: str) -> str:
         for r, a in _AITER_SOFTCAP_CLEAN_TOOLCHAINS.get(normalize_arch(arch), ())
     )
     return (
-        f"detected system version {rocm or 'unknown'} (TheRock reports HIP, "
-        f"others the ROCm release), torch HIP {_torch_hip() or 'unknown'}, "
+        f"detected system version {rocm or 'unknown'} (HIP's on TheRock), "
+        f"torch HIP {_torch_hip() or 'unknown'}, "
         f"amd-aiter {aiter or 'unknown'}; "
         + (
             f"measured correct only on {clean}"

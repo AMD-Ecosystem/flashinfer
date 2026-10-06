@@ -642,10 +642,14 @@ def _softcap_q_gate_or_skip(device, route):
         _device_arch,
         aiter_softcap_defect_arch,
         aiter_softcap_gated_q_len,
+        capability_reason,
     )
 
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    gated_reason = capability_reason(device, "single_prefill", "aiter")
+    if gated_reason:
+        pytest.skip(gated_reason)
     arch = _device_arch(device)
     if aiter_softcap_defect_arch(arch):
         pytest.skip("soft-capped causal prefill is defect-gated on this toolchain")
