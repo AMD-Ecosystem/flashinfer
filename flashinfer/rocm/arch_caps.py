@@ -338,8 +338,8 @@ def aiter_softcap_gated_q_len(arch: str, route: str) -> Optional[int]:
     """Largest query length at which soft-capped causal prefill stays on fa2.
 
     ``route`` is ``"single"``, ``"ragged"`` or ``"paged"``; compare with ``<=``.
-    ``None`` where nothing was measured, which includes every arch the defect
-    table never gated: their soft-cap routing predates this table.
+    ``None`` where no gate is set, which includes every arch the defect table
+    never gated (gfx942's single route measures slower below q=64 but is ungated).
     """
     return _AITER_SOFTCAP_GATED_Q_LEN.get(normalize_arch(arch), {}).get(route)
 

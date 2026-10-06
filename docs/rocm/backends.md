@@ -542,7 +542,11 @@ The gate keys on query length only, so at kv 512 it gives up a little: there
 AITER is 0.77–0.82× on single and 0.79–0.99× on ragged inside the gated range.
 
 Native page sizes dispatch `mha_batch_prefill` and are not gated. gfx942 never
-sent soft-capped prefill to `fa2`, so it has no row and is unchanged.
+had a soft-cap gate and has no row: its soft cap is correct (140 cases on 10.1,
+smaller sweeps on 10.0), its ragged and flat-gather short queries already hit the
+gates below, but its single route still loses to `fa2` at q ≤ 64 (1.67–15× at
+kv ≥ 4096) and is not yet gated. Under graph capture this gate keeps the same
+cudagraph exceptions as the two short-query gates below.
 
 ### Short-query paged prefill avoids AITER's flat gather
 

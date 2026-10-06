@@ -90,8 +90,9 @@ python examples/single_prefill_example.py
 ## Supported hardware and toolchain
 
 **One configuration is supported: the one `docker/Dockerfile.rocm` builds.**
-On ROCm 10.1 the test suite has so far run on gfx950 only, in another image on
-the same base; gfx942 is built for but not yet run.
+On ROCm 10.1 the full test suite has run on gfx950 through the benchdash
+pipeline (Blaze-O1's image on the same base); on gfx942 (MI300X), in this image,
+only the single/batch prefill, arch-caps and AITER-routing suites have.
 
 | | Supported |
 | :--- | :--- |

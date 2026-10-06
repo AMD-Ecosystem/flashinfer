@@ -408,7 +408,7 @@ def test_explicit_aiter_backend_rejects_softcap_defect():
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
     if not aiter_softcap_defect_arch(_device_arch(device)):
-        pytest.skip("this architecture is not affected by the soft-cap defect")
+        pytest.skip("the soft-cap defect is not gated on this GPU and toolchain")
 
     kv_len, qo_len, num_heads, head_dim = 512, 37, 4, 128
     q = torch.randn(qo_len, num_heads, head_dim, dtype=torch.float16, device=device)
@@ -627,7 +627,7 @@ def test_aiter_softcap_is_exact_wherever_the_table_allows_it(qo_len, kv_len, cap
     """
     device = torch.device("cuda:0")
     if _softcap_arch_or_skip(device):
-        pytest.skip("this architecture gates soft-capped causal prefill entirely")
+        pytest.skip("soft-capped causal prefill is defect-gated on this toolchain")
 
     uncapped = _softcap_vs_reference(device, qo_len, kv_len, 0.0)
     capped = _softcap_vs_reference(device, qo_len, kv_len, cap)
@@ -659,7 +659,7 @@ def test_single_prefill_auto_passes_the_query_length(monkeypatch):
     assert seen["single_q_len"] == 7 and seen["kv_len"] == 300
     assert seen["causal"] is True and seen["logits_soft_cap"] == 30.0
     assert seen["op"] == "single_prefill"
-    assert "max_q_len" not in seen and "ragged_q_len" not in seen
+    assert seen.get("max_q_len") is None and seen.get("ragged_q_len") is None
 
 
 def _softcap_q_gate_or_skip(device, route):
@@ -720,16 +720,17 @@ def test_gated_architecture_really_is_defective(qo_len, kv_len, monkeypatch):
 
     Without this nothing re-checks the gate, and a stale one costs 2-5x -- which
     is exactly what this suite failed to catch on gfx942. A failure here means
-    re-measure and consider removing the entry, not that the kernel regressed.
+    re-measure and add a (HIP, amd-aiter) row to the clean-toolchain table.
     """
     device = torch.device("cuda:0")
     if not _softcap_arch_or_skip(device):
-        pytest.skip("this architecture is not gated")
+        pytest.skip("the soft-cap gate is not armed on this GPU and toolchain")
     _disarm_softcap_gate(monkeypatch, device, kv_len)
 
     uncapped = _softcap_vs_reference(device, qo_len, kv_len, 0.0)
     capped = _softcap_vs_reference(device, qo_len, kv_len, 8.0)
     assert math.isnan(capped) or capped > max(10 * uncapped, 2e-2), (
         f"soft cap looks correct here (err {capped:.4f} vs uncapped "
-        f"{uncapped:.4f}); re-measure and consider ungating this architecture"
+        f"{uncapped:.4f}); re-measure and add this (HIP, amd-aiter) to "
+        "arch_caps._AITER_SOFTCAP_CLEAN_TOOLCHAINS"
     )

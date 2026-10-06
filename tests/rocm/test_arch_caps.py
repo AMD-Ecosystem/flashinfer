@@ -690,11 +690,7 @@ class TestLegend:
 
 
 class TestAiterSoftcapDefectArchs:
-    """AITER's causal soft-cap defect is per-arch, not per-kv_len.
-
-    On amd-aiter 0.1.20 gfx950 is wrong at every shape and gfx942 at none, so
-    the table records which architectures are affected rather than a length.
-    """
+    """AITER's causal soft-cap defect depends on arch and toolchain, not kv_len."""
 
     def test_both_architectures_are_declared(self):
         # Without this, the gfx942 assertion below would pass on a missing key:
@@ -789,8 +785,8 @@ class TestAiterFlatGatherQLenGate:
 class TestAiterSoftcapQLenGate:
     """Below these lengths AITER's soft-capped varlen kernel loses to fa2 on gfx950.
 
-    Only arches the defect table gates have a row: elsewhere soft-capped prefill
-    was never sent to fa2, so this table must not start steering it now.
+    Only arches the defect table gates have a row; gfx942's soft-capped single
+    route is measured slower below q=64 but not gated yet.
     """
 
     @pytest.mark.parametrize(
