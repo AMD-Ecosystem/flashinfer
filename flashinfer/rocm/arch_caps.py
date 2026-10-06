@@ -283,8 +283,9 @@ _MEASURED_950_MLA = (
 # gfx942 clean at every one, cap=0 clean on both.
 _AITER_SOFTCAP_DEFECT_ARCHS = {"gfx942": False, "gfx950": True}
 
-# Exact (ROCm, amd-aiter) builds on which a gated arch measured clean -- the
-# defect is in toolchain codegen. Anything not listed stays gated until measured.
+# Exact (HIP, amd-aiter) builds on which a gated arch measured clean -- the defect
+# is in toolchain codegen. HIP spelling only: the live check also requires
+# torch.version.hip to equal it. Anything not listed stays gated until measured.
 _AITER_SOFTCAP_CLEAN_TOOLCHAINS = {"gfx950": (("7.16.26385", "0.1.21.post2"),)}
 
 
@@ -384,7 +385,8 @@ def aiter_softcap_defect_detail(arch: str) -> str:
     )
     return (
         f"detected ROCm {rocm or 'unknown'}, torch HIP {_torch_hip() or 'unknown'}, "
-        f"amd-aiter {aiter or 'unknown'}; measured correct only on {clean or 'none'}"
+        f"amd-aiter {aiter or 'unknown'}; measured correct only on {clean or 'none'}, "
+        "with torch HIP equal to that ROCm"
     )
 
 
