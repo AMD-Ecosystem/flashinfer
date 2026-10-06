@@ -202,9 +202,11 @@ class TestCkIncludePaths:
 
     @pytest.fixture(autouse=True)
     def _uncached(self, monkeypatch):
-        # The probe exports GPU_ARCHS first; keep it off this worker's environment.
+        # The probe exports GPU_ARCHS first; record that, off this worker's env.
+        self.ensured = []
         monkeypatch.setattr(
-            "flashinfer.rocm.aiter_utils._ensure_aiter_gpu_archs", lambda: None
+            "flashinfer.rocm.aiter_utils._ensure_aiter_gpu_archs",
+            lambda: self.ensured.append(True),
         )
         aiter_source.aiter_ck_include_paths.cache_clear()
         yield
@@ -231,6 +233,7 @@ class TestCkIncludePaths:
         assert aiter_source.aiter_ck_include_paths() == (
             str(tmp_path / "ck" / "include"),
         )
+        assert self.ensured, "GPU_ARCHS must be set before aiter.jit.core loads"
 
     def test_no_ck_tree_adds_no_include(self, monkeypatch, tmp_path):
         """Not an error: a ROCm that ships ck_tile still compiles the bridge."""
@@ -241,7 +244,8 @@ class TestCkIncludePaths:
     def test_unimportable_aiter_adds_no_include(self, monkeypatch):
         import sys
 
-        monkeypatch.setitem(sys.modules, "aiter.jit.core", None)
+        for name in ("aiter", "aiter.jit", "aiter.jit.core"):
+            monkeypatch.setitem(sys.modules, name, None)
 
         assert aiter_source.aiter_ck_include_paths() == ()
 

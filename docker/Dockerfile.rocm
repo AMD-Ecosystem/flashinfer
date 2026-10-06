@@ -59,8 +59,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zsh \
     && rm -rf /var/lib/apt/lists/*
 # python-is-python3 points `python` at /usr/bin/python3; every documented command
-# uses `python`, so after apt it must still be python3 and still hold HIP torch.
-RUN python -c "import os, shutil, sys; p3 = shutil.which('python3'); sys.exit(0 if p3 and os.path.realpath(sys.executable) == os.path.realpath(p3) else f'ERROR: python is {sys.executable}, python3 is {p3}')" && \
+# uses `python`, so after apt it must still be python3 (no venv) with HIP torch.
+RUN python -c "import os, shutil, sys; p3 = shutil.which('python3'); sys.exit(0 if p3 and os.path.realpath(sys.executable) == os.path.realpath(p3) and sys.prefix == sys.base_prefix else f'ERROR: python is {sys.executable} (prefix {sys.prefix}), python3 is {p3}')" && \
     python -c "import sys, torch; sys.exit('ERROR: python has no HIP torch' if torch.version.hip is None else 0)"
 
 # flashinfer resolves ROCm through ROCM_PATH/ROCM_HOME and invokes
