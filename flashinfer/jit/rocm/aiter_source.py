@@ -353,11 +353,11 @@ def _aiter_csrc_include_dir() -> Path:
 
 
 @functools.lru_cache(maxsize=1)
-def aiter_ck_include_paths() -> List[str]:
-    """``[<include>]`` of the composable_kernel tree AITER builds against, else ``[]``.
+def aiter_ck_include_paths() -> Tuple[str, ...]:
+    """``(<include>,)`` of the composable_kernel tree AITER builds against, else ``()``.
 
     The prefill bridge passes ``ck_tile::stream_config`` into AITER, so it should
-    compile against AITER's CK; ``[]`` leaves ``ck_tile`` to ROCm's own headers,
+    compile against AITER's CK; ``()`` leaves ``ck_tile`` to ROCm's own headers,
     which the ROCm 10.1 pip SDK does not ship.
     """
     candidates = []
@@ -381,8 +381,8 @@ def aiter_ck_include_paths() -> List[str]:
         pass
     for inc in candidates:
         if (inc / "ck_tile").is_dir():
-            return [str(inc)]
-    return []
+            return (str(inc),)
+    return ()
 
 
 def ensure_aiter_lib(module: Union[str, AiterModule]) -> Path:

@@ -211,6 +211,11 @@ class TestCkIncludePaths:
         import sys
         import types
 
+        # The probe exports GPU_ARCHS before importing aiter; keep that off the
+        # process environment other tests in this worker read.
+        monkeypatch.setattr(
+            "flashinfer.rocm.aiter_utils._ensure_aiter_gpu_archs", lambda: None
+        )
         pkg = types.ModuleType("aiter")
         pkg.__path__ = []
         jit = types.ModuleType("aiter.jit")
@@ -238,19 +243,19 @@ class TestCkIncludePaths:
         self._ck(tmp_path / "meta" / "3rdparty" / "composable_kernel")
         self._fake(monkeypatch, tmp_path / "ck_dir", tmp_path / "meta")
 
-        assert aiter_source.aiter_ck_include_paths() == [str(own)]
+        assert aiter_source.aiter_ck_include_paths() == (str(own),)
 
     def test_aiter_meta_is_the_fallback(self, monkeypatch, tmp_path):
         meta = self._ck(tmp_path / "meta" / "3rdparty" / "composable_kernel")
         self._fake(monkeypatch, tmp_path / "absent", tmp_path / "meta")
 
-        assert aiter_source.aiter_ck_include_paths() == [str(meta)]
+        assert aiter_source.aiter_ck_include_paths() == (str(meta),)
 
     def test_no_ck_tree_adds_no_include(self, monkeypatch, tmp_path):
         """Not an error: a ROCm that ships ck_tile still compiles the bridge."""
         self._fake(monkeypatch, tmp_path / "absent", tmp_path / "meta")
 
-        assert aiter_source.aiter_ck_include_paths() == []
+        assert aiter_source.aiter_ck_include_paths() == ()
 
 
 class TestFindBuiltSo:
