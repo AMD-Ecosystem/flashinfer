@@ -657,6 +657,9 @@ def test_single_prefill_auto_passes_the_query_length(monkeypatch):
             q, k, k, causal=True, logits_soft_cap=30.0, backend="auto"
         )
     assert seen["single_q_len"] == 7 and seen["kv_len"] == 300
+    assert seen["causal"] is True and seen["logits_soft_cap"] == 30.0
+    assert seen["op"] == "single_prefill"
+    assert "max_q_len" not in seen and "ragged_q_len" not in seen
 
 
 def _softcap_q_gate_or_skip(device, route):

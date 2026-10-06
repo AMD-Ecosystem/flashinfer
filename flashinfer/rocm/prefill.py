@@ -774,7 +774,7 @@ def _auto_select_prefill_backend(
                 "(AITER mha_varlen_fwd computes the soft cap incorrectly; "
                 f"{_softcap_defect_scope(device)})"
             )
-        # Both perf gates sit last, after every constraint that is a property of
+        # The perf gates sit last, after every constraint that is a property of
         # the device rather than the batch -- and only if AITER could have run,
         # or a box with no amd-aiter would be told "too short" instead of the
         # install diagnostic below.
