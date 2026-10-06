@@ -201,64 +201,43 @@ class TestCkIncludePaths:
     """The prefill bridge's ck_tile must come from the CK tree AITER builds with."""
 
     @pytest.fixture(autouse=True)
-    def _isolated(self, monkeypatch, tmp_path):
-        """Fake aiter / aiter_meta packages on sys.path; none of the real ones."""
-        import sys
-
-        for name in [
-            m for m in sys.modules if m.split(".")[0] in ("aiter", "aiter_meta")
-        ]:
-            monkeypatch.delitem(sys.modules, name)
-        monkeypatch.delenv("CK_DIR", raising=False)
-        monkeypatch.delenv("AITER_META_DIR", raising=False)
-        monkeypatch.syspath_prepend(str(tmp_path / "site"))
+    def _uncached(self):
         aiter_source.aiter_ck_include_paths.cache_clear()
         yield
         aiter_source.aiter_ck_include_paths.cache_clear()
 
     @staticmethod
-    def _package(root, name):
-        (root / name).mkdir(parents=True)
-        (root / name / "__init__.py").write_text("raise AssertionError('imported')\n")
-        return root / name
+    def _fake_aiter(monkeypatch, ck_3rdparty_dir):
+        import sys
+        import types
 
-    @staticmethod
-    def _ck(root):
-        inc = root / "3rdparty" / "composable_kernel" / "include"
-        (inc / "ck_tile").mkdir(parents=True)
-        return inc
+        modules = {
+            n: types.ModuleType(n) for n in ("aiter", "aiter.jit", "aiter.jit.core")
+        }
+        modules["aiter"].__path__ = []
+        modules["aiter.jit"].__path__ = []
+        modules["aiter.jit.core"].CK_3RDPARTY_DIR = str(ck_3rdparty_dir)
+        for name, mod in modules.items():
+            monkeypatch.setitem(sys.modules, name, mod)
 
-    def test_ck_dir_wins(self, monkeypatch, tmp_path):
+    def test_aiters_ck_dir_is_used(self, monkeypatch, tmp_path):
         (tmp_path / "ck" / "include" / "ck_tile").mkdir(parents=True)
-        self._ck(self._package(tmp_path / "site", "aiter_meta"))
-        monkeypatch.setenv("CK_DIR", str(tmp_path / "ck"))
+        self._fake_aiter(monkeypatch, tmp_path / "ck")
 
         assert aiter_source.aiter_ck_include_paths() == (
             str(tmp_path / "ck" / "include"),
         )
 
-    def test_aiter_meta_dir_env_wins_over_the_package(self, monkeypatch, tmp_path):
-        env = self._ck(tmp_path / "meta_env")
-        self._ck(self._package(tmp_path / "site", "aiter_meta"))
-        monkeypatch.setenv("AITER_META_DIR", str(tmp_path / "meta_env"))
-
-        assert aiter_source.aiter_ck_include_paths() == (str(env),)
-
-    def test_aiter_meta_package_without_importing_it(self, tmp_path):
-        meta = self._ck(self._package(tmp_path / "site", "aiter_meta"))
-
-        assert aiter_source.aiter_ck_include_paths() == (str(meta),)
-
-    def test_develop_install_root_is_the_last_resort(self, tmp_path):
-        self._package(tmp_path / "site", "aiter_meta")  # shadows an installed one
-        self._package(tmp_path / "site", "aiter")
-        root = self._ck(tmp_path / "site")
-
-        assert aiter_source.aiter_ck_include_paths() == (str(root),)
-
-    def test_no_ck_tree_adds_no_include(self, tmp_path):
+    def test_no_ck_tree_adds_no_include(self, monkeypatch, tmp_path):
         """Not an error: a ROCm that ships ck_tile still compiles the bridge."""
-        self._package(tmp_path / "site", "aiter_meta")
+        self._fake_aiter(monkeypatch, tmp_path / "absent")
+
+        assert aiter_source.aiter_ck_include_paths() == ()
+
+    def test_unimportable_aiter_adds_no_include(self, monkeypatch):
+        import sys
+
+        monkeypatch.setitem(sys.modules, "aiter.jit.core", None)
 
         assert aiter_source.aiter_ck_include_paths() == ()
 

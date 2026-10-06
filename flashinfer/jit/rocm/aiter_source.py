@@ -25,7 +25,6 @@ and a CK GEMM module), and a module may be built in a *specialized* form -- see
 
 import contextlib
 import functools
-import importlib.util
 import inspect
 import os
 import re
@@ -361,26 +360,14 @@ def aiter_ck_include_paths() -> Tuple[str, ...]:
     compile against AITER's CK; ``()`` leaves ``ck_tile`` to ROCm's own headers,
     which the ROCm 10.1 pip SDK does not ship.
     """
-    # AITER's own precedence (aiter/jit/core.py), resolved without importing
-    # aiter: that import needs a GPU and pins GPU_ARCHS for the process.
-    candidates = []
-    if os.environ.get("CK_DIR"):
-        candidates.append(Path(os.environ["CK_DIR"]) / "include")
-    roots = [os.environ["AITER_META_DIR"]] if os.environ.get("AITER_META_DIR") else []
-    for name, up in (("aiter_meta", False), ("aiter", True)):  # aiter: develop install
-        try:
-            spec = importlib.util.find_spec(name)
-        except (ImportError, ValueError):
-            continue
-        for loc in (spec.submodule_search_locations or []) if spec else []:
-            roots.append(os.path.dirname(loc) if up else loc)
-    candidates += [
-        Path(r) / "3rdparty" / "composable_kernel" / "include" for r in roots
-    ]
-    for inc in candidates:
-        if (inc / "ck_tile").is_dir():
-            return (str(inc),)
-    return ()
+    try:
+        # Both callers import aiter first, so this is already loaded; it is the
+        # exact tree AITER compiles against (CK_DIR, AITER_META_DIR, develop root).
+        from aiter.jit.core import CK_3RDPARTY_DIR
+    except Exception:
+        return ()
+    inc = Path(CK_3RDPARTY_DIR) / "include"
+    return (str(inc),) if (inc / "ck_tile").is_dir() else ()
 
 
 def ensure_aiter_lib(module: Union[str, AiterModule]) -> Path:
