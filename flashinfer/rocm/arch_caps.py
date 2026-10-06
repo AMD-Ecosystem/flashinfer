@@ -281,10 +281,11 @@ _MEASURED_950_MLA = (
 # gfx942 clean at every one, cap=0 clean on both.
 _AITER_SOFTCAP_DEFECT_ARCHS = {"gfx942": False, "gfx950": True}
 
-# ROCm releases (both spellings, see KnownBad) on which a gated arch measured
-# clean with the same AITER: the defect is in the toolchain's codegen. Any other
-# release keeps the gate until someone re-measures it.
-_AITER_SOFTCAP_CLEAN_ROCM = {"gfx950": ("10.1", "7.16")}
+# Half-open ROCm windows (both spellings, see KnownBad) in which a gated arch
+# measured clean with the same AITER: the defect is in the toolchain's codegen.
+# The TheRock window starts at the measured 10.1.0 build, not at 7.16, so an
+# earlier nightly on that line stays gated. Anything else waits for a re-measure.
+_AITER_SOFTCAP_CLEAN_ROCM = {"gfx950": (("10.1", "10.2"), ("7.16.26385", "7.17"))}
 
 
 # A non-native page size makes AITER gather the whole KV cache before
@@ -354,8 +355,11 @@ def aiter_softcap_defect_arch(arch: str, rocm: Optional[str] = None) -> bool:
         return False
     if rocm is None:
         rocm = _live_versions()[0]
-    return ".".join((rocm or "").split(".")[:2]) not in _AITER_SOFTCAP_CLEAN_ROCM.get(
-        arch, ()
+    if not rocm:
+        return True
+    return not any(
+        _compare(rocm, low) >= 0 and _compare(rocm, high) < 0
+        for low, high in _AITER_SOFTCAP_CLEAN_ROCM.get(arch, ())
     )
 
 

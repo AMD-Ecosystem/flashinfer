@@ -89,7 +89,7 @@ def test_single_prefill_with_kv_cache(
         and head_dim == 128
         and softcap_defective
     ):
-        pytest.skip("AITER mha_varlen_fwd soft-cap defect (aiter<=0.1.21)")
+        pytest.skip("AITER mha_varlen_fwd soft-cap defect on this GPU and ROCm")
 
     if kv_layout == "HND":
         k = torch.randn(
@@ -455,6 +455,65 @@ def test_softcap_predicate_covers_every_branch(
     )
     got = rocm_prefill._aiter_softcap_defect(causal, cap, head_dim, kv_len, None)
     assert got is expected
+
+
+@pytest.mark.parametrize(
+    "causal,cap,head_dim,kv_len,q_len,route,expected",
+    [
+        (True, 30.0, 128, 4096, 192, "single", 192),
+        (True, 30.0, 128, 4096, 193, "single", None),
+        (True, 30.0, 128, 4096, 16, "ragged", 16),
+        (True, 30.0, 128, 4096, 32, "paged", 32),
+        (True, 30.0, 128, None, 8, "paged", None),  # native paging: no varlen kernel
+        (False, 30.0, 128, 4096, 8, "ragged", None),
+        (True, 0.0, 128, 4096, 8, "ragged", None),
+        (True, None, 128, 4096, 8, "ragged", None),
+        (True, 30.0, 64, 4096, 8, "ragged", None),
+        (True, 30.0, 128, 4096, None, "single", None),
+        (True, 30.0, 128, 4096, 0, "single", None),
+        (True, 30.0, 128, 4096, 8, "decode", None),
+    ],
+)
+def test_softcap_short_query_predicate_covers_every_branch(
+    monkeypatch, causal, cap, head_dim, kv_len, q_len, route, expected
+):
+    """_aiter_softcap_short_query's matrix, independent of the host GPU and ROCm."""
+    from flashinfer.rocm import prefill as rocm_prefill
+
+    table = {"single": 192, "ragged": 16, "paged": 32}
+    monkeypatch.setattr(
+        "flashinfer.rocm.arch_caps.aiter_softcap_gated_q_len",
+        lambda arch, route: table.get(route),
+    )
+    got = rocm_prefill._aiter_softcap_short_query(
+        causal, cap, head_dim, kv_len, q_len, route, None
+    )
+    assert got == expected
+
+
+@pytest.mark.parametrize(
+    "lengths",
+    [
+        {"max_q_len": 8, "ragged_q_len": 8},
+        {"max_q_len": 8, "single_q_len": 8},
+        {"ragged_q_len": 8, "single_q_len": 8},
+    ],
+)
+def test_auto_select_refuses_two_routes(lengths):
+    from flashinfer.rocm.prefill import _auto_select_prefill_backend
+
+    with pytest.raises(ValueError, match="different routes"):
+        _auto_select_prefill_backend(
+            torch.device("cuda:0"),
+            dtype_q=torch.bfloat16,
+            dtype_kv=torch.bfloat16,
+            kv_layout="NHD",
+            has_custom_mask=False,
+            head_dim_qk=128,
+            head_dim_vo=128,
+            op="single_prefill",
+            **lengths,
+        )
 
 
 @pytest.mark.parametrize("affected", [True, False])

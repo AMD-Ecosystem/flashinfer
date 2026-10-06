@@ -705,14 +705,27 @@ class TestAiterSoftcapDefectArchs:
     def test_gfx942_is_not_affected(self):
         assert arch_caps.aiter_softcap_defect_arch("gfx942") is False
 
-    @pytest.mark.parametrize("rocm", ["10.0.0", "7.15.26333", "10.2.0", "7.17.0", ""])
+    @pytest.mark.parametrize(
+        "rocm",
+        ["10.0.0", "7.15.26333", "10.2.0", "7.17.0", "7.16", "7.16.26384", ""],
+    )
     def test_gfx950_is_affected_unless_measured_clean(self, rocm):
-        """10.0 measured wrong; the next release and an unreadable one stay gated."""
+        """10.0 measured wrong; 10.2, a pre-release 7.16 build, and an unreadable
+        version stay gated until measured."""
         assert arch_caps.aiter_softcap_defect_arch("gfx950", rocm=rocm) is True
 
-    @pytest.mark.parametrize("rocm", ["10.1.0", "7.16.26385"])
+    @pytest.mark.parametrize(
+        "rocm", ["10.1", "10.1.0", "10.1.2", "7.16.26385", "7.16.27000"]
+    )
     def test_gfx950_is_clean_on_rocm_10_1(self, rocm):
         assert arch_caps.aiter_softcap_defect_arch("gfx950", rocm=rocm) is False
+
+    @pytest.mark.parametrize(
+        "live,expected", [("7.16.26385", False), ("10.0.0", True), (None, True)]
+    )
+    def test_default_reads_the_live_toolchain(self, as_toolchain, live, expected):
+        as_toolchain(live)
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is expected
 
     def test_arch_qualifiers_are_normalized(self):
         defect = arch_caps.aiter_softcap_defect_arch

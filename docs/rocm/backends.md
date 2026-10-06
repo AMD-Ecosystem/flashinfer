@@ -508,14 +508,16 @@ speedup matters for that shape, measure it, and use
 
 AITER's
 `mha_varlen_fwd` miscomputes `logits_soft_cap` for causal prefill at
-`head_dim=128` (through amd-aiter 0.1.21) — on **gfx950 built with ROCm 10.0 or
-earlier**, and there at every length, so which architecture and toolchain are
+`head_dim=128` (through amd-aiter 0.1.21) — on **gfx950 with any ROCm but
+10.1**, and there at every length, so which architecture and toolchain are
 affected lives in `arch_caps.py` rather than at the call sites. Single and
 ragged prefill always dispatch through that kernel, so there `auto` serves them
 with `fa2` and `backend="aiter"` raises rather than returning wrong numbers.
 ROCm 10.1 builds the same kernel correctly — 140 shapes × caps exact against an
 fp32 reference — so on gfx950 / 10.1 the gate lifts and the crossover below
-takes its place. gfx942 measures clean over a `qo_len` × `kv_len` sweep at
+takes its place. Other releases stay gated until measured. The lift assumes the
+running ROCm built the AITER kernels: an `AITER_JIT_DIR` built under 10.0 is
+not covered. gfx942 measures clean over a `qo_len` × `kv_len` sweep at
 every cap and uses AITER as normal.
 
 Paged prefill keeps AITER at a native page size, since that route takes

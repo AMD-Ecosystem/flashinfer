@@ -222,8 +222,8 @@ has the complete lists and the evidence for each entry;
 names a kernel source `csrc/rocm` does not have, so the second group cannot
 grow unnoticed.
 
-**Soft-capped causal single and ragged prefill fall back to `fa2` on gfx950
-before ROCm 10.1.** AITER's `mha_varlen_fwd` miscomputes `logits_soft_cap` at
+**Soft-capped causal single and ragged prefill fall back to `fa2` on gfx950,
+except on ROCm 10.1.** AITER's `mha_varlen_fwd` miscomputes `logits_soft_cap` at
 `head_dim=128` there, so `auto` declines it and `backend="aiter"` raises rather
 than returning wrong numbers. ROCm 10.1 builds it correctly; `auto` then keeps
 only short queries on `fa2`, where AITER is slower. Paged prefill at a native
