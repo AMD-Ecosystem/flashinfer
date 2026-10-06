@@ -59,8 +59,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zsh \
     && rm -rf /var/lib/apt/lists/*
 # python-is-python3 points `python` at /usr/bin/python3; every documented command
-# uses `python`, so it must be the same interpreter as python3, with HIP torch.
-RUN python -c "import os, sys, torch, shutil; p3 = os.path.realpath(shutil.which('python3')); sys.exit(f'ERROR: python is {sys.executable}, python3 is {p3}' if os.path.realpath(sys.executable) != p3 else 'ERROR: torch has no HIP' if torch.version.hip is None else 0)"
+# uses `python`, so it must be the interpreter checked for HIP torch above.
+RUN python -c "import os, shutil, sys; p3 = shutil.which('python3'); sys.exit(0 if p3 and os.path.realpath(sys.executable) == os.path.realpath(p3) else f'ERROR: python is {sys.executable}, python3 is {p3}')"
 
 # flashinfer resolves ROCm through ROCM_PATH/ROCM_HOME and invokes
 # $ROCM_HOME/bin/amdclang++ by absolute path; hipcc finds its own clang under
