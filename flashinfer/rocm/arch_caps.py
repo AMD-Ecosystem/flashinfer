@@ -156,10 +156,9 @@ class KnownBad:
 
     Bounds are half-open: ``rocm_min`` inclusive, ``rocm_max`` exclusive.
 
-    Write the bound in the spelling the machine will report, not the marketing
-    one: on a pip-SDK build ``get_system_rocm_version`` returns the HIP version,
-    so a ROCm 10.1 box compares as ``"7.16"`` and never falls inside a window
-    written ``rocm_min="10.0"``.
+    Bounds compare against ``get_system_rocm_version()``: ROCm 10.1 is ``"7.16"``
+    on a TheRock build (above 7.15, below every 10.x bound) but ``"10.1"`` where
+    .info/version is read, so a window on one spelling misses the other.
     """
 
     rocm_min: Optional[str] = None
@@ -258,8 +257,8 @@ class Capability:
 # empty string means "declared, nobody recorded a run". The AITER rows carry
 # evidence; the HIP rows deliberately do not yet.
 #
-# Both architectures are validated on the one supported configuration --
-# ROCm 10.0 (HIP 7.15.26333), torch 2.12.0, amd-aiter 0.1.20. The gfx942
+# Both architectures were validated on ROCm 10.0 (HIP 7.15.26333), torch
+# 2.12.0, amd-aiter 0.1.20, which is what the strings below record. The gfx942
 # AITER-backed op suites gave 8725 passed / 3581 skipped for the v0.6.18
 # release.
 # --------------------------------------------------------------------------
