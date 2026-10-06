@@ -58,6 +58,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     zsh \
     && rm -rf /var/lib/apt/lists/*
+# python-is-python3 points `python` at /usr/bin/python3; every documented command
+# uses `python`, so it has to be the interpreter that holds torch.
+RUN python -c "import torch"
 
 # flashinfer resolves ROCm through ROCM_PATH/ROCM_HOME and invokes
 # $ROCM_HOME/bin/amdclang++ by absolute path; hipcc finds its own clang under
@@ -101,7 +104,11 @@ RUN set -eu; \
 # Silence the warning about out-of-range UID/GID, then create the user.
 RUN sed -i 's/^\(UID_MAX\s*\).*$/\11000000000/' /etc/login.defs && \
     sed -i 's/^\(GID_MAX\s*\).*$/\11000000000/' /etc/login.defs && \
-    (getent group $USER_GID >/dev/null || groupadd --gid $USER_GID $USERNAME) && \
+    group="$(getent group $USER_GID | cut -d: -f1 || true)" && \
+    if [ -z "$group" ]; then groupadd --gid $USER_GID $USERNAME; \
+    elif [ $USER_GID -lt 1000 ]; then \
+        echo "ERROR: GID $USER_GID is system group '$group'" >&2; exit 1; \
+    else echo "[user] primary group: existing '$group' (GID $USER_GID)"; fi && \
     useradd --uid $USER_UID --gid $USER_GID -m $USERNAME && \
     echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME && \
     chmod 0440 /etc/sudoers.d/$USERNAME
