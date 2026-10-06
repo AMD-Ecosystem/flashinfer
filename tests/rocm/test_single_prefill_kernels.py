@@ -343,8 +343,9 @@ _SOFTCAP_ROUTING = [
     (False, 8.0, 128, 512, True),  # non-causal: exact
     (True, 8.0, 64, 512, True),  # other head dims unaffected
     (True, 8.0, 256, 512, True),
-    # The capped causal head_dim=128 cases are arch-dependent: gfx950 is wrong
-    # at every length, gfx942 at none. None = derive from the table.
+    # The capped causal head_dim=128 cases depend on arch and toolchain: gfx950
+    # is wrong at every length before ROCm 10.1, gfx942 never. None = derive
+    # from the table.
     (True, 8.0, 128, 128, None),
     (True, 8.0, 128, 512, None),
     (True, 8.0, 128, 2048, None),
@@ -574,6 +575,54 @@ def test_aiter_softcap_is_exact_wherever_the_table_allows_it(qo_len, kv_len, cap
     assert capped <= max(2 * uncapped, 2e-2), (
         f"cap={cap} err {capped:.4f} vs uncapped {uncapped:.4f}"
     )
+
+
+def _softcap_q_gate_or_skip(device, route):
+    """The soft-cap short-query threshold here, skipping where none applies."""
+    from flashinfer.rocm.arch_caps import (
+        _device_arch,
+        aiter_softcap_defect_arch,
+        aiter_softcap_gated_q_len,
+    )
+
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    arch = _device_arch(device)
+    if aiter_softcap_defect_arch(arch):
+        pytest.skip("soft-capped causal prefill is defect-gated on this toolchain")
+    gated = aiter_softcap_gated_q_len(arch, route)
+    if gated is None:
+        pytest.skip(f"no soft-cap query-length gate for {arch!r}")
+    return gated
+
+
+@pytest.mark.parametrize("offset,expect", [(0, "fa2"), (1, "aiter")])
+def test_auto_keeps_short_softcapped_single_prefill_on_fa2(offset, expect):
+    """gfx950/ROCm 10.1: AITER's soft-capped kernel loses up to 18x below the gate."""
+    from flashinfer.rocm.prefill import (
+        _auto_select_prefill_backend,
+        _softcap_short_query_reason,
+    )
+
+    device = torch.device("cuda:0")
+    gated = _softcap_q_gate_or_skip(device, "single")
+    chosen, reason = _auto_select_prefill_backend(
+        device,
+        dtype_q=torch.bfloat16,
+        dtype_kv=torch.bfloat16,
+        kv_layout="NHD",
+        has_custom_mask=False,
+        head_dim_qk=128,
+        head_dim_vo=128,
+        op="single_prefill",
+        causal=True,
+        logits_soft_cap=30.0,
+        kv_len=4096,
+        single_q_len=gated + offset,
+    )
+    assert chosen == expect, reason
+    if expect == "fa2":
+        assert reason == _softcap_short_query_reason(gated)
 
 
 @pytest.mark.parametrize("qo_len,kv_len", [(17, 2048), (512, 512)])

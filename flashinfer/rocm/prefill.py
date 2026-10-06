@@ -639,6 +639,41 @@ def _aiter_ragged_short_query(
     return gated if gated is not None and max_q_len <= gated else None
 
 
+def _aiter_softcap_short_query(
+    causal: bool,
+    logits_soft_cap: Optional[float],
+    head_dim: int,
+    kv_len: Optional[int],
+    q_len: Optional[int],
+    route: str,
+    device: Optional[torch.device] = None,
+) -> Optional[int]:
+    """Is this soft-capped call too short for AITER's varlen logits kernel?
+
+    Returns the threshold that gated it, or ``None``. Arms exactly where
+    :func:`_aiter_softcap_defect` does, so it only ever narrows a case that the
+    defect gate used to send to fa2 wholesale.
+    """
+    if q_len is None or q_len <= 0:
+        return None
+    if not (causal and logits_soft_cap and logits_soft_cap > 0):
+        return None
+    if head_dim != 128 or kv_len is None:
+        return None
+    from .arch_caps import _device_arch, aiter_softcap_gated_q_len
+
+    gated = aiter_softcap_gated_q_len(_device_arch(device), route)
+    return gated if gated is not None and q_len <= gated else None
+
+
+def _softcap_short_query_reason(threshold: int) -> str:
+    """The soft-cap short-query decline, built in exactly one place."""
+    return (
+        f"logits_soft_cap with query length <= {threshold} (AITER's soft-capped "
+        "mha_varlen_fwd is slower than the in-tree kernel below that)"
+    )
+
+
 def _ragged_short_query_reason(threshold: int) -> str:
     """The ragged short-query decline, built in exactly one place.
 
@@ -669,6 +704,7 @@ def _auto_select_prefill_backend(
     allow_fp8: bool = False,
     max_q_len: Optional[int] = None,
     ragged_q_len: Optional[int] = None,
+    single_q_len: Optional[int] = None,
 ) -> Tuple[str, Optional[str]]:
     """Return ``(backend, reason)``: 'aiter' when the GPU and call parameters satisfy
     AITER's constraints, else 'fa2' plus the reason AITER was declined.
@@ -743,6 +779,19 @@ def _auto_select_prefill_backend(
                 ragged_threshold = _aiter_ragged_short_query(ragged_q_len, device)
                 if ragged_threshold is not None:
                     reason = _ragged_short_query_reason(ragged_threshold)
+            if reason is None:
+                route, q_len = (
+                    ("ragged", ragged_q_len)
+                    if ragged_q_len is not None
+                    else ("paged", max_q_len)
+                    if max_q_len is not None
+                    else ("single", single_q_len)
+                )
+                softcap_threshold = _aiter_softcap_short_query(
+                    causal, logits_soft_cap, head_dim_qk, kv_len, q_len, route, device
+                )
+                if softcap_threshold is not None:
+                    reason = _softcap_short_query_reason(softcap_threshold)
 
     if reason is not None:
         _warn_auto_fallback_once(device, reason)
@@ -2001,6 +2050,7 @@ def single_prefill_with_kv_cache(
             causal=causal,
             logits_soft_cap=logits_soft_cap,
             kv_len=kv_len,
+            single_q_len=q.shape[0],
         )
 
     _reject_fp8_on_fa2(q.dtype, backend)
@@ -2897,10 +2947,23 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 short_q_threshold = _aiter_flat_gather_short_query(
                     gather_q_len, self.device
                 )
+                softcap_q_threshold = _aiter_softcap_short_query(
+                    causal,
+                    logits_soft_cap,
+                    head_dim_qk,
+                    softcap_kv_len,
+                    gather_q_len,
+                    "paged",
+                    self.device,
+                )
                 self._backend_short_query_demoted = (
                     short_q_threshold is not None
                     and self._backend_fallback_reason
                     == _flat_gather_short_query_reason(short_q_threshold)
+                ) or (
+                    softcap_q_threshold is not None
+                    and self._backend_fallback_reason
+                    == _softcap_short_query_reason(softcap_q_threshold)
                 )
             if self._backend == "aiter":
                 _require_native_fp8_dtype(q_data_type)
@@ -2994,6 +3057,15 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     short_q_threshold = _aiter_flat_gather_short_query(
                         self._max_q_len, self.device
                     )
+                    softcap_q_threshold = _aiter_softcap_short_query(
+                        causal,
+                        logits_soft_cap,
+                        head_dim_qk,
+                        self._max_kv_len,
+                        self._max_q_len,
+                        "paged",
+                        self.device,
+                    )
                     if softcap_now and not demotable:
                         raise ValueError(
                             "AITER miscomputes logits_soft_cap for causal head_dim=128 "
@@ -3019,6 +3091,10 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         # by this point the page size does gather, whether it
                         # was never native or the probe just demoted it.
                         reason = _flat_gather_short_query_reason(short_q_threshold)
+                        _warn_auto_fallback_once(self.device, reason)
+                    elif demotable and softcap_q_threshold is not None:
+                        self._backend_short_query_demoted = True
+                        reason = _softcap_short_query_reason(softcap_q_threshold)
                         _warn_auto_fallback_once(self.device, reason)
                     elif demotable:
                         reason = _aiter_batch_ragged_available(

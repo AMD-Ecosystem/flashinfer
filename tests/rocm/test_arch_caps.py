@@ -705,11 +705,19 @@ class TestAiterSoftcapDefectArchs:
     def test_gfx942_is_not_affected(self):
         assert arch_caps.aiter_softcap_defect_arch("gfx942") is False
 
-    def test_gfx950_is_affected(self):
-        assert arch_caps.aiter_softcap_defect_arch("gfx950") is True
+    @pytest.mark.parametrize("rocm", ["10.0.0", "7.15.26333", "10.2.0", "7.17.0", ""])
+    def test_gfx950_is_affected_unless_measured_clean(self, rocm):
+        """10.0 measured wrong; the next release and an unreadable one stay gated."""
+        assert arch_caps.aiter_softcap_defect_arch("gfx950", rocm=rocm) is True
+
+    @pytest.mark.parametrize("rocm", ["10.1.0", "7.16.26385"])
+    def test_gfx950_is_clean_on_rocm_10_1(self, rocm):
+        assert arch_caps.aiter_softcap_defect_arch("gfx950", rocm=rocm) is False
 
     def test_arch_qualifiers_are_normalized(self):
-        assert arch_caps.aiter_softcap_defect_arch("gfx950:sramecc+:xnack-") is True
+        defect = arch_caps.aiter_softcap_defect_arch
+        assert defect("gfx950:sramecc+:xnack-", rocm="10.0.0") is True
+        assert defect("gfx950:sramecc+:xnack-", rocm="10.1.0") is False
 
     def test_unknown_arch_disarms_rather_than_blocks(self):
         assert arch_caps.aiter_softcap_defect_arch("unknown") is False
@@ -732,6 +740,33 @@ class TestAiterFlatGatherQLenGate:
 
     def test_unknown_arch_disarms_rather_than_blocks(self):
         assert arch_caps.aiter_flat_gather_gated_q_len("unknown") is None
+
+
+class TestAiterSoftcapQLenGate:
+    """Below these lengths AITER's soft-capped varlen kernel loses to fa2 on gfx950.
+
+    Only arches the defect table gates have a row: elsewhere soft-capped prefill
+    was never sent to fa2, so this table must not start steering it now.
+    """
+
+    @pytest.mark.parametrize(
+        "route,gated", [("single", 192), ("ragged", 16), ("paged", 32)]
+    )
+    def test_gfx950_thresholds(self, route, gated):
+        assert arch_caps.aiter_softcap_gated_q_len("gfx950", route) == gated
+
+    @pytest.mark.parametrize("route", ["single", "ragged", "paged"])
+    def test_gfx942_is_not_steered(self, route):
+        assert arch_caps.aiter_softcap_gated_q_len("gfx942", route) is None
+
+    def test_every_gated_arch_is_a_defect_arch(self):
+        assert set(arch_caps._AITER_SOFTCAP_GATED_Q_LEN) <= {
+            a for a, bad in arch_caps._AITER_SOFTCAP_DEFECT_ARCHS.items() if bad
+        }
+
+    def test_unknown_arch_or_route_disarms(self):
+        assert arch_caps.aiter_softcap_gated_q_len("unknown", "single") is None
+        assert arch_caps.aiter_softcap_gated_q_len("gfx950", "decode") is None
 
 
 class TestAiterRaggedQLenGate:

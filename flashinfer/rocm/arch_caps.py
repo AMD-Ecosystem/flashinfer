@@ -39,6 +39,7 @@ __all__ = [
     "aiter_flat_gather_gated_q_len",
     "aiter_ragged_gated_q_len",
     "aiter_softcap_defect_arch",
+    "aiter_softcap_gated_q_len",
     "capability_available",
     "capability_reason",
     "normalize_arch",
@@ -276,9 +277,14 @@ _MEASURED_950_MLA = (
 # Not a KnownBad row: those gate a whole (op, backend, arch) on toolchain
 # version and would also disable the clean logits_soft_cap=0 path. What varies
 # by architecture is whether the kernel is affected, not at which length.
-# Re-measured on 0.1.21.post2 and unchanged: gfx950 wrong at every capped
-# shape, gfx942 clean at every one, cap=0 clean on both.
+# Re-measured on 0.1.21.post2 / ROCm 10.0: gfx950 wrong at every capped shape,
+# gfx942 clean at every one, cap=0 clean on both.
 _AITER_SOFTCAP_DEFECT_ARCHS = {"gfx942": False, "gfx950": True}
+
+# ROCm releases (both spellings, see KnownBad) on which a gated arch measured
+# clean with the same AITER: the defect is in the toolchain's codegen. Any other
+# release keeps the gate until someone re-measures it.
+_AITER_SOFTCAP_CLEAN_ROCM = {"gfx950": ("10.1", "7.16")}
 
 
 # A non-native page size makes AITER gather the whole KV cache before
@@ -321,13 +327,36 @@ def aiter_ragged_gated_q_len(arch: str) -> Optional[int]:
     return _AITER_RAGGED_GATED_Q_LEN.get(normalize_arch(arch))
 
 
-def aiter_softcap_defect_arch(arch: str) -> bool:
-    """Does AITER miscompute a causal soft cap on ``arch``?
+# Where a toolchain fix opened soft-capped causal prefill to AITER, its varlen
+# logits kernel still loses to fa2 up to these query lengths, per route. ROCm
+# 10.1; batches of 8, GQA 4/8, kv 512-32768; ratio tables in git log.
+_AITER_SOFTCAP_GATED_Q_LEN = {"gfx950": {"single": 192, "ragged": 16, "paged": 32}}
 
-    An unrecognised architecture answers ``False``, disarming the guard rather
-    than refusing to route on a machine that is probably fine.
+
+def aiter_softcap_gated_q_len(arch: str, route: str) -> Optional[int]:
+    """Largest query length at which soft-capped causal prefill stays on fa2.
+
+    ``route`` is ``"single"``, ``"ragged"`` or ``"paged"``; compare with ``<=``.
+    ``None`` where nothing was measured, which includes every arch the defect
+    table never gated: their soft-cap routing predates this table.
     """
-    return bool(_AITER_SOFTCAP_DEFECT_ARCHS.get(normalize_arch(arch), False))
+    return _AITER_SOFTCAP_GATED_Q_LEN.get(normalize_arch(arch), {}).get(route)
+
+
+def aiter_softcap_defect_arch(arch: str, rocm: Optional[str] = None) -> bool:
+    """Does AITER miscompute a causal soft cap on ``arch`` under ``rocm``?
+
+    ``rocm`` defaults to the live toolchain. An unrecognised architecture answers
+    ``False``; an unmeasured or undetectable ROCm keeps a gated one gated.
+    """
+    arch = normalize_arch(arch)
+    if not _AITER_SOFTCAP_DEFECT_ARCHS.get(arch, False):
+        return False
+    if rocm is None:
+        rocm = _live_versions()[0]
+    return ".".join((rocm or "").split(".")[:2]) not in _AITER_SOFTCAP_CLEAN_ROCM.get(
+        arch, ()
+    )
 
 
 # AITER's asm forward beats its CK Tile arm only where there is enough q-side

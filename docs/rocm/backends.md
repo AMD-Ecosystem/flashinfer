@@ -508,17 +508,39 @@ speedup matters for that shape, measure it, and use
 
 AITER's
 `mha_varlen_fwd` miscomputes `logits_soft_cap` for causal prefill at
-`head_dim=128` (through amd-aiter 0.1.21) — on **gfx950 only**, and there at
-every length, so which architectures are affected lives in `arch_caps.py`
-rather than at the call sites. Single and ragged prefill always dispatch
-through that kernel, so on gfx950 `auto` serves them with `fa2` and
-`backend="aiter"` raises rather than returning wrong numbers. gfx942 measures
-clean over a `qo_len` × `kv_len` sweep at every cap and uses AITER as normal.
+`head_dim=128` (through amd-aiter 0.1.21) — on **gfx950 built with ROCm 10.0 or
+earlier**, and there at every length, so which architecture and toolchain are
+affected lives in `arch_caps.py` rather than at the call sites. Single and
+ragged prefill always dispatch through that kernel, so there `auto` serves them
+with `fa2` and `backend="aiter"` raises rather than returning wrong numbers.
+ROCm 10.1 builds the same kernel correctly — 140 shapes × caps exact against an
+fp32 reference — so on gfx950 / 10.1 the gate lifts and the crossover below
+takes its place. gfx942 measures clean over a `qo_len` × `kv_len` sweep at
+every cap and uses AITER as normal.
 
 Paged prefill keeps AITER at a native page size, since that route takes
 `mha_batch_prefill` instead — measured exact on amd-aiter 0.1.20 against an
 fp32 reference on both architectures — and falls back only when the run-time
 probe demotes it to a flat gather. Every other soft-cap shape is unaffected.
+
+### Short soft-capped prefill stays on `fa2` on gfx950
+
+Where the soft-cap gate lifts, AITER's soft-capped kernel still loses to `fa2`
+on short queries against a long context, so `auto` keeps those on `fa2` and
+`backend_fallback_reason` names the threshold. gfx950 / ROCm 10.1, cap 30,
+GQA 4 and 8, kv 512–32768; batch 8 for ragged and paged:
+
+| route | routed to `fa2` when the query length is | AITER time ÷ `fa2` time, gated range | AITER faster from |
+| :--- | :--- | :--- | :--- |
+| single | ≤ 192 | 1.18–18.5× at kv ≥ 4096 | 512 (0.52–0.60×; 256 is a tie) |
+| ragged | ≤ 16 | 1.37–3.85× at kv ≥ 4096 | 32 (0.67–0.80×) |
+| paged, flat gather | ≤ 32 | 1.46–4.5× to 16, 0.95–1.22× at 32 | 64 (0.47–0.81×) |
+
+The gate keys on query length only, so at kv 512 it gives up a little: there
+AITER is 0.77–0.82× on single and 0.79–0.99× on ragged inside the gated range.
+
+Native page sizes dispatch `mha_batch_prefill` and are not gated. gfx942 never
+sent soft-capped prefill to `fa2`, so it has no row and is unchanged.
 
 ### Short-query paged prefill avoids AITER's flat gather
 
@@ -572,9 +594,9 @@ reaches AITER under graph capture too when the wrapper is given `max_seq_len`,
 and an explicit `backend="aiter"` reaches it either way; neither was timed
 here.
 
-Single prefill is not gated either. It shares the soft-cap defect with ragged,
-but the sweep behind the table above ran through the ragged wrapper, and no
-single-prefill measurement at these query lengths exists to site a threshold on.
+Uncapped single prefill is not gated either: the sweep behind the table above
+ran through the ragged wrapper, and no uncapped single-prefill measurement at
+these query lengths exists to site a threshold on.
 
 An explicit `backend="aiter"` is honoured throughout — these are routing
 preferences, not wrong answers, so the other side stays measurable.
