@@ -22,13 +22,13 @@ The development image carries a matched ROCm, PyTorch, Python and AITER set,
 so it is the shortest path to a working environment:
 
 ```bash
-docker build -t flashinfer-dev:rocm10.0 -f docker/Dockerfile.rocm . \
+docker build -t flashinfer-dev:rocm10.1 -f docker/Dockerfile.rocm . \
   --build-arg USERNAME=$USER --build-arg USER_UID=$(id -u) \
   --build-arg USER_GID=$(id -g)
 docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
   --group-add video --group-add "$(getent group render | cut -d: -f3)" \
   --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --shm-size=64G \
-  -v "$PWD":/workspace -w /workspace flashinfer-dev:rocm10.0
+  -v "$PWD":/workspace -w /workspace flashinfer-dev:rocm10.1
 ```
 
 The image carries no source — `-v "$PWD":/workspace` is what puts it there.
@@ -47,10 +47,9 @@ has the full recipe: the `docker run` GPU flags, the wheel build, and the
 ahead-of-time kernel build.
 
 **Bringing your own environment?** The image is the supported path because of
-torch: `repo.radeon.com` publishes no `rocm-rel-` directory for ROCm 10.0, so
-no pip command installs the torch 2.12 build this release is tested against —
-it comes from the base image
-(`rocm/pytorch:rocm10.0_ubuntu24.04_py3.12_pytorch_release_2.12.0`). Whatever
+torch: `repo.radeon.com` publishes no `rocm-rel-` directory for ROCm 10.1, so
+the torch 2.12 build this release is tested against comes from the base image
+(`rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.12.0`). Whatever
 you assemble, check you did not land on a CPU-only wheel:
 
 ```bash
@@ -90,13 +89,15 @@ python examples/single_prefill_example.py
 
 ## Supported hardware and toolchain
 
-**One configuration is supported: the one `docker/Dockerfile.rocm` builds
-and this release is tested on.**
+**One configuration is supported: the one `docker/Dockerfile.rocm` builds.**
+On ROCm 10.1 the full test suite has run on gfx950 through the benchdash
+pipeline (Blaze-O1's image on the same base); on gfx942 (MI300X), in this image,
+only the single/batch prefill, arch-caps and AITER-routing suites have.
 
 | | Supported |
 | :--- | :--- |
 | GPUs | gfx942 (CDNA3 — MI300X, MI325X), gfx950 (CDNA4 — MI350X, MI355X) |
-| ROCm | 10.0 |
+| ROCm | 10.1 |
 | PyTorch+ROCm | 2.12.0 |
 | Python | 3.12 |
 | OS | Ubuntu 24.04 |
@@ -108,8 +109,8 @@ matrix below, and not what a bug report will be reproduced against.
 
 The pins move together, which is why the supported configuration is an image
 rather than a list of versions: `amd-aiter` is built from source against the
-image's own ROCm, since no wheel targets ROCm 10.0; torch must stay at 2.12,
-since 2.13 drops a `c10` symbol AITER's prefill kernels need; and its ROCm 10.0
+image's own ROCm, since no wheel targets ROCm 10; torch must stay at 2.12,
+since 2.13 drops a `c10` symbol AITER's prefill kernels need; and its ROCm 10.1
 build exists only in the base image.
 
 ## Support matrix
@@ -222,11 +223,14 @@ has the complete lists and the evidence for each entry;
 names a kernel source `csrc/rocm` does not have, so the second group cannot
 grow unnoticed.
 
-**Soft-capped causal single and ragged prefill fall back to `fa2` on gfx950.**
-AITER's `mha_varlen_fwd` miscomputes `logits_soft_cap` at `head_dim=128` there,
-so `auto` declines it and `backend="aiter"` raises rather than returning wrong
-numbers. Paged prefill at a native page size is exempt — it dispatches
-`mha_batch_prefill`, which is exact — and gfx942 is unaffected at every route.
+**Soft-capped causal single and ragged prefill fall back to `fa2` on gfx950,
+except on the measured toolchain: TheRock ROCm 10.1.0 (HIP 7.16.26385, torch
+HIP the same) with amd-aiter 0.1.21.post2.** AITER's `mha_varlen_fwd` miscomputes `logits_soft_cap` at
+`head_dim=128` there, so `auto` declines it and `backend="aiter"` raises rather
+than returning wrong numbers. That toolchain builds it correctly; `auto` there
+keeps only short queries on `fa2`, where AITER is slower. Paged prefill at a native
+page size is exempt — it dispatches `mha_batch_prefill`, which is exact — and
+gfx942 is unaffected at every route.
 See
 [per-op notes](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md#per-op-notes).
 

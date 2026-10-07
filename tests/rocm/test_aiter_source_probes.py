@@ -197,6 +197,73 @@ class TestCsrcIncludeDir:
             aiter_source._aiter_csrc_include_dir()
 
 
+class TestCkIncludePaths:
+    """The prefill bridge's ck_tile must come from the CK tree AITER builds with."""
+
+    @pytest.fixture(autouse=True)
+    def _uncached(self, monkeypatch):
+        import sys
+
+        # The probe must export GPU_ARCHS before aiter.jit.core first loads; the
+        # fake core below refuses to load otherwise. Keeps GPU_ARCHS off the env.
+        monkeypatch.setattr(
+            "flashinfer.rocm.aiter_utils._ensure_aiter_gpu_archs",
+            lambda: monkeypatch.setenv("FI_TEST_GPU_ARCHS_ENSURED", "1"),
+        )
+        saved = sys.modules.pop("aiter.jit.core", None)
+        aiter_source.aiter_ck_include_paths.cache_clear()
+        yield
+        aiter_source.aiter_ck_include_paths.cache_clear()
+        sys.modules.pop("aiter.jit.core", None)
+        if saved is not None:
+            sys.modules["aiter.jit.core"] = saved
+
+    @staticmethod
+    def _fake_aiter(monkeypatch, tmp_path, ck_3rdparty_dir):
+        """aiter / aiter.jit packages whose core.py loads only after the export."""
+        import sys
+        import types
+
+        jit_dir = tmp_path / "aiter_jit"
+        jit_dir.mkdir()
+        (jit_dir / "core.py").write_text(
+            "import os\n"
+            "if not os.environ.get('FI_TEST_GPU_ARCHS_ENSURED'):\n"
+            "    raise RuntimeError('aiter.jit.core loaded before GPU_ARCHS was set')\n"
+            f"CK_3RDPARTY_DIR = {str(ck_3rdparty_dir)!r}\n"
+        )
+        pkg, jit = types.ModuleType("aiter"), types.ModuleType("aiter.jit")
+        pkg.__path__, jit.__path__ = [], [str(jit_dir)]
+        monkeypatch.setitem(sys.modules, "aiter", pkg)
+        monkeypatch.setitem(sys.modules, "aiter.jit", jit)
+
+    def test_aiters_ck_dir_is_used(self, monkeypatch, tmp_path):
+        (tmp_path / "ck" / "include" / "ck_tile").mkdir(parents=True)
+        self._fake_aiter(monkeypatch, tmp_path, tmp_path / "ck")
+
+        assert aiter_source.aiter_ck_include_paths() == (
+            str(tmp_path / "ck" / "include"),
+        )
+
+    def test_no_ck_tree_adds_no_include(self, monkeypatch, tmp_path):
+        """Not an error: a ROCm that ships ck_tile still compiles the bridge."""
+        import sys
+
+        self._fake_aiter(monkeypatch, tmp_path, tmp_path / "absent")
+
+        assert aiter_source.aiter_ck_include_paths() == ()
+        # The is_dir() arm, not the import failing into the except arm.
+        core = sys.modules["aiter.jit.core"]
+        assert str(tmp_path / "absent") == core.CK_3RDPARTY_DIR
+
+    def test_unimportable_aiter_adds_no_include(self):
+        import sys
+
+        sys.modules["aiter.jit.core"] = None  # the fixture restores the real entry
+
+        assert aiter_source.aiter_ck_include_paths() == ()
+
+
 class TestFindBuiltSo:
     """AITER writes its output to whichever of several directories its own JIT
     chose; a miss here reads as 'the build produced nothing'."""

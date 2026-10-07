@@ -948,6 +948,67 @@ def test_ragged_long_then_short_still_demotes():
     assert "ragged KV" in (wrapper.backend_fallback_reason or "")
 
 
+def _softcap_q_gate_or_skip(device, route):
+    """The soft-cap short-query threshold here, skipping where none applies."""
+    from flashinfer.rocm.arch_caps import (
+        _device_arch,
+        aiter_softcap_defect_arch,
+        aiter_softcap_gated_q_len,
+    )
+
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    _skip_if_prefill_gated(device)
+    arch = _device_arch(device)
+    if aiter_softcap_defect_arch(arch):
+        pytest.skip("soft-capped causal prefill is defect-gated on this toolchain")
+    gated = aiter_softcap_gated_q_len(arch, route)
+    if gated is None:
+        pytest.skip(f"no soft-cap query-length gate for {arch!r}")
+    return gated
+
+
+@pytest.mark.parametrize("route", ["ragged", "paged"])
+def test_softcapped_short_query_demotes_without_sticking(route):
+    """Long -> short -> long on one wrapper: aiter, fa2 for the soft-cap gate, aiter.
+
+    Paged uses a gathering page size; its threshold sits above the flat-gather one.
+    """
+    from flashinfer.rocm.prefill import _softcap_short_query_reason
+
+    device = torch.device("cuda:0")
+    gated = _softcap_q_gate_or_skip(device, route)
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+    if route == "ragged":
+        wrapper = flashinfer.prefill.BatchPrefillWithRaggedKVCacheWrapper(
+            workspace, "NHD", backend="auto"
+        )
+        args, min_kv = _ragged_short_query_plan_args, 2048
+    else:
+        wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+            workspace, "NHD", backend="auto"
+        )
+        args, min_kv = _short_query_plan_args, 256
+    long_q = gated * 16
+
+    def plan(q_len, **kw):
+        wrapper.plan(
+            **args(device, q_len, **kw),
+            causal=True,
+            logits_soft_cap=30.0,
+            q_data_type=torch.bfloat16,
+        )
+
+    plan(long_q, kv_len=max(min_kv, long_q * 2))
+    if wrapper.backend != "aiter":
+        pytest.skip(f"AITER unavailable here: {wrapper.backend_fallback_reason}")
+    plan(gated)
+    assert wrapper.backend == "fa2"
+    assert wrapper.backend_fallback_reason == _softcap_short_query_reason(gated)
+    plan(gated + 1, kv_len=max(min_kv, long_q * 2))
+    assert wrapper.backend == "aiter", wrapper.backend_fallback_reason
+
+
 def test_ragged_maskless_plan_after_a_masked_one_drops_the_mask():
     """Asserts the output, not the backend: the failure is silent wrong numbers.
 
@@ -1404,6 +1465,35 @@ def test_short_query_gate_re_checks_when_native_paging_probe_fails(monkeypatch):
     assert wrapper._backend_short_query_demoted, (
         "a per-batch demotion must be marked re-evaluable"
     )
+
+
+def test_softcap_short_query_gate_re_checks_when_native_paging_probe_fails(
+    monkeypatch,
+):
+    """As above, for the soft-cap gate: the probe site is its only re-check."""
+    from flashinfer.rocm import prefill as prefill_rocm
+
+    device = torch.device("cuda:0")
+    gated = _softcap_q_gate_or_skip(device, "paged")
+    page_size = max(prefill_rocm._aiter_paged_route_page_sizes(torch.bfloat16))
+    monkeypatch.setattr(
+        prefill_rocm, "_aiter_native_paging_available", lambda *a, **k: False
+    )
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+    wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+        workspace, "NHD", backend="auto"
+    )
+    wrapper.plan(
+        **_short_query_plan_args(device, gated, kv_len=2048, page_size=page_size),
+        causal=True,
+        logits_soft_cap=30.0,
+        q_data_type=torch.bfloat16,
+    )
+    assert wrapper.backend == "fa2"
+    assert wrapper.backend_fallback_reason == (
+        prefill_rocm._softcap_short_query_reason(gated)
+    )
+    assert wrapper._backend_short_query_demoted
 
 
 def test_explicit_aiter_survives_the_short_query_gate():

@@ -353,6 +353,41 @@ class TestValidateRocmArch:
             result = validate_rocm_arch(arch_list="gfx942,gfx950")
             assert result == "gfx942,gfx950"
 
+    @pytest.mark.parametrize(
+        "version", ["10.1.0", "7.16.26385", "10.0.0", "7.15.26333"]
+    )
+    def test_rocm_10_under_either_name(self, version):
+        """A TheRock build reports HIP (7.15/7.16); .info/version reports ROCm."""
+        with self._patch_rocm_version(version):
+            assert validate_rocm_arch(arch_list="gfx942,gfx950") == "gfx942,gfx950"
+
+    @pytest.mark.parametrize("version", ["10.2.0", "7.17.0"])
+    def test_the_next_release_is_not_matched_by_accident(self, version):
+        """Negative control: the lookup is exact on major.minor, so the adjacent
+        releases must still raise -- a prefix match would pass every case above.
+        """
+        with (
+            self._patch_rocm_version(version),
+            pytest.raises(RuntimeError, match="not recognized in the ROCm"),
+        ):
+            validate_rocm_arch(arch_list="gfx942")
+
+    @pytest.mark.parametrize(
+        "groups",
+        [
+            [(["7.2", "7.1"], ["gfx942"]), (["6.4", "7.1"], ["gfx90a"])],
+            [(["7.1", "7.1"], ["gfx942"])],
+        ],
+    )
+    def test_a_version_listed_twice_is_rejected(self, groups):
+        with pytest.raises(RuntimeError, match="'7.1' is listed twice"):
+            hip_utils._compat_matrix(groups)
+
+    @pytest.mark.parametrize("version", ["10.2.0", "10", "v10.2"])
+    def test_a_key_the_lookup_cannot_hit_is_rejected(self, version):
+        with pytest.raises(RuntimeError, match="is not major.minor"):
+            hip_utils._compat_matrix([([version], ["gfx942"])])
+
     def test_raises_when_rocm_not_detected(self):
         with (
             self._patch_rocm_version(None),

@@ -89,7 +89,7 @@ def test_single_prefill_with_kv_cache(
         and head_dim == 128
         and softcap_defective
     ):
-        pytest.skip("AITER mha_varlen_fwd soft-cap defect (aiter<=0.1.21)")
+        pytest.skip("AITER mha_varlen_fwd soft-cap defect on this GPU and ROCm")
 
     if kv_layout == "HND":
         k = torch.randn(
@@ -343,8 +343,9 @@ _SOFTCAP_ROUTING = [
     (False, 8.0, 128, 512, True),  # non-causal: exact
     (True, 8.0, 64, 512, True),  # other head dims unaffected
     (True, 8.0, 256, 512, True),
-    # The capped causal head_dim=128 cases are arch-dependent: gfx950 is wrong
-    # at every length, gfx942 at none. None = derive from the table.
+    # The capped causal head_dim=128 cases depend on arch and toolchain: gfx950
+    # is wrong at every length unless arch_caps lists the toolchain as measured
+    # clean, gfx942 never. None = derive from the table.
     (True, 8.0, 128, 128, None),
     (True, 8.0, 128, 512, None),
     (True, 8.0, 128, 2048, None),
@@ -407,7 +408,7 @@ def test_explicit_aiter_backend_rejects_softcap_defect():
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
     if not aiter_softcap_defect_arch(_device_arch(device)):
-        pytest.skip("this architecture is not affected by the soft-cap defect")
+        pytest.skip("the soft-cap defect is not gated on this GPU and toolchain")
 
     kv_len, qo_len, num_heads, head_dim = 512, 37, 4, 128
     q = torch.randn(qo_len, num_heads, head_dim, dtype=torch.float16, device=device)
@@ -454,6 +455,65 @@ def test_softcap_predicate_covers_every_branch(
     )
     got = rocm_prefill._aiter_softcap_defect(causal, cap, head_dim, kv_len, None)
     assert got is expected
+
+
+@pytest.mark.parametrize(
+    "causal,cap,head_dim,kv_len,q_len,route,expected",
+    [
+        (True, 30.0, 128, 4096, 192, "single", 192),
+        (True, 30.0, 128, 4096, 193, "single", None),
+        (True, 30.0, 128, 4096, 16, "ragged", 16),
+        (True, 30.0, 128, 4096, 32, "paged", 32),
+        (True, 30.0, 128, None, 8, "paged", None),  # native paging: no varlen kernel
+        (False, 30.0, 128, 4096, 8, "ragged", None),
+        (True, 0.0, 128, 4096, 8, "ragged", None),
+        (True, None, 128, 4096, 8, "ragged", None),
+        (True, 30.0, 64, 4096, 8, "ragged", None),
+        (True, 30.0, 128, 4096, None, "single", None),
+        (True, 30.0, 128, 4096, 0, "single", None),
+        (True, 30.0, 128, 4096, 8, "decode", None),
+    ],
+)
+def test_softcap_short_query_predicate_covers_every_branch(
+    monkeypatch, causal, cap, head_dim, kv_len, q_len, route, expected
+):
+    """_aiter_softcap_short_query's matrix, independent of the host GPU and ROCm."""
+    from flashinfer.rocm import prefill as rocm_prefill
+
+    table = {"single": 192, "ragged": 16, "paged": 32}
+    monkeypatch.setattr(
+        "flashinfer.rocm.arch_caps.aiter_softcap_gated_q_len",
+        lambda arch, route: table.get(route),
+    )
+    got = rocm_prefill._aiter_softcap_short_query(
+        causal, cap, head_dim, kv_len, q_len, route, None
+    )
+    assert got == expected
+
+
+@pytest.mark.parametrize(
+    "lengths",
+    [
+        {"max_q_len": 8, "ragged_q_len": 8},
+        {"max_q_len": 8, "single_q_len": 8},
+        {"ragged_q_len": 8, "single_q_len": 8},
+    ],
+)
+def test_auto_select_refuses_two_routes(lengths):
+    from flashinfer.rocm.prefill import _auto_select_prefill_backend
+
+    with pytest.raises(ValueError, match="different routes"):
+        _auto_select_prefill_backend(
+            torch.device("cuda:0"),
+            dtype_q=torch.bfloat16,
+            dtype_kv=torch.bfloat16,
+            kv_layout="NHD",
+            has_custom_mask=False,
+            head_dim_qk=128,
+            head_dim_vo=128,
+            op="single_prefill",
+            **lengths,
+        )
 
 
 @pytest.mark.parametrize("affected", [True, False])
@@ -567,7 +627,7 @@ def test_aiter_softcap_is_exact_wherever_the_table_allows_it(qo_len, kv_len, cap
     """
     device = torch.device("cuda:0")
     if _softcap_arch_or_skip(device):
-        pytest.skip("this architecture gates soft-capped causal prefill entirely")
+        pytest.skip("soft-capped causal prefill is defect-gated on this toolchain")
 
     uncapped = _softcap_vs_reference(device, qo_len, kv_len, 0.0)
     capped = _softcap_vs_reference(device, qo_len, kv_len, cap)
@@ -576,22 +636,101 @@ def test_aiter_softcap_is_exact_wherever_the_table_allows_it(qo_len, kv_len, cap
     )
 
 
+def test_single_prefill_auto_passes_the_query_length(monkeypatch):
+    """The selector's single route must see qo_len, not the head count."""
+    from flashinfer.rocm import prefill as rocm_prefill
+
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        raise _Stop
+
+    monkeypatch.setattr(rocm_prefill, "_auto_select_prefill_backend", spy)
+    q = torch.randn(7, 32, 128, dtype=torch.bfloat16, device="cuda:0")
+    k = torch.randn(300, 8, 128, dtype=torch.bfloat16, device="cuda:0")
+    with pytest.raises(_Stop):
+        rocm_prefill.single_prefill_with_kv_cache(
+            q, k, k, causal=True, logits_soft_cap=30.0, backend="auto"
+        )
+    assert seen["single_q_len"] == 7 and seen["kv_len"] == 300
+    assert seen["causal"] is True and seen["logits_soft_cap"] == 30.0
+    assert seen["op"] == "single_prefill"
+    assert seen.get("max_q_len") is None and seen.get("ragged_q_len") is None
+
+
+def _softcap_q_gate_or_skip(device, route):
+    """The soft-cap short-query threshold here, skipping where none applies."""
+    from flashinfer.rocm.arch_caps import (
+        _device_arch,
+        aiter_softcap_defect_arch,
+        aiter_softcap_gated_q_len,
+        capability_reason,
+    )
+
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    gated_reason = capability_reason(device, "single_prefill", "aiter")
+    if gated_reason:
+        pytest.skip(gated_reason)
+    arch = _device_arch(device)
+    if aiter_softcap_defect_arch(arch):
+        pytest.skip("soft-capped causal prefill is defect-gated on this toolchain")
+    gated = aiter_softcap_gated_q_len(arch, route)
+    if gated is None:
+        pytest.skip(f"no soft-cap query-length gate for {arch!r}")
+    return gated
+
+
+@pytest.mark.parametrize("offset,expect", [(0, "fa2"), (1, "aiter")])
+def test_auto_keeps_short_softcapped_single_prefill_on_fa2(offset, expect):
+    """Short soft-capped single prefill stays on fa2; one past the gate goes to AITER."""
+    from flashinfer.rocm.prefill import (
+        _auto_select_prefill_backend,
+        _softcap_short_query_reason,
+    )
+
+    device = torch.device("cuda:0")
+    gated = _softcap_q_gate_or_skip(device, "single")
+    chosen, reason = _auto_select_prefill_backend(
+        device,
+        dtype_q=torch.bfloat16,
+        dtype_kv=torch.bfloat16,
+        kv_layout="NHD",
+        has_custom_mask=False,
+        head_dim_qk=128,
+        head_dim_vo=128,
+        op="single_prefill",
+        causal=True,
+        logits_soft_cap=30.0,
+        kv_len=4096,
+        single_q_len=gated + offset,
+    )
+    assert chosen == expect, reason
+    if expect == "fa2":
+        assert reason == _softcap_short_query_reason(gated)
+
+
 @pytest.mark.parametrize("qo_len,kv_len", [(17, 2048), (512, 512)])
 def test_gated_architecture_really_is_defective(qo_len, kv_len, monkeypatch):
     """The gate must stay justified: on a gated arch the cap must still be wrong.
 
     Without this nothing re-checks the gate, and a stale one costs 2-5x -- which
     is exactly what this suite failed to catch on gfx942. A failure here means
-    re-measure and consider removing the entry, not that the kernel regressed.
+    re-measure and add a (HIP, amd-aiter) row to the clean-toolchain table.
     """
     device = torch.device("cuda:0")
     if not _softcap_arch_or_skip(device):
-        pytest.skip("this architecture is not gated")
+        pytest.skip("the soft-cap gate is not armed on this GPU and toolchain")
     _disarm_softcap_gate(monkeypatch, device, kv_len)
 
     uncapped = _softcap_vs_reference(device, qo_len, kv_len, 0.0)
     capped = _softcap_vs_reference(device, qo_len, kv_len, 8.0)
     assert math.isnan(capped) or capped > max(10 * uncapped, 2e-2), (
         f"soft cap looks correct here (err {capped:.4f} vs uncapped "
-        f"{uncapped:.4f}); re-measure and consider ungating this architecture"
+        f"{uncapped:.4f}); re-measure and add this (HIP, amd-aiter) to "
+        "arch_caps._AITER_SOFTCAP_CLEAN_TOOLCHAINS"
     )

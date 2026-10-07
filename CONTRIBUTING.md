@@ -16,21 +16,20 @@ building from source and everything else specific to contributing code.
 Build the development image with the repository's Dockerfile:
 
 ```bash
-docker build -t flashinfer-dev:rocm10.0 -f docker/Dockerfile.rocm .
+docker build -t flashinfer-dev:rocm10.1 -f docker/Dockerfile.rocm .
 ```
 
-`ROCM_VERSION`, `UBUNTU_VERSION`, `PY_VERSION`, and `TORCH_VERSION` default to
-10.0, 24.04, 3.12, and 2.12.0. They select the `rocm/pytorch` base image tag,
-so they are not independent knobs — any override has to name a tag that exists
-on Docker Hub. `AITER_REF` selects the AITER tag to build from source, and
-`AITER_PREBUILD_JOBS` how many variants compile at once (~35 min at 2 on 32
-cores). `AITER_SOURCE=0` falls back to the `AITER_VERSION`/`AITER_INDEX` wheel install,
-which is an unblock only: no `amd-aiter` wheel targets ROCm 10, so it installs a
-retarget of another ROCm. Do not raise `TORCH_VERSION` to 2.13 — it drops a `c10` symbol AITER's
-prefill kernels link against, and they fail to load.
+`BASE_IMAGE` defaults to
+`rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.12.0`. An override
+must be the same kind of image — torch in the system interpreter, and a pip ROCm
+SDK whose `rocm-sdk path --root` is a complete ROCm root; the build checks both.
+Do not move to torch 2.13 — it drops a `c10` symbol AITER's prefill kernels link
+against, and they fail to load. `AITER_REF` selects the AITER tag to build from
+source (no `amd-aiter` wheel targets ROCm 10), and `AITER_PREBUILD_JOBS` how many
+variants compile at once (~35 min at 2 on 32 cores).
 Pass `--build-arg USERNAME=$USER --build-arg USER_UID=$(id -u) --build-arg
 USER_GID=$(id -g)` to match container file ownership to your host user —
-without them, build artifacts come out root-owned.
+without them, build artifacts come out owned by UID 1003.
 
 ```bash
 docker run -it \
@@ -40,7 +39,7 @@ docker run -it \
   --group-add video --group-add "$(getent group render | cut -d: -f3)" \
   -v "$PWD":/workspace -w /workspace \
   --name flashinfer-dev-container \
-  flashinfer-dev:rocm10.0
+  flashinfer-dev:rocm10.1
 ```
 
 `render` must be the **host's numeric GID**. Passing the name resolves against

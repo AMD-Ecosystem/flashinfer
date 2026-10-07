@@ -69,9 +69,9 @@ built. Details: `pr-workflow` skill.
 ## Installing Torch
 
 Torch comes from the development image, not from pip. `repo.radeon.com`
-publishes no `rocm-rel-` directory for ROCm 10.0, so there is no pip recipe
+publishes no `rocm-rel-` directory for ROCm 10.1, so there is no pip recipe
 for the supported torch 2.12 at all — `docker/Dockerfile.rocm` takes it from
-the `rocm/pytorch:rocm10.0_*` base image.
+the `rocm/pytorch:rocm10.1.0_*` base image.
 
 Do not raise torch to 2.13: it removes
 `c10::impl::cow::materialize_cow_storage`, which every published `amd-aiter`

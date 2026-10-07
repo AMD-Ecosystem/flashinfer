@@ -65,10 +65,6 @@ from ..utils import (
 # bumping it must not silently move the support boundary.
 _AITER_NATIVE_PAGING_SINCE = "0.1.10"
 _AITER_LAST_VALIDATED = "0.1.21.post2"
-# Newest AITER carrying the mha_varlen_fwd soft-cap defect. Bump only after
-# re-measuring against an fp32 reference; the wrong answer is silent. Message
-# text only -- the gate itself is arch_caps.aiter_softcap_defect_arch.
-_AITER_SOFTCAP_DEFECT_THROUGH = "0.1.21.post2"
 
 # fp8 query dtypes that *could* be an fp8 prefill: E4M3FNUZ on gfx942, OCP
 # E4M3FN on gfx950. Only the arch's own encoding actually works -- the other is
@@ -461,6 +457,26 @@ def _aiter_needs_mask(causal: bool, window_left: int, kv_len: Optional[int]) -> 
     return causal or window_left >= 0
 
 
+def _softcap_defect_scope(device: Optional[torch.device]) -> str:
+    """Detected vs measured-clean toolchain, for soft-cap decline messages."""
+    from .arch_caps import _device_arch, aiter_softcap_defect_detail
+
+    return aiter_softcap_defect_detail(_device_arch(device))
+
+
+def _softcap_varlen_armed(
+    causal: bool, logits_soft_cap: Optional[float], head_dim: int, kv_len: Optional[int]
+) -> bool:
+    """A causal soft-capped head_dim=128 call that reaches mha_varlen_fwd.
+
+    ``kv_len`` is a routing signal, not a length: ``None`` means the call will
+    not reach mha_varlen_fwd.
+    """
+    if not (causal and logits_soft_cap and logits_soft_cap > 0):
+        return False
+    return head_dim == 128 and kv_len is not None
+
+
 def _aiter_softcap_defect(
     causal: bool,
     logits_soft_cap: Optional[float],
@@ -472,14 +488,9 @@ def _aiter_softcap_defect(
 
     A non-zero cap leaves mha_varlen_fwd's CK kernel, which applies the cap
     wrongly for causal head_dim=128 on the architectures
-    :func:`arch_caps.aiter_softcap_defect_arch` names.
-
-    ``kv_len`` is a routing signal, not a length: ``None`` means the call will
-    not reach mha_varlen_fwd and disarms the check.
+    :func:`arch_caps.aiter_softcap_defect_arch` names, on toolchains it names.
     """
-    if not (causal and logits_soft_cap and logits_soft_cap > 0):
-        return False
-    if head_dim != 128 or kv_len is None:
+    if not _softcap_varlen_armed(causal, logits_soft_cap, head_dim, kv_len):
         return False
     from .arch_caps import _device_arch, aiter_softcap_defect_arch
 
@@ -639,6 +650,39 @@ def _aiter_ragged_short_query(
     return gated if gated is not None and max_q_len <= gated else None
 
 
+def _aiter_softcap_short_query(
+    causal: bool,
+    logits_soft_cap: Optional[float],
+    head_dim: int,
+    kv_len: Optional[int],
+    q_len: Optional[int],
+    route: str,
+    device: Optional[torch.device] = None,
+) -> Optional[int]:
+    """Is this soft-capped call too short for AITER's varlen logits kernel?
+
+    Returns the threshold that gated it, or ``None``. Arms on the same predicate
+    as :func:`_aiter_softcap_defect`, so it only ever narrows a case that the
+    defect gate used to send to fa2 wholesale.
+    """
+    if q_len is None or q_len <= 0:
+        return None
+    if not _softcap_varlen_armed(causal, logits_soft_cap, head_dim, kv_len):
+        return None
+    from .arch_caps import _device_arch, aiter_softcap_gated_q_len
+
+    gated = aiter_softcap_gated_q_len(_device_arch(device), route)
+    return gated if gated is not None and q_len <= gated else None
+
+
+def _softcap_short_query_reason(threshold: int) -> str:
+    """The soft-cap short-query decline, built in exactly one place."""
+    return (
+        f"logits_soft_cap with query length <= {threshold} (AITER's soft-capped "
+        "mha_varlen_fwd is slower than the in-tree kernel below that)"
+    )
+
+
 def _ragged_short_query_reason(threshold: int) -> str:
     """The ragged short-query decline, built in exactly one place.
 
@@ -669,6 +713,7 @@ def _auto_select_prefill_backend(
     allow_fp8: bool = False,
     max_q_len: Optional[int] = None,
     ragged_q_len: Optional[int] = None,
+    single_q_len: Optional[int] = None,
 ) -> Tuple[str, Optional[str]]:
     """Return ``(backend, reason)``: 'aiter' when the GPU and call parameters satisfy
     AITER's constraints, else 'fa2' plus the reason AITER was declined.
@@ -691,13 +736,13 @@ def _auto_select_prefill_backend(
     # other unmet constraint. Previously an unsupported architecture returned
     # "fa2" silently, which on CDNA4 would mean a user quietly losing the AITER
     # path with nothing to explain it.
-    # The two perf gates name different routes, so arming both is a caller bug:
+    # The query lengths name different routes, so passing two is a caller bug:
     # the reason would describe one while a demotion site matches the other's
     # string by equality, silently making that demotion permanent.
-    if max_q_len is not None and ragged_q_len is not None:
+    if sum(x is not None for x in (max_q_len, ragged_q_len, single_q_len)) > 1:
         raise ValueError(
-            "max_q_len (paged) and ragged_q_len (ragged) are different routes; "
-            "pass at most one"
+            "max_q_len (paged), ragged_q_len (ragged) and single_q_len (single) "
+            "are different routes; pass at most one"
         )
 
     reason: Optional[str] = capability_reason(device, op, "aiter")
@@ -726,9 +771,10 @@ def _auto_select_prefill_backend(
         ):
             reason = (
                 f"logits_soft_cap={logits_soft_cap} with causal head_dim={head_dim_qk} "
-                "(AITER mha_varlen_fwd computes the soft cap incorrectly)"
+                "(AITER mha_varlen_fwd computes the soft cap incorrectly; "
+                f"{_softcap_defect_scope(device)})"
             )
-        # Both perf gates sit last, after every constraint that is a property of
+        # The perf gates sit last, after every constraint that is a property of
         # the device rather than the batch -- and only if AITER could have run,
         # or a box with no amd-aiter would be told "too short" instead of the
         # install diagnostic below.
@@ -743,6 +789,19 @@ def _auto_select_prefill_backend(
                 ragged_threshold = _aiter_ragged_short_query(ragged_q_len, device)
                 if ragged_threshold is not None:
                     reason = _ragged_short_query_reason(ragged_threshold)
+            if reason is None:
+                route, q_len = (
+                    ("ragged", ragged_q_len)
+                    if ragged_q_len is not None
+                    else ("paged", max_q_len)
+                    if max_q_len is not None
+                    else ("single", single_q_len)
+                )
+                softcap_threshold = _aiter_softcap_short_query(
+                    causal, logits_soft_cap, head_dim_qk, kv_len, q_len, route, device
+                )
+                if softcap_threshold is not None:
+                    reason = _softcap_short_query_reason(softcap_threshold)
 
     if reason is not None:
         _warn_auto_fallback_once(device, reason)
@@ -2001,6 +2060,7 @@ def single_prefill_with_kv_cache(
             causal=causal,
             logits_soft_cap=logits_soft_cap,
             kv_len=kv_len,
+            single_q_len=q.shape[0],
         )
 
     _reject_fp8_on_fa2(q.dtype, backend)
@@ -2027,8 +2087,8 @@ def single_prefill_with_kv_cache(
         ):
             raise ValueError(
                 "AITER miscomputes logits_soft_cap for causal head_dim=128 prefill "
-                "on this GPU (through amd-aiter "
-                f"{_AITER_SOFTCAP_DEFECT_THROUGH}); "
+                "on this GPU and toolchain "
+                f"({_softcap_defect_scope(q.device)}); "
                 "use backend='fa2' or backend='auto' instead."
             )
         # logits_soft_cap > 0 forces the varlen .so (mha_fwd template has no _logits
@@ -2897,10 +2957,23 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 short_q_threshold = _aiter_flat_gather_short_query(
                     gather_q_len, self.device
                 )
+                softcap_q_threshold = _aiter_softcap_short_query(
+                    causal,
+                    logits_soft_cap,
+                    head_dim_qk,
+                    softcap_kv_len,
+                    gather_q_len,
+                    "paged",
+                    self.device,
+                )
                 self._backend_short_query_demoted = (
                     short_q_threshold is not None
                     and self._backend_fallback_reason
                     == _flat_gather_short_query_reason(short_q_threshold)
+                ) or (
+                    softcap_q_threshold is not None
+                    and self._backend_fallback_reason
+                    == _softcap_short_query_reason(softcap_q_threshold)
                 )
             if self._backend == "aiter":
                 _require_native_fp8_dtype(q_data_type)
@@ -2916,8 +2989,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
             ):
                 raise ValueError(
                     "AITER miscomputes logits_soft_cap for causal head_dim=128 prefill "
-                    "on this GPU (through amd-aiter "
-                    f"{_AITER_SOFTCAP_DEFECT_THROUGH}); "
+                    "on this GPU and toolchain "
+                    f"({_softcap_defect_scope(self.device)}); "
                     "use backend='fa2' or backend='auto' instead."
                 )
             if self._backend == "aiter" and pos_encoding_mode != "NONE":
@@ -2994,20 +3067,29 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     short_q_threshold = _aiter_flat_gather_short_query(
                         self._max_q_len, self.device
                     )
+                    softcap_q_threshold = _aiter_softcap_short_query(
+                        causal,
+                        logits_soft_cap,
+                        head_dim_qk,
+                        self._max_kv_len,
+                        self._max_q_len,
+                        "paged",
+                        self.device,
+                    )
                     if softcap_now and not demotable:
                         raise ValueError(
                             "AITER miscomputes logits_soft_cap for causal head_dim=128 "
-                            "prefill on this GPU (through amd-aiter "
-                            f"{_AITER_SOFTCAP_DEFECT_THROUGH}); this page size fell back "
-                            "to the flat-gather kernel. Use backend='fa2'."
+                            "prefill on this GPU and toolchain "
+                            f"({_softcap_defect_scope(self.device)}); this page size "
+                            "fell back to the flat-gather kernel. Use backend='fa2'."
                         )
                     if softcap_now:
                         reason = (
                             "aiter native paging was unavailable for page_size="
                             f"{page_size}, and the flat-gather kernel miscomputes "
                             "logits_soft_cap for causal head_dim=128 "
-                            "on this GPU (through amd-aiter "
-                            f"{_AITER_SOFTCAP_DEFECT_THROUGH})"
+                            "on this GPU and toolchain "
+                            f"({_softcap_defect_scope(self.device)})"
                         )
                         _warn_auto_fallback_once(self.device, reason)
                     elif demotable and short_q_threshold is not None:
@@ -3019,6 +3101,10 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         # by this point the page size does gather, whether it
                         # was never native or the probe just demoted it.
                         reason = _flat_gather_short_query_reason(short_q_threshold)
+                        _warn_auto_fallback_once(self.device, reason)
+                    elif demotable and softcap_q_threshold is not None:
+                        self._backend_short_query_demoted = True
+                        reason = _softcap_short_query_reason(softcap_q_threshold)
                         _warn_auto_fallback_once(self.device, reason)
                     elif demotable:
                         reason = _aiter_batch_ragged_available(
@@ -4115,8 +4201,8 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             ):
                 raise ValueError(
                     "AITER miscomputes logits_soft_cap for causal head_dim=128 prefill "
-                    "on this GPU (through amd-aiter "
-                    f"{_AITER_SOFTCAP_DEFECT_THROUGH}); "
+                    "on this GPU and toolchain "
+                    f"({_softcap_defect_scope(self.device)}); "
                     "use backend='fa2' or backend='auto' instead."
                 )
             if self._backend == "aiter" and pos_encoding_mode != "NONE":
