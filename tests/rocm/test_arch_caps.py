@@ -749,49 +749,103 @@ class TestAiterSoftcapDefectArchs:
         assert defect("gfx950:sramecc+:xnack-", "10.0.0", "0.1.21.post2") is True
         assert defect("gfx950:sramecc+:xnack-", *self.CLEAN) is False
 
-    def test_a_foreign_aiter_jit_dir_stays_gated(
-        self, monkeypatch, as_toolchain, tmp_path
-    ):
-        """AITER_JIT_DIR replaces the variant store, so its build is unverifiable."""
+    @pytest.fixture
+    def trusted_jit(self, monkeypatch, tmp_path):
+        """A box whose amd-aiter is the package that would be imported."""
+        trusted = str(tmp_path / "pkg" / "jit")
+        monkeypatch.setattr(arch_caps, "_aiter_jit_dir", lambda: trusted)
+        monkeypatch.delenv("AITER_JIT_DIR", raising=False)
+        monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR", raising=False)
+        return trusted
+
+    def _clean(self, monkeypatch, as_toolchain):
         as_toolchain(*self.CLEAN)
         monkeypatch.setattr(arch_caps, "_torch_hip", lambda: self.CLEAN[0])
-        monkeypatch.setattr(
-            arch_caps, "_installed_aiter_jit_dirs", lambda: (str(tmp_path / "pkg/jit"),)
-        )
-        monkeypatch.delenv("AITER_JIT_DIR", raising=False)
+
+    def test_a_foreign_aiter_jit_dir_stays_gated(
+        self, monkeypatch, as_toolchain, trusted_jit
+    ):
+        """AITER_JIT_DIR replaces the variant store, so its build is unverifiable."""
+        self._clean(monkeypatch, as_toolchain)
         assert arch_caps.aiter_softcap_defect_arch("gfx950") is False
 
-        monkeypatch.setenv("AITER_JIT_DIR", str(tmp_path / "elsewhere"))
+        monkeypatch.setenv("AITER_JIT_DIR", "/elsewhere/jit")
         assert arch_caps.aiter_softcap_defect_arch("gfx950") is True
         # Explicit versions are a query about those versions, not the live box.
         assert arch_caps.aiter_softcap_defect_arch("gfx950", *self.CLEAN) is False
 
-        # The installed package's own jit dir is the build we measured.
-        monkeypatch.setenv("AITER_JIT_DIR", str(tmp_path / "pkg" / "jit"))
+        monkeypatch.setenv("AITER_JIT_DIR", trusted_jit)
         assert arch_caps.aiter_softcap_defect_arch("gfx950") is False
+
+    def test_a_shadowed_aiter_package_stays_gated(
+        self, monkeypatch, as_toolchain, trusted_jit
+    ):
+        """The metadata version describes code a PYTHONPATH shadow stops us loading."""
+        self._clean(monkeypatch, as_toolchain)
+        monkeypatch.setattr(arch_caps, "_aiter_jit_dir", lambda: None)
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is True
 
     def test_an_operator_set_variant_store_stays_gated(
-        self, monkeypatch, as_toolchain, tmp_path
+        self, monkeypatch, as_toolchain, trusted_jit
     ):
         """FlashInfer names its own stores for the toolchain; nothing else is checkable."""
-        as_toolchain(*self.CLEAN)
-        monkeypatch.setattr(arch_caps, "_torch_hip", lambda: self.CLEAN[0])
-        monkeypatch.setattr(arch_caps, "_foreign_aiter_jit_dir", lambda: False)
+        self._clean(monkeypatch, as_toolchain)
         tag = f"gfx950__aiter-{self.CLEAN[1]}__rocm-{self.CLEAN[0]}"
-
-        monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR", raising=False)
-        assert arch_caps.aiter_softcap_defect_arch("gfx950") is False
-
-        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", str(tmp_path / tag))
+        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", f"/cache/{tag}")
         assert arch_caps.aiter_softcap_defect_arch("gfx950") is False
 
         # One foreign entry in the os.pathsep list is enough.
         monkeypatch.setenv(
             "FLASHINFER_AITER_VARIANT_DIR",
-            os.pathsep.join([str(tmp_path / tag), str(tmp_path / "operator-store")]),
+            os.pathsep.join([f"/cache/{tag}", "/cache/operator-store"]),
         )
         assert arch_caps.aiter_softcap_defect_arch("gfx950") is True
         assert arch_caps.aiter_softcap_defect_arch("gfx950", *self.CLEAN) is False
+
+        # A store cannot be checked against a torch HIP we cannot read.
+        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", f"/cache/{tag}")
+        monkeypatch.setattr(arch_caps, "_torch_hip", lambda: None)
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is True
+
+    @pytest.mark.parametrize(
+        "imported_at,trusted",
+        [("/dist/aiter", "/dist/aiter/jit"), ("/shadow/aiter", None)],
+    )
+    def test_the_trusted_jit_dir_is_the_distributions(
+        self, monkeypatch, imported_at, trusted
+    ):
+        """find_spec answers for sys.path; only amd-aiter's own tree is vouched for."""
+        import importlib.metadata
+        import importlib.util
+
+        class _Dist:
+            @staticmethod
+            def locate_file(name):
+                return f"/dist/{name}"
+
+        class _Spec:
+            submodule_search_locations = [imported_at]
+
+        monkeypatch.setattr(importlib.metadata, "distribution", lambda name: _Dist())
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: _Spec())
+        arch_caps._aiter_jit_dir.cache_clear()
+        try:
+            assert arch_caps._aiter_jit_dir() == trusted
+        finally:
+            arch_caps._aiter_jit_dir.cache_clear()
+
+    def test_detail_names_the_override_that_gated(
+        self, monkeypatch, as_toolchain, trusted_jit
+    ):
+        """A user whose versions all match must be told which override to remove."""
+        self._clean(monkeypatch, as_toolchain)
+        assert "kernels cannot be matched" not in arch_caps.aiter_softcap_defect_detail(
+            "gfx950"
+        )
+
+        monkeypatch.setenv("AITER_JIT_DIR", "/elsewhere/jit")
+        detail = arch_caps.aiter_softcap_defect_detail("gfx950")
+        assert "AITER_JIT_DIR=/elsewhere/jit is outside" in detail
 
     def test_detail_names_detected_and_measured(self, monkeypatch, as_toolchain):
         as_toolchain(None, "0.1.21.post2")

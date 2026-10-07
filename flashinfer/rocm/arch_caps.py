@@ -345,52 +345,61 @@ def aiter_softcap_gated_q_len(arch: str, route: str) -> Optional[int]:
 
 
 @lru_cache(maxsize=1)
-def _installed_aiter_jit_dirs() -> Tuple[str, ...]:
-    """``<aiter package>/jit`` for the installed amd-aiter, without importing it."""
+def _aiter_jit_dir() -> Optional[str]:
+    """``aiter/jit`` of the amd-aiter distribution ``_live_versions`` measured.
+
+    ``None`` when the package that would be imported is not that distribution's
+    -- a ``PYTHONPATH`` shadow leaves the metadata version describing code
+    nothing loads, so no directory here can be vouched for.
+    """
     try:
+        import importlib.metadata
         import importlib.util
 
+        dist = os.path.realpath(
+            str(importlib.metadata.distribution("amd-aiter").locate_file("aiter/jit"))
+        )
         spec = importlib.util.find_spec("aiter")
-    except (ImportError, ValueError):
-        return ()
-    locations = (spec.submodule_search_locations or []) if spec else []
-    return tuple(os.path.realpath(os.path.join(p, "jit")) for p in locations)
-
-
-def _foreign_aiter_jit_dir() -> bool:
-    """Does ``AITER_JIT_DIR`` select kernels other than the installed package's?
-
-    It replaces the variant store the loader would use (``aiter_loader.cc``), so
-    the .so actually dlopened was built by a toolchain the version probes cannot
-    see -- a 10.0-built store on a 10.1 host loads the miscompiled soft cap.
-    """
-    override = os.environ.get("AITER_JIT_DIR")
-    if not override:
-        return False
-    return os.path.realpath(override) not in _installed_aiter_jit_dirs()
-
-
-def _unverifiable_variant_store(
-    arch: str, aiter: str, torch_hip: Optional[str]
-) -> bool:
-    """Does ``FLASHINFER_AITER_VARIANT_DIR`` hold a store this install cannot vouch for?
-
-    FlashInfer exports its own stores there, and those are named for the
-    toolchain that built them (``aiter_source.compose_cache_tag``), so the name
-    is the check. An operator-set directory keeps its own name and could have
-    been built anywhere.
-    """
-    paths = [
-        p
-        for p in os.environ.get("FLASHINFER_AITER_VARIANT_DIR", "").split(os.pathsep)
-        if p
+    except Exception:
+        return None
+    imported = [
+        os.path.realpath(os.path.join(p, "jit"))
+        for p in ((spec.submodule_search_locations or []) if spec else [])
     ]
-    if not paths:
-        return False
+    return dist if imported == [dist] else None
+
+
+def _softcap_override_reason(
+    arch: str, aiter: str, torch_hip: Optional[str]
+) -> Optional[str]:
+    """Why this box's AITER kernels cannot be tied to the measured build.
+
+    The loader takes ``AITER_JIT_DIR``, else the stores in
+    ``FLASHINFER_AITER_VARIANT_DIR`` (``aiter_loader.cc``), so either can serve
+    .so files built by a toolchain the version probes never see.
+    """
+    trusted = _aiter_jit_dir()
+    if trusted is None:
+        return "the aiter package that would be imported is not amd-aiter's"
+    override = os.environ.get("AITER_JIT_DIR")
+    if override and os.path.realpath(override) != trusted:
+        return f"AITER_JIT_DIR={override} is outside {trusted}"
+    stores = [
+        q
+        for q in os.environ.get("FLASHINFER_AITER_VARIANT_DIR", "").split(os.pathsep)
+        if q
+    ]
+    if not stores:
+        return None
     if not torch_hip:
-        return True
+        return "FLASHINFER_AITER_VARIANT_DIR is set and torch's HIP is unreadable"
+    # export_variant_store() names flashinfer's own stores for the toolchain that
+    # built them (aiter_source.compose_cache_tag), so the name is the check.
     expected = f"{arch}__aiter-{aiter}__rocm-{torch_hip}"
-    return any(os.path.basename(os.path.normpath(p)) != expected for p in paths)
+    foreign = [q for q in stores if os.path.basename(os.path.normpath(q)) != expected]
+    if foreign:
+        return f"{foreign[0]} is not a {expected} store"
+    return None
 
 
 def _torch_hip() -> Optional[str]:
@@ -414,8 +423,6 @@ def aiter_softcap_defect_arch(
     # Captured before the live lookups below overwrite rocm: the override checks
     # describe this box, so an explicit-version query must not run them.
     live = rocm is None
-    if live and _foreign_aiter_jit_dir():
-        return True
     torch_hip = _torch_hip() if live else None
     if rocm is None or aiter is None:
         live_rocm, live_aiter = _live_versions()
@@ -426,7 +433,7 @@ def aiter_softcap_defect_arch(
     for clean_rocm, clean_aiter in _AITER_SOFTCAP_CLEAN_TOOLCHAINS.get(arch, ()):
         if _compare(rocm, clean_rocm) == 0 and aiter == clean_aiter:
             if torch_hip is None or _compare(torch_hip, clean_rocm) == 0:
-                if live and _unverifiable_variant_store(arch, aiter, torch_hip):
+                if live and _softcap_override_reason(arch, aiter, torch_hip):
                     return True
                 return False
     return True
@@ -435,6 +442,11 @@ def aiter_softcap_defect_arch(
 def aiter_softcap_defect_detail(arch: str) -> str:
     """The live toolchain against the measured-clean ones, for error messages."""
     rocm, aiter = _live_versions()
+    override = ""
+    if rocm and aiter:
+        reason = _softcap_override_reason(normalize_arch(arch), aiter, _torch_hip())
+        if reason:
+            override = f"kernels cannot be matched to it ({reason}); "
     clean = " or ".join(
         f"system version and torch HIP both {r} + amd-aiter {a}"
         for r, a in _AITER_SOFTCAP_CLEAN_TOOLCHAINS.get(normalize_arch(arch), ())
@@ -444,6 +456,7 @@ def aiter_softcap_defect_detail(arch: str) -> str:
         "TheRock builds), "
         f"torch HIP {_torch_hip() or 'unknown'}, "
         f"amd-aiter {aiter or 'unknown'}; "
+        + (override or "")
         + (
             f"measured correct only on {clean}"
             if clean
