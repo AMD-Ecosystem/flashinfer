@@ -370,6 +370,29 @@ def _foreign_aiter_jit_dir() -> bool:
     return os.path.realpath(override) not in _installed_aiter_jit_dirs()
 
 
+def _unverifiable_variant_store(
+    arch: str, aiter: str, torch_hip: Optional[str]
+) -> bool:
+    """Does ``FLASHINFER_AITER_VARIANT_DIR`` hold a store this install cannot vouch for?
+
+    FlashInfer exports its own stores there, and those are named for the
+    toolchain that built them (``aiter_source.compose_cache_tag``), so the name
+    is the check. An operator-set directory keeps its own name and could have
+    been built anywhere.
+    """
+    paths = [
+        p
+        for p in os.environ.get("FLASHINFER_AITER_VARIANT_DIR", "").split(os.pathsep)
+        if p
+    ]
+    if not paths:
+        return False
+    if not torch_hip:
+        return True
+    expected = f"{arch}__aiter-{aiter}__rocm-{torch_hip}"
+    return any(os.path.basename(os.path.normpath(p)) != expected for p in paths)
+
+
 def _torch_hip() -> Optional[str]:
     """``torch.version.hip`` if torch is already imported; never imports it."""
     return getattr(getattr(sys.modules.get("torch"), "version", None), "hip", None)
@@ -388,9 +411,12 @@ def aiter_softcap_defect_arch(
     arch = normalize_arch(arch)
     if not _AITER_SOFTCAP_DEFECT_ARCHS.get(arch, False):
         return False
-    if rocm is None and _foreign_aiter_jit_dir():
+    # Captured before the live lookups below overwrite rocm: the override checks
+    # describe this box, so an explicit-version query must not run them.
+    live = rocm is None
+    if live and _foreign_aiter_jit_dir():
         return True
-    torch_hip = _torch_hip() if rocm is None else None
+    torch_hip = _torch_hip() if live else None
     if rocm is None or aiter is None:
         live_rocm, live_aiter = _live_versions()
         rocm = live_rocm if rocm is None else rocm
@@ -400,6 +426,8 @@ def aiter_softcap_defect_arch(
     for clean_rocm, clean_aiter in _AITER_SOFTCAP_CLEAN_TOOLCHAINS.get(arch, ()):
         if _compare(rocm, clean_rocm) == 0 and aiter == clean_aiter:
             if torch_hip is None or _compare(torch_hip, clean_rocm) == 0:
+                if live and _unverifiable_variant_store(arch, aiter, torch_hip):
+                    return True
                 return False
     return True
 

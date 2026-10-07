@@ -12,6 +12,7 @@ lets it run as a hardware-less CI job on every pull request
 """
 
 import dataclasses
+import os
 import importlib.util
 import pathlib
 import subprocess
@@ -768,6 +769,29 @@ class TestAiterSoftcapDefectArchs:
         # The installed package's own jit dir is the build we measured.
         monkeypatch.setenv("AITER_JIT_DIR", str(tmp_path / "pkg" / "jit"))
         assert arch_caps.aiter_softcap_defect_arch("gfx950") is False
+
+    def test_an_operator_set_variant_store_stays_gated(
+        self, monkeypatch, as_toolchain, tmp_path
+    ):
+        """FlashInfer names its own stores for the toolchain; nothing else is checkable."""
+        as_toolchain(*self.CLEAN)
+        monkeypatch.setattr(arch_caps, "_torch_hip", lambda: self.CLEAN[0])
+        monkeypatch.setattr(arch_caps, "_foreign_aiter_jit_dir", lambda: False)
+        tag = f"gfx950__aiter-{self.CLEAN[1]}__rocm-{self.CLEAN[0]}"
+
+        monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR", raising=False)
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is False
+
+        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", str(tmp_path / tag))
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is False
+
+        # One foreign entry in the os.pathsep list is enough.
+        monkeypatch.setenv(
+            "FLASHINFER_AITER_VARIANT_DIR",
+            os.pathsep.join([str(tmp_path / tag), str(tmp_path / "operator-store")]),
+        )
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is True
+        assert arch_caps.aiter_softcap_defect_arch("gfx950", *self.CLEAN) is False
 
     def test_detail_names_detected_and_measured(self, monkeypatch, as_toolchain):
         as_toolchain(None, "0.1.21.post2")
