@@ -517,7 +517,8 @@ ROCm 10.1.0 (TheRock HIP 7.16.26385) with amd-aiter 0.1.21.post2 builds the
 same kernel correctly — 140 shapes × caps exact against an fp32 reference — so
 on exactly that toolchain the gate lifts and the crossover below takes its
 place; torch's HIP must match too. Any other ROCm or AITER build stays gated
-until measured. An `AITER_JIT_DIR` built by another toolchain is not covered. gfx942 measures clean over a `qo_len` × `kv_len` sweep at
+until measured, as does an `AITER_JIT_DIR` pointing outside the installed
+amd-aiter package, whose build toolchain the version probes cannot see. gfx942 measures clean over a `qo_len` × `kv_len` sweep at
 every cap and uses AITER as normal.
 
 Paged prefill keeps AITER at a native page size, since that route takes
@@ -602,7 +603,7 @@ here.
 
 Uncapped single prefill is not gated either: the sweep behind the table above
 ran through the ragged wrapper, and no uncapped single-prefill measurement at
-these query lengths exists to site a threshold on.
+these query lengths exists to base a threshold on.
 
 An explicit `backend="aiter"` is honoured throughout — these are routing
 preferences, not wrong answers, so the other side stays measurable.

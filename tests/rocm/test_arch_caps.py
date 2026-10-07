@@ -748,6 +748,27 @@ class TestAiterSoftcapDefectArchs:
         assert defect("gfx950:sramecc+:xnack-", "10.0.0", "0.1.21.post2") is True
         assert defect("gfx950:sramecc+:xnack-", *self.CLEAN) is False
 
+    def test_a_foreign_aiter_jit_dir_stays_gated(
+        self, monkeypatch, as_toolchain, tmp_path
+    ):
+        """AITER_JIT_DIR replaces the variant store, so its build is unverifiable."""
+        as_toolchain(*self.CLEAN)
+        monkeypatch.setattr(arch_caps, "_torch_hip", lambda: self.CLEAN[0])
+        monkeypatch.setattr(
+            arch_caps, "_installed_aiter_jit_dirs", lambda: (str(tmp_path / "pkg/jit"),)
+        )
+        monkeypatch.delenv("AITER_JIT_DIR", raising=False)
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is False
+
+        monkeypatch.setenv("AITER_JIT_DIR", str(tmp_path / "elsewhere"))
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is True
+        # Explicit versions are a query about those versions, not the live box.
+        assert arch_caps.aiter_softcap_defect_arch("gfx950", *self.CLEAN) is False
+
+        # The installed package's own jit dir is the build we measured.
+        monkeypatch.setenv("AITER_JIT_DIR", str(tmp_path / "pkg" / "jit"))
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is False
+
     def test_detail_names_detected_and_measured(self, monkeypatch, as_toolchain):
         as_toolchain(None, "0.1.21.post2")
         monkeypatch.setattr(arch_caps, "_torch_hip", lambda: None)

@@ -344,6 +344,32 @@ def aiter_softcap_gated_q_len(arch: str, route: str) -> Optional[int]:
     return _AITER_SOFTCAP_GATED_Q_LEN.get(normalize_arch(arch), {}).get(route)
 
 
+@lru_cache(maxsize=1)
+def _installed_aiter_jit_dirs() -> Tuple[str, ...]:
+    """``<aiter package>/jit`` for the installed amd-aiter, without importing it."""
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("aiter")
+    except (ImportError, ValueError):
+        return ()
+    locations = (spec.submodule_search_locations or []) if spec else []
+    return tuple(os.path.realpath(os.path.join(p, "jit")) for p in locations)
+
+
+def _foreign_aiter_jit_dir() -> bool:
+    """Does ``AITER_JIT_DIR`` select kernels other than the installed package's?
+
+    It replaces the variant store the loader would use (``aiter_loader.cc``), so
+    the .so actually dlopened was built by a toolchain the version probes cannot
+    see -- a 10.0-built store on a 10.1 host loads the miscompiled soft cap.
+    """
+    override = os.environ.get("AITER_JIT_DIR")
+    if not override:
+        return False
+    return os.path.realpath(override) not in _installed_aiter_jit_dirs()
+
+
 def _torch_hip() -> Optional[str]:
     """``torch.version.hip`` if torch is already imported; never imports it."""
     return getattr(getattr(sys.modules.get("torch"), "version", None), "hip", None)
@@ -355,12 +381,15 @@ def aiter_softcap_defect_arch(
     """Does AITER miscompute a causal soft cap on ``arch`` with this toolchain?
 
     ``rocm`` / ``aiter`` default to the live versions; the live path also needs
-    torch's HIP to agree, since AITER variant caches are keyed on it. Unknown
+    torch's HIP to agree, since AITER variant caches are keyed on it, and stays
+    gated under an ``AITER_JIT_DIR`` pointing outside the installed package. Unknown
     arch answers ``False``; an unmeasured or unreadable toolchain stays gated.
     """
     arch = normalize_arch(arch)
     if not _AITER_SOFTCAP_DEFECT_ARCHS.get(arch, False):
         return False
+    if rocm is None and _foreign_aiter_jit_dir():
+        return True
     torch_hip = _torch_hip() if rocm is None else None
     if rocm is None or aiter is None:
         live_rocm, live_aiter = _live_versions()
@@ -383,7 +412,8 @@ def aiter_softcap_defect_detail(arch: str) -> str:
         for r, a in _AITER_SOFTCAP_CLEAN_TOOLCHAINS.get(normalize_arch(arch), ())
     )
     return (
-        f"detected system version {rocm or 'unknown'} (HIP's on TheRock), "
+        f"detected system version {rocm or 'unknown'} (the HIP version on "
+        "TheRock builds), "
         f"torch HIP {_torch_hip() or 'unknown'}, "
         f"amd-aiter {aiter or 'unknown'}; "
         + (
