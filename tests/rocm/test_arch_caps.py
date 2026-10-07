@@ -738,8 +738,10 @@ class TestAiterSoftcapDefectArchs:
         ],
     )
     def test_default_reads_the_live_toolchain(
-        self, monkeypatch, as_toolchain, live, torch_hip, expected
+        self, monkeypatch, as_toolchain, trusted_jit, live, torch_hip, expected
     ):
+        """``trusted_jit``: faking the versions must fake a coherent install too,
+        or the override checks below gate wherever amd-aiter is absent."""
         as_toolchain(*live)
         monkeypatch.setattr(arch_caps, "_torch_hip", lambda: torch_hip)
         assert arch_caps.aiter_softcap_defect_arch("gfx950") is expected
