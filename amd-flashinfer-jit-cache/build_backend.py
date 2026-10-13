@@ -71,7 +71,7 @@ def _scm_version() -> str:
 def _pin_arch_tagged_version() -> tuple[str, str]:
     """``(version, architectures)``, with the architectures named in the version.
 
-    ``0.6.18+amd.1`` -> ``0.6.18+amd.1.gfx942``. Nothing else in a wheel's name
+    ``0.6.18+amd.2`` -> ``0.6.18+amd.2.gfx942``. Nothing else in a wheel's name
     carries the architecture, so without this the gfx942 and gfx950 builds are
     the same filename and one silently replaces the other on an index. Set
     ``FLASHINFER_ROCM_ARCH_LIST`` to choose; there is deliberately no separate

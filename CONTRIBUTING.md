@@ -2,7 +2,7 @@
 
 This is the **AMD ROCm port** of FlashInfer (`amd-flashinfer`), targeting
 AMD Instinct GPUs — gfx942 (MI300X / MI325X, CDNA3) and gfx950
-(MI355X, CDNA4). The upstream CUDA repo at
+(MI350X / MI355X, CDNA4). The upstream CUDA repo at
 <https://github.com/flashinfer-ai/flashinfer> uses different env vars,
 paths, and toolchains; its contribution guide does not transfer here.
 
@@ -23,10 +23,11 @@ docker build -t flashinfer-dev:rocm10.1 -f docker/Dockerfile.rocm .
 `rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.12.0`. An override
 must be the same kind of image — torch in the system interpreter, and a pip ROCm
 SDK whose `rocm-sdk path --root` is a complete ROCm root; the build checks both.
-Do not move to torch 2.13 — it drops a `c10` symbol AITER's prefill kernels link
-against, and they fail to load. `AITER_REF` selects the AITER tag to build from
-source (no `amd-aiter` wheel targets ROCm 10), and `AITER_PREBUILD_JOBS` how many
-variants compile at once (~35 min at 2 on 32 cores).
+Torch 2.12 is the version tested; 2.13 is untested, and a prebuilt `amd-aiter`
+wheel would additionally fail on the `c10` symbol it drops. `AITER_REF` selects
+the AITER tag to build from source (no `amd-aiter` wheel targets ROCm 10), and
+`AITER_PREBUILD_JOBS` how many variants compile at once (~35 min at 2 on 32
+cores).
 Pass `--build-arg USERNAME=$USER --build-arg USER_UID=$(id -u) --build-arg
 USER_GID=$(id -g)` to match container file ownership to your host user —
 without them, build artifacts come out owned by UID 1003.
@@ -34,7 +35,7 @@ without them, build artifacts come out owned by UID 1003.
 ```bash
 docker run -it \
   --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
-  --privileged --ipc=host --network=host \
+  --privileged --network=host --shm-size=64G \
   --device=/dev/kfd --device=/dev/dri \
   --group-add video --group-add "$(getent group render | cut -d: -f3)" \
   -v "$PWD":/workspace -w /workspace \
@@ -71,11 +72,19 @@ wheel build. It compiles the kernel set up front so the first call does
 not pay for JIT:
 
 ```bash
-python -m flashinfer.rocm.aot --help
+python -m flashinfer.rocm.aot \
+  --out-dir "$(python -c 'import flashinfer, os; print(os.path.dirname(flashinfer.__file__))')/data/aot"
 ```
 
-Pair an AOT-built install with `FLASHINFER_DISABLE_JIT=1` to fail loudly
-on a missing kernel instead of silently triggering a build.
+FlashInfer loads AOT kernels from `flashinfer/data/aot` in the installed
+package, or from the jit-cache wheel instead when one is installed; without
+`--out-dir` the build packages nothing. `--help` lists the head-dim, dtype and
+`--add-act`/`--add-misc` selectors.
+
+Pair an AOT-built install with `FLASHINFER_DISABLE_JIT=1` to fail loudly on a
+missing kernel instead of triggering a build. It refuses modules already
+compiled into `~/.cache/flashinfer` as well, and an `auto` call that picks
+AITER raises `MissingJITCacheError`, since the AITER shims are never prebuilt.
 
 **Prebuilt-kernel wheel.** `amd-flashinfer-jit-cache` packages the AOT
 output, one wheel per architecture. Cross-compiling needs no target GPU,
@@ -90,7 +99,7 @@ done
 
 `--no-isolation` is required — resolving the target architecture imports
 torch. The architecture rides in the version's local segment
-(`0.6.18+amd.1.gfx942`) because a wheel tag cannot carry it, and the build
+(`0.6.18+amd.2.gfx942`) because a wheel tag cannot carry it, and the build
 fails if the version and the compiled kernels disagree. See
 [amd-flashinfer-jit-cache/README.md](amd-flashinfer-jit-cache/README.md).
 Note `scripts/build_flashinfer_jit_cache_whl.sh` is upstream's **CUDA**
@@ -173,7 +182,7 @@ python3 scripts/amd_coverage.py --run --show-files -- -n auto --reruns 2 -m "not
 python3 scripts/amd_coverage.py                           # re-score an existing .coverage
 ```
 
-**What gets counted.** Files we added are scored whole. Upstream files we merely edited are scored **only on the lines our diff touched**, so upstream's untested code neither flatters nor penalises the number. A third tier covers files with a zero-line Python diff whose implementation is ours anyway through the `FLASHINFER_CSRC_DIR` redirect — `sampling.py` and friends — which no diff can discover; they are declared in `scripts/coverage_ownership.toml`, one entry per file with a reason.
+**What gets counted.** Files we added are scored whole. Upstream files we merely edited are scored **only on the lines our diff touched**, so upstream's untested code neither flatters nor penalises the number. A third tier covers wrappers whose implementation is ours through the `FLASHINFER_CSRC_DIR` redirect however small their Python diff — `sampling.py`, `quantization/packbits.py` and the JIT generators behind them — which no diff can discover; they are declared in `scripts/coverage_ownership.toml`, one entry per file with a reason.
 
 **What is deliberately left out, and why the report says so.** Lines inside `if IS_CUDA:` are excluded and counted in the output: the port re-indented upstream code under those guards, so git attributes it to us even though no ROCm box can execute it — in `flashinfer/jit/env.py` that is about half the owned lines. Lines that run at `import flashinfer` are reported as their own bucket rather than in the headline, because `tests/conftest.py` imports the package at collection and would otherwise credit every module-level statement before a test body runs. C++ under `csrc/rocm/` is JIT-compiled and has no line data at all; instead the report counts how many of its translation units a run actually built and loaded, labelled as reach, not coverage. An `if __name__ == "__main__":` guard carries `# pragma: no cover` at each site, because pytest imports the module rather than running it.
 
@@ -181,7 +190,7 @@ python3 scripts/amd_coverage.py                           # re-score an existing
 
 **Say what the AITER lib cache was.** `jit/rocm/aiter_source.py`'s build path executes only when `ensure_aiter_lib` actually builds, so that file measures **32 lines higher** on a cold `~/.cache/flashinfer` than on a warm one — 120/124 against 88/124, observed across two runs on gfx942 on 2026-08-28. Neither is wrong, but two numbers only compare if the cache policy matched, and roughly 0.9 points of the headline turns on it — so state which you ran. (The two runs differed by other commits as well, so they do not isolate the effect at the headline level — the per-file figure is what was measured.)
 
-**There is no GPU CI**, so nobody produces this number for you — every `.github/workflows` job runs on `ubuntu-latest` or a CPU self-hosted runner, and the `Jenkinsfile` is upstream's unused CUDA pipeline. Run it on a GPU box and say which architecture it came from: `arch_caps.py` gates behaviour per gfx942/gfx950, so a single-arch run leaves the other's branches unexecuted. The honest union is `coverage combine` across both, which needs `[tool.coverage.paths]` **and** must run from a checkout containing the sources — coverage only aliases onto a path that exists on disk, and is otherwise a silent no-op that halves the number.
+**There is no AMD GPU CI**, so nobody produces this number for you — the `.github/workflows` jobs that name GPUs (`pr-test.yml`, `nightly-release.yml`) are upstream's, on NVIDIA runners, every other job runs on `ubuntu-latest` or a CPU self-hosted runner, and the `Jenkinsfile` is upstream's unused CUDA pipeline. Run it on a GPU box and say which architecture it came from: `arch_caps.py` gates behaviour per gfx942/gfx950, so a single-arch run leaves the other's branches unexecuted. The honest union is `coverage combine` across both, which needs `[tool.coverage.paths]` **and** must run from a checkout containing the sources — coverage only aliases onto a path that exists on disk, and is otherwise a silent no-op that halves the number.
 
 **Running it in a container against a worktree** needs the *parent* repository mounted, not just the worktree: a linked worktree's `.git` is a file pointing into the main checkout, so git — and therefore the whole classifier — fails without it. Mount the repo root at its host path and set `git config --global --add safe.directory '*'` inside the container.
 
@@ -197,8 +206,10 @@ flashinfer/
 ├── csrc/                     # upstream CUDA op registration (PyTorch bindings)
 │   └── rocm/                 # HIP op registration — fork-owned, upstream has nothing here
 ├── flashinfer/
-│   ├── jit/                  # Python JIT compilation infra (jit/rocm/ holds the HIP entry points)
-│   └── *.py                  # Python user-facing API (e.g. attention.py, mla_rocm.py)
+│   ├── jit/                  # Python JIT compilation infra
+│   │   └── rocm/             # HIP build flags, AITER source builds, ROCm JIT re-exports
+│   ├── rocm/                 # ROCm Python API: prefill/decode/mla twins, arch_caps, aot
+│   └── *.py                  # upstream user-facing API (e.g. prefill.py, norm/)
 ├── tests/rocm/         # HIP test suite (test_*.py)
 ├── benchmarks/rocm/  # ROCm-specific benchmarks
 └── 3rdparty/                 # vendored dependencies (cutlass, composable_kernel, …)
@@ -263,14 +274,17 @@ carry the upstream name.
    `flashinfer/csrc/rocm/` on ROCm (see `flashinfer/jit/env.py` and
    `flashinfer/get_include_paths.py`), so a shared JIT generator naming
    `sampling.cu` picks up the HIP source with **zero Python diff**. This is why
-   `flashinfer/sampling.py` and `flashinfer/quantization.py` contain no HIP
-   references at all. Use it whenever only the kernel differs.
-2. **A ROCm module beside the upstream one**, swapped into `sys.modules` in
-   `flashinfer/__init__.py` — how `rocm/prefill.py` and `rocm/decode.py` are
-   reached.
+   `flashinfer/quantization/packbits.py` and the JIT generators
+   `flashinfer/jit/sampling.py` and `flashinfer/jit/quantization.py` carry no
+   HIP branch. Use it whenever only the kernel differs.
+2. **A ROCm module beside the upstream one**, swapped into `sys.modules` by
+   `install_shadow_modules` in `flashinfer/rocm/__init__.py` (called from
+   `flashinfer/rocm/api.py`) — how `rocm/prefill.py`, `rocm/decode.py` and
+   `rocm/mla.py` are reached.
 3. **A declared-unsupported gate**, so an op the port does not implement raises
-   a named error rather than `AttributeError`. See the meta-path loader in
-   `flashinfer/comm/__init__.py`.
+   a named error rather than `AttributeError`. See `gate_cuda_only_modules` and
+   its meta-path finder `_CudaOnlyFinder` in `flashinfer/rocm/__init__.py`,
+   installed from `flashinfer/rocm/api.py` and `flashinfer/comm/__init__.py`.
 
 **Last resort: an `if IS_HIP:` branch inside an upstream file.** Every one of
 these is a recurring merge conflict, so it needs a reason that the three
@@ -318,7 +332,7 @@ that stale base. Produce the merge from the recorded base instead:
 
 ```bash
 BASE=$(python3 -c "import sys; sys.path.insert(0, 'scripts'); import upstream_base as u; print(u.read_worktree('.').sha)")
-git switch -c sync/upstream-v0.6.19
+git switch -c upstream-v0.6.19-sync
 git merge-recursive "$BASE" -- HEAD v0.6.19   # explicit base; populates the index
 ```
 
@@ -371,13 +385,21 @@ cosmetic.
 
 # Adding a Kernel
 
+Follow the [additive-only](#additive-only-the-rule-that-keeps-upstream-syncs-cheap)
+order: add files, and edit an upstream one only as a last resort.
+
 1. **Kernel implementation** — framework-agnostic header(s) in
    `include/flashinfer/rocm/`, using the intrinsic headers there for any
    HIP-specific intrinsic.
-2. **PyTorch binding** — register the op in `csrc/rocm/`.
-   The only layer that may include Torch headers.
-3. **JIT generator** — add the op's JIT spec in `flashinfer/jit/*.py`.
-4. **Python interface** — expose the user-facing API in `flashinfer/*.py`.
+2. **PyTorch binding** — register the op in `csrc/rocm/`, the only layer that
+   may include Torch headers.
+3. **Python side, porting an upstream op** — give the `csrc/rocm/` sources the
+   filenames upstream's generator names. The `FLASHINFER_CSRC_DIR` redirect then
+   builds them from upstream's own `flashinfer/jit/*.py` and `flashinfer/*.py`,
+   with zero Python diff.
+4. **Python side, a ROCm-only op** — the JIT generator in `flashinfer/jit/rocm/`
+   and the user-facing API in `flashinfer/rocm/`, re-exported from
+   `flashinfer/jit/rocm/api.py` and `flashinfer/rocm/api.py`.
 5. **Tests** — `test_*.py` under `tests/rocm/`. Reuse the
    fixtures in `tests/rocm/conftest.py`.
 6. **(Optional) Benchmark** — script under `benchmarks/rocm/`.
@@ -394,8 +416,8 @@ runtime ones are tabulated in [README.md](README.md#environment-variables).
 | Variable | Purpose |
 | :--- | :--- |
 | `FLASHINFER_ROCM_ARCH_LIST` | Target architectures, `,`- or `;`-separated (`"gfx942,gfx950"`). Overrides autodetection. |
-| `PYTORCH_ROCM_ARCH` | When set, the requested architectures must be a subset of torch's, else the build errors. |
-| `FLASHINFER_JIT_VERBOSE` | Show the ninja and compiler output. |
+| `PYTORCH_ROCM_ARCH` | When set, the architectures `FLASHINFER_ROCM_ARCH_LIST` requests must be a subset of it, else the build errors. |
+| `FLASHINFER_JIT_VERBOSE` | `1` shows the ninja and compiler output, and drops `-DNDEBUG`, so kernels rebuild with device asserts. |
 | `FLASHINFER_JIT_DEBUG` | Build JIT modules `-O0 -g` with asserts on; see below. |
 | `FLASHINFER_EXTRA_CFLAGS` | Extra host compile flags. |
 | `FLASHINFER_EXTRA_CUDAFLAGS` | Extra HIP device compile flags. |

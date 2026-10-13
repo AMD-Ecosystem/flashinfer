@@ -73,9 +73,10 @@ publishes no `rocm-rel-` directory for ROCm 10.1, so there is no pip recipe
 for the supported torch 2.12 at all — `docker/Dockerfile.rocm` takes it from
 the `rocm/pytorch:rocm10.1.0_*` base image.
 
-Do not raise torch to 2.13: it removes
-`c10::impl::cow::materialize_cow_storage`, which every published `amd-aiter`
-build's prebuilt prefill kernels link against.
+Torch 2.12 is the version tested; 2.13 is untested. A prebuilt `amd-aiter`
+wheel would additionally fail on 2.13, which removes
+`c10::impl::cow::materialize_cow_storage` that those wheels' prefill kernels
+link against.
 
 If you ever install torch by hand on another stack, use `-f`
 (`--find-links`) and **not** `--index-url` — that repo is a flat wheel
