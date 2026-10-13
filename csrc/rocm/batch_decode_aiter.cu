@@ -3,7 +3,7 @@
 //
 // PyTorch entry point for the AITER PA v1 (paged_attention_v1) C++ harness.
 // The variant .so is built lazily by AITER on the Python plan() side via
-// aiter.csrc.cpp_itfs.pa.pa_v1.compile(); plan() resolves (so_path, func_name)
+// AITER's csrc.cpp_itfs.pa.pa_v1.compile(); plan() resolves (so_path, func_name)
 // from the returned ctypes function pointer and threads both strings through
 // to this run() entry.
 //
@@ -93,7 +93,7 @@ static std::pair<at::Tensor, at::Tensor> build_block_tables_and_ctxlens(
 //   paged_kv_indices        [total_pages] int32
 //   paged_kv_last_page_len  [num_seqs]   int32
 //   o                       [num_seqs, num_heads, head_size]
-//   so_path, func_name      resolved by Python plan() side from aiter.pa_v1.compile()
+//   so_path, func_name      resolved by Python plan() side from csrc.cpp_itfs.pa.pa_v1.compile()
 //   max_context_len, partition_size, sliding_window — resolved at plan() time
 //   logits_soft_cap, sm_scale
 //   max_blocks_per_seq      precomputed by plan() to avoid GPU sync at run()

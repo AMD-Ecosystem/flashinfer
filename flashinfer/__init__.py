@@ -260,7 +260,7 @@ elif IS_HIP:
 
     # Imported for its side effect first: rocm.api runs
     # check_torch_rocm_compatibility() before it pulls in any wrapper, so an
-    # incompatible torch reports that rather than failing inside decode_rocm.
+    # incompatible torch reports that rather than failing inside rocm.decode.
     from .rocm import api as _rocm_api  # noqa: F401
 
     del _rocm_api  # the import ran the check; the alias is not part of the surface

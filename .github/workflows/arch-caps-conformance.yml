@@ -1,14 +1,13 @@
-# Hardware-less conformance check for the per-op/per-arch capability table.
+# Hardware-less ROCm checks: the per-op/per-arch capability table, HIP JIT flag
+# plumbing, coverage-ownership classification and the repo-maintenance scripts.
 #
-# Every other ROCm test in this repo needs an MI300X/MI355X and a ROCm toolchain,
-# so nothing in tests/rocm/ runs on a pull request today. The capability
-# table is the one piece that can: it is pure data plus routing logic, and its
-# suite is written to load flashinfer/arch_caps.py and flashinfer/hip_utils.py
-# directly rather than importing the package (flashinfer/__init__.py raises on a
-# CPU-only torch build). pytest is the only dependency.
+# The rest of tests/rocm/ needs an MI300X/MI355X and a ROCm toolchain, so these
+# are the only ROCm suites a pull request runs. Each loads its target (e.g.
+# flashinfer/rocm/arch_caps.py) directly rather than importing the package,
+# since flashinfer/__init__.py raises on a CPU-only torch build.
 #
-# What this protects: a row added for one architecture but not the other, a
-# gate whose op name no longer matches any call site, a known-bad window that
+# What the capability suite protects: a row added for one architecture but not
+# the other, a gate whose op name no longer matches any call site, a known-bad window that
 # stops matching the version it was written for, or a module-scope `import torch`
 # creeping into the torch-free arch-resolution path. All of those are currently
 # caught only by someone remembering to run the GPU suite.
@@ -26,9 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      # Full history and tags: the coverage tool derives its diff base from the
-      # fork's own release tag and then walks back to the fork point, neither of
-      # which a depth-1 checkout can reach.
+      # Full history and tags: the coverage tool takes its diff base from the
+      # sha recorded in `upstream-base`, which a depth-1 checkout cannot reach.
       - uses: actions/checkout@v4.2.2
         with:
           fetch-depth: 0
@@ -54,8 +52,9 @@ jobs:
         run: pytest --noconftest tests/rocm/test_arch_caps.py
 
       # Flag plumbing in the HIP JIT ninja generator. It stubs torch to load
-      # cpp_ext_hip.py, which is what lets it run here; without this step that
-      # stubbing buys nothing, since no other lane collects tests/rocm/.
+      # flashinfer/jit/rocm/cpp_ext.py, which is what lets it run here; without
+      # this step that stubbing buys nothing, since no other lane collects
+      # tests/rocm/.
       - name: HIP JIT flag plumbing (no GPU, no torch)
         run: pytest --noconftest tests/rocm/test_jit_flag_hooks.py
 

@@ -559,7 +559,7 @@ class MultiLevelCascadeAttentionWrapper:
             if _HIP_FUSED_CASCADE:
                 # mypy sees prefill.py (CUDA) wrapper here; at runtime on HIP,
                 # flashinfer.__init__ aliases sys.modules["flashinfer.prefill"]
-                # to prefill_rocm, whose run() accepts partial_state.
+                # to flashinfer.rocm.prefill, whose run() accepts partial_state.
                 out, lse = wrapper.run(  # type: ignore[call-overload]
                     q, paged_kv_cache, return_lse=True, partial_state=(out, lse)
                 )

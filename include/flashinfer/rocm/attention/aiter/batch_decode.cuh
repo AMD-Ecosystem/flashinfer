@@ -4,7 +4,7 @@
 // Framework-agnostic helper that invokes AITER's PA v1 (paged_attention_v1) extern-C
 // JIT entry via a cached dlopen+dlsym handle. The .so is per-variant (template params
 // baked in by AITER's compile_template_op) — the Python plan() side resolves the
-// (so_path, func_name) by calling aiter.csrc.cpp_itfs.pa.pa_v1.compile() and passes
+// (so_path, func_name) by calling AITER's csrc.cpp_itfs.pa.pa_v1.compile() and passes
 // both strings down here.
 
 #pragma once

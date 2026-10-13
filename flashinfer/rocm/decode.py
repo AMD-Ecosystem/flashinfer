@@ -518,7 +518,7 @@ def _aiter_pa_v1_resolve(
     """Invoke aiter's pa_v1.compile() to produce the variant .so for this problem,
     then return (so_path, func_name) extracted from the returned ctypes function.
 
-    Importing aiter.csrc.cpp_itfs.pa.pa_v1 is deferred so that flashinfer can be
+    Importing AITER's csrc.cpp_itfs.pa.pa_v1 is deferred so that flashinfer can be
     imported on machines without AITER installed.
     """
     from csrc.cpp_itfs.pa.pa_v1 import compile as aiter_pa_v1_compile  # type: ignore

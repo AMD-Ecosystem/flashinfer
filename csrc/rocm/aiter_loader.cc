@@ -73,9 +73,10 @@ std::vector<std::string> jit_dir_candidates() {
   }
   if (dirs.empty()) {
     throw std::runtime_error(
-        "AITER_JIT_DIR env var not set and FLASHINFER_AITER_JIT_DIR not compiled in. "
-        "Set AITER_JIT_DIR=<path to aiter/jit/> or rebuild the FlashInfer JIT cache "
-        "after installing AITER (rm -rf ~/.cache/flashinfer/).");
+        "Neither AITER_JIT_DIR nor FLASHINFER_AITER_VARIANT_DIR is set and "
+        "FLASHINFER_AITER_JIT_DIR was not compiled in. Set AITER_JIT_DIR=<path to aiter/jit/> "
+        "or rebuild the FlashInfer JIT cache after installing AITER "
+        "(rm -rf ~/.cache/flashinfer/).");
   }
   return dirs;
 }

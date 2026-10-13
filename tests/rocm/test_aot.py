@@ -118,8 +118,8 @@ def test_aot_build_refuses_a_debug_environment(monkeypatch, tmp_path):
 def test_compile_and_package_minimal():
     """Test the full compile and package workflow with minimal config.
 
-    This tests the complete AOT pipeline without slow compilation.
-    Uses skip_prebuilt=True to avoid actual compilation.
+    skip_prebuilt=True skips only modules whose AOT artifact already exists, so
+    on a cold tree this compiles everything the config selects.
     """
     # Create temporary directories
     build_dir = Path(tempfile.mkdtemp())
@@ -135,15 +135,13 @@ def test_compile_and_package_minimal():
             "use_logits_soft_cap": [False],
         }
 
-        # Test with skip_prebuilt=True to avoid actual compilation
-        # This verifies the pipeline works without spending time compiling
         compile_and_package_modules(
             out_dir=None,  # Don't copy, just test generation
             build_dir=build_dir,
             project_root=project_root,
             config=config,
             verbose=False,
-            skip_prebuilt=True,  # Skip actual compilation
+            skip_prebuilt=True,  # Skip modules already built as AOT artifacts
         )
 
     finally:

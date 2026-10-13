@@ -1035,8 +1035,8 @@ def main() -> int:
     parser.add_argument(
         "--upstream-ref",
         default=None,
-        help="ref to take the merge base against (default: the upstream "
-        "release this fork is tagged against, e.g. v0.5.3)",
+        help="ref to take the merge base against (default: the base recorded "
+        "in `upstream-base`, else the release named by the fork's `+amd.` tag)",
     )
     parser.add_argument(
         "--data-file", default=None, help="coverage data file (default: ./.coverage)"

@@ -119,8 +119,7 @@ def is_aiter_available(device: torch.device, op: str) -> bool:
         device: The device the op would run on.
         op: The capability-table op name, e.g. ``"rmsnorm"``. Required, and it
             changes the answer: support is per ``(op, arch)``, so one op can be
-            gated on a toolchain where another is fine -- AITER batch prefill is
-            gated on one architecture and toolchain while every other op stays open.
+            gated on a toolchain where another is fine.
             The name must match a row in :data:`flashinfer.rocm.arch_caps.CAPABILITIES`
             or the lookup treats it as undeclared and returns False.
     """
@@ -131,9 +130,10 @@ def require_aiter(device: torch.device, op: str) -> None:
     """Validate the explicit ``backend="aiter"`` opt-in, raising a clear error.
 
     The architecture half is delegated to the capability table, so this op can be
-    gated on more than "is the arch in the allowlist" -- e.g. a toolchain in which
-    the kernel is known to be miscompiled. ``ArchCapabilityError`` subclasses
-    ``ValueError``, so the previous contract is unchanged for callers.
+    gated on more than "is the arch in the allowlist" -- e.g. a known_bad window
+    for a toolchain that miscompiles the kernel (no row carries one today).
+    ``ArchCapabilityError`` subclasses ``ValueError``, so the previous contract is
+    unchanged for callers.
 
     The package check stays here: a missing ``aiter`` is a different condition
     from an unusable architecture, and it keeps raising a ``ValueError`` rather

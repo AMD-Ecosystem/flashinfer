@@ -308,11 +308,9 @@ def test_paged_prefill_auto_demotes_to_fa2(device, monkeypatch):
     # or below it `auto` declines AITER for the gather cost, and this would
     # assert on that reason rather than the bootstrap failure it covers.
 
-    # Patch the native-paging bootstrap too. page_size=16 is not native on
-    # amd-aiter 0.1.10, but _aiter_native_page_sizes() falls back to {16, 1024}
-    # when the version cannot be read -- e.g. an AITER source build installed as
-    # `aiter`. There the native probe would run first and win, and this test
-    # would fail on an assertion that has nothing to do with what it covers.
+    # Patch the native-paging bootstrap too. bf16 routes only page_size=1024
+    # natively, so at page_size=16 the probe does not run today; the patch keeps
+    # a widened route from masking the failure under test.
     monkeypatch.setattr(
         flashinfer.rocm.prefill,
         "_aiter_bootstrap_batch_prefill",
@@ -387,11 +385,8 @@ def test_ragged_prefill_auto_demotes_to_fa2(device, monkeypatch):
     )
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.int8, device=device)
 
-    # Patch the native-paging bootstrap too. page_size=16 is not native on
-    # amd-aiter 0.1.10, but _aiter_native_page_sizes() falls back to {16, 1024}
-    # when the version cannot be read -- e.g. an AITER source build installed as
-    # `aiter`. There the native probe would run first and win, and this test
-    # would fail on an assertion that has nothing to do with what it covers.
+    # The ragged route never calls the native-paging bootstrap; patched anyway so
+    # no AITER bootstrap can succeed here if that changes.
     monkeypatch.setattr(
         flashinfer.rocm.prefill,
         "_aiter_bootstrap_batch_prefill",
@@ -454,11 +449,9 @@ def test_paged_prefill_explicit_aiter_still_raises(device, monkeypatch):
         head_dim,
         page_size,
     ) = _paged_inputs(device)
-    # Patch the native-paging bootstrap too. page_size=16 is not native on
-    # amd-aiter 0.1.10, but _aiter_native_page_sizes() falls back to {16, 1024}
-    # when the version cannot be read -- e.g. an AITER source build installed as
-    # `aiter`. There the native probe would run first and win, and this test
-    # would fail on an assertion that has nothing to do with what it covers.
+    # Patch the native-paging bootstrap too. bf16 routes only page_size=1024
+    # natively, so at page_size=16 the probe does not run today; the patch keeps
+    # a widened route from masking the failure under test.
     monkeypatch.setattr(
         flashinfer.rocm.prefill,
         "_aiter_bootstrap_batch_prefill",

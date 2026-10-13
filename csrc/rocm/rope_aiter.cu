@@ -3,7 +3,7 @@
 //
 // PyTorch entry point for AITER's cos/sin-cache RoPE C++ API
 // (rope_cached_positions_2c_fwd_impl). FlashInfer links the symbol-visible AITER
-// module (see flashinfer/jit/aiter_source.py) and calls the kernel directly — no
+// module (see flashinfer/jit/rocm/aiter_source.py) and calls the kernel directly — no
 // Python `import aiter` at runtime.
 //
 // FlashInfer stores cos_sin_cache as (max_seq_len, rotary_dim) float32 with cosine

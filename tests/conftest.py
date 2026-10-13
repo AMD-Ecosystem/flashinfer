@@ -48,7 +48,7 @@ TORCH_COMPILE_FNS.extend(
     ]
 )
 
-# Add cascade functions if available (CUDA only)
+# Add cascade functions if available
 if hasattr(flashinfer, "cascade"):
     TORCH_COMPILE_FNS.extend(
         [
@@ -61,17 +61,8 @@ if hasattr(flashinfer, "cascade"):
         ]
     )
 
-# Add decode functions (use decode_rocm for HIP, decode for CUDA)
-if hasattr(flashinfer, "decode_rocm"):
-    # HIP version
-    TORCH_COMPILE_FNS.extend(
-        [
-            flashinfer.single_decode_with_kv_cache,
-            flashinfer.BatchDecodeWithPagedKVCacheWrapper.run,
-        ]
-    )
-elif hasattr(flashinfer, "decode"):
-    # CUDA version
+# Add decode functions
+if hasattr(flashinfer, "decode"):
     TORCH_COMPILE_FNS.extend(
         [
             flashinfer.decode.single_decode_with_kv_cache,
@@ -99,18 +90,8 @@ TORCH_COMPILE_FNS.extend(
     ]
 )
 
-# Add prefill functions (use prefill_rocm for HIP, prefill for CUDA)
-if hasattr(flashinfer, "prefill_rocm"):
-    # HIP version
-    TORCH_COMPILE_FNS.extend(
-        [
-            flashinfer.single_prefill_with_kv_cache,
-            flashinfer.BatchPrefillWithPagedKVCacheWrapper.run,
-            flashinfer.BatchPrefillWithRaggedKVCacheWrapper.run,
-        ]
-    )
-elif hasattr(flashinfer, "prefill"):
-    # CUDA version
+# Add prefill functions
+if hasattr(flashinfer, "prefill"):
     TORCH_COMPILE_FNS.extend(
         [
             flashinfer.prefill.single_prefill_with_kv_cache,

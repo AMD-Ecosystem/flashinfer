@@ -427,8 +427,8 @@ def _aiter_ops_importable() -> bool:
 def _require_aiter_runtime(device: torch.device, op: str = "batch_prefill") -> None:
     """Raise a clear error when AITER is requested on an unsupported GPU or without the package.
 
-    ``op`` selects the capability row, so a gate that applies to batch prefill
-    (such as an arch-specific causal miscompile) does not also block single
+    ``op`` selects the capability row, so a gate on batch prefill (were one
+    added, e.g. a known_bad window for a miscompile) would not also block single
     prefill. ``ArchCapabilityError`` subclasses ``RuntimeError``, so the previous
     contract is unchanged for callers.
     """
@@ -907,7 +907,7 @@ def _auto_select_prefill_backend(
         else:
             reason = (
                 "aiter package not installed (see docs/rocm/backends.md for the "
-                "wheel index and pinned version)"
+                "pinned source build)"
             )
         # Keyed on the reason, like the branch above: a constant key would let
         # whichever condition fired first hide the other for the rest of the
@@ -930,11 +930,11 @@ def _aiter_bootstrap_single_prefill_varlen(
 ) -> None:
     """Force AITER's lazy JIT to compile mha_varlen_fwd_*.so logits variants.
 
-    Non-logits variants are pre-shipped with the AITER package; the logits
-    variants are missing from the pre-built set and must be bootstrapped on
-    first use. Used by single-prefill when logits_soft_cap > 0 (which forces the
-    varlen .so because mha_fwd has no _logits arm). The .so is split on whether
-    anything is masked (mask vs nmask), so pass needs_mask, not causal.
+    AITER's source install ships no variant .so, so unless a prebuild already
+    produced it, the variant is built here on first use. Used by single-prefill
+    when logits_soft_cap > 0 (which forces the varlen .so because mha_fwd has no
+    _logits arm). The .so is split on whether anything is masked (mask vs
+    nmask), so pass needs_mask, not causal.
     """
     # A store hit means the .so this would force already exists; skipping is
     # what turns the store into a latency win.
@@ -984,11 +984,10 @@ def _aiter_bootstrap_single_prefill_mha_fwd(
 ) -> None:
     """Force AITER's lazy JIT to compile mha_fwd_*.so for this (dtype, needs_mask, has_lse) variant.
 
-    Unlike mha_varlen_fwd, mha_fwd ships no prebuilt .so files in the aiter
-    package; every (dtype, needs_mask, has_lse) combination is JIT-built on first
-    use -- 280-360s on gfx942 at MAX_JOBS=32, and the costliest of the three mha
-    families. Bootstrapping here surfaces the build at plan time rather than as a
-    dlopen failure inside the C++ path.
+    Unless a prebuild already produced it, every (dtype, needs_mask, has_lse)
+    combination is JIT-built on first use -- 280-360s on gfx942 at MAX_JOBS=32,
+    and the costliest of the three mha families. Bootstrapping here surfaces the
+    build at plan time rather than as a dlopen failure inside the C++ path.
 
     head_dim is a cache key but not a build axis: one .so serves every head dim.
     """
@@ -1034,13 +1033,10 @@ def _aiter_bootstrap_batch_ragged_prefill(
 ) -> None:
     """Trigger AITER's lazy JIT for mha_varlen_fwd_*.so variants used by batch prefill.
 
-    Same .so family as single-prefill (varlen group-mode), but we parameterize masking
-    and logits-cap so we can cover non-shipped combos for any (needs_mask, logits) the
-    user requests. AITER pre-ships only a subset of the
-    (dtype, needs_mask, has_lse, has_logits_cap) family — which subset is not contractual
-    and varies by amd-aiter build — so any combination may need a lazy build, including
-    no-logits ones. Some releases ship only nmask_lse and
-    mask_nlse, so both remaining nlogits arms are built here on first use.
+    Same .so family as single-prefill (varlen group-mode), parameterized on masking and
+    logits-cap so any (needs_mask, logits) the user requests is covered. AITER's source
+    install ships none of the family, so any combination not already prebuilt is built
+    here on first use.
 
     Used by both batch-prefill wrappers that reach this .so family: the ragged wrapper,
     and the paged wrapper's flat-gather path (any call off the native route). Both loop over return_lse here because the .so is
@@ -1242,9 +1238,10 @@ def _aiter_single_prefill_available(
 ) -> Optional[str]:
     """Probe whether AITER can serve single prefill here; None means it can.
 
-    amd-aiter ships no prebuilt mha_fwd .so, so this variant is JIT-built on
-    first use and can fail for reasons that are the install's, not the caller's
-    — e.g. a site-packages AITER cannot write its built module into.
+    amd-aiter's source install ships no mha_fwd .so, so unless a prebuild
+    produced it this variant is JIT-built on first use and can fail for reasons
+    that are the install's, not the caller's — e.g. a site-packages AITER
+    cannot write its built module into.
     """
     torch.cuda.synchronize(device_idx)
     try:
@@ -2175,10 +2172,8 @@ def single_prefill_with_kv_cache(
                 "use backend='fa2' or backend='auto' instead."
             )
         # logits_soft_cap > 0 forces the varlen .so (mha_fwd template has no _logits
-        # arm); the logits .so is split on masking (mask vs nmask) and neither is
-        # pre-shipped by AITER, so bootstrap the variant matching the request.
-        # logits_soft_cap == 0 takes the mha_fwd .so, none of whose variants are
-        # pre-shipped — JIT-build the exact (dtype, needs_mask, has_lse) we need.
+        # arm), split on masking (mask vs nmask); == 0 takes the mha_fwd .so. AITER
+        # ships neither, so bootstrap the exact variant the request needs.
         with _aiter_bootstrap_lock:
             if resolved_from_auto:
                 # auto promised "AITER when possible, otherwise fa2", and whether
@@ -2785,9 +2780,11 @@ class BatchPrefillWithPagedKVCacheWrapper:
         block_tables: Optional[torch.Tensor]
             A uint32 2D tensor indicating the block table of each prompt. shape: ``[batch_size, max_num_blocks_per_seq]``.
         max_token_per_sequence: Optional[int],
-            Required for cudnn backend. This is the scalar max token length of each sequence.
+            Max query length over the batch. When given, plan() uses it instead of
+            copying ``qo_indptr`` to the host to compute it.
         max_sequence_kv: Optional[int],
-            Required for cudnn backend. This is the scalar max sequence length of each sequence in kv cache.
+            Max KV length over the batch. When given, plan() uses it instead of
+            computing it from the host copy of the paged-KV metadata.
         Note
         ----
         The :meth:`plan` method should be called before any :meth:`run` or
@@ -3199,9 +3196,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
                         # The flat-gather route dispatches through
                         # get_aiter_mha_varlen_fwd_handle, whose .so variant is keyed
                         # on (dtype, needs_mask, has_lse, has_logits_cap).  AITER
-                        # pre-ships only a subset, so bootstrap the rest here rather
-                        # than let the C++ dlopen fail inside run(); both has_lse
-                        # variants, since plan() cannot know which run() will want.
+                        # ships none, so bootstrap here rather than let the C++
+                        # dlopen fail inside run(); both has_lse variants, since
+                        # plan() cannot know which run() will want.
                         _aiter_bootstrap_batch_ragged_prefill(
                             q_data_type,
                             has_logits,
@@ -3251,8 +3248,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._seq_lens_kv = seq_lens
         self._seq_lens_q = seq_lens_q if seq_lens_q is not None else seq_lens
 
-        # Pre-compute flat-KV gather indices whenever AITER is not serving this
-        # page size natively.  These are stored as GPU tensors so that the
+        # Pre-compute flat-KV gather indices whenever AITER is not paging this
+        # call natively.  These are stored as GPU tensors so that the
         # ``run()`` path (which may be inside a CUDA graph capture) can use them
         # without any host-side operations.
         if self._backend == "aiter" and not use_native_paging:
@@ -3644,8 +3641,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 sinks,
             ]
             if self._backend == "aiter":
-                # Pre-computed flat-KV gather info for AITER (None for
-                # natively-supported page sizes).
+                # Pre-computed flat-KV gather info for AITER (None when
+                # paging natively).
                 run_args += [
                     self._aiter_flat_gather_idx,
                     self._aiter_flat_kv_indptr,
@@ -4028,7 +4025,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             The dimension of the heads on query/key tensor.
         head_dim_vo : Optional[int]
             The dimension of the heads on value/output tensor.
-            If not provided, will be set to ``head_dim_vo``.
+            If not provided, will be set to ``head_dim_qk``.
         custom_mask : Optional[torch.Tensor]
             The flattened boolean mask tensor, shape: ``(sum(q_len[i] * k_len[i] for i in range(batch_size))``.
             The elements in the mask tensor should be either ``True`` or ``False``,
@@ -4143,7 +4140,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         batch_size = len(qo_indptr) - 1
         if len(kv_indptr) != batch_size + 1:
             raise ValueError(
-                "The kv_indptr length should be equal to mask_indptr length."
+                "The kv_indptr length should be equal to qo_indptr length."
             )
         if custom_mask is not None or packed_custom_mask is not None:
             mask_indptr = _compute_mask_indptr(qo_indptr, kv_indptr)

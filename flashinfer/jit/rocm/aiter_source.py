@@ -11,9 +11,9 @@ norm and rope headers are POD-only, so every shim now includes the real one; a
 forward declaration remains the fallback only for a header that still pulls in
 pybind11, which clashes with ``-DPy_LIMITED_API``.
 
-AITER's installed wheel builds its modules with ``-fvisibility=hidden``, so the
-kernel symbols (e.g. ``rope_cached_positions_2c_fwd_impl``) are not linkable. This
-helper rebuilds the needed AITER module once with ``AITER_SYMBOL_VISIBLE=1`` via
+AITER builds its own modules with ``-fvisibility=hidden``, so the kernel
+symbols (e.g. ``rope_cached_positions_2c_fwd_impl``) are not linkable. This
+helper builds the needed AITER module once with ``AITER_SYMBOL_VISIBLE=1`` via
 AITER's own ``aiter.jit.core.build_module`` (which also runs CK blob codegen for CK
 ops), caches the result under FlashInfer's cache dir as ``lib<module>.so``, and
 hands back the include/link flags for ``gen_jit_spec``.
@@ -266,39 +266,12 @@ def _aiter_libs_dir() -> Path:
 
 
 def refresh_aiter_jitspec(spec: JitSpec) -> JitSpec:
-    """Regenerate ``build.ninja`` so a changed AITER library path takes effect.
+    """Rewrite ``build.ninja`` so a changed AITER library path takes effect.
 
-    The AITER shim libs live outside the JIT tree, under
-    ``aiter_libs/<arch>__aiter-<ver>__rocm-<ver>/``, and reach the module only as an
-    ``-L``/``-rpath`` on the link line. ``JitSpec.build()`` writes ``build.ninja``
-    only when it is missing, so once a module has been built the recorded link
-    line is never revisited -- the module keeps loading whichever AITER lib it
-    was first built against, even after the resolved architecture changes.
-
-    That is not a stale-build annoyance: the ``.so`` retains a RUNPATH into the
-    old directory, so a module cached under ``.../gfx950/`` can go on loading a
-    gfx942 library and **segfault**, and clearing ``FLASHINFER_ROCM_ARCH_LIST``
-    or setting it correctly does not fix it. Only deleting the cache does.
-
-    ``write_ninja`` funnels through ``write_if_different``, so this is free when
-    nothing changed and rewrites exactly when the link line moves; ninja then
-    relinks on its own.
-
-    Only the JIT path is touched. An AOT-prebuilt module is loaded straight from
-    ``aot_path`` and a ``FLASHINFER_DISABLE_JIT`` run raises before ninja is
-    consulted, so in both cases the manifest has no reader and rewriting it would
-    be pure filesystem noise.
-
-    The write takes ``spec.lock_path`` -- the same lock ``JitSpec.build()`` holds
-    while ninja runs -- because ``write_if_different`` truncates in place. Without
-    it a concurrent builder (``pytest -n auto`` shares one JIT cache across
-    processes) could have the manifest emptied under it mid-read.
-
-    Args:
-        spec: The freshly created :class:`~flashinfer.jit.core.JitSpec`.
-
-    Returns:
-        The same spec, for use as ``return refresh_aiter_jitspec(gen_jit_spec(...))``.
+    The AITER libs reach the module only as an ``-L``/``-rpath`` on the link line,
+    and a stale RUNPATH can load a wrong-arch lib and segfault. ``JitSpec.build()``
+    and ``build_jit_specs()`` also rewrite it before every build, so this is a cheap
+    ``write_if_different`` under ``spec.lock_path``; skipped for AOT and no-JIT runs.
     """
     # v0.6.18 made JitSpec an ABC; is_aot and write_ninja live on JitSpecNvcc,
     # which is what gen_jit_spec() actually returns under its JitSpec annotation.

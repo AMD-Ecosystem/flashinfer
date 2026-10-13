@@ -99,7 +99,7 @@ inline int getMaxSharedMemPerBlock(int dev_id) {
   static thread_local int cache[64] = {0};
   if (dev_id >= 0 && dev_id < 64 && cache[dev_id] > 0) return cache[dev_id];
   // CDNA3/MI300X: sharedMemPerBlock = 65,536 bytes (64 KB) - the actual per-block limit
-  //               sharedMemPerMultiprocessor = 19,922,944 bytes (~19 MB) - total LDS per CU
+  //               sharedMemPerMultiprocessor = 19,922,944 bytes = 304 CUs x 64 KB, a device total
   hipDeviceProp_t deviceProp;
   FI_HIP_CALL(hipGetDeviceProperties(&deviceProp, dev_id));
   const int max_smem_per_block = static_cast<int>(deviceProp.sharedMemPerBlock);

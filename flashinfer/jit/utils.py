@@ -97,7 +97,8 @@ dtype_map_hip = {
     torch.bfloat16: "__hip_bfloat16",
     # NOTE: the two OCP entries map onto the *fnuz* C++ types, whose exponent bias
     # is one greater (E4M3 7 vs 8, E5M2 15 vs 16). Callers that reach a HIP kernel
-    # with an OCP tensor must refuse it rather than rely on this (rocm/prefill.py).
+    # with an OCP tensor must refuse it rather than rely on this
+    # (_check_fa2_fp8_dtypes in jit/rocm/modules.py).
     torch.float8_e4m3fn: "__hip_fp8_e4m3_fnuz",
     torch.float8_e4m3fnuz: "__hip_fp8_e4m3_fnuz",
     torch.float8_e5m2: "__hip_fp8_e5m2_fnuz",

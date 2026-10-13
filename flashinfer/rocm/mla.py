@@ -279,7 +279,8 @@ class BatchMLAPagedAttentionWrapper:
         kv_data_type : torch.dtype
             KV dtype; must match ``q_data_type``.
         use_profiler : bool
-            Ignored (AITER does not expose a per-kernel profiler through this API).
+            Must be ``False``; ``True`` raises ``ValueError`` (AITER exposes no
+            per-kernel profiler through this API).
         """
         if use_profiler:
             raise ValueError(

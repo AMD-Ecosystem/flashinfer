@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """The AITER attention variants FlashInfer ``dlopen``s, and where they live.
 
-The amd-aiter wheel prebuilds almost none of them, so AITER's lazy JIT builds
-them at ``plan()`` time. This module enumerates the set so it can be built ahead
-of time instead.
+AITER's ``PREBUILD_KERNELS=0`` source install ships none of them, so AITER's
+lazy JIT builds them at ``plan()`` time. This module enumerates the set so it can
+be built ahead of time instead.
 
 **Variants and builds are not one-to-one**: two bootstraps loop over
 ``return_lse`` internally and emit two files per call, so driving this table by

@@ -14,10 +14,10 @@ which owns *whether the AITER package is importable*.
    function-local.
 
    ``hip_utils`` imports this module at module scope, and ``hip_utils`` is used
-   very early -- ``tests/conftest.py`` calls it to pick a GPU *before* pinning
-   ``HIP_VISIBLE_DEVICES``, and it must do so without touching the HIP runtime
-   (hence its use of ``rocminfo`` rather than ``torch.cuda``). Staying torch-free
-   is what keeps this module usable on that path.
+   very early -- the repo-root ``conftest.py`` calls it to pick a GPU *before*
+   pinning ``HIP_VISIBLE_DEVICES``, and it must do so without touching the HIP
+   runtime (hence its use of ``rocminfo`` rather than ``torch.cuda``). Staying
+   torch-free is what keeps this module usable on that path.
 """
 
 import os
@@ -84,10 +84,8 @@ class ArchCapabilityError(ValueError, RuntimeError):
 
     - ``ValueError`` -- ``aiter_utils.require_aiter`` raised ``ValueError``, and
       ``tests/rocm/test_activation_aiter.py:67`` asserts on it.
-    - ``RuntimeError`` -- ``prefill_rocm`` and ``mla_rocm`` raised
-      ``RuntimeError``, and
-      ``tests/rocm/test_batch_prefill_bf16_custom_mask.py:157``
-      catches it.
+    - ``RuntimeError`` -- ``flashinfer.rocm.prefill`` and ``flashinfer.rocm.mla``
+      raised ``RuntimeError``.
 
     Deliberately *not* an ``ImportError``: a missing ``aiter`` package is a
     different condition from an unsupported architecture, and the import probes
@@ -96,8 +94,8 @@ class ArchCapabilityError(ValueError, RuntimeError):
     Deliberately *not* a :class:`flashinfer.utils.GPUArchitectureError` either,
     though that would be the tidier hierarchy. That class lives in
     ``flashinfer/utils.py``, which imports torch at module scope, and this module
-    must stay torch-free -- ``hip_utils`` imports it at module scope, and
-    ``tests/conftest.py`` uses ``hip_utils`` to choose a GPU *before* pinning
+    must stay torch-free -- ``hip_utils`` imports it at module scope, and the
+    repo-root ``conftest.py`` uses ``hip_utils`` to choose a GPU *before* pinning
     ``HIP_VISIBLE_DEVICES``. Inheriting would drag torch onto that path and
     silently defeat the pinning. Re-declaring the base locally was considered and
     rejected: a same-named copy is a different class, so ``except
@@ -254,7 +252,7 @@ class Capability:
 # The table.
 #
 # Keyed by (op, backend) because every call site already passes both halves
-# separately -- `require_aiter(input.device, "rmsnorm")` (norm.py:116) -- so
+# separately -- `require_aiter(input.device, "rmsnorm")` (rocm/norm.py) -- so
 # routing them through here changes no signatures.
 #
 # `evidence` is only filled in where a suite was actually run on that board. An
@@ -829,8 +827,8 @@ def _blocking_reason(op: str, backend: str, arch: str) -> Optional[str]:
     if entry.support is Support.UNSUPPORTED:
         return f"{backend} {op} is not supported on {arch}"
     if not entry.known_bad:
-        # The common case: 24 of 25 rows have no window, so they never pay for
-        # version detection at all.
+        # No row carries a known_bad window today, so no row pays for version
+        # detection.
         return None
 
     rocm, aiter = _live_versions()

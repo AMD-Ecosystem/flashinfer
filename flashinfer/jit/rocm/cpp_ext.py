@@ -206,7 +206,7 @@ def generate_ninja_build_for_op(
         "",
     ]
 
-    # Add nvcc linking rule for device code
+    # HIP device-code linking rule
     if needs_device_linking:
         raise ValueError("Device linking unimplemented for ROCm backend")
     else:

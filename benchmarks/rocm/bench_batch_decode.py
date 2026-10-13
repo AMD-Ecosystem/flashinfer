@@ -15,14 +15,9 @@ limitations under the License.
 
 Batch paged-decode benchmark: fa2 (in-tree HIP) vs aiter (PA v1), eager.
 
-Baseline for the "HIP-graph-safe fast decode" work item
-(docs/rocm_library_optimization_plan.md §3 #1): today AITER decode falls back
-to fa2 under CUDA-graph capture, so the fast path never runs in the serving
-hot loop. This bench measures the eager fa2-vs-aiter gap (the win we forfeit
-under graphs) across a serving-shaped batch x kv_len sweep. Once the
-capacity-sized-grid change lands, add a --graph path here to compare
-aiter-under-graph vs fa2-under-graph and to measure the idle-block
-over-provisioning cost (the one open perf item in the plan).
+Measures the eager fa2-vs-aiter gap across a serving-shaped batch x kv_len
+sweep. Graph-captured AITER decode (capture-at-max and a declared max_seq_len)
+is timed by ``benchmarks/rocm/bench_decode_graph.py``.
 
 Shapes: decode (q_len=1), 8 KV heads, HD=128, bf16, page_size=16.
 Sweep: batch x kv_len x qo_heads, each overridable on the command line.
