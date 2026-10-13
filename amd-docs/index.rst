@@ -32,7 +32,7 @@ operators, with easy integration through PyTorch, and C++ APIs.
   `https://github.com/AMD-Ecosystem/flashinfer <https://github.com/AMD-Ecosystem/flashinfer>`__ repository.
 
 FlashInfer is part of the `AMD LLM Extension toolkit
-<https://rocm.docs.amd.com/projects/rocm-llmext/en/docs-26.02/>`__.
+<https://rocm.docs.amd.com/projects/llmextension/en/docs-26.02/>`__.
 
 The FlashInfer public repository is located at `https://github.com/AMD-Ecosystem/flashinfer <https://github.com/AMD-Ecosystem/flashinfer>`__.
 
