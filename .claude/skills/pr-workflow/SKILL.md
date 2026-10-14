@@ -270,7 +270,7 @@ Run this gate on the branch's full diff before `gh pr create`, in order:
    | `docs/rocm/backends.md` | Routing rules, per-op constraints, unavailable modules, AITER install |
    | `CONTRIBUTING.md` | Build, tests, coverage, code structure, upstream-sync procedure |
    | `CLAUDE.md`, `.claude/skills/` | Commands, gotchas and workflows an agent will act on |
-   | `benchmarks/README.md`, `amd-flashinfer-jit-cache/README.md`, module docstrings | Their own subject |
+   | `benchmarks/rocm/README.md`, `amd-flashinfer-jit-cache/README.md`, module docstrings | Their own subject |
 
    A new env var, backend, gate, marker or script belongs in whichever of those
    describes that subject — and a *removed* one has to come back out. Two

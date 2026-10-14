@@ -84,7 +84,7 @@ repos:
             README\.md
             |CONTRIBUTING\.md
             |CLAUDE\.md
-            |benchmarks/README\.md
+            |benchmarks/rocm/README\.md
             |docs/rocm/.*\.md
             |amd-flashinfer-jit-cache/README\.md
             |\.claude/skills/(add-rocm-kernel|benchmark-kernel|code-coverage

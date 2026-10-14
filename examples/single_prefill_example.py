@@ -108,6 +108,7 @@ def single_prefill_with_kv_cache_example(
     pos_encoding_mode: str,
     logits_soft_cap: float,
     return_lse: bool,
+    backend: str = "auto",
 ):
     """
     Run single_prefill_with_kv_cache and verify the output against a naive PyTorch reference implementation.
@@ -126,6 +127,7 @@ def single_prefill_with_kv_cache_example(
     print(f"  pos_encoding_mode={pos_encoding_mode}")
     print(f"  logits_soft_cap={logits_soft_cap}")
     print(f"  return_lse={return_lse}")
+    print(f"  backend={backend}")
 
     q = torch.randn(
         qo_len, num_qo_heads, head_dim, device="cuda:0", dtype=torch.float16
@@ -162,6 +164,7 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            backend=backend,
         )
         print(f"  FlashInfer output shape: {o.shape}, LSE shape: {lse.shape}")
         # Compute reference in FP32 for better accuracy
@@ -197,6 +200,7 @@ def single_prefill_with_kv_cache_example(
             kv_layout=kv_layout,
             pos_encoding_mode=pos_encoding_mode,
             logits_soft_cap=logits_soft_cap,
+            backend=backend,
         )
         print(f"  FlashInfer output shape: {o.shape}")
 
@@ -258,13 +262,14 @@ if __name__ == "__main__":
     )
 
     # Test case specifically for threadblock_sync_mdo_states validation
-    # This config triggers CTA_TILE_Q=16, NUM_WARPS_KV=4, calling threadblock_sync_mdo_states
+    # This config triggers CTA_TILE_Q=16, NUM_WARPS_KV=4 in the in-tree fa2
+    # kernel, calling threadblock_sync_mdo_states; `auto` would send it to AITER.
     print("\n" + "=" * 60)
     print("Testing threadblock_sync_mdo_states (CTA_TILE_Q=16, NUM_WARPS_KV=4)")
     print("=" * 60)
     single_prefill_with_kv_cache_example(
-        16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, False
+        16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, False, backend="fa2"
     )
     single_prefill_with_kv_cache_example(
-        16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, True
+        16, 128, 1, 1, 64, False, "NHD", "NONE", 0.0, True, backend="fa2"
     )

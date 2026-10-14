@@ -11,7 +11,7 @@ only path.
 
 In active development, aimed at developers embedding FlashInfer kernels into
 their own training or serving stack. Release tags are
-`<upstream_version>+amd.<n>` — `0.6.18+amd.1` is the first AMD release based on
+`<upstream_version>+amd.<n>` — `0.6.18+amd.2` is the second AMD release based on
 upstream `v0.6.18`. History is under
 [Releases](https://github.com/AMD-Ecosystem/flashinfer/releases).
 
@@ -57,11 +57,15 @@ python -c "import torch; assert torch.version.hip, 'not a ROCm build'"
 ```
 
 Kernels JIT-compile on first use — a minute or so for an in-tree HIP kernel,
-20+ minutes for a cold AITER variant. The optional
+several minutes for a cold AITER variant. The development image prebuilds
+every AITER prefill variant; AITER batch decode compiles its paged-attention
+kernel at `plan()`, and AITER MoE and the opt-in norm, rope and activation shims
+build on first use. The optional
 [`amd-flashinfer-jit-cache`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/amd-flashinfer-jit-cache/README.md)
-ships them prebuilt, one wheel per architecture with the architecture in the
-version's local segment (`0.6.18+amd.1.gfx942`). Pin it in full: an
-unqualified requirement resolves to whichever architecture sorts highest.
+ships the default in-tree kernel set prebuilt, one wheel per architecture with
+the architecture in the version's local segment (`0.6.18+amd.2.gfx942`). Pin
+it in full: an unqualified requirement resolves to whichever architecture sorts
+highest.
 
 ## Basic usage
 
@@ -109,9 +113,10 @@ matrix below, and not what a bug report will be reproduced against.
 
 The pins move together, which is why the supported configuration is an image
 rather than a list of versions: `amd-aiter` is built from source against the
-image's own ROCm, since no wheel targets ROCm 10; torch must stay at 2.12,
-since 2.13 drops a `c10` symbol AITER's prefill kernels need; and its ROCm 10.1
-build exists only in the base image.
+image's own ROCm and torch, since no wheel targets ROCm 10; torch 2.12 is the
+version tested, and its ROCm 10.1 build exists only in the base image. Torch
+2.13 is untested, and a prebuilt `amd-aiter` wheel would additionally fail on
+it, since 2.13 drops a `c10` symbol those wheels' prefill kernels link against.
 
 ## Support matrix
 
@@ -151,8 +156,10 @@ kernels are HIP, and each attention level routes on its own.
 
 The table is generated from
 [`flashinfer/rocm/arch_caps.py`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/flashinfer/rocm/arch_caps.py) —
-what `backend="auto"` consults at runtime, so it cannot drift from the
-library's actual routing. Do not edit it by hand; run
+what `backend="auto"` consults at runtime, so the rows and support marks come
+from the same capability entries that gate routing; the Notes column is
+hand-written prose in that file, not derived from the gates. Do not edit the
+table by hand; run
 `python3 scripts/gen_arch_support_matrix.py`.
 
 <!-- BEGIN GENERATED: arch support matrix -- scripts/gen_arch_support_matrix.py -->
@@ -160,9 +167,9 @@ library's actual routing. Do not edit it by hand; run
 | Op | Backend | gfx942 (CDNA3) | gfx950 (CDNA4) | Notes |
 | :--- | :--- | :---: | :---: | :--- |
 | `batch_decode` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Under graph capture `auto` needs a declared `max_seq_len`, else it stays on fa2. |
-| `single_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. On gfx950 an unwindowed, uncapped bf16 head_dim 128 call at `qo_len` >= 2048 takes AITER's asm kernel, outside HIP graph capture; everything else is CK Tile. |
-| `batch_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | Paged and ragged, with sliding window. fp8 query/KV on the paged route at head_dim 128/256 (bf16 out, per-tensor descales, no LSE). Page sizes 1/16/1024 are native at head_dim 128/256 only, since AITER's paged kernel reads past the KV cache at any other; fp16/bf16 are routed there only at 1024 and flat-gather otherwise. |
-| `mla` | `aiter` -- only backend | ✅ | ✅ | DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here. |
+| `single_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. No fp8 query (`mha_fwd` has no fp8 kernel); an fp8 KV cache with a 2-byte query runs on fa2. On gfx950 an unwindowed, uncapped bf16 head_dim 128 call at `qo_len` >= 2048 takes AITER's asm kernel, outside HIP graph capture; everything else is CK Tile. |
+| `batch_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | Paged and ragged, with sliding window. fp8 query/KV on the paged route at head_dim 128/256 (bf16 out, per-tensor descales, no LSE). Page sizes 1/16/1024 are native at head_dim 128/256 only, since AITER's paged kernel reads past the KV cache at 64/96 (others unmeasured); fp16/bf16 are routed there only at 1024 and flat-gather otherwise. |
+| `mla` | `aiter` -- only backend | ✅ | ✅ | 512 compressed-KV + 64 rope (DeepSeek V2/V3); fp16/bf16. No HIP kernel exists, so `auto` resolves here. |
 | `rope` | `aiter` -- opt-in | ✅ | ✅ | `apply_rope_with_cos_sin_cache` and its inplace variant, linked at the C++ level. Opt-in. |
 | `append_paged_kv_cache` | `aiter` -- opt-in | ✅ | ✅ | fp16/bf16 + NHD. Bit-exact with the in-tree kernel but slower, so `auto` picks `native`. |
 | `rmsnorm` | `aiter` -- opt-in | ✅ | ✅ | `aiter::rmsnorm`; 2-D fp16/bf16, hidden size even and <= 8192, weight dtype must match. Opt-in: level with native on speed and less accurate. |
@@ -213,7 +220,7 @@ support check**: most rows above import fine and fail later, so probe the
 symbol you actually need (`hasattr`, or `is_cute_dsl_available()` and
 `is_cuda_tile_available()` for those two).
 
-Two modules are simply uninstallable here rather than unsupported:
+Two modules are simply unimportable here rather than unsupported:
 `flashinfer.profiler` needs `tg4perfetto` and `flashinfer.artifacts` needs
 `requests`, neither of which `docker/Dockerfile.rocm` ships.
 
@@ -261,8 +268,9 @@ covers worker pinning, the `slow` marker and the rerun policy.
 
 ## Benchmarking
 
-The unified runner drives batch decode and paged/ragged batch prefill from one
-testlist — the routed paths, not every op in the matrix above:
+The unified runner drives batch decode, paged/ragged batch prefill, and the
+norm, rope and sampling routines from one testlist — not every op in the matrix
+above:
 
 ```bash
 cd benchmarks
@@ -270,14 +278,14 @@ python flashinfer_benchmark.py --testlist rocm/testlist_rocm.txt \
     --output_path run-$(date +%F).csv
 ```
 
-Each line requests both `fa2` and `auto` with its own `--refcheck`, so the two
-compare side by side **where both survive capability filtering** — the
-Llama-3.1-405B rows lose `fa2` to its GQA group-size set and run unverified, so
-count rows per config rather than assuming two. **Read `backend_resolved`**:
+Each attention line requests both `fa2` and `auto` with its own `--refcheck`,
+so the two compare side by side **where both survive capability filtering** —
+the Llama-3.1-405B rows lose `fa2` to its GQA group-size set and run unverified,
+so count rows per config rather than assuming two. **Read `backend_resolved`**:
 `auto` is a request, not a result, and `backend_fallback_reason` says why AITER
 was declined. Per-op drivers are in
 [`benchmarks/rocm/`](https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/benchmarks/rocm);
-[`benchmarks/README.md`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/benchmarks/README.md)
+[`benchmarks/rocm/README.md`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/benchmarks/rocm/README.md)
 documents the output columns.
 
 ## Environment variables
@@ -287,18 +295,23 @@ Read at runtime or import time:
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
 | `FLASHINFER_USE_TORCH_CUSTOM_OPS` | `0` | Wrap kernels for `torch.compile`; set before importing `flashinfer`. See above. |
-| `FLASHINFER_AITER_STRICT` | `0` | Raise instead of degrading when AITER cannot serve a page size natively. Set in CI to catch coverage regressions rather than absorb them as a slowdown. |
-| `FLASHINFER_AITER_ASM_PREFILL` | `1` | Set to `0` to keep single prefill on AITER's CK Tile kernel. AITER aborts the process on several asm failure modes rather than returning an error, so this is the supported way out. |
-| `FLASHINFER_AITER_ASM_VERBOSE` | `0` | Log to stderr which prefill arm ran. The two arms agree numerically, so this is the only way to tell asm from CK Tile. |
-| `FLASHINFER_ARCH_ALLOW_KNOWN_BAD` | `0` | Run an (op, backend, arch) combination the capability table marks known-broken on your toolchain. Only if you have validated it yourself. |
+| `FLASHINFER_AITER_STRICT` | `0` | `1` raises instead of degrading: when AITER cannot serve a page size natively, and when an AITER kernel bootstrap fails under `auto`. Set in CI to catch coverage regressions rather than absorb them as a slowdown. |
+| `FLASHINFER_AITER_ASM_PREFILL` | `1` | Exactly `0` keeps single prefill on AITER's CK Tile kernel; any other value leaves the asm arm on. Read once per process. AITER aborts the process on several asm failure modes rather than returning an error, so this is the supported way out. |
+| `FLASHINFER_AITER_ASM_VERBOSE` | `0` | Any value except `0` logs to stderr which prefill arm ran. The two arms agree numerically, so this is the only way to tell asm from CK Tile. |
+| `FLASHINFER_ARCH_ALLOW_KNOWN_BAD` | `0` | `1` runs an (op, backend, arch) combination the capability table marks known-broken on your toolchain. No row carries such a window in this release, and it does not lift the gfx950 soft-cap gate. |
 | `FLASHINFER_HIP_FUSED_CASCADE` | `0` | In `MultiLevelCascadeAttentionWrapper` only, pass each level's partial state into the next prefill call instead of merging afterwards; AITER levels and the shared-prefix wrappers ignore it. Both paths tested. Read once at import, so set it first. |
 | `FLASHINFER_WORKSPACE_BASE` | `$HOME` | Parent of the JIT cache (`.cache/flashinfer/`); point at fast local disk when `$HOME` is on NFS. Prefer an absolute path: the value is wrapped in `pathlib.Path` unvalidated, so a relative one resolves against the working directory and `~` becomes a literal `./~` directory. |
-| `FLASHINFER_DISABLE_JIT` | unset | **Any non-empty value** — including `0` — skips JIT compilation. Use with an AOT-built install to fail loudly on a missing kernel rather than trigger a build. |
+| `FLASHINFER_DISABLE_JIT` | unset | **Any non-empty value** — including `0` — loads only AOT or jit-cache kernels: it refuses to compile, and refuses modules already in `~/.cache/flashinfer` too. The AITER shims are never prebuilt, so an `auto` call that picks AITER raises `MissingJITCacheError` rather than falling back. |
 | `FLASHINFER_DISABLE_VERSION_CHECK` | unset | Any non-empty value skips the JIT-cache package version check. |
 | `FLASHINFER_LOGGING_LEVEL` | `INFO` | Logger verbosity (`DEBUG`, `INFO`, `WARNING`, …). Affects AITER fallback warnings and JIT build messages. |
-| `FLASHINFER_DISABLE_AOT_ARCH_CHECK` | unset | Use prebuilt kernels even when their architecture does not match the running GPU. By default a mismatch discards them, with a warning, and everything JIT-compiles. |
+| `FLASHINFER_LOGLEVEL` | `0` | API call logging, distinct from `FLASHINFER_LOGGING_LEVEL`: `1` logs function names, `3` adds inputs and outputs, `5` adds tensor statistics, `10` also dumps tensors to disk. |
+| `FLASHINFER_LOGDEST` | `stdout` | Where `FLASHINFER_LOGLEVEL` output goes: `stdout`, `stderr`, or a file path (`%i` becomes the process ID). |
+| `FLASHINFER_TRACE_APPLY` | unset | `1` enables upstream's opt-in kernel substitution at import, from the mapping `FLASHINFER_TRACE_APPLY_PATH` names; any other value except `0` warns and leaves it off. A failure to enable it warns rather than breaking the import. |
+| `FLASHINFER_DISABLE_AOT_ARCH_CHECK` | unset | Any non-empty value — including `0` — uses jit-cache kernels even when their architecture does not match the running GPU. By default a mismatch discards them, with a warning, and everything JIT-compiles. |
 | `ROCM_PATH` / `ROCM_HOME` | `/opt/rocm` | Where `flashinfer.rocm.hip_utils` looks for ROCm. Override only for non-standard layouts. |
 | `AITER_JIT_DIR` | AITER's own | Where the C++ shim `dlopen`s AITER's built `.so` files, overriding the path compiled in at build time. |
+| `FLASHINFER_AITER_VARIANT_DIR` | FlashInfer's stores | `os.pathsep`-separated prebuilt AITER variant stores to load from instead of the cache and jit-cache stores; `AITER_JIT_DIR` is still tried first. |
+| `AITER_ASM_DIR` | set by `import aiter` | Where AITER reads its asm code objects. Unset or empty, single prefill stays on CK Tile rather than let AITER abort. |
 | `GPU_ARCHS` | autodetected | AITER's own JIT architecture. A shim build overrides it from `FLASHINFER_ROCM_ARCH_LIST` and restores your value afterwards, leaving the derived one only if you had not set it. |
 
 Build-time variables — `FLASHINFER_ROCM_ARCH_LIST`, `PYTORCH_ROCM_ARCH`,
@@ -320,8 +333,8 @@ from flashinfer.rocm.hip_utils import check_torch_rocm_compatibility
 if is_aiter_supported(torch.device("cuda")):
     ...
 
-# Raises a clear error if PyTorch + ROCm are incompatible, e.g. a CPU-only
-# torch wheel was picked up from PyPI.
+# Warns when torch's ROCm version differs from the system's. A CPU-only torch
+# never gets here: importing flashinfer already raises.
 check_torch_rocm_compatibility()
 ```
 

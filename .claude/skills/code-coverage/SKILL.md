@@ -7,17 +7,19 @@ description: Measure and interpret line coverage for the AMD-authored parts of a
 
 `scripts/amd_coverage.py` scores only the code this fork added or changed.
 Ownership is recomputed on every run from the diff against the upstream release
-the port is based on, read off this fork's own tag (`v0.5.3+amd.2` scores
-against upstream `v0.5.3`), so the answer is always current for the tree in
-front of you and there is no list to refresh. A fixed release rather than a
+the port is based on, so the answer is always current for the tree in front of
+you and there is no list to refresh. That base is the commit recorded in the
+`upstream-base` file (`v0.6.18`), read by sha; the fork's own `+amd.` tag is
+only the fallback when that record is absent. A fixed release rather than a
 moving branch is what makes two runs weeks apart comparable.
 
 ## Run it
 
-`origin` carries upstream's release tags, so no second remote is needed.
+The recorded commit is reachable from no branch, so the clone needs the
+`upstream-base/<ref>` tag that carries it.
 
 ```bash
-git fetch --tags origin                       # the base is computed, not stored
+git fetch origin tag upstream-base/v0.6.18    # the recorded base, by sha
 pip install -e ".[dev]"                       # brings pytest-cov
 python3 scripts/amd_coverage.py --run --show-files \
     --json-out tmp/coverage/coverage-amd.json --out-dir tmp/coverage \
@@ -37,7 +39,7 @@ python3 scripts/amd_coverage.py --show-files
 |---|---|---|
 | A | we added the file | every statement |
 | B | upstream file we edited | **only the lines our diff touched** |
-| C | zero-line Python diff, but ours via the `FLASHINFER_CSRC_DIR` redirect | every statement |
+| C | ours via the `FLASHINFER_CSRC_DIR` redirect, however small the Python diff | every statement |
 
 Tier C is declared in `scripts/coverage_ownership.toml` because no diff can
 discover it. The tool fails if an entry there names a file that no longer
@@ -88,8 +90,9 @@ docker run -d --name demandal-<branch> \
 docker exec <container> git config --global --add safe.directory '*'
 ```
 
-There is **no GPU CI** in this repo, so no automation produces this number —
-every workflow runs on `ubuntu-latest` or a CPU runner. The classifier's own
+There is **no AMD GPU CI** in this repo, so no automation produces this number
+— the workflows that name GPUs are upstream's, on NVIDIA runners, and every
+other one runs on `ubuntu-latest` or a CPU runner. The classifier's own
 tests (`tests/rocm/test_amd_coverage.py`) do run there, via
 `arch-caps-conformance.yml`.
 
@@ -113,13 +116,17 @@ tests (`tests/rocm/test_amd_coverage.py`) do run there, via
   erases a completed run. A fixture in the test file enforces this.
 - **A file you just wrote shows up as tier A "untracked"** — expected; the tool
   includes untracked, non-ignored files so work in progress still counts.
-- **"cannot tell which upstream release this fork is based on"** — no reachable
-  `*+amd.*` tag. `git fetch --tags origin`, unless the message also says the
-  clone is shallow, in which case only `git fetch --unshallow origin` helps:
-  `describe` needs the tag *reachable*, and the graft is what severs it.
-- **"shares no history with HEAD"** — the tag resolved but the fork point is not
+- **"recorded base ... is not in this clone"** — the `upstream-base` commit is
+  missing. `git fetch origin tag upstream-base/<ref>`; it needs to be present,
+  not reachable, so this works on a shallow clone too.
+- **"cannot tell which upstream release this fork is based on"** — only on the
+  fallback path, with no `upstream-base` file: no reachable `*+amd.*` tag.
+  `git fetch --tags origin`, unless the message also says the clone is shallow,
+  in which case only `git fetch --unshallow origin` helps: `describe` needs the
+  tag *reachable*, and the graft is what severs it.
+- **"shares no history with ..."** — the base resolved but the fork point is not
   in this clone. Same shallow cause, same fix.
 - **`--fail-under` is comparable across runs, but still not wired into CI.** The
-  base is a release tag, so it does not move between rebases and two runs weeks
-  apart do compare. What stops it is cost: the number needs the full GPU suite,
+  base is a recorded release, so it does not move between rebases and two runs
+  weeks apart do compare. What stops it is cost: the number needs the full GPU suite,
   which no PR lane runs. The JSON pins the base SHA either way.

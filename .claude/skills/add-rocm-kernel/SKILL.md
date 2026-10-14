@@ -9,26 +9,29 @@ For a complete worked example to copy, read these together:
 [`norm.cu`](../../../csrc/rocm/norm.cu) +
 [`flashinfer_norm_binding.cu`](../../../csrc/rocm/flashinfer_norm_binding.cu) +
 [`jit/norm.py`](../../../flashinfer/jit/norm.py) +
-[`norm.py`](../../../flashinfer/norm.py). For plan-run / multi-backend / FP8 see
+[`norm/__init__.py`](../../../flashinfer/norm/__init__.py), with the AITER routing in
+[`rocm/norm.py`](../../../flashinfer/rocm/norm.py). For plan-run / multi-backend / FP8 see
 [`batch_prefill.cu`](../../../csrc/rocm/batch_prefill.cu) +
 [`rocm/prefill.py`](../../../flashinfer/rocm/prefill.py).
 
-## File touchpoints (every new op needs each row, in order)
+## File touchpoints (in order)
+
+Add files rather than editing upstream ones — CONTRIBUTING.md's "Additive-Only" section is the authority.
 
 | Step | File | Purpose |
 | --- | --- | --- |
-| 1 | `include/flashinfer/<op>.cuh` | Framework-agnostic kernel + launcher template. **No `<torch/...>` includes here.** |
+| 1 | `include/flashinfer/rocm/<op>.cuh` | Framework-agnostic kernel + launcher template. **No `<torch/...>` includes here.** |
 | 2 | `csrc/rocm/<op>.cu` | PyTorch launcher: `at::Tensor` in, `at::hip::getCurrentHIPStream()`, `TORCH_CHECK`, `DISPATCH_PYTORCH_DTYPE_*`. |
 | 3 | `csrc/rocm/flashinfer_<op>_binding.cu` | `TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) { m.def("<op>", <op>); }`. |
 | 4 (opt) | `csrc/rocm/<op>_customize_config.jinja` | Compile-time type specialization. Skip if runtime dispatch is enough. |
-| 5 | `flashinfer/jit/<op>.py` | `gen_<op>_module() -> JitSpec` via `gen_jit_spec(...)`. |
-| 6 | `flashinfer/<op>.py` | Python API: `@functools.cache` module loader, destination-passing (`out=`). |
-| 7 | `tests/rocm/test_<op>.py` | Correctness tests; FP32 reference math, loose BF16 tolerances. |
-| 8 | `flashinfer/jit/__init__.py` (`IS_HIP` branch) | `from .<op> import gen_<op>_module as gen_<op>_module`. |
-| 9 | `flashinfer/__init__.py` (`IS_HIP` branch) | `from .<op> import <op> as <op>`. |
+| 5 | *Porting an upstream op:* no new Python | Name the sources as upstream's generator does; the `FLASHINFER_CSRC_DIR` redirect builds them from upstream's `flashinfer/jit/<op>.py` and `flashinfer/<op>.py`. Still do step 8 (re-export from `flashinfer/rocm/api.py`; ungate it in `CUDA_ONLY_MODULES` if listed), then 9-10. Upstream files may still need `IS_HIP` arms, as norm did. |
+| 6 | *ROCm-only op:* `flashinfer/jit/rocm/<op>.py` | `gen_<op>_module() -> JitSpec` via `gen_jit_spec(...)`. |
+| 7 | *ROCm-only op:* `flashinfer/rocm/<op>.py` | Python API: `@functools.cache` module loader, destination-passing (`out=`). |
+| 8 | `flashinfer/jit/rocm/api.py`, `flashinfer/rocm/api.py` | Re-export the generator and the API; these are what `flashinfer.jit` and `flashinfer` re-export on ROCm. |
+| 9 | `tests/rocm/test_<op>.py` | Correctness tests; FP32 reference math, loose BF16 tolerances. |
 | 10 (opt) | `flashinfer/rocm/aot.py` | Register `gen_<op>_module` for pre-compiled wheels. |
 
-**Forgetting steps 8 and 9 is the most common bug** — the module compiles but is invisible from `import flashinfer`.
+**Forgetting step 8 is the most common bug** — the module compiles but is invisible from `import flashinfer`.
 
 ## CUDA → ROCm porting cheat sheet
 
@@ -64,7 +67,7 @@ When porting an upstream kernel, mechanically rewrite:
 ## CDNA3 (`gfx942`) vs CDNA4 (`gfx950`)
 
 - **Wavefront = 64 on both.** Anything ported from CUDA assuming warp = 32 is wrong. Use `warpSize` for portability.
-- **FP8** is `__hip_fp8_e4m3_fnuz` / `__hip_fp8_e5m2_fnuz` on both. PyTorch dtype is `torch.float8_e4m3fnuz` (not `torch.float8_e4m3fn`, which is NVIDIA OCP FP8). Bit-exact parity with NVIDIA FP8 is not guaranteed — calibrate scale factors separately.
+- **FP8: in-tree HIP kernels use fnuz on both arches** — `__hip_fp8_e4m3_fnuz` / `__hip_fp8_e5m2_fnuz`, PyTorch `torch.float8_e4m3fnuz` / `torch.float8_e5m2fnuz`; the OCP `torch.float8_e4m3fn` is refused. **AITER uses the arch-native encoding** — `e4m3fnuz` on gfx942, OCP `e4m3fn` on gfx950 (`aiter.dtypes.fp8`). Bit-exact parity with NVIDIA FP8 is not guaranteed — calibrate scale factors separately.
 - **MFMA intrinsics:** CDNA4 has additional FP8 MFMA shapes not on CDNA3. Guard arch-specific intrinsics with `__gfx942__` / `__gfx950__` or compute-capability dispatch at the Python layer.
 - **LDS / register / occupancy budgets differ.** Don't hard-code tile sizes — parameterize (Jinja) or query via `torch.cuda.get_device_properties(dev)` at plan time.
 
@@ -74,6 +77,6 @@ When porting an upstream kernel, mechanically rewrite:
 - [ ] Launcher uses `at::hip::getCurrentHIPStream()` + `OptionalHIPGuardMasqueradingAsCUDA`.
 - [ ] Binding registered via `TORCH_LIBRARY_FRAGMENT`.
 - [ ] JIT generator uses `jit_env.FLASHINFER_CSRC_DIR` (not hardcoded `csrc/`).
-- [ ] Both `flashinfer/jit/__init__.py` and `flashinfer/__init__.py` IS_HIP branches updated.
+- [ ] A ROCm-only op is re-exported from `flashinfer/jit/rocm/api.py` and `flashinfer/rocm/api.py`.
 - [ ] Test file under `tests/rocm/` named `test_*.py`.
 - [ ] `pre-commit run -a` clean.
