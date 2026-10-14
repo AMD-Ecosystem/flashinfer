@@ -257,7 +257,7 @@ class TestTableWellFormed:
 
         pkg = pathlib.Path(arch_caps.__file__).parent
         # Both the aiter_utils wrappers and the capability API they delegate to:
-        # mla_rocm and page.py call require_capability / capability_available
+        # rocm/mla.py and page.py call require_capability / capability_available
         # directly, and those op strings drift just as easily. All five take the
         # op second, so one alternation covers them.
         pattern = re.compile(
@@ -269,11 +269,11 @@ class TestTableWellFormed:
             used |= set(pattern.findall(src.read_text()))
 
         # Coverage is not total, and pretending otherwise would be worse than
-        # the gap: prefill_rocm and decode_rocm pass `op` as a variable, so no
+        # the gap: rocm/prefill.py and rocm/decode.py pass `op` as a variable, so no
         # literal-matching scan can see batch_prefill / batch_decode /
         # single_prefill. Those are reached by the runtime tests instead.
         assert used, "scan found no op names; the pattern has rotted"
-        # `mla` is reached *only* through require_capability (mla_rocm.py), never
+        # `mla` is reached *only* through require_capability (rocm/mla.py), never
         # through the aiter_utils wrappers. Its presence is what proves the
         # alternation still covers the capability API directly; drop it and the
         # scan silently narrows back to the wrappers while still passing.
@@ -446,7 +446,7 @@ class TestGating:
         assert f"backend={suggested!r}" in reason
 
     def test_no_fallback_is_suggested_when_none_exists(self, as_arch):
-        """mla accepts only 'auto'/'aiter' (mla_rocm.py:112), so naming any
+        """mla accepts only 'auto'/'aiter' (rocm/mla.py), so naming any
         alternative would be a dead end. Say nothing rather than something
         wrong."""
         as_arch("unknown")

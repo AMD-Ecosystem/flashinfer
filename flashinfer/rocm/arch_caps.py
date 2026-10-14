@@ -13,11 +13,10 @@ which owns *whether the AITER package is importable*.
    Do not add a module-level ``import torch``; keep every torch import
    function-local.
 
-   ``hip_utils`` imports this module at module scope, and ``hip_utils`` is used
-   very early -- the repo-root ``conftest.py`` calls it to pick a GPU *before*
-   pinning ``HIP_VISIBLE_DEVICES``, and it must do so without touching the HIP
-   runtime (hence its use of ``rocminfo`` rather than ``torch.cuda``). Staying
-   torch-free is what keeps this module usable on that path.
+   ``hip_utils`` imports this module at module scope, and ``hip_utils`` answers
+   "which architecture" on build hosts with neither torch nor a GPU (hence
+   ``rocminfo``, not ``torch.cuda``). The CPU-only arch-caps CI lane relies on
+   the same; ``test_suite_loads_without_torch`` enforces it.
 """
 
 import os
@@ -94,10 +93,8 @@ class ArchCapabilityError(ValueError, RuntimeError):
     Deliberately *not* a :class:`flashinfer.utils.GPUArchitectureError` either,
     though that would be the tidier hierarchy. That class lives in
     ``flashinfer/utils.py``, which imports torch at module scope, and this module
-    must stay torch-free -- ``hip_utils`` imports it at module scope, and the
-    repo-root ``conftest.py`` uses ``hip_utils`` to choose a GPU *before* pinning
-    ``HIP_VISIBLE_DEVICES``. Inheriting would drag torch onto that path and
-    silently defeat the pinning. Re-declaring the base locally was considered and
+    must stay torch-free (see the module docstring); inheriting would drag torch
+    onto torch-less build hosts and the CPU-only CI lane. Re-declaring the base locally was considered and
     rejected: a same-named copy is a different class, so ``except
     GPUArchitectureError`` would not catch it -- worse than not claiming the
     relationship at all. No ROCm path raised ``GPUArchitectureError`` before this

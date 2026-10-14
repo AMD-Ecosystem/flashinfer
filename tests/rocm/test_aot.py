@@ -155,7 +155,7 @@ def test_failed_validation_leaves_the_environment_alone(monkeypatch):
 
     compile_and_package_modules publishes the resolved list into the process
     environment on purpose -- the AITER shim reads it from there
-    (jit/aiter_source.py) and an AOT build has no other channel to reach it.
+    (jit/rocm/aiter_source.py) and an AOT build has no other channel to reach it.
     That side effect outlives the call, so it must only happen once the list is
     known good; otherwise a build that dies on an unsupported ROCm version
     silently repoints whatever runs next in the same process.

@@ -241,7 +241,7 @@ def test_a_fat_wheel_covers_this_gpu(monkeypatch, tmp_path):
 
 
 def test_a_semicolon_separated_manifest_is_still_understood(monkeypatch, tmp_path):
-    """`;` is documented for this same arch list in jit/aiter_source.py."""
+    """`;` is documented for this same arch list in jit/rocm/aiter_source.py."""
     from flashinfer.jit.rocm.env import get_aot_dir
 
     cache = _wheel_with_manifest(

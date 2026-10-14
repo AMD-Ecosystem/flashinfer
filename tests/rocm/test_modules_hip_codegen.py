@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""URI and JitSpec generation in jit/attention/modules_hip.py.
+"""URI and JitSpec generation in jit/rocm/modules.py.
 
 Only the generator is exercised -- no source is compiled and no kernel runs.
 The branches covered here are the ones a gfx942 suite never takes: the ``fa3``
