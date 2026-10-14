@@ -24,10 +24,10 @@ Add files rather than editing upstream ones — CONTRIBUTING.md's "Additive-Only
 | 2 | `csrc/rocm/<op>.cu` | PyTorch launcher: `at::Tensor` in, `at::hip::getCurrentHIPStream()`, `TORCH_CHECK`, `DISPATCH_PYTORCH_DTYPE_*`. |
 | 3 | `csrc/rocm/flashinfer_<op>_binding.cu` | `TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) { m.def("<op>", <op>); }`. |
 | 4 (opt) | `csrc/rocm/<op>_customize_config.jinja` | Compile-time type specialization. Skip if runtime dispatch is enough. |
-| 5 | *Porting an upstream op:* nothing | Name the sources as upstream's generator does; the `FLASHINFER_CSRC_DIR` redirect builds them from upstream's `flashinfer/jit/<op>.py` and `flashinfer/<op>.py` with zero Python diff. Stop here. |
+| 5 | *Porting an upstream op:* no new Python | Name the sources as upstream's generator does; the `FLASHINFER_CSRC_DIR` redirect builds them from upstream's `flashinfer/jit/<op>.py` and `flashinfer/<op>.py`. Still do step 8 (re-export from `flashinfer/rocm/api.py`; ungate it in `CUDA_ONLY_MODULES` if listed), then 9-10. Upstream files may still need `IS_HIP` arms, as norm did. |
 | 6 | *ROCm-only op:* `flashinfer/jit/rocm/<op>.py` | `gen_<op>_module() -> JitSpec` via `gen_jit_spec(...)`. |
 | 7 | *ROCm-only op:* `flashinfer/rocm/<op>.py` | Python API: `@functools.cache` module loader, destination-passing (`out=`). |
-| 8 | *ROCm-only op:* `flashinfer/jit/rocm/api.py`, `flashinfer/rocm/api.py` | Re-export the generator and the API; these are what `flashinfer.jit` and `flashinfer` re-export on ROCm. |
+| 8 | `flashinfer/jit/rocm/api.py`, `flashinfer/rocm/api.py` | Re-export the generator and the API; these are what `flashinfer.jit` and `flashinfer` re-export on ROCm. |
 | 9 | `tests/rocm/test_<op>.py` | Correctness tests; FP32 reference math, loose BF16 tolerances. |
 | 10 (opt) | `flashinfer/rocm/aot.py` | Register `gen_<op>_module` for pre-compiled wheels. |
 

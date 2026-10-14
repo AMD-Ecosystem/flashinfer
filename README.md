@@ -58,8 +58,9 @@ python -c "import torch; assert torch.version.hip, 'not a ROCm build'"
 
 Kernels JIT-compile on first use — a minute or so for an in-tree HIP kernel,
 several minutes for a cold AITER variant. The development image prebuilds
-every AITER attention variant; AITER MoE and the opt-in AITER norm, rope and
-activation shims still build on first use. The optional
+every AITER prefill variant; AITER batch decode compiles its paged-attention
+kernel at `plan()`, and AITER MoE and the opt-in norm, rope and activation shims
+build on first use. The optional
 [`amd-flashinfer-jit-cache`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/amd-flashinfer-jit-cache/README.md)
 ships the default in-tree kernel set prebuilt, one wheel per architecture with
 the architecture in the version's local segment (`0.6.18+amd.2.gfx942`). Pin
@@ -305,10 +306,9 @@ Read at runtime or import time:
 | `FLASHINFER_LOGGING_LEVEL` | `INFO` | Logger verbosity (`DEBUG`, `INFO`, `WARNING`, …). Affects AITER fallback warnings and JIT build messages. |
 | `FLASHINFER_LOGLEVEL` | `0` | API call logging, distinct from `FLASHINFER_LOGGING_LEVEL`: `1` logs function names, `3` adds inputs and outputs, `5` adds tensor statistics, `10` also dumps tensors to disk. |
 | `FLASHINFER_LOGDEST` | `stdout` | Where `FLASHINFER_LOGLEVEL` output goes: `stdout`, `stderr`, or a file path (`%i` becomes the process ID). |
-| `FLASHINFER_TRACE_APPLY` | unset | Upstream's opt-in kernel substitution, enabled at import from the mapping `FLASHINFER_TRACE_APPLY_PATH` names; a failure to enable it logs a warning rather than breaking the import. |
+| `FLASHINFER_TRACE_APPLY` | unset | `1` enables upstream's opt-in kernel substitution at import, from the mapping `FLASHINFER_TRACE_APPLY_PATH` names; any other value except `0` warns and leaves it off. A failure to enable it warns rather than breaking the import. |
 | `FLASHINFER_DISABLE_AOT_ARCH_CHECK` | unset | Any non-empty value — including `0` — uses jit-cache kernels even when their architecture does not match the running GPU. By default a mismatch discards them, with a warning, and everything JIT-compiles. |
 | `ROCM_PATH` / `ROCM_HOME` | `/opt/rocm` | Where `flashinfer.rocm.hip_utils` looks for ROCm. Override only for non-standard layouts. |
-| `PYTORCH_AMDCLANG` / `CXX` | `<ROCm root>/bin/amdclang++` / `c++` | The JIT's HIP device compiler, and its host compiler and linker. |
 | `AITER_JIT_DIR` | AITER's own | Where the C++ shim `dlopen`s AITER's built `.so` files, overriding the path compiled in at build time. |
 | `FLASHINFER_AITER_VARIANT_DIR` | FlashInfer's stores | `os.pathsep`-separated prebuilt AITER variant stores to load from instead of the cache and jit-cache stores; `AITER_JIT_DIR` is still tried first. |
 | `AITER_ASM_DIR` | set by `import aiter` | Where AITER reads its asm code objects. Unset or empty, single prefill stays on CK Tile rather than let AITER abort. |

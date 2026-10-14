@@ -73,13 +73,14 @@ not pay for JIT:
 
 ```bash
 python -m flashinfer.rocm.aot \
-  --out-dir "$(python -c 'import flashinfer, os; print(os.path.dirname(flashinfer.__file__))')/data/aot"
+  --out-dir "$(python -c 'import importlib.util as u, os; print(os.path.dirname(u.find_spec("flashinfer").origin))')/data/aot"
 ```
 
 FlashInfer loads AOT kernels from `flashinfer/data/aot` in the installed
 package, or from the jit-cache wheel instead when one is installed; without
-`--out-dir` the build packages nothing. `--help` lists the head-dim, dtype and
-`--add-act`/`--add-misc` selectors.
+`--out-dir` the build packages nothing. `--help` lists the head-dim, `--f16-dtype` and
+`--add-act`/`--add-misc` selectors; `--f8-dtype` is accepted but builds nothing. That tree carries no version or arch check,
+so rebuild it after every upgrade.
 
 Pair an AOT-built install with `FLASHINFER_DISABLE_JIT=1` to fail loudly on a
 missing kernel instead of triggering a build. It refuses modules already
@@ -395,8 +396,10 @@ order: add files, and edit an upstream one only as a last resort.
    may include Torch headers.
 3. **Python side, porting an upstream op** — give the `csrc/rocm/` sources the
    filenames upstream's generator names. The `FLASHINFER_CSRC_DIR` redirect then
-   builds them from upstream's own `flashinfer/jit/*.py` and `flashinfer/*.py`,
-   with zero Python diff.
+   builds them from upstream's own `flashinfer/jit/*.py` and `flashinfer/*.py`.
+   On ROCm `import flashinfer` exposes only what `flashinfer/rocm/api.py`
+   imports, so re-export the op there (and ungate it in `CUDA_ONLY_MODULES`).
+   An upstream file may still need an `IS_HIP` arm, as norm did.
 4. **Python side, a ROCm-only op** — the JIT generator in `flashinfer/jit/rocm/`
    and the user-facing API in `flashinfer/rocm/`, re-exported from
    `flashinfer/jit/rocm/api.py` and `flashinfer/rocm/api.py`.
@@ -422,6 +425,7 @@ runtime ones are tabulated in [README.md](README.md#environment-variables).
 | `FLASHINFER_EXTRA_CFLAGS` | Extra host compile flags. |
 | `FLASHINFER_EXTRA_CUDAFLAGS` | Extra HIP device compile flags. |
 | `FLASHINFER_EXTRA_LDFLAGS` | Extra link flags. |
+| `PYTORCH_AMDCLANG` / `CXX` | The JIT's HIP device compiler (default `<ROCm root>/bin/amdclang++`), and its host compiler and linker (default `c++`). |
 | `FLASHINFER_OWN_HEADERS_NON_SYSTEM` | Include this fork's headers with `-I` rather than `-isystem`, so warnings apply to them. |
 | `MAX_JOBS` | ninja parallelism. |
 

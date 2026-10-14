@@ -331,9 +331,9 @@ def aiter_ragged_gated_q_len(arch: str) -> Optional[int]:
 
 
 # AITER's native paged prefill (mha_batch_prefill) reads past the end of the KV
-# cache at any head dim outside this set, at every page size it pages natively:
-# a fault or hang when the cache ends at an unmapped page. Tail-guarded on
-# amd-aiter 0.1.21.post2 / ROCm 10.1; data in git log.
+# cache at head_dim 64 and 96, at every page size it pages natively: a fault or
+# hang when the cache ends at an unmapped page. Other head dims are unmeasured,
+# so gated too. Tail-guarded on amd-aiter 0.1.21.post2 / ROCm 10.1; data in git log.
 _AITER_NATIVE_PAGED_HEAD_DIMS = {
     "gfx942": frozenset({128, 256}),
     "gfx950": frozenset({128, 256}),

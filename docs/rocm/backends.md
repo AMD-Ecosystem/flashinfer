@@ -182,7 +182,7 @@ not `setup.py develop`: the develop branch installs no `aiter_meta`, and
 `PREBUILD_KERNELS=0` leaves the install with **no AITER modules at all**, which
 the image compensates for by running `docker/prebuild_aiter_attention.py` (see
 [Prebuilding the variants](#prebuilding-the-variants)). A standalone install
-should do the same:
+should do the same — it needs no GPU and also builds the asm loader modules:
 
 ```bash
 GPU_ARCHS="gfx942;gfx950" python3 docker/prebuild_aiter_attention.py --jobs 2
@@ -288,10 +288,10 @@ a prebuilt variant. That bootstrap doubles as the `page_size` capability probe,
 and the variant filename has no page-size axis, so it runs whether or not
 FlashInfer's own store holds the artifact.
 
-**`python -m flashinfer.rocm.prebuild_aiter_variants` is the route for an
-install that is not the image.** It builds the 40 non-fp8 variants into
-FlashInfer's own store, which `plan()` consults before asking AITER to build
-one, and that store is what the `amd-flashinfer-jit-cache` wheel can carry:
+**`python -m flashinfer.rocm.prebuild_aiter_variants` fills FlashInfer's own
+store instead**, which `plan()` consults before asking AITER to build a variant
+and which the `amd-flashinfer-jit-cache` wheel can carry. It covers the 40
+non-fp8 variants, not the asm loader modules:
 
 ```bash
 python -m flashinfer.rocm.prebuild_aiter_variants --list    # what the default set covers
@@ -307,8 +307,9 @@ ever saves time on. Pass `--only mha_batch_prefill` to build them anyway.
 **This driver needs a GPU**: it emits a variant by calling the op, which
 launches a kernel, so run it as a GPU-attached job.
 
-AITER MoE and the opt-in norm, rope and activation shims are covered by neither
-route; each builds on first use.
+AITER batch decode, MoE and the opt-in norm, rope and activation shims are
+covered by neither route: decode compiles its paged-attention kernel at
+`plan()`, the rest on first use.
 
 The store lives under FlashInfer's cache directory, at
 `aiter_variants/<arch>__aiter-<version>__rocm-<version>/`. That cache is
