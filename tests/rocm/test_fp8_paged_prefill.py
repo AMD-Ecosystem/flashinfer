@@ -156,6 +156,40 @@ def test_every_routed_fp8_page_size_is_numerically_right(page):
     assert float((out.float() - ref).abs().max()) < 0.5
 
 
+@pytest.mark.parametrize("backend", ["auto", "aiter"])
+@pytest.mark.parametrize("page", [1, 16, 32, 1024])
+def test_fp8_is_refused_where_native_paging_reads_out_of_bounds(page, backend):
+    """fp8 has no gather to fall back to, so head_dim 64 must raise, not page natively."""
+    device = torch.device("cuda:0")
+    _require_aiter(device)
+    fp8 = fp8_dtype()
+    # 32 is never routed: the head dim must still be the reason, since no page size fixes it.
+    if page != 32 and page not in _aiter_paged_route_page_sizes(fp8):
+        pytest.skip(f"page_size={page} is not routed natively on this build")
+
+    head_dim, npages = 64, 2
+    ws = torch.empty(64 * 1024 * 1024, dtype=torch.uint8, device=device)
+    w = flashinfer.BatchPrefillWithPagedKVCacheWrapper(ws, "NHD", backend=backend)
+    with pytest.raises(
+        NotImplementedError, match="reads past the KV cache.*No page size avoids this"
+    ):
+        w.plan(
+            torch.tensor([0, 16], dtype=torch.int32, device=device),
+            torch.tensor([0, npages], dtype=torch.int32, device=device),
+            torch.arange(npages, dtype=torch.int32, device=device),
+            torch.tensor([page], dtype=torch.int32, device=device),
+            NHQ,
+            NHKV,
+            head_dim,
+            page,
+            causal=True,
+            q_data_type=fp8,
+            kv_data_type=fp8,
+        )
+    # A q=16 plan is short enough for the flat-gather gate, which fp8 has no use for.
+    assert not w._backend_short_query_demoted, w._backend_fallback_reason
+
+
 def test_a_wrapper_that_once_chose_fa2_can_still_reach_fp8():
     """plan() went concrete on the first call and never re-resolved `auto`.
 
@@ -429,8 +463,8 @@ def test_a_non_routed_page_size_is_refused_on_either_backend(backend, s_qo):
     device = torch.device("cuda:0")
     _require_aiter(device)
     fp8 = fp8_dtype()
-    # s_qo=4 also crosses the short-query gate, which picks fa2 first; the
-    # message must still name the page size rather than fa2's missing kernel.
+    # s_qo=4 is short enough for the flat-gather gate, which fp8 skips; the
+    # message must name the route rather than fa2's missing kernel.
     with pytest.raises(NotImplementedError, match="flat-gather"):
         _plan_and_run(device, s_qo, 1024, fp8, fp8, backend=backend, page=32)
 

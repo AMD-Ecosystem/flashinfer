@@ -161,7 +161,7 @@ library's actual routing. Do not edit it by hand; run
 | :--- | :--- | :---: | :---: | :--- |
 | `batch_decode` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Under graph capture `auto` needs a declared `max_seq_len`, else it stays on fa2. |
 | `single_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. On gfx950 an unwindowed, uncapped bf16 head_dim 128 call at `qo_len` >= 2048 takes AITER's asm kernel, outside HIP graph capture; everything else is CK Tile. |
-| `batch_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | Paged and ragged, with sliding window. fp8 query/KV on the paged route (bf16 out, per-tensor descales, no LSE). Page sizes 1/16/1024 are native; fp16/bf16 are routed there only at 1024 and flat-gather below it, which measured faster. |
+| `batch_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | Paged and ragged, with sliding window. fp8 query/KV on the paged route at head_dim 128/256 (bf16 out, per-tensor descales, no LSE). Page sizes 1/16/1024 are native at head_dim 128/256 only, since AITER's paged kernel reads past the KV cache at any other; fp16/bf16 are routed there only at 1024 and flat-gather otherwise. |
 | `mla` | `aiter` -- only backend | ✅ | ✅ | DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here. |
 | `rope` | `aiter` -- opt-in | ✅ | ✅ | `apply_rope_with_cos_sin_cache` and its inplace variant, linked at the C++ level. Opt-in. |
 | `append_paged_kv_cache` | `aiter` -- opt-in | ✅ | ✅ | fp16/bf16 + NHD. Bit-exact with the in-tree kernel but slower, so `auto` picks `native`. |
@@ -228,8 +228,8 @@ except on the measured toolchain: TheRock ROCm 10.1.0 (HIP 7.16.26385, torch
 HIP the same) with amd-aiter 0.1.21.post2.** AITER's `mha_varlen_fwd` miscomputes `logits_soft_cap` at
 `head_dim=128` there, so `auto` declines it and `backend="aiter"` raises rather
 than returning wrong numbers. That toolchain builds it correctly; `auto` there
-keeps only short queries on `fa2`, where AITER is slower. Paged prefill at a native
-page size is exempt — it dispatches `mha_batch_prefill`, which is exact — and
+keeps only short queries on `fa2`, where AITER is slower. Paged prefill on the native
+paging route is exempt — it dispatches `mha_batch_prefill`, which is exact — and
 gfx942 is unaffected at every route.
 See
 [per-op notes](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md#per-op-notes).

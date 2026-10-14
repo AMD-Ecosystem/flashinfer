@@ -115,8 +115,16 @@ def _build_batch_prefill(
     built. The variant filename has no page-size axis, so any working size
     produces the artifact the loader wants.
     """
-    from . import prefill as _prefill
+    import torch
 
+    from . import prefill as _prefill
+    from .arch_caps import _device_arch, aiter_native_paged_overreads
+
+    # One .so serves every head dim, so probe at one the kernel stays in bounds at.
+    if aiter_native_paged_overreads(
+        _device_arch(torch.device("cuda", device_idx)), head_dim
+    ):
+        head_dim = 128
     sizes = sorted(_prefill._aiter_native_page_sizes()) or [16]
     errors = []
     for page_size in sizes:

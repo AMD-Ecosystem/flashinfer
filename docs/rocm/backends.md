@@ -534,7 +534,7 @@ until measured, as does an `AITER_JIT_DIR` pointing outside the installed
 amd-aiter package, whose build toolchain the version probes cannot see. gfx942 measures clean over a `qo_len` × `kv_len` sweep at
 every cap and uses AITER as normal.
 
-Paged prefill keeps AITER at a native page size, since that route takes
+Paged prefill keeps AITER on the native paging route, since that takes
 `mha_batch_prefill` instead — measured exact on amd-aiter 0.1.20 against an
 fp32 reference on both architectures — and falls back only when the run-time
 probe demotes it to a flat gather. Every other soft-cap shape is unaffected.
@@ -555,7 +555,7 @@ GQA 4 and 8, kv 512–32768; batch 8 for ragged and paged:
 The gate keys on query length only, so at kv 512 it gives up a little: there
 AITER is 0.77–0.82× on single and 0.79–0.99× on ragged inside the gated range.
 
-Native page sizes dispatch `mha_batch_prefill` and are not gated. gfx942 never
+The native paging route dispatches `mha_batch_prefill` and is not gated. gfx942 never
 had a soft-cap gate and has no row: its soft cap is correct (140 cases on 10.1,
 smaller sweeps on 10.0), its ragged and flat-gather short queries already hit the
 gates below, but its single route still loses to `fa2` at q ≤ 64 (1.67–15× at
@@ -564,7 +564,7 @@ cudagraph exceptions as the two short-query gates below.
 
 ### Short-query paged prefill avoids AITER's flat gather
 
-At a page size AITER cannot page natively, its paged prefill first
+Off AITER's native paging route, its paged prefill first
 `index_select`s the whole KV cache into a contiguous buffer. That copy is
 `O(kv)` against an `O(q·kv)` attention, so its cost decays as `1/q`: a long
 query amortises it, a short one pays it in full. `auto` therefore serves
@@ -600,7 +600,7 @@ capture-mode wrapper that demotes on one short batch stays on `fa2` for its
 lifetime, since re-promoting would swap the module a captured graph points at.
 Use a separate wrapper per query-length regime if you need both.
 
-Two paths are deliberately **not** gated. Native page sizes have no gather and
+Two paths are deliberately **not** gated. The native paging route has no gather and
 beat `fa2` even at one query row (0.93× on gfx942, 0.54× on gfx950). Decode is
 ungated on measurement rather than assertion: AITER wins every cell at 64 query
 heads (up to 7.7× on gfx950), and the 32-head cells it loses cost 5–26 µs — a
@@ -662,8 +662,15 @@ size raises `NotImplementedError` rather than falling back.
 **Being able to serve a page size natively is not a reason to.** For fp16 and
 bf16 the gather measured equal to or faster than the native kernel at every
 batch size, so `auto` keeps them on it and reaches for native paging only at
-page size 1024. fp8 is the exception: its flat-gather route would be
-`mha_varlen_fwd`, which has no fp8 kernel, so fp8 always takes native paging.
+page size 1024. fp8 has no gather — its flat-gather route would be
+`mha_varlen_fwd`, which has no fp8 kernel — so it pages natively at all three.
+
+**Native paging also needs `head_dim` 128 or 256.** At any other head dim
+`mha_batch_prefill` reads past the end of the KV cache on both architectures —
+a GPU memory fault or a hang when the cache ends at an unmapped page — so
+fp16/bf16 take the gather at every page size and fp8 raises
+`NotImplementedError`. The set is `_AITER_NATIVE_PAGED_HEAD_DIMS` in
+`flashinfer/rocm/arch_caps.py`.
 
 That list is a starting point, not a guarantee. `plan()` confirms it by
 building the kernel, and for fp16/bf16 a page size the installed AITER cannot
@@ -863,6 +870,8 @@ is HBM traffic and cache capacity, not math.
 **1.22-1.66x** over bf16 through the wrapper (gfx942, page size 16, GQA 32/8,
 causal). The constraints, all of them AITER's:
 
+* **`head_dim` must be 128 or 256** — the native paged kernel reads past the KV
+  cache at any other, and fp8 has no gather to fall back to.
 * **Output is bf16**, whatever the query dtype — there is no fp8-output kernel.
   `plan()` defaults `o_data_type` accordingly and rejects anything else.
 * **Descales are required and must be per-tensor** — a single float32 each for

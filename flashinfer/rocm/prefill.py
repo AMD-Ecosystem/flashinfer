@@ -97,7 +97,7 @@ def _reject_descale_tensors(
 
 @functools.cache
 def _aiter_paged_route_page_sizes(dtype: torch.dtype) -> frozenset:
-    """Page sizes we will *route* through the native paged kernel.
+    """Page sizes we will *route* through the native paged kernel, head dim permitting.
 
     Narrower than capability on purpose. fp8 must take it -- the flat-gather
     route runs mha_varlen_fwd, which has no fp8 kernel -- while fp16/bf16 keep
@@ -105,10 +105,8 @@ def _aiter_paged_route_page_sizes(dtype: torch.dtype) -> frozenset:
     faster than native at every batch size (docs/rocm/backends.md). Widening
     this for fp16/bf16 is a benchmark, not a one-line edit.
     """
-    # Known, unfixed, and not ours: on gfx950 the native paged kernel faults
-    # (GPU memory fault in FmhaBatchPrefillWithPagedKVCacheKernel) past kv=1024
-    # at page_size=1024, on amd-aiter 0.1.20 and 0.1.21.post2 alike. Not gated
-    # here because the failing kv boundary has not been bounded.
+    # Per dtype only: the head-dim over-read gate is applied by
+    # _aiter_not_native_reason(), which knows the device.
     native = _aiter_native_page_sizes()
     return native if dtype in FP8_PREFILL_DTYPES else native & {1024}
 
@@ -587,7 +585,32 @@ def _reject_fp8_on_fa2(dtype_q: torch.dtype, backend: str) -> None:
         )
 
 
-def _reject_fp8_off_native_paging(dtype_q: torch.dtype, route: str) -> None:
+def _aiter_not_native_reason(
+    dtype: torch.dtype, page_size: int, head_dim: int, device: torch.device
+) -> Optional[Tuple[str, bool]]:
+    """Why this paged prefill cannot page natively, and whether a page size could fix it.
+
+    None when it can. Head dim and arch come first: no page size fixes either.
+    """
+    from .arch_caps import _device_arch, aiter_native_paged_head_dims
+
+    arch = _device_arch(device)
+    safe = aiter_native_paged_head_dims(arch)
+    if safe is None:
+        return f"no AITER native-paging head-dim data for {arch}", False
+    if head_dim not in safe:
+        return (
+            f"AITER's native paged kernel reads past the KV cache at head_dim {head_dim}",
+            False,
+        )
+    if page_size not in _aiter_paged_route_page_sizes(dtype):
+        return f"page_size {page_size} is not routed natively for {dtype}", True
+    return None
+
+
+def _reject_fp8_off_native_paging(
+    dtype_q: torch.dtype, route: str, remedy: Optional[str] = None
+) -> None:
     """Raise for fp8 on a route with no fp8 kernel, whatever the backend.
 
     ``_reject_fp8_on_fa2`` covers only the fa2 arm. An explicit
@@ -596,11 +619,14 @@ def _reject_fp8_off_native_paging(dtype_q: torch.dtype, route: str) -> None:
     """
     if dtype_q in FP8_PREFILL_DTYPES:
         raise NotImplementedError(
-            f"fp8 prefill (dtype={dtype_q}) is not supported on {route}. AITER "
-            "serves fp8 only through mha_batch_prefill, which needs native "
-            "paging: use BatchPrefillWithPagedKVCacheWrapper at a natively "
-            "routed page size with per-tensor scale_q/scale_k/scale_v, or cast "
-            "q/k/v to bf16 or fp16."
+            f"fp8 prefill (dtype={dtype_q}) is not supported on {route}. "
+            + (
+                remedy
+                or "AITER serves fp8 only through mha_batch_prefill, which needs "
+                "native paging: use BatchPrefillWithPagedKVCacheWrapper at a "
+                "natively routed page size and head_dim 128 or 256 with per-tensor "
+                "scale_q/scale_k/scale_v, or cast q/k/v to bf16 or fp16."
+            )
         )
 
 
@@ -623,7 +649,7 @@ def _aiter_flat_gather_short_query(
     """Would this call pay more for AITER's flat gather than the attention saves?
 
     Returns the threshold that gated it, or ``None`` when it is not gated.
-    ``max_q_len=None`` disarms, which is how a planner says the page size pages
+    ``max_q_len=None`` disarms, which is how a planner says the call pages
     natively -- that path has no gather and beats fa2 even at one query row.
     """
     # <= 0 is an empty batch, not a short query -- same reasoning as the ragged twin.
@@ -682,9 +708,9 @@ def _flat_gather_short_query_reason(threshold: int) -> str:
     must not be re-evaluated per batch.
     """
     return (
-        f"query length <= {threshold} on a page size AITER cannot page "
-        "natively (its flat gather copies the whole KV cache, which a short "
-        "query cannot amortise)"
+        f"query length <= {threshold} off AITER's native paging route (its "
+        "flat gather copies the whole KV cache, which a short query cannot "
+        "amortise)"
     )
 
 
@@ -1017,8 +1043,7 @@ def _aiter_bootstrap_batch_ragged_prefill(
     mask_nlse, so both remaining nlogits arms are built here on first use.
 
     Used by both batch-prefill wrappers that reach this .so family: the ragged wrapper,
-    and the paged wrapper's flat-gather path (page sizes outside
-    ``_aiter_native_page_sizes()``). Both loop over return_lse here because the .so is
+    and the paged wrapper's flat-gather path (any call off the native route). Both loop over return_lse here because the .so is
     also split on lse, and plan() cannot know which run() will request.
     """
     # A store hit means the .so this would force already exists; skipping is
@@ -2429,8 +2454,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
             The implementation backend, could be ``auto``/``fa2``/``aiter``. Defaults to ``auto``.
             On ROCm gfx942/gfx950, ``auto`` selects the AITER backend when constraints are met
             (NHD layout, fp16/bf16, no custom mask, equal head dims); otherwise falls back to FA2.
-            fp8 is the one dtype exception: it is served on the natively routed paged route,
-            with per-tensor descales and a bf16 output, and declined everywhere else.
+            fp8 is the one dtype exception: it is served on the natively routed paged route
+            (head_dim 128/256), with per-tensor descales and a bf16 output, and declined
+            everywhere else.
 
         jit_args : Optional[List[Any]]
             If provided, the wrapper will use the provided arguments to create the JIT module,
@@ -2532,8 +2558,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._seq_lens_kv = None
         self._seq_lens_q = None
         self._block_tables = None
-        # Pre-computed flat-KV buffers for the AITER backend when the page
-        # size is not routed natively (see _aiter_paged_route_page_sizes()).
+        # Pre-computed flat-KV buffers for the AITER backend when the call is
+        # not routed natively (see _aiter_not_native_reason()).
         self._aiter_flat_gather_idx: Optional[torch.Tensor] = None
         self._aiter_flat_kv_indptr: Optional[torch.Tensor] = None
 
@@ -2943,30 +2969,25 @@ class BatchPrefillWithPagedKVCacheWrapper:
         )
 
         resolved_from_auto = self._backend_requested == "auto"
+        # Decided once and reused below, so every gate sees the same route.
+        not_native = _aiter_not_native_reason(
+            q_data_type, page_size, head_dim_qk, self.device
+        )
+        routes_natively = not_native is None
+        # Only the flat-gather route carries the soft-cap defect; native paging
+        # uses mha_batch_prefill, which is exact. The run-time probe below may
+        # still demote a native call to the gather -- see use_native_paging.
+        softcap_kv_len = None if routes_natively else self._max_kv_len
+        # Routed, not capable: bf16 can serve page 16 natively and still gathers.
+        # fp8 has no gather, so its refusal below must not be pre-empted by this gate.
+        gather_q_len = (
+            None
+            if routes_natively or q_data_type in FP8_PREFILL_DTYPES
+            else self._max_q_len
+        )
         if self._jit_module is not None:
             self._cached_module = self._jit_module
         else:
-            # Only the flat-gather route carries the soft-cap defect; native
-            # paging uses mha_batch_prefill, which is exact. A page size outside
-            # the native set forces flat-gather, so that is the case we can rule
-            # out up front. When native paging is merely *claimed*, the run-time
-            # probe may still fall back to flat-gather -- see plan()'s
-            # use_native_paging. Shared by the auto route and the explicit-aiter
-            # guard below so the two cannot disagree about the same call.
-            softcap_kv_len = (
-                None
-                if page_size in _aiter_paged_route_page_sizes(q_data_type)
-                else self._max_kv_len
-            )
-            # Same disarm as softcap_kv_len, and against the same set: the
-            # flat-gather penalty exists exactly when this page size is not
-            # *routed* natively. Being in the capability set is not enough --
-            # bf16 can serve page 16 natively and still be routed to the gather.
-            gather_q_len = (
-                None
-                if page_size in _aiter_paged_route_page_sizes(q_data_type)
-                else self._max_q_len
-            )
             # A short-query demotion describes one batch, not the device, so it
             # must not stick: a wrapper that served a 4-token verify would
             # otherwise stay on fa2 for every later long prefill. Mirrors
@@ -3035,11 +3056,17 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 )
             if self._backend == "aiter":
                 _require_native_fp8_dtype(q_data_type)
-            # Ahead of the fa2 message: fp8 here was declined for the page size,
-            # not the kernel, and the short-query gate can reach fa2 first.
-            if page_size not in _aiter_paged_route_page_sizes(q_data_type):
+            # Ahead of the fa2 message: fp8 here was declined for the route,
+            # not the kernel, and naming the route is what tells the caller why.
+            if not routes_natively:
+                reason, page_size_fixes = not_native
                 _reject_fp8_off_native_paging(
-                    q_data_type, "the paged flat-gather route"
+                    q_data_type,
+                    f"the paged flat-gather route ({reason})",
+                    remedy=None
+                    if page_size_fixes
+                    else "No page size avoids this; cast q/k/v to bf16 or fp16 "
+                    "(fa2 also serves an fnuz fp8 KV cache with a 2-byte query).",
                 )
             _reject_fp8_on_fa2(q_data_type, self._backend)
             if self._backend == "aiter" and _aiter_softcap_defect(
@@ -3083,7 +3110,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
             needs_mask = _aiter_needs_mask(causal, window_left, kv_len=None)
             reason = None
             with _aiter_bootstrap_lock:
-                if page_size in _aiter_paged_route_page_sizes(q_data_type):
+                if routes_natively:
                     use_native_paging = _aiter_native_paging_available(
                         q_data_type,
                         has_logits,
@@ -3099,7 +3126,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     _reject_fp8_off_native_paging(
                         q_data_type, "the paged flat-gather route"
                     )
-                    # The guard above disarmed itself because the page size looked
+                    # The guard above disarmed itself because the call looked
                     # native; the probe just proved otherwise, so this call takes
                     # flat-gather after all. Re-check against the real kv_len.
                     softcap_now = softcap_kv_len is None and _aiter_softcap_defect(
