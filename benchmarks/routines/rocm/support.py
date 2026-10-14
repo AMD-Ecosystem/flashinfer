@@ -18,7 +18,7 @@ from flashinfer.rocm.arch_caps import capability_available, normalize_arch
 # the backend names this routine's own --backends accepts). Deriving the op from
 # the arch-support matrix keeps the two from drifting; the names differ per
 # routine because the upstream CLIs disagree on what to call the native kernel.
-# MLA is absent until mla_rocm matches the CUDA wrapper.
+# MLA is absent until flashinfer.rocm.mla matches the CUDA wrapper.
 _ATTENTION = ("fa2", "auto")
 # Everything outside attention runs the library default, which upstream's CLI
 # spells "cuda" -- the same legacy name torch uses for the HIP device.
@@ -60,8 +60,8 @@ _ROCM_ROUTINE_TO_CAP_OP = {
 }
 
 # GQA group sizes the HIP decode kernel instantiates; see DISPATCH_GQA_GROUP_SIZE
-# in include/flashinfer/utils.cuh. Others raise "Unsupported group_size" from the
-# kernel, which aborts the whole test case rather than skipping one backend.
+# in include/flashinfer/rocm/dispatch.cuh. Others raise "Unsupported group_size"
+# from the kernel, which aborts the whole test case rather than skipping one backend.
 HIP_DECODE_GQA_GROUP_SIZES = frozenset({1, 2, 3, 4, 8})
 
 

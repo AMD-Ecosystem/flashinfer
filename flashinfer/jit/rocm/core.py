@@ -24,7 +24,8 @@ def check_rocm_arch() -> None:
 
     try:
         validate_flashinfer_rocm_arch(
-            arch_list=None,  # Uses FLASHINFER_ROCM_ARCH_LIST env or defaults to gfx942
+            # FLASHINFER_ROCM_ARCH_LIST, else the detected devices, else gfx942
+            arch_list=None,
             torch_cpp_ext_module=torch_cpp_ext,
             verbose=False,
         )

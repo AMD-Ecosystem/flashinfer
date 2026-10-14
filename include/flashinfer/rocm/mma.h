@@ -225,16 +225,8 @@ __device__ __forceinline__ void load_quad_transposed_fragment(uint32_t* R, const
   transpose_intra_quad_fragments(R);
 }
 
-// TODO: Verify correct matrix multiplication order for rowsum on CDNA3
-// Current assumption: s_frag × ones_vector = row_sums
-// Need to validate:
-// 1. How compute_qk stores Q×K^T result in s_frag for CDNA3
-// 2. Whether K is pre-transposed or transposed during fragment loading
-// 3. If we need s_frag × M1 or M1 × s_frag for correct row sums
-//
-// Test with known input matrices to verify:
-// - s_frag layout matches expected Q×K^T result
-// - rowsum produces correct per-row sums
+// Row sums of the s_frag tile (already in A-matrix layout), accumulated into d by an
+// MFMA against a ones B-matrix.
 template <typename DType>
 __device__ __forceinline__ void m16k16_rowsum_f16f16f32(float* d, DType* s_frag) {
   static_assert(sizeof(DType) == 2, "DType must be 16-bit type");
@@ -263,8 +255,7 @@ __device__ __forceinline__ void m16k16_rowsum_f16f16f32(float* d, DType* s_frag)
   d[3] = out.w;
 }
 
-// TODO (rimaddur) : After release 2025.08
-// FP8 operations - not implemented for MI300 yet
+// TODO (rimaddur): FP8 operations - not implemented for MI300 yet
 template <typename T>
 __device__ __forceinline__ void mma_sync_m16n16k32_row_col_f8f8f32(float* c_frag, T* a_frag,
                                                                    T* b_frag) {

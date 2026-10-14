@@ -103,7 +103,7 @@ hipError_t BatchPrefillFlatGatherDispatched(
   args.nhead_stride_o = static_cast<int32_t>(HEAD_DIM_VO);
 
   // Batch prefill uses mask_bottom_right so q[0] can attend to all prefix KV tokens
-  // (i.e. k[j <= j + kv_len - qo_len]).  mask_top_left would wrongly restrict q[0]
+  // (i.e. q[i] sees k[j <= i + kv_len - qo_len]).  mask_top_left would wrongly restrict q[0]
   // to only k[0] when kv_len > qo_len (prefill-with-history / chunked-prefill case).
   args.mask_type = needs_mask ? kAiterBatchMaskBottomRight : kAiterBatchMaskNone;
   args.window_size_left = window_left;
@@ -160,7 +160,7 @@ hipError_t BatchPrefillNativePagedDispatched(
   // mask_enum / bias_enum / quant_scale_enum are declared in CK Tile example headers at
   // global scope.  We can't include those headers here (framework-agnostic rule).  Instead
   // cast the integer values matching the enum constants (verified from mask.hpp/bias.hpp):
-  //   mask_enum::no_mask=0, mask_enum::mask_top_left=1
+  //   mask_enum::no_mask=0, mask_enum::mask_top_left=1, mask_enum::mask_bottom_right=2
   //   bias_enum::no_bias=0, quant_scale_enum::no_scale=0, quant_scale_enum::pertensor=1
   // The function pointer type uses `int` ABI for these enum class parameters.
   using mha_batch_prefill_fn =

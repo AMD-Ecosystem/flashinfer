@@ -509,8 +509,9 @@ def gen_batch_decode_aiter_module(
     head_dim_vo: int,
 ) -> JitSpec:
     # First, ahead of both the URI (which indexes filename_safe_dtype_map, so an
-    # unsupported dtype would raise KeyError) and the aiter import (absent on a
-    # py3.13 box, which would mask the refusal with ModuleNotFoundError).
+    # unsupported dtype would raise KeyError) and the aiter import (absent when
+    # amd-aiter is not installed, which would mask the refusal with
+    # ModuleNotFoundError).
     _check_aiter_decode_dtypes("batch decode (aiter)", dtype_q, dtype_kv, dtype_o)
 
     import aiter as _aiter_mod

@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-Acceptance test + timing for graph-capturable AITER decode (plan §3 #1).
+Acceptance test + timing for graph-capturable AITER decode.
 
 Covers both AITER graph contracts: capture-at-max (replay only shorter) and a
 declared max_seq_len (capture at any shape, replay anything up to the capacity).

@@ -21,15 +21,11 @@ logger.setLevel(logging.ERROR)
 
 
 def _skip_if_prefill_gated(device):
-    """Skip when the capability table gates AITER batch prefill on this toolchain.
+    """Skip when the capability table gates AITER batch prefill on this device.
 
-    A test that asks for ``backend="aiter"`` explicitly gets an
-    ``ArchCapabilityError`` out of the wrapper constructor once the capability
-    table gates that (op, backend, arch). That is the gate doing its job, so a test comparing AITER output against a
-    reference has nothing left to prove and should stand down.
-
-    Use this for tests that assert *numbers*. Tests that only assert plumbing can
-    set ``FLASHINFER_ARCH_ALLOW_KNOWN_BAD=1`` instead and keep their coverage.
+    No row gates it today. Were one added, an explicit ``backend="aiter"`` would
+    raise ``ArchCapabilityError`` from the wrapper, and a test comparing AITER
+    output against a reference would have nothing left to prove.
     """
     from flashinfer.rocm.arch_caps import capability_available, capability_reason
 
@@ -1526,13 +1522,13 @@ def test_explicit_aiter_survives_the_short_query_gate():
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("return_lse", [False, True])
 def test_batch_prefill_aiter_flat_gather_bf16(page_size, causal, return_lse):
-    """Non-native page sizes take AITER's flat-gather route, which must bootstrap its .so.
+    """bf16 page sizes off the native route take flat-gather, which must bootstrap its .so.
 
     The mha_varlen_fwd_*.so variant is keyed on (dtype, causal, has_lse, has_logits_cap)
-    — whether a logits soft cap is enabled, not its value — and
-    AITER pre-ships only a subset, so an un-bootstrapped combo fails at run() with
-    "AITER .so not found". bf16 is covered here because it is SGLang's serving dtype and
-    is a distinct .so family from the fp16 cases above.
+    — whether a logits soft cap is enabled, not its value — and AITER ships none,
+    so an un-bootstrapped combo fails at run() with "AITER .so not found". bf16 is
+    covered here because it is SGLang's serving dtype and is a distinct .so family
+    from the fp16 cases above.
     """
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
@@ -1830,8 +1826,6 @@ def test_softcap_guard_survives_a_native_page_size_degrading(backend, monkeypatc
     call to flat-gather, it lands on the defective mha_varlen_fwd and has to be
     re-guarded against the real kv_len.
     """
-    # Plumbing only -- no numbers compared, so the gfx950 causal gate is irrelevant.
-    monkeypatch.setenv("FLASHINFER_ARCH_ALLOW_KNOWN_BAD", "1")
     # Strict turns the probe into a raise, so there would be nothing to demote.
     monkeypatch.delenv("FLASHINFER_AITER_STRICT", raising=False)
     device = torch.device("cuda:0")
@@ -1878,10 +1872,6 @@ def test_softcap_guard_survives_a_native_page_size_degrading(backend, monkeypatc
 
 def test_batch_prefill_aiter_strict_mode_raises(monkeypatch):
     """FLASHINFER_AITER_STRICT=1 must surface the AITER failure instead of degrading."""
-    # Asserts plumbing and compares no numbers, so a miscompiled kernel cannot
-    # affect the outcome. Opt past the capability gate rather than skip and lose
-    # the coverage on the one architecture we can run.
-    monkeypatch.setenv("FLASHINFER_ARCH_ALLOW_KNOWN_BAD", "1")
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
@@ -2013,9 +2003,9 @@ def test_ragged_softcap_avoids_broken_aiter_kernel(kv_len, qo_len):
 def test_paged_softcap_is_numerically_correct(kv_len, page_size):
     """Causal soft-cap paged prefill must be correct whichever route plan() picks.
 
-    page_size=128 is advertised as native but the probe can degrade it to
-    flat-gather, and 16 never is; both land on the defective mha_varlen_fwd
-    unless the guard redirects. Asserts the numbers, not the route.
+    fp16 routes only page_size=1024 natively, so both sizes take flat-gather and
+    land on the defective mha_varlen_fwd unless the guard redirects. Asserts the
+    numbers, not the route.
     """
     device = torch.device("cuda:0")
     if not is_aiter_supported(device) or not _aiter_ops_importable():

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // PyTorch entry point for AITER's CK two-stage fused MoE. FlashInfer links the
-// symbol-visible AITER modules (see flashinfer/jit/aiter_source.py) and calls the
+// symbol-visible AITER modules (see flashinfer/jit/rocm/aiter_source.py) and calls the
 // kernels directly — no Python `import aiter` at runtime.
 //
 // Routing is the caller's: this takes topk_ids/topk_weights and runs

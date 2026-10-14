@@ -21,7 +21,7 @@ FLASHINFER_SUPPORTED_ROCM_ARCHS = ["gfx942", "gfx950"]
 
 
 # The architecture assumed when nothing else can be determined. Must stay equal
-# to ``jit/aiter_source.py``'s ``_DEFAULT_BUILD_ARCH``: the two are consulted
+# to ``jit/rocm/aiter_source.py``'s ``_DEFAULT_BUILD_ARCH``: the two are consulted
 # independently on a GPU-less host, and a shim built for one architecture beside
 # kernels built for another faults at run time.
 _GPULESS_FALLBACK_ARCH = "gfx942"
@@ -62,7 +62,7 @@ def _canonical_arch_list(raw: str) -> str:
     ``"gfx942;gfx950"``, matches nothing, and
     :func:`validate_flashinfer_rocm_arch` raises "FlashInfer does not support any
     of the requested ROCm architectures". ``";"`` is worth accepting because
-    ``jit/aiter_source.py`` already documents it for this same variable, and the
+    ``jit/rocm/aiter_source.py`` already documents it for this same variable, and the
     two must not disagree about their own env var.
 
     Only *syntax* is normalized. Unknown architectures are passed through so the
@@ -128,7 +128,7 @@ def resolve_target_archs(arch_list: str = None) -> str:
 
     # Deliberately the *existing* default, not "every architecture we support".
     #
-    # A fat list looks like the safer answer here and is not. `aot_hip` publishes
+    # A fat list looks like the safer answer here and is not. `rocm.aot` publishes
     # this value into FLASHINFER_ROCM_ARCH_LIST, and `resolve_aiter_build_arch()`
     # returns `env_archs[0]` when no device is visible -- so "gfx942,gfx950"
     # ships gfx950 HIP kernels beside a gfx942-only AITER shim, which faults on a
@@ -299,7 +299,7 @@ def get_system_rocm_version():
     For TheRock builds, ``hipconfig`` is used directly because it reports the
     HIP runtime version (consistent with ``torch.version.hip``), unlike
     ``.info/version`` which reports the TheRock SDK version (for example,
-    ``"7.12.0"`` when HIP is ``7.3``).
+    ``"10.1.0"`` while HIP reports ``7.16``).
 
     Returns:
         str: ROCm version like "7.1.0" or None if not detectable
@@ -754,10 +754,10 @@ def check_torch_rocm_compatibility() -> None:
             "     form a shell would read as a redirection)\n\n"
             "Pin the version. -f only *adds* to PyPI, so an unpinned install\n"
             "can pick a newer CPU-only wheel from there and land you back here.\n"
-            "Which version pairs with your ROCm release, and what to do when\n"
-            "repo.radeon.com publishes no rocm-rel- directory for it (as with\n"
-            "ROCm 10.1 in the development image), are in the Quick start:\n"
-            "https://github.com/AMD-Ecosystem/flashinfer#quick-start\n" + "=" * 70
+            "The supported ROCm/torch pairing, and why the development image\n"
+            "is the only route on ROCm 10.1 (repo.radeon.com publishes no\n"
+            'rocm-rel- directory for it), are under "Supported hardware and\n'
+            'toolchain" in https://github.com/AMD-Ecosystem/flashinfer\n' + "=" * 70
         )
 
     # ROCm version compatibility warning

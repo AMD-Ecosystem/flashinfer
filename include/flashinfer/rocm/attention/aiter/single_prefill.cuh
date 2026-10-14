@@ -135,10 +135,10 @@ hipError_t SinglePrefillWithKVCacheDispatched(Params const& params, bool causal,
       .has_logits_cap = has_logits_cap,
   };
 
-  // AITER ships two dispatcher .so templates: mha_fwd (batch-mode CK + ASM v3) and
-  // mha_varlen_fwd (group-mode CK + ASM v3). Single-prefill is batch=1, so the
-  // mha_fwd .so is the natural fit — except it has no _logits arm, so logits_soft_cap
-  // forces us onto the varlen path.
+  // Two CK Tile variant .so templates: mha_fwd (batch-mode) and mha_varlen_fwd
+  // (group-mode); the asm arm is the separately loaded module_fmha_v3_fwd. Single-prefill
+  // is batch=1, so mha_fwd is the natural fit — except it has no _logits arm, so
+  // logits_soft_cap forces us onto the varlen path.
   using mha_fwd_fn = float (*)(::aiter::mha_fwd_args, ::ck_tile::stream_config const&);
   auto fn = reinterpret_cast<mha_fwd_fn>(
       has_logits_cap ? flashinfer::aiter::get_aiter_mha_varlen_fwd_handle(key)

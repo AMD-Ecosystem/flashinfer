@@ -6,9 +6,8 @@ Guards the regressions in ``_restoring_pkg_trees``: a wheel or sdist build
 must never leave a header copy in the checkout, because ``get_include()`` would
 resolve it later and shadow edits under ``include/``.
 
-The assertions are filesystem-only and need no GPU, but collection still pulls
-in the suite's torch-importing conftest — there is no CPU-only lane to put this
-in, and ``tests/rocm`` is the only directory ``testpaths`` covers.
+The assertions are filesystem-only and need no GPU; the arch-caps conformance
+workflow runs this file with ``--noconftest`` on a CPU runner.
 """
 
 import pathlib

@@ -200,7 +200,7 @@ class TestResolveTargetArchs:
             # Qualifiers: what torch's gcnArchName looks like, so an operator
             # copying from `rocminfo` or a torch error message pastes this shape.
             ("gfx950:sramecc+:xnack-", "gfx950"),
-            # ';' is documented for this same variable by jit/aiter_source.py.
+            # ';' is documented for this same variable by jit/rocm/aiter_source.py.
             # The two consumers must not disagree about their own env var.
             ("gfx942;gfx950", "gfx942,gfx950"),
             ("gfx942; gfx950", "gfx942,gfx950"),

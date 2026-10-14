@@ -15,8 +15,21 @@ from ..._version import __version__ as flashinfer_version
 from ...rocm.arch_caps import normalize_arch
 
 #: Records which architectures an AOT kernel tree was compiled for. Lives here
-#: rather than in aot_hip so the reader owns the name and the writer imports it.
+#: rather than in flashinfer.rocm.aot so the reader owns the name and the
+#: writer imports it.
 AOT_MANIFEST_NAME = "aot_manifest.json"
+
+
+def _is_our_jit_cache_version(cache_version: str) -> bool:
+    """Our version exactly, or it plus only the arch tags build_backend appends."""
+    joiner = "." if "+" in flashinfer_version else "+"
+    prefix = flashinfer_version + joiner
+    if cache_version == flashinfer_version:
+        return True
+    if not cache_version.startswith(prefix):
+        return False
+    tags = cache_version[len(prefix) :].split(".")
+    return all(re.fullmatch(r"gfx[0-9a-f]+", tag) for tag in tags)
 
 
 def get_aot_dir(
@@ -26,7 +39,7 @@ def get_aot_dir(
 
     `has_jit_cache` is passed in rather than imported: env.py calls this while
     still executing its own module body, so importing back into it would cycle.
-    The wheel's version may carry a ROCm suffix (0.5.3+rocm6.4), hence startswith.
+    The wheel's version is ours plus an arch suffix (0.6.18+amd.2.gfx942).
     """
     if not has_jit_cache():
         return package_root / "data" / "aot"
@@ -36,7 +49,7 @@ def get_aot_dir(
     cache_version = amd_flashinfer_jit_cache.__version__
     if not os.getenv(
         "FLASHINFER_DISABLE_VERSION_CHECK"
-    ) and not cache_version.startswith(flashinfer_version):
+    ) and not _is_our_jit_cache_version(cache_version):
         raise RuntimeError(
             f"amd-flashinfer-jit-cache version ({cache_version}) does not match "
             f"flashinfer version ({flashinfer_version}). "
@@ -49,8 +62,8 @@ def get_aot_dir(
         return cache_dir
     # Somewhere that does not exist, so JitSpec.is_aot goes False and every
     # module JITs for the architecture actually present. Not the in-tree dir:
-    # that can itself hold kernels (`aot_hip --out-dir flashinfer/data/aot`),
-    # which would swap one unchecked tree for another.
+    # that can itself hold kernels (`python -m flashinfer.rocm.aot --out-dir
+    # flashinfer/data/aot`), which would swap one unchecked tree for another.
     return package_root / "data" / "aot-arch-mismatch"
 
 

@@ -16,8 +16,8 @@ does not stall, it fails, and ``backend="auto"`` silently drops to fa2.
 which launches a kernel. AITER's build machinery itself does not: ``aiter``'s
 own ``setup.py`` reaches it by a flat ``sys.path`` import of ``jit.core`` that
 never runs ``aiter/__init__.py``, so a driver written that way can be a
-``docker build`` step. This one cannot, and runs as a GPU-attached job whose
-output the image copies in.
+``docker build`` step -- the dev image's ``docker/prebuild_aiter_attention.py``
+is one. This driver is the route for installs outside that image.
 
 One build at a time, deliberately. ``_aiter_env_scope`` mutates process-global
 environment that AITER reads, so two concurrent builds in one process have the
@@ -200,11 +200,6 @@ def prebuild(
     """
     from . import prefill as _prefill
 
-    # _aiter_env_scope(None, ...) preserves an ambient AITER_JIT_DIR so the
-    # bootstraps can import what they build. That would publish a *different*
-    # AITER build's artifacts into a store tagged with the installed version,
-    # which a later process auto-discovers -- the isolation active_stores()
-    # enforces on the read side, defeated on the write side.
     # _aiter_env_scope(None, ...) preserves an ambient AITER_JIT_DIR so the
     # bootstraps can import what they build. That would publish a *different*
     # AITER build's artifacts into a store tagged with the installed version,

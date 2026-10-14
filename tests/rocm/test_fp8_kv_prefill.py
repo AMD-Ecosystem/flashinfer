@@ -32,8 +32,8 @@ WORKSPACE = 128 * 1024 * 1024
 
 
 def _skip_without_aiter():
-    """Building an AITER spec imports aiter. The wheel is cp312-only, so a
-    py3.13 image has none and the refusal tests still have to run."""
+    """Building an AITER spec imports aiter, which may not be installed; the
+    refusal tests still have to run without it."""
     pytest.importorskip("aiter")
 
 

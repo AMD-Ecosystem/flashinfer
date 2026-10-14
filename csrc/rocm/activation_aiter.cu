@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // PyTorch entry point for AITER's silu_and_mul C++ API. FlashInfer links the
-// symbol-visible AITER module (see flashinfer/jit/aiter_source.py) and calls the
+// symbol-visible AITER module (see flashinfer/jit/rocm/aiter_source.py) and calls the
 // kernel directly — no Python `import aiter` at runtime.
 
 #include <ATen/ATen.h>

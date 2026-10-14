@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Probe and lookup helpers in jit/aiter_source.py.
+"""Probe and lookup helpers in jit/rocm/aiter_source.py.
 
 Everything here runs during JIT setup, before any HIP runtime is required, so
 each probe has a not-available arm that a working box never reaches: no visible

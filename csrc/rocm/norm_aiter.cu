@@ -4,7 +4,7 @@
 // PyTorch entry points for AITER's RMSNorm kernels: plain rmsnorm and fused-add
 // rmsnorm (aiter::rmsnorm / aiter::add_rmsnorm, from module_rmsnorm_quant).
 // FlashInfer links the symbol-visible AITER module (see
-// flashinfer/jit/aiter_source.py) and calls the kernels directly — no Python
+// flashinfer/jit/rocm/aiter_source.py) and calls the kernels directly — no Python
 // `import aiter` at runtime.
 //
 // FlashInfer's fused_add_rmsnorm is in-place:

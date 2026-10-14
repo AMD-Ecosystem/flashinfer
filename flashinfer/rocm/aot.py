@@ -366,15 +366,13 @@ def _compile_and_package_modules(
     #
     # Publishing the result back into the environment is deliberate, not
     # incidental bookkeeping: the AITER shim resolves its own build architecture
-    # from FLASHINFER_ROCM_ARCH_LIST (jit/aiter_source.py), and an AOT build has
+    # from FLASHINFER_ROCM_ARCH_LIST (jit/rocm/aiter_source.py), and an AOT build has
     # no other channel to tell it what this build targets. Without this, a shim
     # built during an AOT run on a mixed or GPU-less host can disagree with the
     # kernels it is packaged alongside.
     #
-    # It is a process-global side effect that outlives the call, which is worth
-    # replacing with an explicit parameter threaded through the AOT -> JIT
-    # boundary. That is a wider change than this one; leaving the lifetime
-    # unchanged here keeps this commit to the resolution bug it is fixing.
+    # It is a process-global side effect that outlives the call: no explicit
+    # parameter carries the architecture across the AOT -> JIT boundary.
     from .compilation_context import CompilationContext
 
     # Publish the *validated* list, not the resolved one. Validation filters as
@@ -510,7 +508,7 @@ def main():
         "--f8-dtype",
         nargs="*",
         choices=["float8_e4m3fn", "float8_e5m2"],
-        help="8-bit data type",
+        help="Ignored; kept for CLI compatibility",
     )
     parser.add_argument(
         "--use-sliding-window", nargs="*", help="Use sliding window attention"
@@ -529,7 +527,7 @@ def main():
     args = parser.parse_args()
 
     # Setup paths
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parents[2]
     build_dir = Path(args.build_dir) if args.build_dir else Path.cwd()
     out_dir: Optional[Path] = Path(args.out_dir) if args.out_dir else None
 

@@ -144,10 +144,8 @@ struct KernelTraits {
   // Presently we use 16x4 thread layout for all cases.
   static constexpr uint32_t KV_THR_LAYOUT_ROW = WARP_THREAD_ROWS;
   static constexpr uint32_t KV_THR_LAYOUT_COL = WARP_THREAD_COLS;
-  // FIXME: [The comment is not correct] The constant is defined based on the
-  // matrix layout of the "D/C" accumulator matrix in a D = A*B+C computation.
-  // On CDNA3 the D/C matrices are distributed as four 4x16 bands across the
-  // 64 threads. Each thread owns one element from four different rows.
+  // Rows of the 16x16 MFMA D/C accumulator each thread holds: lane l owns column
+  // l % 16 of rows 4 * (l / 16) + {0..3}, i.e. four 4x16 bands across 64 lanes.
   static constexpr uint32_t NUM_ACCUM_ROWS_PER_THREAD = 4;
   // Number of threads that collaboratively handle the same set of matrix rows
   // in attention score computation and cross-warp synchronization.

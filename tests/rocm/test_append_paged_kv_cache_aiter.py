@@ -423,12 +423,11 @@ def test_append_empty_batch_is_a_noop_under_aiter():
 def test_append_paged_kv_cache_aiter_honors_current_stream():
     """The AITER append must run on torch's current stream, not the default one.
 
-    The shim sets only the device; reshape_and_cache_flash picks up the stream
-    itself. In amd-aiter 0.1.10 it calls at::hip::getCurrentHIPStream(), so this
-    holds. Newer AITER moved these ops to a thread-local stream set from Python,
-    which would silently put the append on the null stream instead -- and because
-    torch's default stream *is* stream 0, every other test here would still pass.
-    This is the one that would not.
+    AITER's POD reshape_and_cache_flash launches on its own thread-local stream,
+    so the shim scopes it to torch's current stream with a StreamGuard
+    (csrc/rocm/page_aiter.cu). Without it the append lands on the null stream,
+    and because torch's default stream *is* stream 0 every other test here would
+    still pass. This is the one that would not.
     """
     device = torch.device("cuda:0")
     dtype = torch.bfloat16

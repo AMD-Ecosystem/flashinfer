@@ -142,7 +142,7 @@ def test_so_names_are_unique_and_well_formed():
 
 def test_a_known_name_is_reproduced_exactly():
     """One spelled-out case, so a refactor of so_name cannot pass by agreeing
-    with itself. This file ships in the 0.1.20 wheel."""
+    with itself."""
     key = av.VariantKey(
         av.Family.MHA_VARLEN_FWD,
         dtype="bf16",

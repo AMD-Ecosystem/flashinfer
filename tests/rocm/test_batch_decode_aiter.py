@@ -212,7 +212,7 @@ def test_batch_decode_aiter_sliding_window_vs_fa2(
 ):
     """AITER PA v1 with sliding_window=window_left+1 must match FA2 with window_left.
 
-    Covers (a) the convention mapping fix in decode_rocm.py and (b) the in-kernel
+    Covers (a) the convention mapping fix in rocm/decode.py and (b) the in-kernel
     masking logic in AITER's pa_kernels.cuh. Includes the saturation regime
     (window_left >= max_kv_len-1) to exercise the no-op branch.
     """

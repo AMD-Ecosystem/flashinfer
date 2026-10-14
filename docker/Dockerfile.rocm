@@ -21,8 +21,9 @@
 #     that never executes aiter/__init__.py. Do not "simplify" it to
 #     `from aiter.jit import core` -- that runs the __init__ and needs a GPU.
 #
-# NOT torch 2.13: it drops c10::impl::cow::materialize_cow_storage, which every
-# published amd-aiter build's prebuilt prefill kernels link against.
+# NOT torch 2.13: untested; 2.12 is the version this image is validated against.
+# Prebuilt amd-aiter wheels also link c10::impl::cow::materialize_cow_storage,
+# which 2.13 removes.
 ARG BASE_IMAGE=rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.12.0
 FROM ${BASE_IMAGE}
 
@@ -153,7 +154,9 @@ RUN pip install --no-cache-dir \
 # PREBUILD_KERNELS=1 is unusable here: it rmtree's the jit dir and does
 # `from aiter.aot.flydsl.common import run_aot`, a real `import aiter`. Its
 # prebuilt modules are no loss -- FlashInfer links its own lib<module>.so built
-# from these same sources, and measured, only aiter.mla loads one of AITER's.
+# from these same sources. Of AITER's own modules it loads module_fmha_v3_fwd
+# (asm prefill) and, via aiter.mla, module_aiter_core and module_mla_asm; the
+# prebuild below builds all three alongside the attention variants.
 #
 # AITER_USE_SYSTEM_TRITON=1: above torch 2.9.1 aiter's setup.py otherwise
 # replaces the image's triton with its own build, which on this base swaps
