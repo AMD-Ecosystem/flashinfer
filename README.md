@@ -305,8 +305,7 @@ Build-time variables — `FLASHINFER_ROCM_ARCH_LIST`, `PYTORCH_ROCM_ARCH`,
 `FLASHINFER_JIT_VERBOSE`, `FLASHINFER_EXTRA_{LDFLAGS,CFLAGS,CUDAFLAGS}`,
 `FLASHINFER_OWN_HEADERS_NON_SYSTEM`, `MAX_JOBS` — live in
 [CONTRIBUTING.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md),
-which also explains how to get a debug build, since `FLASHINFER_JIT_DEBUG` is a
-**no-op on ROCm/HIP**.
+as does `FLASHINFER_JIT_DEBUG`, the debug-build switch.
 
 ## Runtime helpers
 

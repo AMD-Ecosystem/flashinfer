@@ -430,9 +430,6 @@ backend fixes only the first group.
 
 **Dropped on the AITER path; pass `backend="fa2"` if you need them:**
 
-* attention sinks (`sinks`)
-* FP8 dequant scales (`scale_q` / `scale_k` / `scale_v`) — **except** on the
-  natively paged batch-prefill route, where they are required and honoured
 * `use_fp16_qk_reduction`
 * RoPE scaling kwargs (`rope_scale`, `rope_theta`) — only meaningful
   alongside `pos_encoding_mode != "NONE"`, which AITER attention rejects
@@ -441,9 +438,25 @@ backend fixes only the first group.
 **Dropped on *both* ROCm paths — there is no backend that honours them.**
 These at least log a warning rather than failing silently:
 
-* `enable_pdl`
+* `enable_pdl=True` on the paged/ragged prefill and decode wrappers (the
+  default resolves to off and stays quiet); upstream's block-sparse and POD
+  wrappers drop it without a warning
 * multi-modal / prefix-cache helpers (`maybe_prefix_len_ptr`,
   `maybe_token_pos_in_items_ptr`, `maybe_max_item_len_ptr`)
+
+### Refused rather than ignored
+
+Ignoring these would return wrong numbers, so ROCm raises instead:
+
+* attention sinks — `sinks=` on the paged prefill and decode `run()`, and
+  `_sinks` set on the ragged prefill wrapper. No ROCm kernel applies them.
+* fp8 descale tensors (`scale_q` / `scale_k` / `scale_v`) anywhere but the
+  natively paged AITER batch-prefill route, where they are required. A paged
+  call that resolves to `fa2`, single prefill, and `BlockSparseAttentionWrapper`
+  all raise; for an fp8 KV cache with a 2-byte query pass the float `k_scale` /
+  `v_scale` instead. One exception, inherited from upstream: a block-sparse plan
+  with `R * (num_qo_heads // num_kv_heads) < 4` and no mask takes the decode
+  kernel, and upstream's `sparse.py` passes it no scale, so there they are dropped.
 
 ALiBi is not in either list: `maybe_alibi_slopes` is filled internally
 from the head count, and the user-facing route to it is

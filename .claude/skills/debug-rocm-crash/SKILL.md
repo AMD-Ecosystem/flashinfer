@@ -54,7 +54,7 @@ For an in-script view of what's being passed, wrap the suspect call with `print(
 
 - **PyTorch's ROCm masquerade.** Device strings show `cuda:0` on AMD; "CUDA error" messages may be HIP errors. The unambiguous arch field is `torch.cuda.get_device_properties(0).gcnArchName`.
 - **Wavefront = 64**, not 32. Any representative-thread `printf` ported from CUDA needs `threadIdx.x % 64 == 0` (or use the `warpSize` builtin).
-- **`FLASHINFER_JIT_DEBUG=1` is wired on the CUDA path only.** On HIP it does nothing for debug build flags (no `-O0 -g`). Add `-g` via `extra_cuda_cflags` in the JIT generator for the op being debugged, clear `~/.cache/flashinfer/`, retry. See CLAUDE.md "Non-Obvious Gotchas".
+- **`FLASHINFER_JIT_DEBUG=1` builds `-O0 -g` with asserts on.** Set it before the process imports flashinfer; modules rebuild on the flag change, but a prebuilt AOT or jit-cache `.so` is loaded as is — uninstall the jit-cache wheel first. Do not pass `-O0` through `extra_cuda_cflags`: the trailing host flag group's `-O3` wins.
 - **HIP installs are stripped.** `rocgdb` exits with `no symbol table loaded` unless you rebuild with `-g` (see previous bullet).
 - **Device `printf` flushes on `torch.cuda.synchronize()`** — works the same as CUDA.
 - **`HIP_VISIBLE_DEVICES`** is the canonical AMD scoping env var (`ROCR_VISIBLE_DEVICES` works one layer deeper). `CUDA_VISIBLE_DEVICES` may also be honored by PyTorch.

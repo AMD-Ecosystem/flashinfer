@@ -110,6 +110,7 @@ CUDA_ONLY_PARAMS: Dict[str, str] = {
     "window_right": "cute-dsl backend only",
     "v_indptr": "CUDA ragged-prefill scheduler input",
     "o_indptr": "CUDA ragged-prefill scheduler input",
+    "sinks": "attention sinks; no ROCm kernel applies them",
 }
 
 # Methods a ROCm twin may leave out. Keyed "<upstream path>::<Class>.<method>".
