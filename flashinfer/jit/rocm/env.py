@@ -20,6 +20,18 @@ from ...rocm.arch_caps import normalize_arch
 AOT_MANIFEST_NAME = "aot_manifest.json"
 
 
+def _is_our_jit_cache_version(cache_version: str) -> bool:
+    """Our version exactly, or it plus only the arch tags build_backend appends."""
+    joiner = "." if "+" in flashinfer_version else "+"
+    prefix = flashinfer_version + joiner
+    if cache_version == flashinfer_version:
+        return True
+    if not cache_version.startswith(prefix):
+        return False
+    tags = cache_version[len(prefix) :].split(".")
+    return all(re.fullmatch(r"gfx[0-9a-f]+", tag) for tag in tags)
+
+
 def get_aot_dir(
     package_root: pathlib.Path, has_jit_cache: Callable[[], bool]
 ) -> pathlib.Path:
@@ -27,7 +39,7 @@ def get_aot_dir(
 
     `has_jit_cache` is passed in rather than imported: env.py calls this while
     still executing its own module body, so importing back into it would cycle.
-    The wheel's version carries an arch suffix (0.6.18+amd.2.gfx942), hence startswith.
+    The wheel's version is ours plus an arch suffix (0.6.18+amd.2.gfx942).
     """
     if not has_jit_cache():
         return package_root / "data" / "aot"
@@ -37,7 +49,7 @@ def get_aot_dir(
     cache_version = amd_flashinfer_jit_cache.__version__
     if not os.getenv(
         "FLASHINFER_DISABLE_VERSION_CHECK"
-    ) and not cache_version.startswith(flashinfer_version):
+    ) and not _is_our_jit_cache_version(cache_version):
         raise RuntimeError(
             f"amd-flashinfer-jit-cache version ({cache_version}) does not match "
             f"flashinfer version ({flashinfer_version}). "
