@@ -7,14 +7,16 @@
 The ROCm twins declare upstream's full parameter list so a caller pinned to the
 CUDA API binds correctly and a default-valued argument costs nothing. An
 argument that actually asks for a CUDA feature raises here rather than being
-ignored, which would silently return unscaled or unmasked attention.
+ignored, which would silently return unscaled or unmasked attention; the one
+exception is ``enable_pdl``, a scheduling hint whose absence changes no result.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import warnings
+from typing import Any, Optional
 
-__all__ = ["reject_cuda_only"]
+__all__ = ["ignore_enable_pdl", "reject_cuda_only"]
 
 
 _MISSING = object()
@@ -43,3 +45,18 @@ def reject_cuda_only(
         f"{name} is a CUDA-only feature and is not supported on ROCm; "
         f"pass {name}={allowed}, or omit it"
     )
+
+
+def ignore_enable_pdl(enable_pdl: Optional[bool]) -> bool:
+    """Resolve ``enable_pdl`` to False, warning (deduplicated) if it was True.
+
+    ROCm has no programmatic dependent launch. The default (None) stays silent:
+    upstream resolves it from ``device_support_pdl()``, which is True on gfx9.
+    """
+    if enable_pdl:
+        warnings.warn(
+            "enable_pdl is not supported on ROCm and is ignored.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return False
