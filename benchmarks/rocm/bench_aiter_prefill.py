@@ -15,7 +15,7 @@ limitations under the License.
 
 AITER prefill benchmark: single-prefill and batch-paged via backend="aiter".
 
-Shapes: q=256, GQA 16/4, HD=64, causal, kv ∈ {512, 1024, 2048, 3072, 4096, 8192}.
+Shapes: q=256, GQA 16/4, HD=128, causal, kv ∈ {512, 1024, 2048, 3072, 4096, 8192}.
 Paged regimes: page_size=1024 (native-paged) and page_size=16 (flat-gather).
 The native size is read from the route set at run time, not hard-coded.
 
@@ -100,7 +100,7 @@ _Q_LEN = 256
 _KV_LENS = [512, 1024, 2048, 3072, 4096, 8192]
 _NUM_QO_HEADS = 16
 _NUM_KV_HEADS = 4
-_HEAD_DIM = 64
+_HEAD_DIM = 128
 _DTYPE = torch.float16
 _CAUSAL = True
 _BATCH = _bench_args.batch
@@ -222,6 +222,11 @@ def _make_configs() -> list[KernelConfig]:
             causal=_CAUSAL,
             q_data_type=_DTYPE,
         )
+        if wrapper._aiter_flat_gather_idx is not None:
+            raise SystemExit(
+                f"batch(native) at page {native_page}, head_dim {_HEAD_DIM} "
+                "flat-gathers on this build; the label would be wrong"
+            )
 
         flops = _BATCH * _flops(_Q_LEN, kv_len, _NUM_QO_HEADS, _HEAD_DIM, _CAUSAL)
         theo_bytes = _BATCH * _bytes(

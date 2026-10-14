@@ -1177,6 +1177,21 @@ class TestPrebuildDispatch:
         bootstraps.drv._build_batch_prefill(spec, bootstraps.drv._dtype("bf16"), 128, 0)
         assert tried == [1, 16], "it must not stop at the first failure"
 
+    @pytest.mark.parametrize("arch", ["gfx942", "gfx950"])
+    @pytest.mark.parametrize("asked,probed", [(64, 128), (96, 128), (256, 256)])
+    def test_the_paged_probe_stays_in_bounds(
+        self, bootstraps, monkeypatch, arch, asked, probed
+    ):
+        """mha_batch_prefill over-reads at head_dim 64/96, and one .so serves every head dim."""
+        from flashinfer.rocm import arch_caps
+
+        monkeypatch.setattr(arch_caps, "_device_arch", lambda _device=None: arch)
+        spec = next(s for s in av.builds() if s.family is av.Family.MHA_BATCH_PREFILL)
+        bootstraps.drv._build_batch_prefill(
+            spec, bootstraps.drv._dtype("bf16"), asked, 0
+        )
+        assert {a[5] for _, a in bootstraps.calls} == {probed}
+
     def test_every_page_size_failing_names_them_all(self, bootstraps, monkeypatch):
         def never(*_a, **_k):
             raise RuntimeError("no matching kernel found")

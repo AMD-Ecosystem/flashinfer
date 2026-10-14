@@ -1722,6 +1722,72 @@ def test_batch_prefill_aiter_falls_back_when_native_paging_missing(
     torch.testing.assert_close(o, wrapper_ref.run(q, kv_data), rtol=2e-2, atol=2e-2)
 
 
+@pytest.mark.parametrize("backend", ["aiter", "auto"])
+@pytest.mark.parametrize("head_dim,native", [(64, False), (128, True), (256, True)])
+def test_native_paging_only_at_head_dims_aiter_keeps_in_bounds(
+    head_dim, native, backend
+):
+    """mha_batch_prefill reads past the KV cache outside head_dim 128/256.
+
+    The over-read faults only when the cache ends at an unmapped page, so assert
+    the route before run(): a regressed gate fails here rather than crashing.
+    """
+    device = torch.device("cuda:0")
+    if not is_aiter_supported(device) or not _aiter_ops_importable():
+        pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
+    # fp16: the fa2 reference reuses a module the suite already builds.
+    dtype, page_size = torch.float16, 1024
+    if page_size not in _aiter_paged_route_page_sizes(dtype):
+        pytest.skip(f"page_size={page_size} is not routed natively on this build")
+    _skip_if_prefill_gated(device)
+    # A source-built AITER can reject a "native" size; plan() then gathers.
+    if native and not _aiter_native_paging_available(
+        dtype, False, True, page_size, head_dim, device.index or 0
+    ):
+        pytest.skip(f"this AITER build cannot page {dtype} at {page_size} natively")
+
+    batch_size, qo_len, kv_len = 2, 64, 2048
+    num_qo_heads, num_kv_heads = 16, 4
+    num_pages = kv_len // page_size
+    q = torch.randn(
+        batch_size * qo_len, num_qo_heads, head_dim, device=device, dtype=dtype
+    )
+    kv_data = torch.randn(
+        batch_size * num_pages,
+        2,
+        page_size,
+        num_kv_heads,
+        head_dim,
+        device=device,
+        dtype=dtype,
+    )
+    plan_args = (
+        torch.arange(batch_size + 1, dtype=torch.int32, device=device) * qo_len,
+        torch.arange(batch_size + 1, dtype=torch.int32, device=device) * num_pages,
+        torch.arange(batch_size * num_pages, dtype=torch.int32, device=device),
+        torch.full((batch_size,), page_size, dtype=torch.int32, device=device),
+        num_qo_heads,
+        num_kv_heads,
+        head_dim,
+        page_size,
+    )
+    workspace = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device=device)
+    outputs = {}
+    for requested in (backend, "fa2"):
+        wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
+            workspace, "NHD", backend=requested
+        )
+        wrapper.plan(*plan_args, causal=True, q_data_type=dtype, kv_data_type=dtype)
+        if requested == backend:
+            assert wrapper.backend == "aiter", wrapper.backend_fallback_reason
+            assert (wrapper._aiter_flat_gather_idx is None) == native, (
+                f"head_dim={head_dim} took the "
+                f"{'gather' if native else 'native paged kernel'}"
+            )
+        outputs[requested] = wrapper.run(q, kv_data)
+    torch.testing.assert_close(outputs[backend], outputs["fa2"], rtol=2e-2, atol=2e-2)
+
+
 def _plan_softcap_flat_gather(wrapper, device, page_size, kv_len, dtype):
     """plan() a defect-shape call (causal, cap>0, head_dim=128, kv_len>=512)."""
     batch_size, qo_len = 1, 16

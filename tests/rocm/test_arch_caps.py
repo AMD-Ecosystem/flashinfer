@@ -933,3 +933,30 @@ class TestAiterRaggedQLenGate:
 
     def test_unknown_arch_disarms_rather_than_blocks(self):
         assert arch_caps.aiter_ragged_gated_q_len("unknown") is None
+
+
+class TestAiterNativePagedHeadDims:
+    """AITER's native paged prefill reads past the KV cache outside these head dims.
+
+    A memory-safety gate, so it fails closed on an unknown arch; data in git log.
+    """
+
+    @pytest.mark.parametrize("arch", ["gfx942", "gfx950"])
+    @pytest.mark.parametrize(
+        "head_dim,overreads", [(64, True), (96, True), (128, False), (256, False)]
+    )
+    def test_measured_cells(self, arch, head_dim, overreads):
+        assert arch_caps.aiter_native_paged_overreads(arch, head_dim) is overreads
+
+    def test_every_supported_arch_has_a_row(self):
+        # A missing row fails closed, so a newly allowlisted arch would quietly
+        # lose native paging at every head dim rather than fail a test.
+        assert set(SUPPORTED_ARCHS) <= set(arch_caps._AITER_NATIVE_PAGED_HEAD_DIMS)
+
+    def test_unmeasured_arch_has_no_head_dims(self):
+        assert arch_caps.aiter_native_paged_head_dims("unknown") is None
+        assert arch_caps.aiter_native_paged_head_dims("gfx950") == frozenset({128, 256})
+
+    @pytest.mark.parametrize("head_dim", [64, 128])
+    def test_unknown_arch_fails_closed(self, head_dim):
+        assert arch_caps.aiter_native_paged_overreads("unknown", head_dim) is True

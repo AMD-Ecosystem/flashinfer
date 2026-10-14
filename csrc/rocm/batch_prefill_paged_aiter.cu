@@ -39,8 +39,8 @@ using flashinfer::QKVLayout;
 //   page_size            int64
 //   max_q_len            int64  (max per-sequence q length in this batch)
 //   max_kv_len           int64  (max per-sequence kv length in this batch)
-//   aiter_flat_gather_idx  [total_kv_tokens] int64 (non-native page sizes only; nullopt otherwise)
-//   aiter_flat_kv_indptr   [batch+1] int32 (non-native page sizes; cumsum of gathered tokens)
+//   aiter_flat_gather_idx  [total_kv_tokens] int64 (flat-gather route only; nullopt otherwise)
+//   aiter_flat_kv_indptr   [batch+1] int32 (flat-gather route; cumsum of gathered tokens)
 //   maybe_q/k/v_descale    [1] float32 per-tensor fp8 descales; required for fp8, else unset
 void batch_prefill_with_paged_kv_cache_aiter(
     at::Tensor q, at::Tensor paged_k_cache, at::Tensor paged_v_cache, at::Tensor qo_indptr,
@@ -132,7 +132,8 @@ void batch_prefill_with_paged_kv_cache_aiter(
     // descales checked above, so refuse rather than return unscaled numbers.
     TORCH_CHECK(!is_fp8,
                 "fp8 paged prefill requires AITER native paging; this plan resolved to the "
-                "flat-gather route, which has no fp8 kernel. Use a natively paged page size.");
+                "flat-gather route, which has no fp8 kernel. Use a natively paged page size "
+                "and head dim.");
     TORCH_CHECK(aiter_flat_kv_indptr.has_value(),
                 "aiter_flat_kv_indptr must be provided together with aiter_flat_gather_idx");
 
@@ -163,8 +164,11 @@ void batch_prefill_with_paged_kv_cache_aiter(
         static_cast<float>(sm_scale), static_cast<float>(logits_soft_cap),
         static_cast<int32_t>(window_left), causal, dtype_str, dtype_enum, stream);
   } else {
-    // Native-paged path: paged KV cache with page_size in {1, 16, 1024}.
-    // paged_k_cache layout: [max_pages, page_size, nhead_k, head_dim] (NHD linear).
+    // Native-paged path: page_size in {1, 16, 1024}, NHD [pages, page, H, D].
+    // mha_batch_prefill reads past the KV cache at other head dims; plan() routes
+    // those to the gather (arch_caps._AITER_NATIVE_PAGED_HEAD_DIMS), this backstops it.
+    TORCH_CHECK(HEAD_DIM_QK == 128 || HEAD_DIM_QK == 256,
+                "AITER native paged prefill reads past the KV cache at head_dim ", HEAD_DIM_QK);
     const int32_t num_total_pages = static_cast<int32_t>(paged_k_cache.size(0));
 
     status = flashinfer::BatchPrefillNativePagedDispatched<HEAD_DIM_QK, HEAD_DIM_VO, DTypeQ,

@@ -39,6 +39,8 @@ __all__ = [
     "aiter_asm_prefill_min_qo_len",
     "aiter_fallback_backend",
     "aiter_flat_gather_gated_q_len",
+    "aiter_native_paged_head_dims",
+    "aiter_native_paged_overreads",
     "aiter_ragged_gated_q_len",
     "aiter_softcap_defect_arch",
     "aiter_softcap_defect_detail",
@@ -288,8 +290,8 @@ _AITER_SOFTCAP_DEFECT_ARCHS = {"gfx942": False, "gfx950": True}
 _AITER_SOFTCAP_CLEAN_TOOLCHAINS = {"gfx950": (("7.16.26385", "0.1.21.post2"),)}
 
 
-# A non-native page size makes AITER gather the whole KV cache before
-# attending, an O(kv) copy against an O(q*kv) attention -- so the overhead
+# Off the native paging route (page size or head dim) AITER gathers the KV
+# before attending, an O(kv) copy against an O(q*kv) attention -- so the overhead
 # decays as 1/q and only short queries lose. The crossover differs by arch
 # because the two kernels' throughputs do; measured on amd-aiter 0.1.20,
 # ratio table in git log.
@@ -301,9 +303,9 @@ def aiter_flat_gather_gated_q_len(arch: str) -> Optional[int]:
 
     Compare with ``<=``. ``None`` for an unknown architecture disarms the gate
     rather than steering a machine that is probably fine, matching
-    :func:`aiter_softcap_defect_arch`. Applies only to page sizes AITER
-    cannot page natively; native paging is faster than fa2 even at ``q=1`` and
-    must not be gated.
+    :func:`aiter_softcap_defect_arch`. Applies only off AITER's native paging
+    route; native paging is faster than fa2 even at ``q=1`` and must not be
+    gated.
 
     Measured over head_dim 128, GQA groups {4, 8}, kv_len {512, 4096, 32768}.
     It is a per-arch scalar, so a much larger head_dim or GQA group is steered
@@ -326,6 +328,32 @@ def aiter_ragged_gated_q_len(arch: str) -> Optional[int]:
     this accessor, so ``test_arch_caps`` asserts membership too.
     """
     return _AITER_RAGGED_GATED_Q_LEN.get(normalize_arch(arch))
+
+
+# AITER's native paged prefill (mha_batch_prefill) reads past the end of the KV
+# cache at any head dim outside this set, at every page size it pages natively:
+# a fault or hang when the cache ends at an unmapped page. Tail-guarded on
+# amd-aiter 0.1.21.post2 / ROCm 10.1; data in git log.
+_AITER_NATIVE_PAGED_HEAD_DIMS = {
+    "gfx942": frozenset({128, 256}),
+    "gfx950": frozenset({128, 256}),
+}
+
+
+def aiter_native_paged_head_dims(arch: str) -> Optional[frozenset]:
+    """Head dims AITER's native paged prefill stays in bounds at; None if unmeasured."""
+    return _AITER_NATIVE_PAGED_HEAD_DIMS.get(normalize_arch(arch))
+
+
+def aiter_native_paged_overreads(arch: str, head_dim: int) -> bool:
+    """Whether AITER's native paged prefill may read past the KV cache at head_dim.
+
+    True for an unknown architecture: unlike the performance gates this one
+    guards memory safety. Failing closed costs fp16/bf16 the flat gather and
+    makes fp8, which has none, raise.
+    """
+    safe = aiter_native_paged_head_dims(arch)
+    return safe is None or head_dim not in safe
 
 
 # Where a toolchain fix opened soft-capped causal prefill to AITER, its varlen
@@ -549,7 +577,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
             _OK_942,
             ArchSupport(Support.SUPPORTED, evidence=_MEASURED_950),
         ),
-        note="Paged and ragged, with sliding window. fp8 query/KV on the paged route (bf16 out, per-tensor descales, no LSE). Page sizes 1/16/1024 are native; fp16/bf16 are routed there only at 1024 and flat-gather below it, which measured faster.",
+        note="Paged and ragged, with sliding window. fp8 query/KV on the paged route at head_dim 128/256 (bf16 out, per-tensor descales, no LSE). Page sizes 1/16/1024 are native at head_dim 128/256 only, since AITER's paged kernel reads past the KV cache at any other; fp16/bf16 are routed there only at 1024 and flat-gather otherwise.",
         fallback="fa2",
     ),
     # No alternative backend -- hence no fallback=.
