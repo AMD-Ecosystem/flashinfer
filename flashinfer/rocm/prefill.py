@@ -2780,11 +2780,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
         block_tables: Optional[torch.Tensor]
             A uint32 2D tensor indicating the block table of each prompt. shape: ``[batch_size, max_num_blocks_per_seq]``.
         max_token_per_sequence: Optional[int],
-            Max query length over the batch. When given, plan() uses it instead of
-            copying ``qo_indptr`` to the host to compute it.
+            Upstream's cuDNN backend only; must be ``None`` on ROCm.
         max_sequence_kv: Optional[int],
-            Max KV length over the batch. When given, plan() uses it instead of
-            computing it from the host copy of the paged-KV metadata.
+            Upstream's cuDNN backend only; must be ``None`` on ROCm.
         Note
         ----
         The :meth:`plan` method should be called before any :meth:`run` or
@@ -2799,6 +2797,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
         """
         reject_cuda_only("fixed_split_size", fixed_split_size, None)
         reject_cuda_only("disable_split_kv", disable_split_kv, False)
+        reject_cuda_only("max_token_per_sequence", max_token_per_sequence, None)
+        reject_cuda_only("max_sequence_kv", max_sequence_kv, None)
         q_data_type = canonicalize_torch_dtype(q_data_type)
         if kv_data_type is None:
             kv_data_type = q_data_type
@@ -2848,31 +2848,22 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._token_pos_in_items_len = token_pos_in_items_len
         self._max_item_len_ptr = max_item_len_ptr
 
-        # NOTE(Zihao): only required if qo_indptr/paged_kv_indptr are device tensors
-        if max_token_per_sequence is not None:
-            self._max_q_len = max_token_per_sequence
-        else:
-            qo_indptr_host = qo_indptr.to("cpu")
-            total_num_rows = qo_indptr_host[-1]
-            self._max_q_len = int(
-                (qo_indptr_host[1:] - qo_indptr_host[:-1]).max().item()
-            )
+        qo_indptr_host = qo_indptr.to("cpu")
+        total_num_rows = qo_indptr_host[-1]
+        self._max_q_len = int((qo_indptr_host[1:] - qo_indptr_host[:-1]).max().item())
 
-        if max_sequence_kv is not None:
-            self._max_kv_len = max_sequence_kv
-        else:
-            paged_kv_indptr_host = paged_kv_indptr.to("cpu")
-            paged_kv_last_page_len_host = paged_kv_last_page_len.to("cpu")
-            if seq_lens is None:
-                kv_lens_arr_host = get_seq_lens(
-                    paged_kv_indptr_host, paged_kv_last_page_len_host, page_size
-                )
-            else:
-                kv_lens_arr_host = seq_lens.cpu().flatten()
-            self._kv_lens_buffer[: len(kv_lens_arr_host)].copy_(
-                kv_lens_arr_host, non_blocking=non_blocking
+        paged_kv_indptr_host = paged_kv_indptr.to("cpu")
+        paged_kv_last_page_len_host = paged_kv_last_page_len.to("cpu")
+        if seq_lens is None:
+            kv_lens_arr_host = get_seq_lens(
+                paged_kv_indptr_host, paged_kv_last_page_len_host, page_size
             )
-            self._max_kv_len = max(kv_lens_arr_host).item()
+        else:
+            kv_lens_arr_host = seq_lens.cpu().flatten()
+        self._kv_lens_buffer[: len(kv_lens_arr_host)].copy_(
+            kv_lens_arr_host, non_blocking=non_blocking
+        )
+        self._max_kv_len = max(kv_lens_arr_host).item()
 
         if self.is_cuda_graph_enabled:
             if self._max_total_num_rows is None:
