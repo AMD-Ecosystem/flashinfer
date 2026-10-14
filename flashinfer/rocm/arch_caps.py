@@ -326,9 +326,9 @@ def aiter_ragged_gated_q_len(arch: str) -> Optional[int]:
 
 
 # AITER's native paged prefill (mha_batch_prefill) reads past the end of the KV
-# cache at any head dim outside this set, at every page size it pages natively:
-# a fault or hang when the cache ends at an unmapped page. Tail-guarded on
-# amd-aiter 0.1.21.post2 / ROCm 10.1; data in git log.
+# cache at head_dim 64 and 96, at every page size it pages natively: a fault or
+# hang when the cache ends at an unmapped page. Other head dims are unmeasured,
+# so gated too. Tail-guarded on amd-aiter 0.1.21.post2 / ROCm 10.1; data in git log.
 _AITER_NATIVE_PAGED_HEAD_DIMS = {
     "gfx942": frozenset({128, 256}),
     "gfx950": frozenset({128, 256}),
@@ -562,7 +562,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "single_prefill",
         "aiter",
         _archs(_OK_942, _OK_950),
-        note="MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP. On gfx950 an unwindowed, uncapped bf16 head_dim 128 call at `qo_len` >= 2048 takes AITER's asm kernel, outside HIP graph capture; everything else is CK Tile.",
+        note="MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. No fp8 query (`mha_fwd` has no fp8 kernel); an fp8 KV cache with a 2-byte query runs on fa2. On gfx950 an unwindowed, uncapped bf16 head_dim 128 call at `qo_len` >= 2048 takes AITER's asm kernel, outside HIP graph capture; everything else is CK Tile.",
         fallback="fa2",
     ),
     Capability(
@@ -572,7 +572,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
             _OK_942,
             ArchSupport(Support.SUPPORTED, evidence=_MEASURED_950),
         ),
-        note="Paged and ragged, with sliding window. fp8 query/KV on the paged route at head_dim 128/256 (bf16 out, per-tensor descales, no LSE). Page sizes 1/16/1024 are native at head_dim 128/256 only, since AITER's paged kernel reads past the KV cache at any other; fp16/bf16 are routed there only at 1024 and flat-gather otherwise.",
+        note="Paged and ragged, with sliding window. fp8 query/KV on the paged route at head_dim 128/256 (bf16 out, per-tensor descales, no LSE). Page sizes 1/16/1024 are native at head_dim 128/256 only, since AITER's paged kernel reads past the KV cache at 64/96 (others unmeasured); fp16/bf16 are routed there only at 1024 and flat-gather otherwise.",
         fallback="fa2",
     ),
     # No alternative backend -- hence no fallback=.
@@ -580,7 +580,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "mla",
         "aiter",
         _archs(_OK_942, ArchSupport(Support.SUPPORTED, evidence=_MEASURED_950_MLA)),
-        note="DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here.",
+        note="512 compressed-KV + 64 rope (DeepSeek V2/V3); fp16/bf16. No HIP kernel exists, so `auto` resolves here.",
     ),
     Capability(
         "rope",

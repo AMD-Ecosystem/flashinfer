@@ -21,6 +21,7 @@ def batch_prefill_with_paged_kv_cache_example(
     logits_soft_cap: float,
     return_lse: bool,
     contiguous_kv: bool,
+    backend: str = "auto",
 ):
     """
     Run batch_prefill_with_paged_kv_cache and verify the output against single_prefill_with_kv_cache implementation
@@ -38,6 +39,7 @@ def batch_prefill_with_paged_kv_cache_example(
     print(f"  pos_encoding_mode={pos_encoding_mode}")
     print(f"  logits_soft_cap={logits_soft_cap}")
     print(f"  return_lse={return_lse}")
+    print(f"  backend={backend}")
     print(f"  contiguous_kv={contiguous_kv}")
     print("\n")
 
@@ -105,7 +107,7 @@ def batch_prefill_with_paged_kv_cache_example(
     # temporary buffer requirements for split-KV attention.
     workspace_buffer = torch.empty(512 * 1024 * 1024, dtype=torch.int8, device="cuda:0")
     wrapper = flashinfer.prefill.BatchPrefillWithPagedKVCacheWrapper(
-        workspace_buffer, kv_layout
+        workspace_buffer, kv_layout, backend=backend
     )
     # Create auxiliary data structures for batch prefill attention
     logits_soft_cap = logits_soft_cap if logits_soft_cap > 0 else None
@@ -409,13 +411,13 @@ if __name__ == "__main__":
     batch_prefill_with_paged_kv_cache_example(
         12, 54, 37, 16, 8, 8, 128, True, "HND", "NONE", 0.0, False, True
     )
-    # Tests the partition_kv=True mode
+    # Tests the fa2 kernel's partition_kv=True mode; `auto` would send it to AITER
     batch_prefill_with_paged_kv_cache_example(
-        12, 512, 127, 1, 4, 4, 128, False, "NHD", "NONE", 0.0, True, True
+        12, 512, 127, 1, 4, 4, 128, False, "NHD", "NONE", 0.0, True, True, backend="fa2"
     )
-    # Tests the allocation of the workspace buffer
+    # Tests the allocation of the fa2 kernel's split-KV workspace buffer
     batch_prefill_with_paged_kv_cache_example(
-        12, 512, 37, 1, 4, 32, 128, False, "NHD", "NONE", 0.0, True, True
+        12, 512, 37, 1, 4, 32, 128, False, "NHD", "NONE", 0.0, True, True, backend="fa2"
     )
 
     # ===============================

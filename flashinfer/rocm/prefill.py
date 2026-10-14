@@ -600,7 +600,8 @@ def _aiter_not_native_reason(
         return f"no AITER native-paging head-dim data for {arch}", False
     if head_dim not in safe:
         return (
-            f"AITER's native paged kernel reads past the KV cache at head_dim {head_dim}",
+            f"head_dim {head_dim} is outside {sorted(safe)}, the head dims AITER's "
+            "native paged kernel is verified at (it reads past the KV cache at 64/96)",
             False,
         )
     if page_size not in _aiter_paged_route_page_sizes(dtype):
