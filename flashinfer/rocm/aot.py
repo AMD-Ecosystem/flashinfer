@@ -332,6 +332,14 @@ def compile_and_package_modules(
         verbose: Whether to print verbose build output
         skip_prebuilt: Whether to skip pre-built modules
     """
+    from ..jit.rocm.core import jit_debug_enabled
+
+    # build_flags reads it from the environment, which a wheel build inherits.
+    if jit_debug_enabled():
+        raise RuntimeError(
+            "FLASHINFER_JIT_DEBUG=1 would build the packaged AOT modules -O0 -g; "
+            "unset it to build them."
+        )
     with _redirected_jit_env(build_dir):
         _compile_and_package_modules(
             out_dir, build_dir, project_root, config, verbose, skip_prebuilt

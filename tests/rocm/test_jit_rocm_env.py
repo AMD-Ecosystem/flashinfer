@@ -378,6 +378,7 @@ def test_verbose_drops_ndebug(monkeypatch):
     from flashinfer.jit.core import current_compilation_context
     from flashinfer.jit.rocm.core import build_flags
 
+    monkeypatch.delenv("FLASHINFER_JIT_DEBUG", raising=False)
     monkeypatch.setenv("FLASHINFER_JIT_VERBOSE", "1")
     _, verbose_flags = build_flags(current_compilation_context)
     monkeypatch.setenv("FLASHINFER_JIT_VERBOSE", "0")
@@ -385,6 +386,37 @@ def test_verbose_drops_ndebug(monkeypatch):
 
     assert "-DNDEBUG" not in verbose_flags
     assert "-DNDEBUG" in quiet_flags
+
+
+@pytest.mark.parametrize("verbose", ["0", "1"])
+def test_jit_debug_builds_unoptimised(monkeypatch, verbose):
+    """FLASHINFER_JIT_DEBUG=1 must reach both flag groups with no -O3 left.
+
+    The hip_compile rule ends with $cflags, so an -O3 surviving there would
+    outrank any -O0 placed in cuda_cflags.
+    """
+    from flashinfer.jit.rocm.core import _warn_debug_build, build_flags
+
+    class _StubContext:
+        def get_hipcc_flags_list(self):
+            return ["--offload-arch=gfx942"]
+
+    monkeypatch.setenv("FLASHINFER_JIT_VERBOSE", verbose)
+    monkeypatch.setenv("FLASHINFER_JIT_DEBUG", "1")
+    _warn_debug_build.cache_clear()
+    # Ambient, so it would reach a jit-cache wheel build unannounced.
+    with pytest.warns(UserWarning, match="FLASHINFER_JIT_DEBUG=1"):
+        cflags, cuda_cflags = build_flags(_StubContext())
+    for flags in (cflags, cuda_cflags):
+        assert "-O0" in flags and "-g" in flags
+        assert "-O3" not in flags
+    assert "-DNDEBUG" not in cuda_cflags
+
+    monkeypatch.setenv("FLASHINFER_JIT_DEBUG", "0")
+    cflags, cuda_cflags = build_flags(_StubContext())
+    for flags in (cflags, cuda_cflags):
+        assert "-O3" in flags and "-O0" not in flags
+    _warn_debug_build.cache_clear()
 
 
 def test_activation_template_targets_the_forked_rocm_header():

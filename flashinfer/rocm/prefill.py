@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 import torch
 from .aiter_utils import handle_aiter_probe_failure
-from .api_compat import reject_cuda_only
+from .api_compat import ignore_enable_pdl, reject_cuda_only
 from .arch_caps import capability_reason, require_capability
 from ..jit.core import logger
 from ..jit.rocm import aiter_variants as _variants
@@ -51,7 +51,6 @@ from ..utils import (
     _get_cache_buf,
     _unpack_paged_kv_cache,
     canonicalize_torch_dtype,
-    device_support_pdl,
     is_float8,
     plan_info_vec_as_tensor,
     register_custom_op,
@@ -74,6 +73,26 @@ FP8_PREFILL_DTYPES = (torch.float8_e4m3fnuz, torch.float8_e4m3fn)
 
 # fp8 prefill writes bf16: AITER ships no fp8-output prefill kernel.
 FP8_PREFILL_OUT_DTYPE = torch.bfloat16
+
+
+_K_V_SCALE_HINT = (
+    "for an fp8 KV cache with a 2-byte query pass the float k_scale/v_scale instead"
+)
+
+
+def _reject_descale_tensors(
+    where: str,
+    scale_q: Optional[torch.Tensor],
+    scale_k: Optional[torch.Tensor],
+    scale_v: Optional[torch.Tensor],
+    hint: str = _K_V_SCALE_HINT,
+) -> None:
+    """Refuse fp8 descale tensors on a route whose kernel never reads them."""
+    if scale_q is not None or scale_k is not None or scale_v is not None:
+        raise NotImplementedError(
+            f"{where}: scale_q/scale_k/scale_v are honoured only by "
+            f"BatchPrefillWithPagedKVCacheWrapper on the AITER paged route; {hint}."
+        )
 
 
 @functools.cache
@@ -1506,6 +1525,16 @@ def get_batch_prefill_module(backend, *args):
         maybe_partial_lse: Optional[torch.Tensor] = None,
     ) -> None:
         assert not is_float8(q)
+        # Reached directly by BlockSparseAttentionWrapper, which has no k_scale/v_scale.
+        if scale_q is not None or scale_k is not None or scale_v is not None:
+            _reject_descale_tensors(
+                "fa2 paged prefill",
+                scale_q,
+                scale_k,
+                scale_v,
+                hint="for a per-tensor fp8 KV scale, fold it into plan(sm_scale=...) "
+                "and multiply the output by the v scale",
+            )
         paged_run_func(
             float_workspace_buffer,
             int_workspace_buffer,
@@ -1879,15 +1908,10 @@ def single_prefill_with_kv_cache(
         The key tensor, shape: ``[kv_len, num_kv_heads, head_dim_vo]`` if :attr:`kv_layout`
         is ``NHD``, ``[num_kv_heads, kv_len, head_dim_vo]`` if :attr:`kv_layout` is
         ``HND``.
-    scale_q : Optional[torch.Tensor]
-        The scale tensor for query, per-head quantization with shape: ``[num_qo_heads]``.
-        Used with FP8 Quantization. If not provided, will be set to ``1.0``.
-    scale_k : Optional[torch.Tensor]
-        The scale tensor for key, per-head quantization with shape: ``[num_kv_heads]``.
-        Used with FP8 Quantization. If not provided, will be set to ``1.0``.
-    scale_v : Optional[torch.Tensor]
-        The scale tensor for value, per-head quantization with shape: ``[num_kv_heads]``.
-        Used with FP8 Quantization. If not provided, will be set to ``1.0``.
+    scale_q, scale_k, scale_v : Optional[torch.Tensor]
+        Must be ``None`` on ROCm: no single-prefill kernel applies descale tensors,
+        so passing one raises. For an fp8 KV cache use the float ``k_scale`` /
+        ``v_scale`` below.
     o_dtype : Optional[torch.dtype]
         The output tensor data type, if not provided, will be set to the same as the q.
         This is necessary as output dtype cannot be automatically inferred in quant.
@@ -1987,6 +2011,7 @@ def single_prefill_with_kv_cache(
     `grouped query attention <https://arxiv.org/abs/2305.13245>`_.
     """
     reject_cuda_only("kv_cache_sf", kv_cache_sf, None)
+    _reject_descale_tensors("single prefill", scale_q, scale_k, scale_v)
 
     _check_pos_encoding_mode(pos_encoding_mode)
     _check_kv_layout(kv_layout)
@@ -2035,12 +2060,6 @@ def single_prefill_with_kv_cache(
                 "outright, and AITER compiles one dtype for all three."
             )
         assert q.shape[-1] == k.shape[-1] == v.shape[-1]
-        if scale_q is None:
-            scale_q = torch.ones(q.shape[1], dtype=torch.float32, device=q.device)
-        if scale_k is None:
-            scale_k = torch.ones(k.shape[1], dtype=torch.float32, device=q.device)
-        if scale_v is None:
-            scale_v = torch.ones(v.shape[1], dtype=torch.float32, device=q.device)
 
     resolved_from_auto = backend == "auto"
     kv_len = k.shape[0] if kv_layout == "NHD" else k.shape[1]
@@ -3388,14 +3407,28 @@ class BatchPrefillWithPagedKVCacheWrapper:
         )
         reject_cuda_only("use_fp16_softmax", use_fp16_softmax, None, neutral=False)
         reject_cuda_only("uses_spcompress", uses_spcompress, None, neutral=False)
-
-        if enable_pdl is None:
-            enable_pdl = device_support_pdl(q.device)
-        if enable_pdl:
-            logger.warning(
-                "enable_pdl is not supported in the HIP/ROCm backend and will be ignored. "
-                "This parameter is only effective on CUDA devices with sm_90+."
+        # No ROCm prefill kernel applies attention sinks; dropping them is wrong output.
+        reject_cuda_only("sinks", sinks, None)
+        has_descale = scale_q is not None or scale_k is not None or scale_v is not None
+        if has_descale and self._jit_module is not None:
+            _reject_descale_tensors(
+                "a custom variant runs the fa2 kernel",
+                scale_q,
+                scale_k,
+                scale_v,
+                hint="pass them as run() arguments the variant declares",
             )
+        if has_descale and self._backend != "aiter":
+            why = self._backend_fallback_reason
+            _reject_descale_tensors(
+                f"this call resolved to fa2{f' ({why})' if why else ''}",
+                scale_q,
+                scale_k,
+                scale_v,
+            )
+
+        # ROCm has no PDL: the default resolves to off, and only an explicit request warns.
+        enable_pdl = ignore_enable_pdl(enable_pdl)
         if self._prefix_len_ptr is not None or self._token_pos_in_items_ptr is not None:
             logger.warning(
                 "Token position tracking features (prefix_len_ptr, token_pos_in_items_ptr) "
@@ -3569,12 +3602,6 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     scale_v,
                 ]
             else:
-                if scale_q is not None or scale_k is not None or scale_v is not None:
-                    raise NotImplementedError(
-                        "scale_q/scale_k/scale_v are fp8 descales honoured only by "
-                        "the AITER paged route; this call resolved to fa2, which "
-                        f"would ignore them ({self._backend_fallback_reason})."
-                    )
                 po, plse = partial_state if partial_state is not None else (None, None)
                 run_args += [po, plse]
 
@@ -4370,9 +4397,15 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         """
         reject_cuda_only("o_scale", o_scale, None, neutral=1.0)
         reject_cuda_only("kv_cache_sf", kv_cache_sf, None)
+        # vLLM stores attention sinks on the wrapper for upstream's fmha_v2 route.
+        if getattr(self, "_sinks", None) is not None:
+            raise NotImplementedError(
+                "attention sinks were set on the wrapper (_sinks), but no ROCm "
+                "ragged prefill kernel applies them"
+            )
 
-        if enable_pdl is None:
-            enable_pdl = device_support_pdl(q.device)
+        # ROCm has no PDL: the default resolves to off, and only an explicit request warns.
+        enable_pdl = ignore_enable_pdl(enable_pdl)
         _check_cached_qkv_data_type(
             q, k, self._cached_q_data_type, self._cached_kv_data_type
         )

@@ -85,17 +85,16 @@ PyPI, so an unpinned install can pick a CPU-only wheel. Verify with
 
 ## Non-Obvious Gotchas
 
-**JIT build.ninja caching**: `JitSpec.build()` only writes `build.ninja` when
-the file is missing. Changing env vars (`FLASHINFER_ROCM_ARCH_LIST`, extra
-cflags) is a **silent no-op** unless you call `spec.write_ninja()` first.
+**Where a flag change does not reach**: `JitSpec.build()` rewrites
+`build.ninja` when its content changes and ninja rebuilds, but a prebuilt AOT or
+jit-cache `.so` is loaded and never rebuilt, `FLASHINFER_ROCM_ARCH_LIST` is
+resolved once at import, and a `functools.cache`d module getter keeps its spec
+for the life of the process.
 
-**`FLASHINFER_JIT_DEBUG=1` is a no-op on ROCm/HIP**: the env var is read in
-[`flashinfer/jit/core.py`](flashinfer/jit/core.py) only on the `IS_CUDA` branch
-(where it adds `-O0 -g -G`). The `IS_HIP` branch ignores it entirely. To get a
-debug build on ROCm, append `"-O0", "-g"` via `extra_cuda_cflags` in the op's
-JIT generator (the HIP path injects `-O3` before `extra_cuda_cflags`, so trailing
-`-O0` is what actually overrides it on the hipcc command line) and clear
-`~/.cache/flashinfer/`.
+**`FLASHINFER_JIT_DEBUG=1` on ROCm** builds `-O0 -g` without `-DNDEBUG`
+(`flashinfer/jit/rocm/core.py::build_flags`), and the AOT build refuses it. The
+`hip_compile` rule ends with `$cflags`, so an `-O` level passed through
+`extra_cuda_cflags` or `FLASHINFER_EXTRA_CUDAFLAGS` is silently outranked.
 
 **Framework separation**: Torch headers **must not** be included in `include/`
 files. `include/` is framework-agnostic (raw pointers only);

@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 import torch
 
-from .api_compat import reject_cuda_only
+from .api_compat import ignore_enable_pdl, reject_cuda_only
 from ..jit import (
     gen_batch_decode_aiter_module,
     gen_batch_decode_module,
@@ -59,7 +59,6 @@ from ..utils import (
     _unpack_paged_kv_cache,
     canonicalize_torch_dtype,
     ceil_div,
-    device_support_pdl,
     is_float8,
     plan_info_vec_as_tensor,
     register_custom_op,
@@ -1131,8 +1130,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
         self._plan_info: Optional[torch.Tensor] = None
         self._batch_size: int = 0
         self._q_len_per_req: Optional[int] = None
-        # ROCm never supports PDL; cache once to avoid per-call device property lookup.
-        self._pdl_supported = device_support_pdl(float_workspace_buffer.device)
 
     @property
     def use_tensor_cores(self) -> bool:
@@ -2044,6 +2041,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
             None,
         )
         reject_cuda_only("kv_cache_sf", kv_cache_sf, None)
+        # No ROCm decode kernel applies attention sinks; dropping them is wrong output.
+        reject_cuda_only("sinks", sinks, None)
 
         # Resolved before the AITER branch below, not just before the tensor-core
         # one: AITER's PA v1 kernel reads q as [batch, heads, dim], so a query
@@ -2104,15 +2103,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
         # No use_tensor_cores check here: plan() refuses q_len_per_req > 1 without
         # it, and the equality above ties this call to that plan.
 
-        if enable_pdl is None:
-            enable_pdl = self._pdl_supported
-        if enable_pdl:
-            warnings.warn(
-                "enable_pdl is not supported in the HIP/ROCm backend and will be ignored.",
-                UserWarning,
-                stacklevel=2,
-            )
-            enable_pdl = False
+        # ROCm has no PDL: the default resolves to off, and only an explicit request warns.
+        enable_pdl = ignore_enable_pdl(enable_pdl)
         k_cache, v_cache = _unpack_paged_kv_cache(paged_kv_cache, self._kv_layout)
         if self._kv_layout == "NHD":
             page_size = k_cache.shape[1]

@@ -396,25 +396,25 @@ runtime ones are tabulated in [README.md](README.md#environment-variables).
 | `FLASHINFER_ROCM_ARCH_LIST` | Target architectures, `,`- or `;`-separated (`"gfx942,gfx950"`). Overrides autodetection. |
 | `PYTORCH_ROCM_ARCH` | When set, the requested architectures must be a subset of torch's, else the build errors. |
 | `FLASHINFER_JIT_VERBOSE` | Show the ninja and compiler output. |
+| `FLASHINFER_JIT_DEBUG` | Build JIT modules `-O0 -g` with asserts on; see below. |
 | `FLASHINFER_EXTRA_CFLAGS` | Extra host compile flags. |
 | `FLASHINFER_EXTRA_CUDAFLAGS` | Extra HIP device compile flags. |
 | `FLASHINFER_EXTRA_LDFLAGS` | Extra link flags. |
 | `FLASHINFER_OWN_HEADERS_NON_SYSTEM` | Include this fork's headers with `-I` rather than `-isystem`, so warnings apply to them. |
 | `MAX_JOBS` | ninja parallelism. |
 
-**JIT cache silently sticky.** `JitSpec.build()` only writes
-`build.ninja` when the file is missing, so changing env vars
-(`FLASHINFER_ROCM_ARCH_LIST`, extra cflags) is a **silent no-op**
-unless you either `rm -rf ~/.cache/flashinfer/` or call
-`spec.write_ninja()` explicitly. When debugging build flags, always
-clear the cache first.
+**Where a flag change does not reach.** `JitSpec.build()` rewrites
+`build.ninja` whenever its content changes, and ninja then rebuilds. Three
+things stay as they were: a prebuilt AOT or jit-cache `.so` is loaded and never
+rebuilt; `FLASHINFER_ROCM_ARCH_LIST` is resolved once, at `import flashinfer`;
+and a module getter cached with `functools.cache` keeps its spec for the life
+of the process.
 
-**Debug builds.** `FLASHINFER_JIT_DEBUG=1` is a no-op on ROCm/HIP — it
-only injects debug flags on the CUDA branch. To get a debug build on
-ROCm, append `"-O0", "-g"` via `extra_cuda_cflags` in the op's JIT
-generator (the HIP path injects `-O3` before `extra_cuda_cflags`, so
-the trailing `-O0` is what actually overrides it on the hipcc command
-line) and clear `~/.cache/flashinfer/`.
+**Debug builds.** `FLASHINFER_JIT_DEBUG=1` compiles with `-O0 -g` and
+without `-DNDEBUG`; unlike CUDA, `FLASHINFER_JIT_VERBOSE=1` alone does not
+imply it, and the AOT build refuses it so a debug build never ships. An `-O` level in
+`FLASHINFER_EXTRA_CUDAFLAGS` has no effect: the device compile line ends
+with the host flag group, whose own `-O` wins.
 
 # Pre-Commit
 

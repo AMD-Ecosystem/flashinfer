@@ -106,6 +106,15 @@ def test_gen_all_modules_deduplication():
     assert len(names) == len(set(names)), "Found duplicate module names"
 
 
+def test_aot_build_refuses_a_debug_environment(monkeypatch, tmp_path):
+    """build_flags honours FLASHINFER_JIT_DEBUG, so a wheel built under it would ship -O0."""
+    monkeypatch.setenv("FLASHINFER_JIT_DEBUG", "1")
+    with pytest.raises(RuntimeError, match="FLASHINFER_JIT_DEBUG=1"):
+        compile_and_package_modules(
+            out_dir=None, build_dir=tmp_path, project_root=tmp_path
+        )
+
+
 def test_compile_and_package_minimal():
     """Test the full compile and package workflow with minimal config.
 
@@ -578,7 +587,7 @@ class TestCopyBuiltKernels:
         from flashinfer.jit.rocm.env import AOT_MANIFEST_NAME
 
         pyproject = (
-            Path(aot_hip.__file__).parents[1]
+            Path(__file__).resolve().parents[2]
             / "amd-flashinfer-jit-cache"
             / "pyproject.toml"
         )
