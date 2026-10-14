@@ -661,6 +661,45 @@ def _aiter_flat_gather_short_query(
     return gated if gated is not None and max_q_len <= gated else None
 
 
+def _flat_gather_indices(
+    kv_indptr: torch.Tensor,
+    kv_indices: torch.Tensor,
+    kv_last_page_len: torch.Tensor,
+    page_size: int,
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Token rows of the paged cache each request reads, and their int32 indptr.
+
+    Row ``p * page_size + t`` is slot ``t`` of page ``p``. ``kv_indptr`` need not
+    start at 0 (vLLM passes the prefill tail of a mixed batch). Bookkeeping runs
+    on the host and reaches the device by pinned non-blocking copies.
+    """
+    indptr = kv_indptr.to("cpu", torch.long)
+    npages = indptr[1:] - indptr[:-1]
+    last_len = kv_last_page_len.to("cpu", torch.long)[: npages.numel()]
+    start, end = int(indptr[0]), int(indptr[-1])
+    has_pages = npages > 0
+    counts = torch.where(has_pages, (npages - 1) * page_size + last_len, 0)
+    total = int(counts.sum())
+    flat_indptr = torch.zeros(npages.numel() + 1, dtype=torch.int32)
+    flat_indptr[1:] = counts.cumsum(0)
+    per_page = torch.full((end - start,), page_size, dtype=torch.long)
+    per_page[indptr[1:][has_pages] - 1 - start] = last_len[has_pages]
+
+    def h2d(t: torch.Tensor) -> torch.Tensor:
+        return (
+            t if device.type == "cpu" else t.pin_memory().to(device, non_blocking=True)
+        )
+
+    # Output row r lies in page j at slot r - first_row[j].
+    first_row = torch.cumsum(per_page, 0) - per_page
+    pages = kv_indices[start:end].to(device=device, dtype=torch.long)
+    base = pages * page_size - h2d(first_row)
+    rows = torch.arange(total, dtype=torch.long, device=device)
+    rows += torch.repeat_interleave(base, h2d(per_page), output_size=total)
+    return rows, h2d(flat_indptr)
+
+
 def _flat_gather_short_query_reason(threshold: int) -> str:
     """The auto-selector's short-query decline, built in exactly one place.
 
@@ -3217,36 +3256,22 @@ class BatchPrefillWithPagedKVCacheWrapper:
         # ``run()`` path (which may be inside a CUDA graph capture) can use them
         # without any host-side operations.
         if self._backend == "aiter" and not use_native_paging:
-            kv_indptr_h = paged_kv_indptr.cpu()
-            kv_indices_h = paged_kv_indices.cpu()
-            kv_lpl_h = paged_kv_last_page_len.cpu()
-            bs = kv_indptr_h.size(0) - 1
-
-            gather_indices: list[int] = []
-            token_counts: list[int] = []
-            for i in range(bs):
-                start = int(kv_indptr_h[i].item())
-                end = int(kv_indptr_h[i + 1].item())
-                lpl = int(kv_lpl_h[i].item())
-                # Full pages
-                for p_local in range(start, end - 1):
-                    page_global = int(kv_indices_h[p_local].item())
-                    for t in range(page_size):
-                        gather_indices.append(page_global * page_size + t)
-                # Last page (trimmed)
-                last_page = int(kv_indices_h[end - 1].item())
-                for t in range(lpl):
-                    gather_indices.append(last_page * page_size + t)
-                token_counts.append((end - start - 1) * page_size + lpl)
-
-            total_tokens = len(gather_indices)
-            gather_t = torch.tensor(
-                gather_indices, dtype=torch.long, device=self.device
+            # Host copies plan() already made, and the page table already on device.
+            # A graph-mode buffer outlives this plan's indices, so bound them here.
+            if int(paged_kv_indptr_host[-1]) > len(paged_kv_indices):
+                raise ValueError(
+                    f"paged_kv_indptr ends at {int(paged_kv_indptr_host[-1])} but "
+                    f"paged_kv_indices has {len(paged_kv_indices)} entries"
+                )
+            gather_t, flat_indptr = _flat_gather_indices(
+                paged_kv_indptr_host,
+                self._paged_kv_indices_buf,
+                paged_kv_last_page_len_host,
+                page_size,
+                self.device,
             )
-            flat_indptr = torch.zeros(bs + 1, dtype=torch.int32, device=self.device)
-            flat_indptr[1:] = torch.tensor(
-                token_counts, dtype=torch.int32, device=self.device
-            ).cumsum(0)
+            bs = flat_indptr.numel() - 1
+            total_tokens = gather_t.numel()
             if self.is_cuda_graph_enabled:
                 # In CUDA-graph mode the tensors used inside the captured
                 # graph must keep the **same addresses and sizes** across

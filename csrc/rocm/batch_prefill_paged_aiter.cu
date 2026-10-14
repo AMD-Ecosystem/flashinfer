@@ -15,6 +15,7 @@
 #include <flashinfer/rocm/layout.cuh>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "batch_prefill_aiter_config.inc"
 #include "pytorch_extension_utils.h"
@@ -126,6 +127,14 @@ void batch_prefill_with_paged_kv_cache_aiter(
 
   hipError_t status;
 
+  TORCH_CHECK(paged_k_cache.size(3) == HEAD_DIM_QK && paged_v_cache.size(3) == HEAD_DIM_VO,
+              "paged K/V head dims (", paged_k_cache.size(3), ", ", paged_v_cache.size(3),
+              ") do not match the planned ", HEAD_DIM_QK, "/", HEAD_DIM_VO);
+  TORCH_CHECK(paged_v_cache.size(1) == paged_k_cache.size(1) &&
+                  paged_v_cache.size(2) == paged_k_cache.size(2) && paged_k_cache.size(2) > 0,
+              "paged K and V must share a page size and a non-zero head count; got K ",
+              paged_k_cache.sizes(), ", V ", paged_v_cache.sizes());
+
   if (aiter_flat_gather_idx.has_value()) {
     // Flat-gather path: gather pages into contiguous k/v then call mha_fwd group-mode.
     // It dispatches mha_varlen_fwd, which has no fp8 kernel and would ignore the
@@ -140,13 +149,36 @@ void batch_prefill_with_paged_kv_cache_aiter(
     const int32_t total_kv = static_cast<int32_t>(aiter_flat_gather_idx->size(0));
     const auto& gather_idx = *aiter_flat_gather_idx;
 
-    // Reshape paged cache to 2D token view: [max_pages * page_size, nhead_k, head_dim]
-    auto k_2d = paged_k_cache.contiguous().reshape({-1, num_kv_heads, HEAD_DIM_QK});
-    auto v_2d = paged_v_cache.contiguous().reshape({-1, num_kv_heads, HEAD_DIM_VO});
-
-    // GPU gather: k_flat = k_2d[gather_idx], v_flat = v_2d[gather_idx]
-    at::Tensor k_flat = k_2d.index_select(0, gather_idx).contiguous();
-    at::Tensor v_flat = v_2d.index_select(0, gather_idx).contiguous();
+    // Read only this batch's rows: .contiguous() on the k/v halves of a
+    // [pages, 2, page, H, D] pool would copy every page first. View the pool as
+    // token rows and remap the page stride (once, as K and V share it).
+    std::optional<std::pair<int64_t, at::Tensor>> remapped;
+    auto gather_rows = [&](const at::Tensor& cache) -> at::Tensor {
+      const int64_t row = cache.size(2) * cache.size(3);
+      // A size-1 dim's stride is arbitrary, so it cannot break row contiguity.
+      const bool rows_contiguous =
+          cache.stride(3) == 1 && (cache.size(2) == 1 || cache.stride(2) == cache.size(3)) &&
+          (cache.size(1) == 1 || cache.stride(1) == row) && cache.stride(0) % row == 0;
+      if (!rows_contiguous || cache.size(0) == 0) {
+        return cache.contiguous()
+            .view({-1, cache.size(2), cache.size(3)})
+            .index_select(0, gather_idx);
+      }
+      const int64_t cache_page = cache.size(1);
+      const int64_t rows_per_page = cache.stride(0) / row;
+      const int64_t num_rows = (cache.size(0) - 1) * rows_per_page + cache_page;
+      auto rows =
+          cache.as_strided({num_rows, cache.size(2), cache.size(3)}, {row, cache.size(3), 1});
+      if (rows_per_page == cache_page) return rows.index_select(0, gather_idx);
+      if (!remapped || remapped->first != rows_per_page) {
+        auto idx = at::div(gather_idx, cache_page, "floor");
+        idx.mul_(rows_per_page - cache_page).add_(gather_idx);
+        remapped.emplace(rows_per_page, std::move(idx));
+      }
+      return rows.index_select(0, remapped->second);
+    };
+    at::Tensor k_flat = gather_rows(paged_k_cache);
+    at::Tensor v_flat = gather_rows(paged_v_cache);
 
     status = flashinfer::BatchPrefillFlatGatherDispatched<HEAD_DIM_QK, HEAD_DIM_VO, DTypeQ, DTypeKV,
                                                           DTypeO>(
