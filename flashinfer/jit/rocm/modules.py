@@ -98,6 +98,24 @@ def _generate_additional_params_hip(
 
 generate_additional_params = _generate_additional_params_hip
 
+_SCHEMA_SCALAR_TYPES = {"double": "float", "int64_t": "int", "bool": "bool"}
+
+
+def _additional_params_schema(tensor_names, scalar_names, scalar_dtypes) -> str:
+    """torch schema text for ``ADDITIONAL_FUNC_PARAMS``, in the same order."""
+    params = [
+        f"Tensor? {n}" if n.startswith("maybe") else f"Tensor {n}" for n in tensor_names
+    ]
+    for dtype, name in zip(scalar_dtypes, scalar_names, strict=False):
+        if dtype not in _SCHEMA_SCALAR_TYPES:
+            raise ValueError(
+                f"scalar parameter {name!r} has type {dtype!r}; a torch op takes "
+                f"only {sorted(_SCHEMA_SCALAR_TYPES)}"
+            )
+        params.append(f"{_SCHEMA_SCALAR_TYPES[dtype]} {name}")
+    return "".join(f", {p}" for p in params)
+
+
 # dtype_map_hip sends both OCP spellings to the *fnuz* C++ types, whose exponent
 # bias is one greater (E4M3 7 vs 8, E5M2 15 vs 16), so either is silently 2x off.
 _FP8_OCP_DTYPES = (torch.float8_e4m3fn, torch.float8_e5m2)
@@ -932,7 +950,10 @@ def gen_customize_single_prefill_module(
             "additional_params_setter": additional_params_setter,
         }
 
-        generated_inc_str = config_templ.render(**kwargs)
+        generated_inc_str = config_templ.render(**kwargs) + (
+            "\n#define ADDITIONAL_FUNC_PARAMS_SCHEMA "
+            f'"{_additional_params_schema(additional_tensor_names, additional_scalar_names, additional_scalar_dtypes)}"\n'
+        )
         os.makedirs(gen_directory, exist_ok=True)
 
         source_paths = []

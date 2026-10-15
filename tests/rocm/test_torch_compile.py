@@ -358,6 +358,33 @@ def test_torch_compile_aiter_single_prefill(backend):
     )
 
 
+def test_customized_aiter_single_prefill_registers():
+    """A caller's own parameter list reaches the named schema, flag off.
+
+    The list covers every type the schema tail maps: Tensor?, Tensor, float, int, bool.
+    """
+    _run_aiter_snippet(
+        """\
+        from flashinfer.jit.rocm.modules import gen_customize_single_prefill_module
+        module = gen_customize_single_prefill_module(
+            "aiter", "single_prefill_aiter_mixed_params_bf16_hd128", dt, dt, dt, 128, 128,
+            ["maybe_bias", "t"], ["float", "float"],
+            ["logits_soft_cap", "sm_scale", "n", "flag"], ["double", "double", "int64_t", "bool"],
+            "DefaultAttention<use_custom_mask, false, false, false>",
+            "#include<flashinfer/rocm/attention/variants.cuh>",
+        ).build_and_load()
+        q = torch.randn(64, 8, 128, device=dev, dtype=dt)
+        k, v = torch.randn_like(q), torch.randn_like(q)
+        o = torch.empty_like(q)
+        module.run(q, k, v, torch.empty(1, device=dev), o, None, 1, 0, -1,
+                   None, torch.zeros(1, device=dev), 0.0, 128 ** -0.5, 3, True)
+        ref = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="aiter")
+        torch.testing.assert_close(o, ref, rtol=2e-2, atol=2e-2)
+        """,
+        custom_ops="0",
+    )
+
+
 @_needs_custom_ops
 @pytest.mark.parametrize(
     "page_size, head_dim, gathers",
