@@ -83,13 +83,8 @@ v = torch.randn(1024,  8, 128, dtype=torch.float16, device="cuda")
 output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True)
 ```
 
-[`examples/`](https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/examples)
-has runnable single/batch prefill and batch decode scripts, plus
-`amd_flashinfer_rocm_tutorial.ipynb` walking the public API on ROCm:
-
-```bash
-python examples/single_prefill_example.py
-```
+The batch prefill and decode wrappers keep upstream's `plan()`/`run()` API;
+see the [FlashInfer documentation](https://docs.flashinfer.ai).
 
 ## Supported hardware and toolchain
 
