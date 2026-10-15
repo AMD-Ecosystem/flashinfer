@@ -27,6 +27,7 @@ import torch
 from .aiter_utils import handle_aiter_probe_failure
 from .api_compat import ignore_enable_pdl, reject_cuda_only
 from .arch_caps import capability_reason, require_capability
+from .torch_compile import extension_custom_op
 from ..jit.core import logger
 from ..jit.rocm import aiter_variants as _variants
 from ..jit.rocm.modules import _check_fa2_fp8_dtypes
@@ -229,8 +230,8 @@ def get_single_prefill_module(backend, *args):
     run_func = module.run.default
 
     if backend == "aiter":
-        # Skip torch custom-op dispatch for AITER (saves ~3 µs per call).
-        # AITER is inference-only on ROCm; torch.compile support not required.
+        run_func = extension_custom_op(run_func, ("o", "maybe_lse"))
+
         # AITER ignores custom_mask, alibi, rope, and FP8 scale params.
         def run_single_prefill(
             q,
@@ -1293,8 +1294,10 @@ def get_batch_prefill_module(backend, *args):
         _check_fa2_fp8_dtypes("batch prefill", *args[:3], kv_must_match_q=True)
     if backend == "aiter":
         module = gen_batch_prefill_module(backend, *args).build_and_load()
-        _c_paged_run = module.paged_run.default
-        _c_ragged_run = module.ragged_run.default
+        _c_paged_run = extension_custom_op(module.paged_run.default, ("o", "maybe_lse"))
+        _c_ragged_run = extension_custom_op(
+            module.ragged_run.default, ("o", "maybe_lse")
+        )
 
         def aiter_paged_run(
             float_workspace_buffer: torch.Tensor,

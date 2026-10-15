@@ -13,8 +13,10 @@ torch 2.4, so the guard only exists from 2.4 up.
 import contextlib
 import functools
 import os
+import re
+import threading
 import warnings
-from typing import Callable, Iterable, Optional, Sequence, Union
+from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
 
 import torch
 from torch.torch_version import TorchVersion
@@ -105,3 +107,49 @@ def register_fake_op(
     if fn is not None:
         return decorator(fn)
     return decorator
+
+
+# One registration per op name, with the writes it declared.
+_EXTENSION_OPS: Dict[str, Tuple[Tuple[str, ...], Callable]] = {}
+_EXTENSION_OPS_LOCK = threading.Lock()
+
+
+def extension_custom_op(
+    c_op: "torch._ops.OpOverload", mutated: Tuple[str, ...]
+) -> Callable:
+    """``c_op`` as a custom op whose schema declares its writes, when the flag is on.
+
+    Extension schemas carry no alias annotations, so compiled code would not know
+    the ``mutated`` arguments are written. Flag off, ``c_op`` comes back unchanged.
+    Registered once per op: torch silently replaces a second registration.
+    """
+    if not _USE_TORCH_CUSTOM_OPS:
+        return c_op
+    name = "flashinfer::" + c_op._schema.name.replace("::", "__")
+    with _EXTENSION_OPS_LOCK:
+        if name in _EXTENSION_OPS:
+            registered, op = _EXTENSION_OPS[name]
+            if registered != mutated:
+                raise ValueError(f"{name} already declares writes to {registered}")
+            return op
+        else:
+            schema = str(c_op._schema)
+            schema = schema[schema.index("(") :]
+            for alias, arg in enumerate(mutated):
+                schema, n = re.subn(
+                    rf"Tensor(\??) {arg}\b",
+                    rf"Tensor({chr(ord('a') + alias)}!)\1 {arg}",
+                    schema,
+                )
+                if n != 1:
+                    raise ValueError(
+                        f"{c_op} has no Tensor argument named {arg!r}: {schema}"
+                    )
+            op = torch.library.custom_op(
+                name,
+                lambda *args: c_op(*args),
+                mutates_args=mutated,
+                schema=schema,
+            )
+            _EXTENSION_OPS[name] = (mutated, op)
+            return op

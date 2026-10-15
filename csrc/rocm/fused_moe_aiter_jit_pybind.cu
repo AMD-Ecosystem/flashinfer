@@ -12,4 +12,14 @@ void fused_moe_aiter(at::Tensor out, at::Tensor hidden_states, at::Tensor w1, at
                      int64_t activation, std::optional<at::Tensor> w1_scale,
                      std::optional<at::Tensor> w2_scale);
 
-TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) { m.def("fused_moe_aiter", fused_moe_aiter); }
+// Named so flashinfer/rocm/torch_compile.py can mark the written arguments by name.
+// CONSERVATIVE: a named schema otherwise declares this void op side-effect free,
+// and torch.jit.trace drops it.
+TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) {
+  m.def(torch::schema("fused_moe_aiter(Tensor out, Tensor hidden_states, Tensor w1, Tensor w2, "
+                      "Tensor topk_ids, "
+                      "Tensor topk_weights, int block_m, int activation, Tensor? w1_scale, "
+                      "Tensor? w2_scale) -> ()",
+                      c10::AliasAnalysisKind::CONSERVATIVE),
+        fused_moe_aiter);
+}
