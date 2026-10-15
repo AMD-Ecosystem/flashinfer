@@ -34,6 +34,7 @@ from ..jit import (
     get_single_decode_uri,
 )
 from .aiter_utils import handle_aiter_probe_failure
+from .torch_compile import untraced
 from ..jit.core import logger
 from ..jit.rocm.modules import _check_fa2_fp8_dtypes
 from ..page import get_seq_lens
@@ -1014,6 +1015,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
               parallel FA2 decode plan that is built lazily on the first such call (so
               AITER-only workloads pay no JIT/plan cost). A one-time-per-device warning
               is emitted on that first call so the backend switch is not silent.
+              Under ``torch.compile`` every such call breaks the graph to prepare
+              that plan eagerly, so ``fullgraph=True`` needs ``backend="fa2"``.
 
         jit_args : Optional[List[Any]]
             If provided, the wrapper will use the provided arguments to create the JIT module,
@@ -1706,6 +1709,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     num_kv_heads,
                     page_size,
                 )
+                getattr(self._prepare_fa2_lse_plan, "prepare", lambda: None)()
 
                 # This path returns before the common tail, so it commits the
                 # same run()-visible state itself. AITER decode is q_len 1 by
@@ -1839,6 +1843,30 @@ class BatchDecodeWithPagedKVCacheWrapper:
         self._rope_theta = rope_theta
 
     begin_forward = plan
+
+    def _prepare_fa2_lse_plan_eager(self) -> None:
+        if torch.cuda.is_current_stream_capturing():
+            # The shadow plan is built lazily and re-nulled by every plan(), so
+            # capturing it would JIT-load inside the graph and later replay a
+            # freed plan_info. Eager calls are fine, hence the capture check
+            # rather than is_cuda_graph_enabled.
+            raise ValueError(
+                "return_lse=True is not supported for AITER decode under "
+                "CUDA-graph capture (PA v1 emits no LSE and its FA2 shadow "
+                "plan is not capture-safe); use backend='fa2'."
+            )
+        self._ensure_fa2_lse_plan()
+
+    # The shadow plan calls an unregistered plan op, so torch.compile runs it
+    # outside the graph rather than tracing it.
+    def _prepare_fa2_lse_plan_dispatch(self) -> None:
+        self._prepare_fa2_lse_plan_eager()
+
+    _prepare_fa2_lse_plan = untraced(
+        _prepare_fa2_lse_plan_dispatch,
+        reason="AITER PA v1 emits no LSE, so return_lse=True builds an fa2 shadow "
+        "plan outside the graph; use backend='fa2' for fullgraph=True.",
+    )
 
     def _ensure_fa2_lse_plan(self) -> None:
         if self._fa2_lse_plan_info is not None:
@@ -2156,17 +2184,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
 
         if self._backend == "aiter":
             if return_lse:
-                if torch.cuda.is_current_stream_capturing():
-                    # The shadow plan is built lazily and re-nulled by every plan(), so
-                    # capturing it would JIT-load inside the graph and later replay a
-                    # freed plan_info. Eager calls are fine, hence the capture check
-                    # rather than is_cuda_graph_enabled.
-                    raise ValueError(
-                        "return_lse=True is not supported for AITER decode under "
-                        "CUDA-graph capture (PA v1 emits no LSE and its FA2 shadow "
-                        "plan is not capture-safe); use backend='fa2'."
-                    )
-                self._ensure_fa2_lse_plan()
+                self._prepare_fa2_lse_plan()
                 self._fa2_lse_module.run(
                     self._float_workspace_buffer,
                     self._int_workspace_buffer,

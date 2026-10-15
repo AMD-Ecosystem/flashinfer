@@ -441,6 +441,105 @@ def test_torch_compile_aiter_ragged_prefill():
     )
 
 
+# AITER decode builds its return_lse shadow plan on the first such call after
+# plan(), so each case compiles before any eager call; references use fa2.
+_DECODE = """\
+ws_ref = torch.empty(256 << 20, dtype=torch.uint8, device=dev)
+
+def replan(w, batch, kv_len, page=16):
+    per = kv_len // page
+    w.plan(i32(*range(0, batch * per + 1, per)),
+           torch.arange(batch * per, dtype=torch.int32, device=dev),
+           i32(*[page] * batch), 8, 2, 128, page, q_data_type=dt)
+
+def decode(backend, workspace, batch, kv_len):
+    w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(workspace, "NHD", backend=backend)
+    replan(w, batch, kv_len)
+    return w
+
+# Separate K and V: dynamic shapes drop an interleaved cache's V offset (README).
+def inputs(batch, kv_len, page=16):
+    q = torch.randn(batch, 8, 128, device=dev, dtype=dt)
+    shape = (batch * kv_len // page, page, 2, 128)
+    return q, (torch.randn(shape, device=dev, dtype=dt), torch.randn(shape, device=dev, dtype=dt))
+
+def close(a, b):
+    torch.testing.assert_close(a, b, rtol=2e-2, atol=2e-2)
+"""
+
+
+@_needs_custom_ops
+def test_torch_compile_aiter_batch_decode():
+    _run_aiter_snippet(
+        _DECODE
+        + """\
+q, kv = inputs(4, 512)
+w = decode("aiter", ws, 4, 512)
+assert w.backend == "aiter"
+ref = decode("fa2", ws_ref, 4, 512)
+close(torch.compile(lambda q, kv: with_lse(w.run, 4, q, kv), dynamic=True)(q, kv),
+      with_lse(ref.run, 4, q, kv))
+replan(w, 4, 512)
+torch._dynamo.reset()
+o, lse = torch.compile(lambda q, kv: w.forward_return_lse(q, kv), dynamic=True)(q, kv)
+ref_o, ref_lse = ref.run(q, kv, return_lse=True)
+close(o, ref_o)
+close(lse, ref_lse)
+check(lambda q, kv: w.run(q, kv), q, kv)
+"""
+    )
+
+
+@_needs_custom_ops
+def test_torch_compile_aiter_batch_decode_replanned():
+    """One compiled function across two split-KV plans: a stale shadow plan would
+    under-cover the longer KV."""
+    _run_aiter_snippet(
+        _DECODE
+        + """\
+q1, kv1 = inputs(1, 2048)
+q2, kv2 = inputs(1, 16384)
+w = decode("aiter", ws, 1, 2048)
+assert w.backend == "aiter"
+f = torch.compile(lambda q, kv: with_lse(w.run, 1, q, kv), dynamic=True)
+close(f(q1, kv1), with_lse(decode("fa2", ws_ref, 1, 2048).run, 1, q1, kv1))
+first = w._fa2_lse_plan_info
+replan(w, 1, 16384)
+out = f(q2, kv2)
+second = w._fa2_lse_plan_info
+assert int(first[9]) == 1 and int(second[9]) == 1, (first, second)
+assert not torch.equal(first, second), (first, second)
+close(out, with_lse(decode("fa2", ws_ref, 1, 16384).run, 1, q2, kv2))
+"""
+    )
+
+
+_needs_disable_reason = pytest.mark.skipif(
+    torch.torch_version.TorchVersion(torch.__version__)
+    < torch.torch_version.TorchVersion("2.8"),
+    reason="torch.compiler.disable takes reason= from torch 2.8",
+)
+
+
+@_needs_custom_ops
+@_needs_disable_reason
+def test_aiter_batch_decode_return_lse_fullgraph_names_the_reason():
+    _run_aiter_snippet(
+        _DECODE
+        + """\
+q, kv = inputs(4, 512)
+w = decode("aiter", ws, 4, 512)
+assert w.backend == "aiter"
+try:
+    torch.compile(lambda q, kv: w.run(q, kv, return_lse=True), fullgraph=True)(q, kv)
+except Exception as e:
+    assert "AITER PA v1 emits no LSE" in str(e), str(e)[-2000:]
+else:
+    raise AssertionError("fullgraph traced the fa2 shadow plan")
+"""
+    )
+
+
 def test_jit_trace_keeps_the_aiter_ops():
     """Flag off, the default: a traced AITER call must still run its kernel.
 
@@ -681,3 +780,51 @@ class TestExtensionCustomOp:
         extension_custom_op(c_op, ("out", "lse"))
         with pytest.raises(ValueError, match="already declares writes"):
             extension_custom_op(c_op, ("out",))
+
+
+class TestUntraced:
+    """``untraced`` on a CPU stand-in for the decode shadow-plan build."""
+
+    @pytest.fixture(autouse=True)
+    def flag_on(self, monkeypatch):
+        from flashinfer.rocm import torch_compile as tc
+
+        monkeypatch.setattr(tc, "_USE_TORCH_CUSTOM_OPS", True)
+        yield
+        torch._dynamo.reset()
+
+    @staticmethod
+    def _stand_in(calls):
+        def build(x):
+            calls.append(torch.compiler.is_compiling())
+            return x.sum().item()  # host sync: untraceable under fullgraph
+
+        return build
+
+    def test_flag_off_returns_the_function_unchanged(self, monkeypatch):
+        from flashinfer.rocm import torch_compile as tc
+
+        monkeypatch.setattr(tc, "_USE_TORCH_CUSTOM_OPS", False)
+        fn = self._stand_in([])
+        assert tc.untraced(fn, "why") is fn
+
+    def test_a_compiled_caller_runs_it_eagerly(self):
+        from flashinfer.rocm.torch_compile import untraced
+
+        calls = []
+        build = untraced(self._stand_in(calls), "why")
+        x = torch.ones(4)
+        assert build(x) == 4.0 and calls == [False]
+        f = torch.compile(lambda x: x * build(x), backend="eager")
+        assert f(x).tolist() == [4.0] * 4 and calls[1:] == [False]
+
+    @_needs_disable_reason
+    def test_after_prepare_fullgraph_names_the_reason(self):
+        from flashinfer.rocm.torch_compile import untraced
+
+        build = untraced(self._stand_in([]), "UNTRACED-REASON")
+        build.prepare()  # no trace has built the boundary yet
+        with pytest.raises(Exception, match="UNTRACED-REASON"):
+            torch.compile(lambda x: x * build(x), backend="eager", fullgraph=True)(
+                torch.ones(4)
+            )
