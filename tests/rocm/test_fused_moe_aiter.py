@@ -338,7 +338,7 @@ def test_shuffle_moe_weight_rejects_bad_shapes():
         ({"activation": "relu"}, None, "activation must be one of"),
         ({"block_m": 48}, None, 'block_m must be "auto" or one of'),
         ({"block_m": "bogus"}, None, 'block_m must be "auto" or one of'),
-        # Rejected in Python, before _get_module: one module is built per dtype,
+        # Rejected in Python, before _get_run: one module is built per dtype,
         # so an unsupported dtype would otherwise trigger a multi-minute compile
         # only to fail afterwards.
         ({}, torch.float32, "hidden_states must be one of"),
@@ -376,7 +376,7 @@ def test_fused_moe_rejects_weights_of_the_wrong_dtype():
 def test_fused_moe_rejects_mismatched_weight_dtypes(quantize_w1):
     """Quantizing one weight and not the other, caught before the build.
 
-    _get_module keys on w1 alone, so without this the fp8 case compiles a CK
+    _get_run keys on w1 alone, so without this the fp8 case compiles a CK
     module for minutes and only then fails in the shim.
     """
     device = torch.device("cuda:0")

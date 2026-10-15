@@ -10,4 +10,14 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
                                   int64_t mask_mode_code, int64_t layout,
                                   int64_t window_left ADDITIONAL_FUNC_PARAMS);
 
-TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) { m.def("run", single_prefill_with_kv_cache); }
+// Named so flashinfer/rocm/torch_compile.py can mark the written arguments by name;
+// the tail is generated with ADDITIONAL_FUNC_PARAMS. CONSERVATIVE: a named schema
+// otherwise declares this void op side-effect free, and torch.jit.trace drops it.
+TORCH_LIBRARY_FRAGMENT(TORCH_EXTENSION_NAME, m) {
+  m.def(
+      torch::schema("run(Tensor q, Tensor k, Tensor v, Tensor tmp, Tensor o, Tensor? maybe_lse, "
+                    "int mask_mode_code, int layout, int window_left" ADDITIONAL_FUNC_PARAMS_SCHEMA
+                    ") -> ()",
+                    c10::AliasAnalysisKind::CONSERVATIVE),
+      single_prefill_with_kv_cache);
+}

@@ -250,6 +250,245 @@ def test_torch_compile_without_custom_ops_fails():
     assert result.returncode == 0, f"unexpected failure:\n{result.stderr}"
 
 
+_AITER_PREAMBLE = textwrap.dedent(
+    """\
+    import sys
+    import torch
+    import flashinfer
+    from flashinfer.rocm.aiter_utils import is_aiter_supported
+    from flashinfer.rocm.prefill import _aiter_ops_importable
+
+    dev = torch.device("cuda:0")
+    if not is_aiter_supported(dev) or not _aiter_ops_importable():
+        sys.exit(99)
+    dt = torch.bfloat16
+    ws = torch.empty(256 << 20, dtype=torch.uint8, device=dev)
+    i32 = lambda *v: torch.tensor(v, dtype=torch.int32, device=dev)
+    torch.manual_seed(0)
+
+    def check(fn, *args):
+        \"\"\"Compiled == eager, and the AITER op is a node in the graph.\"\"\"
+        ref = fn(*args)
+        targets = []
+
+        def record(gm, example_inputs):
+            targets.extend(str(n.target) for n in gm.graph.nodes)
+            return gm.forward
+
+        torch._dynamo.reset()
+        torch.compile(fn, backend=record, dynamic=True)(*args)
+        assert any("flashinfer" in t and "aiter" in t for t in targets), targets
+        torch._dynamo.reset()
+        out = torch.compile(fn, dynamic=True)(*args)
+        torch.testing.assert_close(out, ref, rtol=2e-2, atol=2e-2)
+
+    # run's output and lse, read back from a zeros buffer made here: an undeclared
+    # write reads back as zeros under compile, which flashinfer's own
+    # torch.empty lse would hide.
+    def with_lse(run, rows, *args):
+        lse = torch.zeros(rows, 8, device=dev, dtype=torch.float32)
+        o, _ = run(*args, lse=lse, return_lse=True)
+        return torch.cat([o.float().flatten(), (lse + 1).flatten()])
+
+    def paged(page_size, head_dim, kv_len=2048):
+        w = flashinfer.BatchPrefillWithPagedKVCacheWrapper(ws, "NHD", backend="aiter")
+        pages = kv_len // page_size
+        w.plan(i32(0, 64), i32(0, pages), torch.arange(pages, dtype=torch.int32, device=dev),
+               i32(page_size), 8, 8, head_dim, page_size, causal=True, q_data_type=dt)
+        assert w.backend == "aiter"
+        q = torch.randn(64, 8, head_dim, device=dev, dtype=dt)
+        kv = torch.randn(pages, 2, page_size, 8, head_dim, device=dev, dtype=dt)
+        return w, q, kv
+"""
+)
+
+
+def _run_aiter_snippet(body: str, custom_ops: str = "1") -> None:
+    # Cold, the child builds the AITER shims; see test_torch_compile_with_aiter_backend.
+    result = _run_snippet(
+        _AITER_PREAMBLE + textwrap.dedent(body),
+        {"FLASHINFER_USE_TORCH_CUSTOM_OPS": custom_ops},
+        timeout=1800,
+    )
+    if result.returncode == 99:
+        pytest.skip("AITER prefill unavailable here")
+    assert result.returncode == 0, f"failed:\n{result.stderr[-4000:]}"
+
+
+_needs_custom_ops = pytest.mark.skipif(
+    torch.torch_version.TorchVersion(torch.__version__)
+    < torch.torch_version.TorchVersion("2.4"),
+    reason="torch.compile custom ops require torch >= 2.4",
+)
+
+
+@_needs_custom_ops
+@pytest.mark.parametrize("backend", ["aiter", "auto"])
+def test_torch_compile_aiter_single_prefill(backend):
+    """auto resolves to AITER here, so this is the default route under compile.
+
+    The two sliding-window settings share one AITER URI but not one module-cache
+    key, so both module getters hand back the same registered op.
+    """
+    _run_aiter_snippet(
+        f"""\
+        q = torch.randn(64, 8, 128, device=dev, dtype=dt)
+        k, v = torch.randn_like(q), torch.randn_like(q)
+        for window_left in (-1, 32):
+            check(lambda q, k, v: flashinfer.single_prefill_with_kv_cache(
+                q, k, v, causal=True, window_left=window_left, backend="{backend}"), q, k, v)
+        # The public API allocates lse itself; drive the module so a caller-owned
+        # zeros buffer shows an undeclared lse write.
+        from flashinfer.rocm.prefill import get_single_prefill_module
+        run = get_single_prefill_module(
+            "aiter", dt, dt, dt, 128, 128, 0, False, False, False).run
+        # Builds the has_lse variant the raw run() below needs.
+        flashinfer.single_prefill_with_kv_cache(
+            q, k, v, causal=True, backend="aiter", return_lse=True)
+        tmp = torch.empty(1, device=dev)
+
+        def single_lse(q, k, v):
+            o, lse = torch.empty_like(q), torch.zeros(64, 8, device=dev)
+            run(q, k, v, tmp, o, lse, 1, 0, -1, None, None, 0.0, 128 ** -0.5,
+                None, None, None, 1.0, 1e4)
+            return torch.cat([o.float().flatten(), (lse + 1).flatten()])
+
+        check(single_lse, q, k, v)
+        """
+    )
+
+
+def test_customized_aiter_single_prefill_registers():
+    """A caller's own parameter list reaches the named schema, flag off.
+
+    The list covers every type the schema tail maps: Tensor?, Tensor, float, int, bool.
+    """
+    _run_aiter_snippet(
+        """\
+        from flashinfer.jit.rocm.modules import gen_customize_single_prefill_module
+        module = gen_customize_single_prefill_module(
+            "aiter", "single_prefill_aiter_mixed_params_bf16_hd128", dt, dt, dt, 128, 128,
+            ["maybe_bias", "t"], ["float", "float"],
+            ["logits_soft_cap", "sm_scale", "n", "flag"], ["double", "double", "int64_t", "bool"],
+            "DefaultAttention<use_custom_mask, false, false, false>",
+            "#include<flashinfer/rocm/attention/variants.cuh>",
+        ).build_and_load()
+        q = torch.randn(64, 8, 128, device=dev, dtype=dt)
+        k, v = torch.randn_like(q), torch.randn_like(q)
+        o = torch.empty_like(q)
+        module.run(q, k, v, torch.empty(1, device=dev), o, None, 1, 0, -1,
+                   None, torch.zeros(1, device=dev), 0.0, 128 ** -0.5, 3, True)
+        ref = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True, backend="aiter")
+        torch.testing.assert_close(o, ref, rtol=2e-2, atol=2e-2)
+        """,
+        custom_ops="0",
+    )
+
+
+@_needs_custom_ops
+@pytest.mark.parametrize(
+    "page_size, head_dim, gathers",
+    [(1024, 128, False), (32, 128, True), (1024, 64, True)],
+    ids=["native", "gather-page", "gather-head-dim"],
+)
+def test_torch_compile_aiter_paged_prefill(page_size, head_dim, gathers):
+    _run_aiter_snippet(
+        f"""\
+        w, q, kv = paged({page_size}, {head_dim})
+        assert (w._aiter_flat_gather_idx is not None) is {gathers}
+        check(lambda q, kv: w.run(q, kv), q, kv)
+        check(lambda q, kv: with_lse(w.run, 64, q, kv), q, kv)
+        """
+    )
+
+
+@_needs_custom_ops
+def test_torch_compile_aiter_paged_prefill_replanned():
+    """One compiled function across two plans, short query then long.
+
+    max_q_len reaches the op as an int the kernel reads; a graph that kept the
+    first plan's value would under-size the second launch.
+    """
+    _run_aiter_snippet(
+        """\
+        w, q, kv = paged(1024, 128, kv_len=2048)
+        # Two requests over the same 64 rows: only the split, and so max_q_len,
+        # moves between plans, so no tensor shape forces a recompile.
+        for qo_indptr in ((0, 32, 64), (0, 8, 64)):
+            w.plan(i32(*qo_indptr), i32(0, 1, 2), i32(0, 1), i32(1024, 1024), 8, 8,
+                   128, 1024, causal=True, q_data_type=dt)
+            if qo_indptr[1] == 32:
+                f = torch.compile(lambda q, kv: w.run(q, kv))
+                f(q, kv)
+        torch.testing.assert_close(f(q, kv), w.run(q, kv), rtol=2e-2, atol=2e-2)
+        """
+    )
+
+
+@_needs_custom_ops
+def test_torch_compile_aiter_ragged_prefill():
+    _run_aiter_snippet(
+        """\
+        w = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(ws, "NHD", backend="aiter")
+        w.plan(i32(0, 64), i32(0, 256), 8, 8, 128, causal=True, q_data_type=dt)
+        assert w.backend == "aiter"
+        q = torch.randn(64, 8, 128, device=dev, dtype=dt)
+        k = torch.randn(256, 8, 128, device=dev, dtype=dt)
+        v = torch.randn_like(k)
+        check(lambda q, k, v: w.run(q, k, v), q, k, v)
+        check(lambda q, k, v: with_lse(w.run, 64, q, k, v), q, k, v)
+        """
+    )
+
+
+def test_jit_trace_keeps_the_aiter_ops():
+    """Flag off, the default: a traced AITER call must still run its kernel.
+
+    A named schema with default alias analysis declares the void op side-effect
+    free, and jit.trace's dead-code pass then returns the uninitialised output.
+    Single prefill is absent: it builds its module from traced shapes.
+    """
+    _run_aiter_snippet(
+        """\
+        assert not flashinfer.use_torch_custom_ops_enabled()
+        from flashinfer.rocm.fused_moe import shuffle_moe_weight
+        w, q, kv = paged(1024, 128)
+        M, E, K, I, topk = 7, 8, 512, 256, 2
+        x = torch.randn(M, K, device=dev, dtype=dt) / 10
+        w1 = shuffle_moe_weight(torch.randn(E, 2 * I, K, device=dev, dtype=dt) / 10)
+        w2 = shuffle_moe_weight(torch.randn(E, K, I, device=dev, dtype=dt) / 10)
+        ids = torch.stack([torch.randperm(E, device=dev)[:topk] for _ in range(M)]).int()
+        weights = torch.softmax(torch.randn(M, topk, device=dev), -1)
+        # Outputs are zeros made inside the traced function: a dropped op then
+        # returns zeros, where torch.empty could hand back a stale correct result.
+        for fn, args in (
+            (lambda q, kv: w.run(q, kv, out=torch.zeros_like(q)), (q, kv)),
+            (lambda x: flashinfer.aiter_fused_moe(
+                x, w1, w2, ids, weights, out=torch.zeros_like(x)), (x,)),
+        ):
+            traced = torch.jit.trace(fn, args, check_trace=False)
+            torch.testing.assert_close(traced(*args), fn(*args), rtol=2e-2, atol=2e-2)
+        """,
+        custom_ops="0",
+    )
+
+
+@_needs_custom_ops
+def test_torch_compile_aiter_fused_moe():
+    _run_aiter_snippet(
+        """\
+        from flashinfer.rocm.fused_moe import shuffle_moe_weight
+        M, E, K, I, topk = 7, 8, 512, 256, 2
+        x = torch.randn(M, K, device=dev, dtype=dt) / 10
+        w1 = shuffle_moe_weight(torch.randn(E, 2 * I, K, device=dev, dtype=dt) / 10)
+        w2 = shuffle_moe_weight(torch.randn(E, K, I, device=dev, dtype=dt) / 10)
+        ids = torch.stack([torch.randperm(E, device=dev)[:topk] for _ in range(M)]).int()
+        weights = torch.softmax(torch.randn(M, topk, device=dev), -1)
+        check(lambda x: flashinfer.aiter_fused_moe(x, w1, w2, ids, weights), x)
+        """
+    )
+
+
 class TestRegistrationInProcess:
     """The decorators themselves, with the module-level flag patched.
 
@@ -369,3 +608,76 @@ class TestRegistrationInProcess:
             (torch.randn(4, device="cuda"),),
             test_utils=("test_faketensor",),
         )
+
+
+class TestExtensionCustomOp:
+    """``extension_custom_op`` on a stand-in for a void extension op, on CPU."""
+
+    @staticmethod
+    def _void_op():
+        ns = f"flashinfer_test_{uuid.uuid4().hex[:8]}"
+        lib = torch.library.Library(ns, "DEF")
+        lib.define("write(Tensor x, Tensor out, Tensor? lse) -> ()")
+
+        def write(x, out, lse):
+            out.copy_(x + 1)
+            if lse is not None:
+                lse.fill_(7)
+
+        lib.impl("write", write, "CompositeExplicitAutograd")
+        return lib, getattr(torch.ops, ns).write.default
+
+    @pytest.fixture
+    def flag_on(self, monkeypatch):
+        from flashinfer.rocm import torch_compile as tc
+
+        monkeypatch.setattr(tc, "_USE_TORCH_CUSTOM_OPS", True)
+
+    def test_flag_off_returns_the_op_unchanged(self, monkeypatch):
+        """The default eager path must not pay custom-op dispatch."""
+        from flashinfer.rocm import torch_compile as tc
+        from flashinfer.rocm.torch_compile import extension_custom_op
+
+        monkeypatch.setattr(tc, "_USE_TORCH_CUSTOM_OPS", False)
+
+        lib, c_op = self._void_op()
+        assert extension_custom_op(c_op, ("out",)) is c_op
+
+    def test_written_arguments_are_annotated_by_name(self, flag_on):
+        from flashinfer.rocm.torch_compile import extension_custom_op
+
+        lib, c_op = self._void_op()
+        op = extension_custom_op(c_op, ("out", "lse"))
+        schema = str(op._opoverload._schema)
+        assert "Tensor(a!) out" in schema and "Tensor(b!)? lse" in schema, schema
+        assert "Tensor x" in schema
+
+        x, out, lse = torch.zeros(3), torch.empty(3), torch.empty(1)
+        op(x, out, lse)
+        assert out.tolist() == [1.0, 1.0, 1.0] and lse.item() == 7
+
+        def f(x):
+            o = torch.empty_like(x)
+            op(x, o, None)
+            return o * 2
+
+        torch._dynamo.reset()
+        assert torch.compile(f, fullgraph=True)(x).tolist() == [2.0, 2.0, 2.0]
+        assert extension_custom_op(c_op, ("out", "lse")) is op, "registered twice"
+
+    def test_an_unknown_argument_name_raises(self, flag_on):
+        """A renamed C++ argument must fail loudly, not leave a write undeclared."""
+        from flashinfer.rocm.torch_compile import extension_custom_op
+
+        lib, c_op = self._void_op()
+        with pytest.raises(ValueError, match="no Tensor argument named 'o'"):
+            extension_custom_op(c_op, ("o",))
+
+    def test_a_second_caller_cannot_declare_different_writes(self, flag_on):
+        """Whichever caller registered first would otherwise win silently."""
+        from flashinfer.rocm.torch_compile import extension_custom_op
+
+        lib, c_op = self._void_op()
+        extension_custom_op(c_op, ("out", "lse"))
+        with pytest.raises(ValueError, match="already declares writes"):
+            extension_custom_op(c_op, ("out",))

@@ -22,6 +22,7 @@ from typing import Optional, Tuple, Union
 import torch
 
 from .aiter_utils import require_aiter
+from .torch_compile import extension_custom_op
 from ..jit.rocm.aiter_source import resolve_aiter_build_arch
 from ..jit.rocm.fused_moe import SUPPORTED_DTYPES, gen_fused_moe_aiter_module
 
@@ -106,8 +107,11 @@ _SHUFFLE_LAYOUT = (16, 16)
 
 
 @functools.cache
-def _get_module(dtype: torch.dtype, activation: str, weight_dtype: torch.dtype):
-    return gen_fused_moe_aiter_module(dtype, activation, weight_dtype).build_and_load()
+def _get_run(dtype: torch.dtype, activation: str, weight_dtype: torch.dtype):
+    module = gen_fused_moe_aiter_module(
+        dtype, activation, weight_dtype
+    ).build_and_load()
+    return extension_custom_op(module.fused_moe_aiter.default, ("out",))
 
 
 def moe_fp8_dtype() -> torch.dtype:
@@ -270,7 +274,7 @@ def aiter_fused_moe(
             f'block_m must be "auto" or one of {_SUPPORTED_BLOCK_M}, got {block_m!r}'
         )
     if hidden_states.dtype not in SUPPORTED_DTYPES:
-        # Ahead of _get_module: one module is built per dtype, so an unsupported
+        # Ahead of _get_run: one module is built per dtype, so an unsupported
         # one would otherwise compile for minutes before anything rejected it.
         raise ValueError(
             f"hidden_states must be one of {list(SUPPORTED_DTYPES)}, "
@@ -279,7 +283,7 @@ def aiter_fused_moe(
 
     weight_dtype = w1_shuffled.dtype
     quantized = weight_dtype in FP8_DTYPES
-    # Before _get_module, which keys on w1 alone: a mismatched pair would
+    # Before _get_run, which keys on w1 alone: a mismatched pair would
     # otherwise compile for minutes and only then fail in the shim.
     if w2_shuffled.dtype != weight_dtype:
         raise ValueError(
@@ -344,10 +348,7 @@ def aiter_fused_moe(
         shape = tuple(hidden_states.shape) if hidden_states.dim() == 2 else (0, 0)
         out = torch.empty(shape, dtype=hidden_states.dtype, device=hidden_states.device)
 
-    module = _get_module(hidden_states.dtype, activation, weight_dtype)
-    # Skip torch custom-op dispatch, as the other AITER ROCm paths do: AITER is
-    # inference-only here and torch.compile support is not required.
-    module.fused_moe_aiter.default(
+    _get_run(hidden_states.dtype, activation, weight_dtype)(
         out,
         hidden_states,
         w1_shuffled,
