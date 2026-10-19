@@ -529,6 +529,7 @@ def test_aiter_batch_decode_return_lse_fullgraph_names_the_reason():
     _run_aiter_snippet(
         _DECODE
         + """\
+import torch._dynamo  # plan()'s prepare() needs it; do not rely on aiter loading it
 q, kv = inputs(4, 512)
 w = decode("aiter", ws, 4, 512)
 assert w.backend == "aiter"
@@ -538,6 +539,11 @@ except Exception as e:
     assert "AITER PA v1 emits no LSE" in str(e), str(e)[-2000:]
 else:
     raise AssertionError("fullgraph traced the fa2 shadow plan")
+ref = decode("fa2", ws_ref, 4, 512)  # the advice the reason gives
+o, lse = torch.compile(lambda q, kv: ref.run(q, kv, return_lse=True), fullgraph=True)(q, kv)
+ref_o, ref_lse = ref.run(q, kv, return_lse=True)
+close(o, ref_o)
+close(lse, ref_lse)
 """
     )
 
