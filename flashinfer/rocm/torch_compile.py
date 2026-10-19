@@ -12,8 +12,10 @@ torch 2.4, so the guard only exists from 2.4 up.
 
 import contextlib
 import functools
+import inspect
 import os
 import re
+import sys
 import threading
 import warnings
 from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
@@ -107,6 +109,43 @@ def register_fake_op(
     if fn is not None:
         return decorator(fn)
     return decorator
+
+
+@functools.cache
+def _disable_takes_reason() -> bool:
+    return "reason" in inspect.signature(torch.compiler.disable).parameters
+
+
+def untraced(fn: Callable, reason: str) -> Callable:
+    """``fn``, run eagerly when torch.compile traces its caller, when the flag is on.
+
+    Dynamo breaks the graph at every traced call; ``fullgraph=True`` raises naming
+    ``reason`` once the boundary exists, from ``prepare()`` outside a trace or an
+    earlier non-fullgraph trace. Flag off, ``fn`` comes back unchanged.
+    """
+    if not _USE_TORCH_CUSTOM_OPS:
+        return fn
+    boundary: Dict[str, Callable] = {}
+
+    def build() -> Callable:
+        if "fn" not in boundary:
+            kwargs = {"reason": reason} if _disable_takes_reason() else {}
+            boundary["fn"] = torch.compiler.disable(fn, **kwargs)
+        return boundary["fn"]
+
+    @functools.wraps(fn)
+    def call(*args, **kwargs):
+        if torch.compiler.is_compiling():
+            return build()(*args, **kwargs)
+        return fn(*args, **kwargs)
+
+    def prepare() -> None:
+        # Only once torch.compile has loaded Dynamo, which is slow to import.
+        if "torch._dynamo" in sys.modules:
+            build()
+
+    call.prepare = prepare  # type: ignore[attr-defined]
+    return call
 
 
 # One registration per op name, with the writes it declared.
