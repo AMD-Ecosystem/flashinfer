@@ -540,10 +540,8 @@ except Exception as e:
 else:
     raise AssertionError("fullgraph traced the fa2 shadow plan")
 ref = decode("fa2", ws_ref, 4, 512)  # the advice the reason gives
-o, lse = torch.compile(lambda q, kv: ref.run(q, kv, return_lse=True), fullgraph=True)(q, kv)
-ref_o, ref_lse = ref.run(q, kv, return_lse=True)
-close(o, ref_o)
-close(lse, ref_lse)
+fa2 = torch.compile(lambda q, kv: with_lse(ref.run, 4, q, kv), fullgraph=True, dynamic=True)
+close(fa2(q, kv), with_lse(ref.run, 4, q, kv))
 """
     )
 

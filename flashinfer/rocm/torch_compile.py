@@ -140,7 +140,7 @@ def untraced(fn: Callable, reason: str) -> Callable:
         return fn(*args, **kwargs)
 
     def prepare() -> None:
-        # Only once torch.compile has loaded Dynamo: importing it costs ~0.6 s.
+        # Only once torch.compile has loaded Dynamo, which is slow to import.
         if "torch._dynamo" in sys.modules:
             build()
 
