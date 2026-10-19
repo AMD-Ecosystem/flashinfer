@@ -84,14 +84,22 @@ output = flashinfer.single_prefill_with_kv_cache(q, k, v, causal=True)
 ```
 
 The batch prefill and decode wrappers keep upstream's `plan()`/`run()` API;
-see the [FlashInfer documentation](https://docs.flashinfer.ai).
+see the [FlashInfer documentation](https://docs.flashinfer.ai), which tracks
+upstream's latest release rather than v0.6.18 (this release's docstrings match
+its own code), and the
+[CUDA-only arguments](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md#cuda-only-arguments)
+ROCm refuses.
 
 ## Supported hardware and toolchain
 
 **One configuration is supported: the one `docker/Dockerfile.rocm` builds.**
-On ROCm 10.1 the full test suite has run on gfx950 through the benchdash
-pipeline (Blaze-O1's image on the same base); on gfx942 (MI300X), in this image,
-only the single/batch prefill, arch-caps and AITER-routing suites have.
+At `v0.6.18+amd.2` the full test suite passes in that image on both
+architectures:
+
+| `pytest --reruns 2` | gfx942 (MI300X) | gfx950 (MI355X) |
+| :--- | :--- | :--- |
+| `-n auto -m "not slow"` | 33867 passed, 4024 skipped | 33875 passed, 4016 skipped |
+| `-n 1 -m slow` | 72 passed | 72 passed |
 
 | | Supported |
 | :--- | :--- |
@@ -245,17 +253,44 @@ CDNA3 stays on CK Tile — see
 ## `torch.compile`
 
 Set `FLASHINFER_USE_TORCH_CUSTOM_OPS=1` **before** importing `flashinfer` to
-wrap the kernels in `torch.library.custom_op` so TorchDynamo can trace them.
-Requires PyTorch ≥ 2.4 and adds a small per-call dispatch overhead. Without it,
-`torch.compile` raises a clear error on tracing into a FlashInfer op rather
-than silently producing a wrong graph.
+register the kernels as `torch.library` custom ops so TorchDynamo can trace
+them (PyTorch ≥ 2.4). Each eager call pays a host-side dispatch cost, measured
+at 21 µs and 11 µs per single prefill on our MI300X and MI355X hosts. Measured
+in bf16 on gfx942 and gfx950 (identical) on the fa2 and AITER backends, each
+compiled result checked against eager:
 
-**Known issue:** PyTorch 2.12 miscompiles a custom op that writes into a view,
-and `append_paged_kv_cache` writes the KV cache: compiled over a layer of a
-multi-layer pool or over views of one tensor, it can write the wrong memory or
-fault the GPU. Allocate K and V separately. Under `mode="reduce-overhead"`,
-register the KV cache as a module buffer: passed as an argument it is copied
-into the CUDA graph on every replay.
+| Op | Flag off | Flag on | Flag on, `fullgraph=True` |
+|---|---|---|---|
+| Paged and ragged prefill, batch decode `run()` | fails | compiles | compiles¹ |
+| Single prefill, `aiter_fused_moe` | fails | compiles | fails |
+| MLA | compiles | compiles | fails |
+| `append_paged_kv_cache`, `append_paged_mla_kv_cache` | fails | compiles | compiles² |
+
+¹ Except AITER decode with `return_lse=True`, which breaks the graph to build
+its fa2 LSE plan eagerly; use `backend="fa2"` there.
+² Except `append_paged_kv_cache(backend="aiter")`, which breaks the graph.
+
+Ops outside the table were not measured beyond the known issue below; sampling
+ops that take a `generator`, POD, `jit_args` custom variants, the
+fp8-quantizing norms and AITER's opt-in norm, RoPE and activation backends are
+not registered. Call `plan()` outside the compiled region: its ops are not
+registered either. With the flag off the error is often torch's `RuntimeError
+when making fake tensor call` rather than a message naming the flag.
+
+**Known issue:** under every `dynamic` setting, PyTorch 2.12 can miscompile an
+op that writes into a view of a larger tensor, silently or with a GPU fault.
+That covers an `out=` slice, an in-place norm on part of a buffer, K and V
+caches carved from one allocation (a layer of a multi-layer pool, the halves of
+a `[2, pages, ...]` tensor), and the single `[pages, 2, ...]` cache
+`append_paged_kv_cache` accepts, which it splits into K and V views itself.
+Allocate every tensor an op writes as its own buffer up front, rather than
+slicing it from a larger one, and pass append two separately allocated caches;
+a `.clone()` per call is not a fix, since the write never reaches the original.
+In-place RoPE on `qkv.split` views and MLA's `torch.split(buf, [512, 64],
+dim=-1)` cache layout measured exact, so keep those. Under
+`mode="reduce-overhead"`, a KV cache passed as an argument is copied into the
+CUDA graph on every replay (measured with AITER decode); register it as a
+module buffer (`persistent=False`) instead.
 
 ## Running the tests
 
@@ -271,8 +306,8 @@ covers worker pinning, the `slow` marker and the rerun policy.
 ## Benchmarking
 
 The unified runner drives batch decode, paged/ragged batch prefill, and the
-norm, rope and sampling routines from one testlist — not every op in the matrix
-above:
+norm, rope and sampling routines from one testlist — not every op in the
+support matrix:
 
 ```bash
 cd benchmarks
