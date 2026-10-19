@@ -1709,7 +1709,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     num_kv_heads,
                     page_size,
                 )
-                getattr(self._prepare_fa2_lse_plan, "prepare", lambda: None)()
 
                 # This path returns before the common tail, so it commits the
                 # same run()-visible state itself. AITER decode is q_len 1 by
@@ -1729,6 +1728,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 self._sm_scale = sm_scale
                 self._rope_scale = rope_scale
                 self._rope_theta = rope_theta
+                getattr(self._prepare_fa2_lse_plan, "prepare", lambda: None)()
                 return
 
             # auto promised fa2 when AITER cannot serve; fall through to it below.

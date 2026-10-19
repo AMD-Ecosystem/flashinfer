@@ -457,7 +457,7 @@ def decode(backend, workspace, batch, kv_len):
     replan(w, batch, kv_len)
     return w
 
-# Separate K and V: dynamic shapes drop an interleaved cache's V offset (README).
+# Separate K and V: torch 2.12 under dynamic=True drops an interleaved cache's V offset.
 def inputs(batch, kv_len, page=16):
     q = torch.randn(batch, 8, 128, device=dev, dtype=dt)
     shape = (batch * kv_len // page, page, 2, 128)
@@ -469,12 +469,14 @@ def close(a, b):
 
 
 @_needs_custom_ops
-def test_torch_compile_aiter_batch_decode():
+@pytest.mark.parametrize("backend", ["aiter", "auto"])
+def test_torch_compile_aiter_batch_decode(backend):
+    """auto resolves to AITER here, so this is the default route under compile."""
     _run_aiter_snippet(
         _DECODE
-        + """\
+        + f"""\
 q, kv = inputs(4, 512)
-w = decode("aiter", ws, 4, 512)
+w = decode({backend!r}, ws, 4, 512)
 assert w.backend == "aiter"
 ref = decode("fa2", ws_ref, 4, 512)
 close(torch.compile(lambda q, kv: with_lse(w.run, 4, q, kv), dynamic=True)(q, kv),
