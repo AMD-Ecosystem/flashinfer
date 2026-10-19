@@ -820,6 +820,8 @@ class TestUntraced:
 
     @_needs_disable_reason
     def test_after_prepare_fullgraph_names_the_reason(self):
+        import torch._dynamo  # prepare() is a no-op until Dynamo is loaded
+
         from flashinfer.rocm.torch_compile import untraced
 
         build = untraced(self._stand_in([]), "UNTRACED-REASON")
