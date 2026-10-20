@@ -11,7 +11,7 @@ FlashInfer on ROCm installation
 System requirements
 ====================================================================
 
-FlashInfer `0.6.18 <https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.6.18>`__ on ROCm has the following prerequisites:
+To use FlashInfer `0.6.18 <https://github.com/flashinfer-ai/flashinfer/releases/tag/v0.6.18>`__ on ROCm, you need the following prerequisites:
 
 - **ROCm version:** `10.1.0 <https://rocm.docs.amd.com/en/docs-10.1.0/>`__
 - **Operating system:** Ubuntu 24.04
