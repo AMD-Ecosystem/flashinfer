@@ -12,7 +12,7 @@ The examples folder in the `https://github.com/AMD-Ecosystem/flashinfer/tree/amd
 has example code that you can use to run FlashInfer. 
 
 You also have the option to use the AITER backend for the prefill attention kernels.
-The AITER backend is currently enabled for the ``single_prefill`` and ``batch_prefill`` kernels only.
+AITER supports single and batch prefill, along with other operations listed in the :doc:`kernel support matrix <../what-is-flashinfer>`.
 To use AITER as the backend for these kernels, use the ``backend="aiter"`` keyword argument to invoke the kernels.
 
 1. Save the following code snippet to a Python script named ``flashinfer_example.py``.
