@@ -115,3 +115,15 @@ repos:
         language: system
         files: ^(flashinfer/rocm/arch_caps\.py|README\.md|scripts/gen_arch_support_matrix\.py)$
         pass_filenames: false
+
+  # AMD repository baseline. A separate entry, not merged into the
+  # pre-commit-hooks block above, so upstream's edits to that block still merge.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: cef0300fd0fc4d2a87a85fa2093c6b283ea36f4b  # frozen: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-json
+  - repo: https://github.com/rhysd/actionlint
+    rev: 0933c147c9d6587653d45fdcb4c497c57a65f9af  # frozen: v1.7.10
+    hooks:
+      - id: actionlint
