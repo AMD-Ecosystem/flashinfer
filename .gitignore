@@ -1,3 +1,4 @@
+# Modified by Advanced Micro Devices, Inc. for the ROCm port (Apache-2.0 sec. 4(b)).
 # ci
 flashinfer-whl/
 dist/
@@ -230,3 +231,18 @@ flashinfer/moe_ep/backends/split/comm/nixl_ep/_vendored/
 
 # Claude Code per-developer overrides — settings.json is shared, *.local.json is not.
 .claude/settings.local.json
+
+# From ROCm/rocm-repo-template's baseline, minus entries already covered above.
+/out/
+node_modules/
+npm-debug.log*
+.env.*
+.DS_Store
+Thumbs.db
+*.zip
+*.tar
+*.gz
+*.tmp
+*.swp
+secrets.*
+credentials.*

@@ -11,6 +11,23 @@ see [`README.md`](README.md); for backend routing and AITER setup, see
 [`docs/rocm/backends.md`](docs/rocm/backends.md). This document covers
 building from source and everything else specific to contributing code.
 
+> **Security vulnerabilities** — do not open a public GitHub issue. See
+> [SECURITY.md](SECURITY.md) for the private reporting process.
+
+# Developer Policies
+
+> [!IMPORTANT]
+> AMD employees must also follow the ROCm open source software
+> contributing policies at <http://u.amd.com/rocm-oss-policies>.
+
+- **Governance and conduct:** the
+  [ROCm Project Governance](https://github.com/ROCm/TheRock/blob/main/GOVERNANCE.md),
+  which also defines the code of conduct.
+- **Licensing:** contributions are covered by the Apache-2.0 [LICENSE](LICENSE);
+  upstream attributions are in [NOTICE](NOTICE).
+- **Secrets:** never commit tokens, passwords, or credentials. GitHub secret
+  scanning with push protection is enabled.
+
 # Setting up a Development Environment
 
 Build the development image with the repository's Dockerfile:
@@ -191,7 +208,7 @@ python3 scripts/amd_coverage.py                           # re-score an existing
 
 **Say what the AITER lib cache was.** `jit/rocm/aiter_source.py`'s build path executes only when `ensure_aiter_lib` actually builds, so that file measures **32 lines higher** on a cold `~/.cache/flashinfer` than on a warm one — 120/124 against 88/124, observed across two runs on gfx942 on 2026-08-28. Neither is wrong, but two numbers only compare if the cache policy matched, and roughly 0.9 points of the headline turns on it — so state which you ran. (The two runs differed by other commits as well, so they do not isolate the effect at the headline level — the per-file figure is what was measured.)
 
-**There is no AMD GPU CI**, so nobody produces this number for you — the `.github/workflows` jobs that name GPUs (`pr-test.yml`, `nightly-release.yml`) are upstream's, on NVIDIA runners, every other job runs on `ubuntu-latest` or a CPU self-hosted runner, and the `Jenkinsfile` is upstream's unused CUDA pipeline. Run it on a GPU box and say which architecture it came from: `arch_caps.py` gates behaviour per gfx942/gfx950, so a single-arch run leaves the other's branches unexecuted. The honest union is `coverage combine` across both, which needs `[tool.coverage.paths]` **and** must run from a checkout containing the sources — coverage only aliases onto a path that exists on disk, and is otherwise a silent no-op that halves the number.
+**There is no AMD GPU CI**, so nobody produces this number for you — no `.github/workflows` job has a GPU runner, and the `Jenkinsfile` is upstream's unused CUDA pipeline. Run it on a GPU box and say which architecture it came from: `arch_caps.py` gates behaviour per gfx942/gfx950, so a single-arch run leaves the other's branches unexecuted. The honest union is `coverage combine` across both, which needs `[tool.coverage.paths]` **and** must run from a checkout containing the sources — coverage only aliases onto a path that exists on disk, and is otherwise a silent no-op that halves the number.
 
 **Running it in a container against a worktree** needs the *parent* repository mounted, not just the worktree: a linked worktree's `.git` is a file pointing into the main checkout, so git — and therefore the whole classifier — fails without it. Mount the repo root at its host path and set `git config --global --add safe.directory '*'` inside the container.
 
@@ -341,7 +358,16 @@ Read it with the tool's own parser, not an `awk` one-liner: a malformed record
 has to fail here the same way it fails in `amd_coverage.py`, not resolve to
 something plausible.
 
-Then resolve, commit, and in the same PR update `upstream-base` to
+Then resolve. `.github/` is fork-owned, but upstream edits there either merge
+in silently or conflict, so restore it wholesale — this clears added files and
+modify/delete leftovers too:
+
+```bash
+git rm -r -q -f .github && git checkout HEAD -- .github
+```
+
+Commit, and in the same PR update
+`upstream-base` to
 `v0.6.19 <sha>`. After it merges, push the matching lightweight tag so the base
 commit stays fetchable — it is reachable from no branch:
 
@@ -450,6 +476,13 @@ pre-commit run -a    # run on all files
 ```
 
 CI rejects PRs that don't pass `pre-commit run -a`.
+
+# Reporting Issues
+
+Search [existing issues](https://github.com/AMD-Ecosystem/flashinfer/issues)
+first. A new report should name the GPU (`amd-smi static --asic`), the
+ROCm, torch, and AITER versions, the OS, and the exact command and output that
+reproduce it.
 
 # Submitting Changes
 
