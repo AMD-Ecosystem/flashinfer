@@ -93,11 +93,15 @@ FlashInfer on ROCm supports the following attention modes:
 - **Multi-Query Attention (MQA):** All query heads share a single key and value stream, minimizing KV cache size.
 
 Most operations run on in-tree HIP kernels, and a subset can also run on the
-`AITER <https://github.com/ROCm/aiter>`__ backend. The ``backend`` argument
-defaults to ``"auto"``, which selects the backend listed in the
-**Default** column. To select a backend explicitly, pass ``backend="aiter"``,
-or ``backend="fa2"`` (attention) or ``backend="native"`` (all other operations)
-for the HIP kernel.
+`AITER <https://github.com/ROCm/aiter>`__ backend. For APIs exposing a ``backend``
+argument, its default is ``"auto"``. Single/batch prefill and batch decode use
+AITER only for compatible calls and otherwise fall back to HIP. Other defaults
+are listed in the **Default** column.
+
+Where supported, select AITER with ``backend="aiter"`` or HIP with
+``backend="fa2"`` (attention) or ``backend="native"`` (other routed operations).
+``single_decode_with_kv_cache``, ``aiter_fused_moe``, and the cascade wrappers
+do not accept ``backend``; cascade attention levels are routed automatically.
 
 All operations listed below are supported on AMD Instinct MI300X, MI325X, and MI355X GPUs.
 
