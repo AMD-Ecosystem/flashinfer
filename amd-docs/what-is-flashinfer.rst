@@ -129,12 +129,12 @@ All operations listed below are supported on AMD Instinct MI300X, MI325X, and MI
      - ✅
      - ✅
      - AITER
-     - MHA, GQA, and MQA; sliding window; custom attention masks (HIP); FP8 KV cache
+     - MHA, GQA, and MQA; sliding window; custom attention masks (HIP)
    * - Batch prefill
      - ✅
      - ✅
      - AITER
-     - Paged and ragged KV cache; sliding window; custom attention masks (HIP); FP8 KV cache
+     - Paged and ragged KV cache; sliding window; custom attention masks (HIP)
    * - Block-sparse attention
      - ✅
      - —
