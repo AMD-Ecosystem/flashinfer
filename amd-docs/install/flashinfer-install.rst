@@ -116,4 +116,5 @@ The wheels package is hosted on the AMD PyPI repository. Use the following comma
 
 .. code-block:: bash
 
-   pip install amd-aiter --index-url https://pypi.amd.com/simple/
+   pip install amd-aiter==0.1.20+rocm10.1.0a20260819.3135022 \
+     --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/
