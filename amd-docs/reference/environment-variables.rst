@@ -86,9 +86,6 @@ These variables control the `AITER <https://github.com/ROCm/aiter>`__ backend an
    * - ``AITER_JIT_DIR``
      - AITER default
      - Directory of AITER shared libraries that the FlashInfer C++ shim loads. Overrides the path recorded when FlashInfer was built.
-   * - ``FLASHINFER_AITER_VARIANT_DIR``
-     - FlashInfer stores
-     - List of prebuilt AITER variant directories, separated by ``os.pathsep``. FlashInfer loads these stores before the cache and the JIT-cache stores. ``AITER_JIT_DIR`` is still tried first.
    * - ``AITER_ASM_DIR``
      - Set by ``import aiter``
      - Directory of AITER assembly code objects. When the variable is unset or empty, single prefill stays on the CK Tile kernel.
