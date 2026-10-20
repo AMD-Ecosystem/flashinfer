@@ -71,12 +71,6 @@ These variables control the `AITER <https://github.com/ROCm/aiter>`__ backend an
    * - ``FLASHINFER_AITER_STRICT``
      - ``0``
      - Set to ``1`` to raise an error when AITER cannot serve a page size directly, or when an AITER kernel fails to initialize for ``backend="auto"``. The default is to use another supported path.
-   * - ``FLASHINFER_AITER_ASM_PREFILL``
-     - ``1``
-     - Selects the single-prefill implementation inside AITER. ``0`` uses the CK Tile kernel. Any other value uses the assembly kernel. The value is read once per process. Some assembly-kernel failures stop the process. Set this variable to ``0`` to stay on CK Tile.
-   * - ``FLASHINFER_AITER_ASM_VERBOSE``
-     - ``0``
-     - Any value other than ``0`` writes to standard error which single-prefill implementation ran, assembly or CK Tile. The two implementations agree numerically.
    * - ``FLASHINFER_ARCH_ALLOW_KNOWN_BAD``
      - ``0``
      - Set to ``1`` to run an operation and backend that the capability table marks as broken on the current toolchain. This release does not mark any combination that way. Soft-capped causal prefill on gfx950 (MI350X and MI355X) keeps its own routing.
