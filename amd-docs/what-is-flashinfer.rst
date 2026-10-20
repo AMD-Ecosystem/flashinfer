@@ -179,7 +179,7 @@ All operations listed below are supported on AMD Instinct MI300X, MI325X, and MI
      - ✅
      - ✅
      - HIP
-     - SiLU and GELU with fused gating
+     - SiLU and GELU with fused gating (GELU is HIP only)
    * - Sampling
      - ✅
      - —
