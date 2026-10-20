@@ -4,11 +4,12 @@
 # list see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
-'''
+"""
 html_theme is usually unchanged (rocm_docs_theme).
 flavor defines the site header display, select the flavor for the corresponding portals
 flavor options: rocm, rocm-docs-home, rocm-blogs, rocm-ds, instinct, ai-developer-hub, local, generic
-'''
+"""
+
 html_theme = "rocm_docs_theme"
 html_theme_options = {
     "flavor": "rocm-llmext",
@@ -26,14 +27,12 @@ html_theme_options = {
 # https://rocm.docs.amd.com/projects/rocm-docs-core/en/latest/user_guide/llms.html
 rocm_docs_generate_llms = True
 
-'''
+"""
 docs_header_version is used to manually configure the version in the header. If
 there exists a non-null value mapped to docs_header_version, then the header in
 the documentation page will contain the given version string.
-'''
-html_context = {
-    "docs_header_version": "26.10"
-}
+"""
+html_context = {"docs_header_version": "26.10"}
 
 
 # This section turns on/off article info
@@ -51,13 +50,14 @@ copyright = "Copyright (c) 2026 Advanced Micro Devices, Inc. All rights reserved
 version = version_number
 release = version_number
 
-external_toc_path = "./sphinx/_toc.yml" # Defines Table of Content structure definition path
+# Defines Table of Content structure definition path
+external_toc_path = "./sphinx/_toc.yml"
 
 # Add more addtional package accordingly
 extensions = [
-    "rocm_docs", 
-    "sphinx.ext.autodoc", # for Python docstrings
-] 
+    "rocm_docs",
+    "sphinx.ext.autodoc",  # for Python docstrings
+]
 
 html_title = f"{project} {version_number} documentation"
 

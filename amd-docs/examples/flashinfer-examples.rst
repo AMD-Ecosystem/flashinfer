@@ -9,7 +9,7 @@ Run a FlashInfer example
 ********************************************************************
 
 The examples folder in the `https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/examples <https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/examples>`__ repository
-has example code that you can use to run FlashInfer. 
+has example code that you can use to run FlashInfer.
 
 You also have the option to use the AITER backend for the prefill attention kernels.
 AITER supports single and batch prefill, along with other operations listed in the :doc:`kernel support matrix <../what-is-flashinfer>`.

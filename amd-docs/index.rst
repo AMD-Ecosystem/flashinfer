@@ -12,12 +12,12 @@ Accelerate LLM attention and decoding kernels with FlashInfer on ROCm for
 AMD Instinct GPUs, enabling high-throughput batch and streaming generation
 for real-time applications like multilingual chat and code completion.
 
-`FlashInfer <https://docs.flashinfer.ai/index.html>`__ is a library and kernel generator 
+`FlashInfer <https://docs.flashinfer.ai/index.html>`__ is a library and kernel generator
 for Large Language Models (LLMs) that provides a high-performance implementation of
 kernels for graphic processing units (GPUs). FlashInfer focuses on LLM serving and inference,
 as well as advanced performance across diverse scenarios.
 
-FlashInfer on ROCm includes capabilities such as load balancing, 
+FlashInfer on ROCm includes capabilities such as load balancing,
 sparse and dense attention optimizations, and single and batch decode, alongside
 prefill for high‑performance execution on AMD Instinct MI300X, MI325X, and MI355X GPUs.
 FlashInfer features highly efficient attention kernels, load-balanced scheduling,

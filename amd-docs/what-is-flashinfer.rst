@@ -8,13 +8,13 @@
 What is FlashInfer?
 ********************************************************************
 
-`FlashInfer <https://docs.flashinfer.ai/index.html>`__ is a library and kernel generator 
+`FlashInfer <https://docs.flashinfer.ai/index.html>`__ is a library and kernel generator
 for Large Language Models (LLMs) that provides a high-performance implementation of kernels
-for graphic processing units (GPUs). FlashInfer focuses on LLM serving and inference, as well 
+for graphic processing units (GPUs). FlashInfer focuses on LLM serving and inference, as well
 as advanced performance across diverse scenarios.
 
-FlashInfer features highly efficient attention kernels, load-balanced scheduling, and memory-optimized 
-techniques, while supporting customized attention variants. It’s compatible with ``torch.compile``, and 
+FlashInfer features highly efficient attention kernels, load-balanced scheduling, and memory-optimized
+techniques, while supporting customized attention variants. It’s compatible with ``torch.compile``, and
 offers high-performance LLM-specific operators, with easy integration through PyTorch, and C++ APIs.
 
 FlashInfer on ROCm supports both stages of LLM inference:
@@ -63,7 +63,7 @@ FlashInfer on ROCm also includes performance-enhancing features:
 
 - Load balancing across GPU compute units
 - Sparse and dense attention optimizations
-- Batch and single‑sequence decode  
+- Batch and single‑sequence decode
 - High‑throughput prefill optimized for AMD Instinct MI300X, MI325X, and MI355X GPUs
 
 FlashInfer is commonly used in the following scenarios:
@@ -80,7 +80,7 @@ FlashInfer is commonly used in the following scenarios:
 - **Research on Kernel Efficiency:** Prototype new attention and cache
   strategies to improve inference performance on AMD Instinct GPUs.
 
-For currently supported use cases and recommendations, refer to the `AMD ROCm blog <https://rocm.blogs.amd.com/search.html?q=flashinfer>`__, 
+For currently supported use cases and recommendations, refer to the `AMD ROCm blog <https://rocm.blogs.amd.com/search.html?q=flashinfer>`__,
 where you can search for examples and best practices to optimize your workloads on AMD GPUs.
 
 Kernel support matrix
