@@ -71,6 +71,12 @@ These variables control the `AITER <https://github.com/ROCm/aiter>`__ backend an
    * - ``FLASHINFER_AITER_STRICT``
      - ``0``
      - Set to ``1`` to raise an error when AITER cannot serve a page size directly, or when an AITER kernel fails to initialize for ``backend="auto"``. The default is to use another supported path.
+   * - ``FLASHINFER_AITER_ASM_PREFILL``
+     - ``1``
+     - Selects the single-prefill implementation inside AITER. ``0`` uses the CK Tile kernel. Any other value uses the assembly kernel. The value is read once per process. Some assembly-kernel failures stop the process. Set this variable to ``0`` to stay on CK Tile.
+   * - ``FLASHINFER_AITER_ASM_VERBOSE``
+     - ``0``
+     - Any value other than ``0`` writes to standard error which single-prefill implementation ran, assembly or CK Tile. The two implementations agree numerically.
    * - ``FLASHINFER_ARCH_ALLOW_KNOWN_BAD``
      - ``0``
      - Set to ``1`` to run an operation and backend that the capability table marks as broken on the current toolchain. This release does not mark any combination that way. Soft-capped causal prefill on gfx950 (MI350X and MI355X) keeps its own routing.
@@ -80,9 +86,12 @@ These variables control the `AITER <https://github.com/ROCm/aiter>`__ backend an
    * - ``AITER_JIT_DIR``
      - AITER default
      - Directory of AITER shared libraries that the FlashInfer C++ shim loads. Overrides the path recorded when FlashInfer was built.
+   * - ``FLASHINFER_AITER_VARIANT_DIR``
+     - FlashInfer stores
+     - List of prebuilt AITER variant directories, separated by ``os.pathsep``. FlashInfer loads these stores before the cache and the JIT-cache stores. ``AITER_JIT_DIR`` is still tried first.
    * - ``AITER_ASM_DIR``
      - Set by ``import aiter``
-     - Directory of AITER assembly code objects, initialized by ``import aiter``. This variable does not disable assembly dispatch or force single prefill to use CK Tile.
+     - Directory of AITER assembly code objects. When the variable is unset or empty, single prefill stays on the CK Tile kernel.
    * - ``GPU_ARCHS``
      - Autodetected
      - GPU architecture list for AITER JIT compilation. If you leave it unset, a shim build may set it from ``FLASHINFER_ROCM_ARCH_LIST`` for that build. If you set it yourself, FlashInfer restores your value after the build.
