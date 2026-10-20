@@ -88,7 +88,7 @@ These variables control the `AITER <https://github.com/ROCm/aiter>`__ backend an
      - Directory of AITER shared libraries that the FlashInfer C++ shim loads. Overrides the path recorded when FlashInfer was built.
    * - ``AITER_ASM_DIR``
      - Set by ``import aiter``
-     - Directory of AITER assembly code objects. When the variable is unset or empty, single prefill stays on the CK Tile kernel.
+     - Directory of AITER assembly code objects, initialized by ``import aiter``. This variable does not disable assembly dispatch or force single prefill to use CK Tile.
    * - ``GPU_ARCHS``
      - Autodetected
      - GPU architecture list for AITER JIT compilation. If you leave it unset, a shim build may set it from ``FLASHINFER_ROCM_ARCH_LIST`` for that build. If you set it yourself, FlashInfer restores your value after the build.
