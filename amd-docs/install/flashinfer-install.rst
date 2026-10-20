@@ -88,7 +88,7 @@ AITER Support
 
 FlashInfer on ROCm has experimental support to use `https://github.com/ROCm/aiter <https://github.com/ROCm/aiter>`__ as a backend. AITER is a library for efficient attention operations.
 
-Unless you are using the prebuilt docker image with FlashInfer pre-installed (which includes AITER), AITER should be installed on your system to use it as a backend.
+The development image built above already includes the validated AITER wheel; no separate AITER installation is needed. Install AITER separately only when assembling your own environment.
 Use one of the following options to install AITER:
 
 * :ref:`aiter-build-from-source`
