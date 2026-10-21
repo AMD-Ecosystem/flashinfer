@@ -201,6 +201,7 @@ def get_batch_decode_jit_module(module_name: str, jit_module: Any):
         mutates_args=(
             "float_workspace_buffer",
             "int_workspace_buffer",
+            # Never registered (*args fails schema inference); if it is, drop the caches.
             "paged_k_cache",
             "paged_v_cache",
             "o",
@@ -280,13 +281,15 @@ def get_batch_decode_module(*args):
 
     # torch library for batch_decode_with_paged_kv_cache_run
 
+    # The caches are only read and undeclared: declared, they miscompile K/V views.
+    # A new name keeps torch's on-disk compile cache from replaying the old op.
+    run_op = f"flashinfer::{uri}_run_kvro"
+
     @register_custom_op(
-        f"flashinfer::{uri}_run",
+        run_op,
         mutates_args=(
             "float_workspace_buffer",
             "int_workspace_buffer",
-            "paged_k_cache",
-            "paged_v_cache",
             "o",
             "maybe_lse",
         ),
@@ -334,7 +337,7 @@ def get_batch_decode_module(*args):
             1.0 / rope_theta,  # rope_rcp_theta
         )
 
-    @register_fake_op(f"flashinfer::{uri}_run")
+    @register_fake_op(run_op)
     def _fake_run_batch_decode(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
@@ -390,9 +393,13 @@ def get_batch_decode_aiter_module(
     ).build_and_load()
     run_func = mod.run.default
 
+    # The caches are only read and undeclared: declared, they miscompile K/V views.
+    # A new name keeps torch's on-disk compile cache from replaying the old op.
+    run_op = f"flashinfer::{uri}_run_kvro"
+
     @register_custom_op(
-        f"flashinfer::{uri}_run",
-        mutates_args=("paged_k_cache", "paged_v_cache", "o"),
+        run_op,
+        mutates_args=("o",),
     )
     def run_batch_decode_aiter(
         q: torch.Tensor,
@@ -429,7 +436,7 @@ def get_batch_decode_aiter_module(
             max_blocks_per_seq,
         )
 
-    @register_fake_op(f"flashinfer::{uri}_run")
+    @register_fake_op(run_op)
     def _fake_run_batch_decode_aiter(
         q: torch.Tensor,
         paged_k_cache: torch.Tensor,

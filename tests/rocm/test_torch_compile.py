@@ -460,7 +460,6 @@ def decode(backend, workspace, batch, kv_len):
     replan(w, batch, kv_len)
     return w
 
-# Separate K and V: torch 2.12 under dynamic=True drops an interleaved cache's V offset.
 def inputs(batch, kv_len, page=16):
     q = torch.randn(batch, 8, 128, device=dev, dtype=dt)
     shape = (batch * kv_len // page, page, 2, 128)
@@ -516,6 +515,123 @@ assert int(first[9]) == 1 and int(second[9]) == 1, (first, second)
 assert not torch.equal(first, second), (first, second)
 close(out, with_lse(decode("fa2", ws_ref, 1, 16384).run, 1, q2, kv2))
 """
+    )
+
+
+@_needs_custom_ops
+@pytest.mark.parametrize(
+    "route", ["decode fa2", "decode fa2 tensor cores", "decode aiter", "prefill fa2"]
+)
+def test_torch_compile_kv_cache_views(route):
+    """Compiled attention over K/V views matches eager and leaves the cache
+    unchanged; the reference is taken before compiling."""
+    _run_aiter_snippet(
+        f"""\
+        route = {route!r}
+        pages, page = 32, 16
+        indptr = i32(*range(0, pages + 1, pages // 4))
+        indices = torch.arange(pages, dtype=torch.int32, device=dev)
+        if route.startswith("decode"):
+            w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+                ws, "NHD", backend=route.split()[1], use_tensor_cores="tensor" in route)
+            w.plan(indptr, indices, i32(*[page] * 4), 8, 2, 128, page, q_data_type=dt)
+            q = torch.randn(4, 8, 128, device=dev, dtype=dt)
+        else:
+            w = flashinfer.BatchPrefillWithPagedKVCacheWrapper(ws, "NHD", backend="fa2")
+            w.plan(i32(0, 16, 32, 48, 64), indptr, indices, i32(*[page] * 4),
+                   8, 2, 128, page, causal=True, q_data_type=dt)
+            q = torch.randn(64, 8, 128, device=dev, dtype=dt)
+        assert w.backend == route.split()[1], w.backend
+        stacked = torch.randn(2, pages, page, 2, 128, device=dev, dtype=dt)
+        interleaved = stacked.transpose(0, 1).contiguous()
+        pool = torch.stack([torch.zeros_like(interleaved), interleaved])
+        cases = (  # layer-1 last: before the fix it faults the GPU
+            ("[2, pages] views", (stacked[0], stacked[1]), None),
+            ("interleaved tensor", interleaved, True),
+            ("layer 1 of a pool", pool[1], None),
+            ("layer 1 of a pool", pool[1], True),
+        )
+        failures = []
+        for name, kv, dynamic in cases:
+            name = f"{{name}}, dynamic={{dynamic}}"
+            ref = w.run(q, kv)
+            before = [t.clone() for t in (pool, stacked, interleaved)]
+            torch._dynamo.reset()
+            run = torch.compile(lambda q, kv: w.run(q, kv), dynamic=dynamic, fullgraph=True)
+            out = run(q, kv)
+            torch.cuda.synchronize()
+            status = "ok"
+            try:
+                torch.testing.assert_close(out, ref, rtol=2e-2, atol=2e-2)
+                assert all(torch.equal(t, b) for t, b in zip((pool, stacked, interleaved), before)), "cache changed"
+            except AssertionError as e:
+                failures.append(f"{{name}}: {{e}}")
+                status = "FAILED"
+            print(name, status, flush=True)
+        assert not failures, "\\n".join(failures)
+        """,
+        fresh_inductor=True,
+    )
+
+
+@_needs_custom_ops
+@pytest.mark.parametrize("route", ["decode fa2", "decode aiter", "prefill fa2"])
+def test_torch_compile_append_and_attention_order(route):
+    """In one compiled graph, attention reads the cache after an earlier append
+    and before a later one."""
+    _run_aiter_snippet(
+        f"""\
+        from flashinfer.page import append_paged_kv_cache
+        route = {route!r}
+        pages, page = 8, 16
+        indptr, indices = i32(0, 4, 8), torch.arange(pages, dtype=torch.int32, device=dev)
+        last = i32(page, page)
+        if route.startswith("decode"):
+            w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD", backend=route.split()[1])
+            w.plan(indptr, indices, last, 8, 2, 128, page, q_data_type=dt)
+            q = torch.randn(2, 8, 128, device=dev, dtype=dt)
+        else:
+            w = flashinfer.BatchPrefillWithPagedKVCacheWrapper(ws, "NHD", backend="fa2")
+            w.plan(i32(0, 16, 32), indptr, indices, last, 8, 2, 128, page, causal=True, q_data_type=dt)
+            q = torch.randn(32, 8, 128, device=dev, dtype=dt)
+        assert w.backend == route.split()[1], w.backend
+        # Half of each request's positions, so untouched slots must still read
+        # the original cache.
+        k_new = torch.randn(2 * 2 * page, 2, 128, device=dev, dtype=dt)
+        v_new = torch.randn_like(k_new)
+        batch = torch.arange(2, device=dev, dtype=torch.int32).repeat_interleave(2 * page)
+        pos = torch.arange(2 * page, device=dev, dtype=torch.int32).repeat(2)
+
+        def append(k_cache, v_cache):
+            append_paged_kv_cache(k_new, v_new, batch, pos, (k_cache, v_cache), indices, indptr, last)
+
+        def append_then_attend(q, k_cache, v_cache):
+            append(k_cache, v_cache)
+            return w.run(q, (k_cache, v_cache))
+
+        def attend_then_append(q, k_cache, v_cache):
+            o = w.run(q, (k_cache, v_cache))
+            append(k_cache, v_cache)
+            return o
+
+        separate = lambda: tuple(torch.randn(pages, page, 2, 128, device=dev, dtype=dt) for _ in range(2))
+        def views():  # K and V as views of one interleaved tensor
+            kv = torch.randn(pages, 2, page, 2, 128, device=dev, dtype=dt)
+            return kv[:, 0], kv[:, 1]
+        for caches, dynamic in ((separate, None), (views, True)):
+            for step in (append_then_attend, attend_then_append):
+                torch.manual_seed(1)
+                ref_caches = caches()
+                ref = step(q, *ref_caches)
+                torch.manual_seed(1)
+                got_caches = caches()
+                torch._dynamo.reset()
+                out = torch.compile(step, fullgraph=True, dynamic=dynamic)(q, *got_caches)
+                torch.testing.assert_close(out, ref, rtol=2e-2, atol=2e-2)
+                for got, want in zip(got_caches, ref_caches):
+                    torch.testing.assert_close(got, want, rtol=0, atol=0)
+        """,
+        fresh_inductor=True,
     )
 
 

@@ -1532,13 +1532,15 @@ def get_batch_prefill_module(backend, *args):
 
     # torch library for paged_run
 
+    # The caches are only read and undeclared: declared, they miscompile K/V views.
+    # A new name keeps torch's on-disk compile cache from replaying the old op.
+    run_op = f"flashinfer::{uri}_paged_run_kvro"
+
     @register_custom_op(
-        f"flashinfer::{uri}_paged_run",
+        run_op,
         mutates_args=(
             "float_workspace_buffer",
             "int_workspace_buffer",
-            "paged_k_cache",
-            "paged_v_cache",
             "o",
             "maybe_lse",
         ),
@@ -1632,7 +1634,7 @@ def get_batch_prefill_module(backend, *args):
             maybe_partial_lse,
         )
 
-    @register_fake_op(f"flashinfer::{uri}_paged_run")
+    @register_fake_op(run_op)
     def _fake_paged_run(
         float_workspace_buffer: torch.Tensor,
         int_workspace_buffer: torch.Tensor,
@@ -1765,6 +1767,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
         mutates_args=(
             "float_workspace_buffer",
             "int_workspace_buffer",
+            # Never registered (*args fails schema inference); if it is, drop the caches.
             "paged_k_cache",
             "paged_v_cache",
             "o",

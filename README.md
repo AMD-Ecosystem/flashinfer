@@ -255,6 +255,13 @@ Requires PyTorch ≥ 2.4 and adds a small per-call dispatch overhead. Without it
 `torch.compile` raises a clear error on tracing into a FlashInfer op rather
 than silently producing a wrong graph.
 
+**Known issue:** PyTorch 2.12 miscompiles a custom op that writes into a view,
+and `append_paged_kv_cache` writes the KV cache: compiled over a layer of a
+multi-layer pool or over views of one tensor, it can write the wrong memory or
+fault the GPU. Allocate K and V separately. Under `mode="reduce-overhead"`,
+register the KV cache as a module buffer: passed as an argument it is copied
+into the CUDA graph on every replay.
+
 ## Running the tests
 
 ```bash
