@@ -53,7 +53,7 @@ These variables control ``torch.compile``, JIT compilation, and the on-disk kern
      - Any non-empty value, including ``0``, allows a JIT-cache kernel to run when its architecture does not match the current GPU. By default, a mismatch is discarded with a warning and the kernel is JIT-compiled for the current GPU.
    * - ``FLASHINFER_TRACE_APPLY``
      - Unset
-     - Set to ``1`` to apply the kernel substitution mapping named by ``FLASHINFER_TRACE_APPLY_PATH`` at import. ``0`` leaves substitution off. Any other value logs a warning and leaves it off. If substitution cannot be enabled, FlashInfer logs a warning and continues to import.
+     - Set to ``1`` to apply the kernel substitution mapping named by ``FLASHINFER_TRACE_APPLY_PATH`` at import. Only ``0``, ``false``, ``False``, and the empty string leave substitution off; every other value, including ``off`` and ``FALSE``, enables it. If substitution cannot be enabled, FlashInfer logs a warning and continues to import.
 
 AITER
 ====================================================================

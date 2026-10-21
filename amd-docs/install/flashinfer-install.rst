@@ -15,7 +15,7 @@ To use FlashInfer `0.6.18 <https://github.com/flashinfer-ai/flashinfer/releases/
 
 - **ROCm version:** `10.1.0 <https://rocm.docs.amd.com/en/docs-10.1.0/>`__
 - **Operating system:** Ubuntu 24.04
-- **GPU platform:** AMD Instinct™ MI300X, MI325X, MI355X
+- **GPU platform:** AMD Instinct™ MI300X, MI325X, MI350X, MI355X
 - **PyTorch:** `2.12.0 <https://github.com/ROCm/pytorch/tree/release/2.12>`__
 - **Python:** `3.12 <https://www.python.org/downloads/release/python-31215/>`__
 - **AITER:** `0.1.21.post2 <https://github.com/ROCm/aiter/releases/tag/v0.1.21.post2>`__ (source build)
@@ -55,7 +55,7 @@ Build FlashInfer from source
       --device=/dev/dri --group-add video \
       --cap-add=SYS_PTRACE \
       --security-opt seccomp=unconfined \
-      --ipc=host --shm-size 16G \
+      --shm-size 16G \
       -v $PWD:/workspace \
       rocm-flashinfer-dev
 

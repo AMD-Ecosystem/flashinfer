@@ -64,7 +64,7 @@ FlashInfer on ROCm also includes performance-enhancing features:
 - Load balancing across GPU compute units
 - Sparse and dense attention optimizations
 - Batch and single‑sequence decode
-- High‑throughput prefill optimized for AMD Instinct MI300X, MI325X, and MI355X GPUs
+- High‑throughput prefill optimized for AMD Instinct MI300X, MI325X, MI350X, and MI355X GPUs
 
 FlashInfer is commonly used in the following scenarios:
 
@@ -104,7 +104,7 @@ Where supported, select AITER with ``backend="aiter"`` or HIP with
 ``single_decode_with_kv_cache``, ``aiter_fused_moe``, and the cascade wrappers
 do not accept ``backend``; cascade attention levels are routed automatically.
 
-All operations listed below are supported on AMD Instinct MI300X, MI325X, and MI355X GPUs.
+All operations listed below are supported on AMD Instinct MI300X, MI325X, MI350X, and MI355X GPUs.
 
 .. list-table::
    :header-rows: 1
