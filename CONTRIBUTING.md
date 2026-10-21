@@ -366,6 +366,7 @@ modify/delete leftovers too:
 git rm -r -q -f .github && git checkout HEAD -- .github
 ```
 
+`tests/rocm/test_repo_workflows.py` fails on a workflow that slips through.
 Commit, and in the same PR update
 `upstream-base` to
 `v0.6.19 <sha>`. After it merges, push the matching lightweight tag so the base

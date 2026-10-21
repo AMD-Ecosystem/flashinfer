@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# PR-side scanners from ROCm/rocm-security-gh's pinned security-baseline.yml.
+# Reports go to the job summary and artifacts; same-repo PRs also get a
+# findings comment. weekly-security-scan.yml uploads SARIF to code scanning.
+
+name: Security scan (PR)
+
+on:
+  pull_request:
+    # Spelled out the default to avoid confusion.
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    name: Security scan
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    uses: ROCm/rocm-security-gh/.github/workflows/security-baseline.yml@228e62369c5d8b677215f8a112ea0c8e8119c58f # v1.0.6
+    with:
+      report_formats: human
+      bandit_config_path: .github/scan_tools_configs/bandit.yml
+      gitleaks_config_path: .github/scan_tools_configs/gitleaks.toml
+      trivy_config_path: .github/scan_tools_configs/trivy.yml
+      zizmor_config_path: .github/scan_tools_configs/zizmor.yml
