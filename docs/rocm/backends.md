@@ -8,6 +8,9 @@ constraints that are easy to trip over.
 
 * [Choosing a backend](#choosing-a-backend)
 * [Not available on ROCm](#not-available-on-rocm)
+  * [Not ported yet](#not-ported-yet-imports-but-has-no-rocm-kernel)
+  * [NVIDIA-only, but not gated](#nvidia-only-but-not-gated)
+  * [Blocked on a missing package](#blocked-on-a-missing-package-not-on-rocm)
 * [Installing AITER](#installing-aiter)
 * [How `backend="auto"` resolves](#how-backendauto-resolves)
 * [CUDA-only arguments](#cuda-only-arguments)
@@ -43,18 +46,92 @@ fails later:
 | `flashinfer.fused_moe` | The upstream CUTLASS MoE. **ROCm has MoE** — use `flashinfer.aiter_fused_moe`, below |
 | `flashinfer.dsv3_ops` | DeepSeek-V3 fusions built on the above |
 | `flashinfer.comm.*` — `cuda_ipc`, `mixed_comm`, `mnnvl`, `nvshmem`, `nvshmem_allreduce`, `trtllm_alltoall`, `trtllm_ar`, `trtllm_mnnvl_ar`, `vllm_ar` | NVLink / NVSHMEM transports |
+| `flashinfer.deep_gemm`, `flashinfer.green_ctx` | Both reach `flashinfer.cuda_utils`, which requires `cuda-python`; CUDA green contexts have no HIP analogue |
+| `flashinfer.gdn_prefill`, `flashinfer.mamba.ssd_combined` | CuTe DSL — both import `cutlass` eagerly. The rest of `flashinfer.mamba` imports fine |
+| `flashinfer.parallel_attention` | Needs `prefill.fmha_varlen`, upstream's CUTLASS varlen FMHA |
+| `flashinfer.aot`, `flashinfer.__main__` | CUDA-only AOT build and CLI — they shell out to `nvcc`. **ROCm has AOT** — use `flashinfer.rocm.aot` |
+| `flashinfer.tactics_blocklist_gen` | Enumerates CUDA backend tactics |
 
 `importlib.util.find_spec` still reports these as present — the files ship,
 the import is what is gated. Feature-detect with `hasattr(flashinfer, ...)`
 or a `try: import ... except ImportError`, not `find_spec`.
 
-The list is exactly what is gated. A module that merely *imports* one of
-them — `flashinfer.comm.trtllm_moe_alltoall`, for instance — still fails,
-but transitively, so the error names the gated dependency rather than the
-module you asked for.
+A module that merely *imports* a gated one — `flashinfer.comm.trtllm_moe_alltoall`,
+for instance — still fails, but transitively, so the error names the gated
+dependency rather than the module you asked for. `flashinfer.cuda_utils` is
+deliberately ungated: it is private, and the modules that reach it are listed
+above.
 
 `flashinfer.quantization`'s `packbits` and `segment_packbits` are unaffected
 and have in-tree HIP kernels.
+
+### Not ported yet: imports, but has no ROCm kernel
+
+Gating is not the whole story. These import cleanly and fail on first call,
+while resolving or building their JIT sources, naming the file that does not
+exist. Usually that surfaces from ninja:
+
+```text
+ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
+```
+
+* `flashinfer.topk`, `flashinfer.concat_ops` and `flashinfer.mhc` — ordinary
+  kernels with no `csrc/rocm` source.
+* `flashinfer.topk_varlen` — its optimized backends admit only NVIDIA compute
+  capabilities and the general fallback calls `get_topk_module()`, so no path
+  is available.
+* `flashinfer.mamba`'s `selective_state_update` and `checkpointing_ssu`. Its
+  `ssd_combined` is gated instead: it imports `cutlass` eagerly and so never
+  reaches a kernel.
+* `flashinfer.kda_prefill` and the `flashinfer.kda_kernels` entry points —
+  `csrc/rocm` has no `kda/` tree. `flashinfer.kda` does not even import, for
+  want of `tvm_ffi`, which the image does not ship.
+* `flashinfer.diffusion_ops` — it re-exports four fused DiT entry points from
+  `flashinfer.norm`, and `csrc/rocm/norm.cu` defines none of them.
+* `flashinfer.trace.templates.gemm`, through the `nv_internal` FP4 sources.
+* Three side paths of otherwise supported modules: `utils.set_log_level()`,
+  the opt-in GPU stats counter in `api_logging`, and `norm`'s fused
+  rmsnorm+silu variant.
+
+They stay importable because working code reaches them — `topk_varlen` imports
+`topk` at module scope — so gating would break more than it documents.
+
+Some fail earlier, as a plain `FileNotFoundError`: the Mamba generators open
+their templates directly, and fused rmsnorm+silu copies its source before any
+build starts.
+
+`tests/rocm/test_kernel_source_coverage.py` holds this list. It fails when a
+newly vendored op names a kernel source absent from `csrc/rocm`, so the set
+above cannot grow unnoticed.
+
+### NVIDIA-only, but not gated
+
+These import cleanly and fail only when called, so the gate never sees them —
+but a ROCm equivalent would be a rewrite, not a port:
+
+* `flashinfer.cute_dsl` and `flashinfer.cutile` — CuTe DSL. Neither fails on
+  call: `cute_dsl/__init__.py:37` imports its kernels only when
+  `is_cute_dsl_available()`, so on ROCm the module offers its availability
+  helpers and no kernels, and `cutile` exports `is_cuda_tile_available()`
+  alone, which answers `False`. Probe those rather than the import.
+* `flashinfer.msa_ops` and `flashinfer.moe_ep` — `cutlass.cute` plus, for
+  `moe_ep`, NVSHMEM.
+* `flashinfer.gdn_decode` — every kernel under `gdn_kernels/` is `@cute.jit`.
+  It imports and fails when called, where `gdn_prefill` reaches `import
+  cutlass` at module scope and is gated in the table above instead.
+* `flashinfer.nvfp4_attention_sm120` — `supported_compute_capability([120, 121])`.
+* `flashinfer.xqa` — `csrc/xqa/{mma.cuh,gmma.cuh,gmma_impl.cuh,tma.h}` emit
+  NVIDIA PTX directly (`mma.sync`, `wgmma`, `cp.async.bulk`), so an AMD path is
+  a rewrite rather than a port.
+* `flashinfer.tllm_utils` — `delay_kernel()` builds five `nv_internal`
+  TensorRT-LLM sources. `flashinfer.autotuner` imports the module, which is why
+  it is not gated.
+
+### Blocked on a missing package, not on ROCm
+
+`flashinfer.profiler` needs `tg4perfetto` and `flashinfer.artifacts` needs
+`requests`; `docker/Dockerfile.rocm` ships neither, so neither imports here.
+That says nothing about their ROCm support either way.
 
 ## Installing AITER
 
@@ -254,6 +331,21 @@ from the head count, and the user-facing route to it is
 being ignored.
 
 ## Per-op notes
+
+### Soft-capped causal prefill avoids one AITER kernel
+
+AITER's
+`mha_varlen_fwd` miscomputes `logits_soft_cap` for causal prefill at
+`head_dim=128` (through amd-aiter 0.1.21) — from `kv_len >= 512` on gfx942, at
+*every* length on gfx950, so the threshold lives in `arch_caps.py` rather than
+at the call sites. Single and ragged prefill always dispatch through that
+kernel, so `auto` serves them with `fa2` and `backend="aiter"` raises rather
+than returning wrong numbers.
+
+Paged prefill keeps AITER at a native page size, since that route takes
+`mha_batch_prefill` instead — measured exact on amd-aiter 0.1.20 against an
+fp32 reference on both architectures — and falls back only when the run-time
+probe demotes it to a flat gather. Every other soft-cap shape is unaffected.
 
 ### `fused_add_rmsnorm` and `gemma_fused_add_rmsnorm` at large `hidden_size`
 

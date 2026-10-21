@@ -238,7 +238,26 @@ Run this gate on the branch's full diff before `gh pr create`, in order:
    that touch no Python have no relevant tests — say so explicitly rather than
    claiming a run.
 
-4. **Commit** the resulting changes.
+4. **Update the documentation the change invalidates.** Ask what a reader would
+   now find wrong, and check each of these against the diff:
+
+   | Where | Covers |
+   | :--- | :--- |
+   | `README.md` | Support matrix, env vars, quick start, supported versions |
+   | `docs/rocm/backends.md` | Routing rules, per-op constraints, unavailable modules, AITER install |
+   | `CONTRIBUTING.md` | Build, tests, coverage, code structure, upstream-sync procedure |
+   | `CLAUDE.md`, `.claude/skills/` | Commands, gotchas and workflows an agent will act on |
+   | `benchmarks/README.md`, `amd-flashinfer-jit-cache/README.md`, module docstrings | Their own subject |
+
+   A new env var, backend, gate, marker or script belongs in whichever of those
+   describes that subject — and a *removed* one has to come back out. Two
+   traps: the README support matrix is generated, so edit
+   `flashinfer/rocm/arch_caps.py` and run
+   `python3 scripts/gen_arch_support_matrix.py` rather than the table; and a
+   fact stated in two files will drift, so cite the one that owns it rather
+   than restating it.
+
+5. **Commit** the resulting changes.
 
 Only after this gate passes do the pre-flight safeguards and `gh pr create`.
 
@@ -360,13 +379,14 @@ setup step has not been run in this clone.
 - **Do not append a "Generated with Claude Code" footer** (or any other
   tool-authored attribution) to the body, even if a harness default suggests it.
 
-**Body** — include sections that apply, skip the rest:
+**Body** — include the sections that apply, skip the rest. All are `##`;
+they are peers, not subsections of Summary:
 
 - `## Summary` — 1–3 sentences on what and why.
-- `### What changed` with `####` per component when the PR spans multiple
+- `## What changed` with `###` per component when the PR spans multiple
   subsystems. Bullet by file: ``- **`path`** — one-line purpose``. Call out
   non-obvious design choices.
-- `### Architecture / design notes` — only when there's a real choice to record.
+- `## Architecture / design notes` — only when there's a real choice to record.
   Tables for routing/dispatch logic; explain *why*.
 - `## Benchmark results` — for perf-touching PRs. Shape line + table per entry
   point + mean overhead/speedup row.

@@ -5,7 +5,7 @@
 """Opt-in ``torch.library`` custom-op registration.
 
 Real registration happens behind FLASHINFER_USE_TORCH_CUSTOM_OPS=1; otherwise
-ops carry a guard that raises under torch.compile instead of letting Dynamo
+ops carry a guard that raises under torch.compile instead of letting TorchDynamo
 trace into an extension. utils.py keeps upstream's unguarded no-op below
 torch 2.4, so the guard only exists from 2.4 up.
 """
