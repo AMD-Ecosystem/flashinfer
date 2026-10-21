@@ -77,3 +77,20 @@ def test_the_gate_is_up_after_importing_flashinfer_alone():
         [sys.executable, "-c", snippet], capture_output=True, text=True, timeout=300
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_python_dash_m_on_a_gated_module_reports_the_gate():
+    """runpy asks the loader for code, never reaching exec_module.
+
+    Without get_code on _CudaOnlyLoader this exits with `AttributeError:
+    '_CudaOnlyLoader' object has no attribute 'get_code'`, which says nothing
+    about the backend. flashinfer.rocm.aot is the ROCm entry point.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "flashinfer.aot", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode != 0
+    assert "CUDA-only and not available on ROCm" in result.stderr, result.stderr

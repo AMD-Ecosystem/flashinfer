@@ -61,6 +61,30 @@ CUDA_ONLY_MODULES = frozenset(
         "flashinfer.gemm",
         "flashinfer.grouped_mm",
         "flashinfer.trtllm_low_latency_gemm",
+        # deep_gemm and green_ctx reach cuda_utils, which re-raises unless
+        # cuda-python is installed -- an error about a missing pip package
+        # rather than about the backend. cuda_utils itself stays ungated: it is
+        # private, and these two are its only importers on this path.
+        "flashinfer.deep_gemm",
+        "flashinfer.green_ctx",
+        # gdn_prefill and mamba.ssd_combined are CuTe DSL, so both stop at
+        # `No module named 'cutlass'`. The rest of flashinfer.mamba imports.
+        "flashinfer.gdn_prefill",
+        "flashinfer.mamba.ssd_combined",
+        # parallel_attention wants prefill.fmha_varlen, upstream's CUTLASS
+        # varlen FMHA. The ROCm twin is right not to carry it, so ungated the
+        # failure reads as a name missing from a module we own.
+        "flashinfer.parallel_attention",
+        # aot and __main__ are CUDA-shaped end to end: jit/cpp_ext.py shells
+        # out to nvcc with no HIP branch. flashinfer.rocm.aot is the ROCm entry
+        # point, and shadowing cannot substitute it -- runpy resolves
+        # `python -m flashinfer.aot` through the aliased spec's loader, which
+        # refuses the name mismatch.
+        "flashinfer.aot",
+        "flashinfer.__main__",
+        # Enumerates CUDA backend tactics; stops at an ActivationType the ROCm
+        # arm of flashinfer/__init__.py does not bind.
+        "flashinfer.tactics_blocklist_gen",
     }
 )
 
@@ -83,14 +107,24 @@ def install_shadow_modules() -> Dict[str, ModuleType]:
     return imported
 
 
+_CUDA_ONLY_MESSAGE = "{name} is CUDA-only and not available on ROCm"
+
+
 class _CudaOnlyLoader(importlib.abc.Loader):
     def create_module(self, spec):
         return None
 
     def exec_module(self, module):
-        raise ImportError(
-            f"{module.__spec__.name} is CUDA-only and not available on ROCm"
-        )
+        raise ImportError(_CUDA_ONLY_MESSAGE.format(name=module.__spec__.name))
+
+    # runpy asks the loader for code rather than executing the module, so
+    # `python -m flashinfer.aot` never reaches exec_module. Without this it
+    # fails with AttributeError: no get_code -- the opposite of uniform.
+    def get_code(self, fullname):
+        raise ImportError(_CUDA_ONLY_MESSAGE.format(name=fullname))
+
+    def get_source(self, fullname):
+        raise ImportError(_CUDA_ONLY_MESSAGE.format(name=fullname))
 
 
 class _CudaOnlyFinder(importlib.abc.MetaPathFinder):
