@@ -92,11 +92,12 @@ FlashInfer on ROCm supports the following attention modes:
 - **Grouped-Query Attention (GQA):** Groups of query heads share keys and values, reducing KV cache size and memory traffic.
 - **Multi-Query Attention (MQA):** All query heads share a single key and value stream, minimizing KV cache size.
 
-Most operations run on in-tree HIP kernels, and a subset can also run on the
-`AITER <https://github.com/ROCm/aiter>`__ backend. For APIs exposing a ``backend``
-argument, its default is ``"auto"``. Single/batch prefill and batch decode use
-AITER only for compatible calls and otherwise fall back to HIP. Other defaults
-are listed in the **Default** column.
+The `AITER <https://github.com/ROCm/aiter>`__ backend is the first-class citizen in
+FlashInfer. Where supported, operations run on AITER and fall back to in-tree HIP
+kernels otherwise. For APIs exposing a ``backend`` argument, its default is
+``"auto"``. Single/batch prefill and batch decode use AITER only for compatible
+calls and otherwise fall back to HIP. Other defaults are listed in the
+**Default** column.
 
 Where supported, select AITER with ``backend="aiter"`` or HIP with
 ``backend="fa2"`` (attention) or ``backend="native"`` (other routed operations).
@@ -134,7 +135,7 @@ All operations listed below are supported on AMD Instinct MI300X, MI325X, and MI
      - ✅
      - ✅
      - AITER
-     - Paged and ragged KV cache; sliding window; custom attention masks (HIP); FP8 KV cache on HIP
+     - Paged and ragged KV cache; sliding window; custom attention masks (HIP); FP8 KV cache on HIP, and on AITER's paged route at head dimension 128 or 256
    * - Block-sparse attention
      - ✅
      - —

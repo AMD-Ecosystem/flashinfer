@@ -8,12 +8,9 @@
 Run a FlashInfer example
 ********************************************************************
 
-The examples folder in the `https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/examples <https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/examples>`__ repository
-has example code that you can use to run FlashInfer.
-
-You also have the option to use the AITER backend for the prefill attention kernels.
 AITER supports single and batch prefill, along with other operations listed in the :doc:`kernel support matrix <../what-is-flashinfer>`.
-To use AITER as the backend for these kernels, use the ``backend="aiter"`` keyword argument to invoke the kernels.
+The ``auto`` backend calls the most optimized kernels from AITER or the in-tree HIP kernels, based on the benchmarking results.
+To use AITER as the backend for any operation explicitly, use the ``backend="aiter"`` keyword argument to invoke the kernels.
 
 1. Save the following code snippet to a Python script named ``flashinfer_example.py``.
 

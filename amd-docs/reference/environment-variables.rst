@@ -70,7 +70,7 @@ These variables control the `AITER <https://github.com/ROCm/aiter>`__ backend an
      - Description
    * - ``FLASHINFER_AITER_STRICT``
      - ``0``
-     - Set to ``1`` to raise an error when AITER cannot serve a page size directly, or when an AITER kernel fails to initialize for ``backend="auto"``. The default is to use another supported path.
+     - Set to ``1`` to raise when an AITER kernel fails to probe or initialize for ``backend="auto"``, instead of falling back to another supported path. It does not force an error for every page size: a page size that is not routed through AITER's native paged kernel still takes the flat-gather path, which copies K and V on each run.
    * - ``FLASHINFER_AITER_ASM_PREFILL``
      - ``1``
      - Selects the single-prefill implementation inside AITER. ``0`` uses the CK Tile kernel. Any other value uses the assembly kernel. The value is read once per process. Some assembly-kernel failures stop the process. Set this variable to ``0`` to stay on CK Tile.

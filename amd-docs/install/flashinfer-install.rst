@@ -86,35 +86,6 @@ If you see the version string above, FlashInfer ``0.6.18`` has been installed su
 AITER Support
 ======================================================================================
 
-FlashInfer on ROCm has experimental support to use `https://github.com/ROCm/aiter <https://github.com/ROCm/aiter>`__ as a backend. AITER is a library for efficient attention operations.
+FlashInfer on ROCm supports `https://github.com/ROCm/aiter <https://github.com/ROCm/aiter>`__ as a backend. AITER is a library for efficient attention operations.
 
-The development image built above already includes the validated AITER wheel; no separate AITER installation is needed. Install AITER separately only when assembling your own environment.
-Use one of the following options to install AITER:
-
-* :ref:`aiter-build-from-source`
-* :ref:`aiter-install-wheel-pypi-amd`
-
-.. _aiter-build-from-source:
-
-Install AITER by building from source
---------------------------------------------------------------------------------------
-
-Use the following command to install AITER by building from source.
-
-.. code-block:: bash
-
-   git clone --recursive https://github.com/ROCm/aiter.git
-   cd aiter
-   python3 setup.py develop
-
-.. _aiter-install-wheel-pypi-amd:
-
-Install the AITER wheels package using pip
---------------------------------------------------------------------------------------
-
-The wheels package is hosted on the AMD PyPI repository. Use the following command to install AITER with ``pip``.
-
-.. code-block:: bash
-
-   pip install amd-aiter==0.1.20+rocm10.1.0a20260819.3135022 \
-     --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/
+The development image built above already includes the validated AITER build; no separate AITER installation is needed.
