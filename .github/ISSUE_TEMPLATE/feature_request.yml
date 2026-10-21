@@ -1,3 +1,4 @@
+# Modified by Advanced Micro Devices, Inc. for the ROCm port (Apache-2.0 sec. 4(b)).
 name: 🚀 Kernel / Feature Request
 description: Request a kernel, hardware enablement, framework integration, API, or performance improvement.
 title: "[Feature]: "
@@ -107,15 +108,14 @@ body:
       label: Workload and configuration
       description: >
         The single most useful section for kernel/performance requests — enough
-        detail to identify the operator path and representative shapes. For the
-        environment line, paste the output of `python -m flashinfer.collect_env`.
+        detail to identify the operator path and representative shapes.
       value: |
         - Data type and quantization:
         - Batch size or request concurrency:
         - Sequence lengths or token counts:
         - Parallelism: TP / EP / DP / PP / disaggregated
         - Relevant shapes: heads, head dimension, hidden size, experts, top-k, page size, or other
-        - Environment: output of `python -m flashinfer.collect_env`
+        - Environment: GPU, ROCm, torch and AITER versions
     validations:
       required: false
 
