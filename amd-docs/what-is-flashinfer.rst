@@ -10,7 +10,7 @@ What is FlashInfer?
 
 `FlashInfer <https://docs.flashinfer.ai/index.html>`__ is a library and kernel generator
 for Large Language Models (LLMs) that provides a high-performance implementation of kernels
-for graphic processing units (GPUs). FlashInfer focuses on LLM serving and inference, as well
+for graphics processing units (GPUs). FlashInfer focuses on LLM serving and inference, as well
 as advanced performance across diverse scenarios.
 
 FlashInfer features highly efficient attention kernels, load-balanced scheduling, and memory-optimized
