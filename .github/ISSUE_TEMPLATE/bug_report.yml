@@ -1,3 +1,4 @@
+# Modified by Advanced Micro Devices, Inc. for the ROCm port (Apache-2.0 sec. 4(b)).
 name: 🐛 Bug Report
 description: Report something broken, wrong, or slower than it used to be.
 labels: ["bug"]
@@ -14,16 +15,12 @@ body:
     attributes:
       label: Environment
       description: >
-        Run `python -m flashinfer.collect_env` (or `flashinfer collect-env`)
-        in the exact environment (same venv/container) where the bug
-        reproduces and paste the full output below. If `import flashinfer` itself is broken, download the
-        standalone script and run it with plain Python:
-        `curl -OL https://raw.githubusercontent.com/flashinfer-ai/flashinfer/main/flashinfer/collect_env.py && python collect_env.py`.
-        The report includes which cuDNN/cuBLAS/CUDA libraries are *actually
-        loaded* vs merely installed — this resolves most "works on my machine"
-        divergence, so please don't trim it.
+        From the exact environment (same venv/container) where the bug
+        reproduces: the GPU (`amd-smi static --asic`), the ROCm version
+        (`cat ${ROCM_PATH:-/opt/rocm}/.info/version` -- `torch.version.hip`
+        reports HIP, not ROCm), the OS, and
+        `python -m pip list | grep -Ei '^(torch|amd-aiter|amd-flashinfer)'`.
       render: text
-      placeholder: Paste the full output of `python -m flashinfer.collect_env` here.
     validations:
       required: true
   - type: textarea

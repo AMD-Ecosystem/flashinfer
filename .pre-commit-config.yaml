@@ -1,3 +1,4 @@
+# Modified by Advanced Micro Devices, Inc. for the ROCm port (Apache-2.0 sec. 4(b)).
 # To use:
 #
 #     pre-commit run -a
@@ -84,6 +85,7 @@ repos:
             README\.md
             |CONTRIBUTING\.md
             |CLAUDE\.md
+            |SECURITY\.md
             |benchmarks/rocm/README\.md
             |docs/rocm/.*\.md
             |amd-flashinfer-jit-cache/README\.md

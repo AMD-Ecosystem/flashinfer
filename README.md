@@ -344,10 +344,17 @@ See [CONTRIBUTING.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integ
 editable and wheel builds, the ahead-of-time kernel build, and how to run
 the test suite.
 
+## Contributing
+
+Contributions are welcome. Please run `pre-commit run -a` and the relevant
+`pytest` selection before opening a PR.
+
+## Security
+
+Do not report vulnerabilities in a public issue — follow
+[SECURITY.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/SECURITY.md).
+
 ## License and acknowledgements
 
 Apache-2.0 — see [LICENSE](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/LICENSE) and [NOTICE](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/NOTICE). Upstream
 project: [flashinfer-ai/flashinfer](https://github.com/flashinfer-ai/flashinfer).
-
-Contributions are welcome. Please run `pre-commit run -a` and the relevant
-`pytest` selection before opening a PR.

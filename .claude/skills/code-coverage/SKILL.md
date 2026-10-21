@@ -91,9 +91,8 @@ docker exec <container> git config --global --add safe.directory '*'
 ```
 
 There is **no AMD GPU CI** in this repo, so no automation produces this number
-— the workflows that name GPUs are upstream's, on NVIDIA runners, and every
-other one runs on `ubuntu-latest` or a CPU runner. The classifier's own
-tests (`tests/rocm/test_amd_coverage.py`) do run there, via
+— no workflow has a GPU runner. The classifier's own
+tests (`tests/rocm/test_amd_coverage.py`) do run in CI, on a CPU runner, via
 `arch-caps-conformance.yml`.
 
 ## Failure modes worth recognising

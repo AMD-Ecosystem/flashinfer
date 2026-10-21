@@ -1,3 +1,4 @@
+# Modified by Advanced Micro Devices, Inc. for the ROCm port (Apache-2.0 sec. 4(b)).
 name: pre-commit
 
 on:
@@ -19,5 +20,5 @@ jobs:
     # Upstream's `Validate CUDA configuration` step is dropped. Its line-based
     # TOML reader cannot parse this file's multi-line `dev = [`, and past that it
     # requires CUDA extras (nvidia-cutlass-dsl[cu13]) a ROCm wheel cannot carry --
-    # unsatisfiable here, not merely noisy. Same removal in release.yml.
+    # unsatisfiable here, not merely noisy.
     - uses: pre-commit/action@v3.0.1
