@@ -2178,7 +2178,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 )
 
         if out is None:
-            out = torch.empty_like(q)
+            # Contiguous whatever q's layout: every decode kernel writes o densely.
+            out = torch.empty_like(q, memory_format=torch.contiguous_format)
         else:
             check_shape_dtype_device(out, q.shape, q.dtype, q.device, "out")
 

@@ -303,13 +303,16 @@ _AITER_PREAMBLE = textwrap.dedent(
 )
 
 
-def _run_aiter_snippet(body: str, custom_ops: str = "1") -> None:
+def _run_aiter_snippet(
+    body: str, custom_ops: str = "1", fresh_inductor: bool = False
+) -> None:
     # Cold, the child builds the AITER shims; see test_torch_compile_with_aiter_backend.
-    result = _run_snippet(
-        _AITER_PREAMBLE + textwrap.dedent(body),
-        {"FLASHINFER_USE_TORCH_CUSTOM_OPS": custom_ops},
-        timeout=1800,
-    )
+    env = {"FLASHINFER_USE_TORCH_CUSTOM_OPS": custom_ops}
+    if fresh_inductor:
+        # Inductor's on-disk caches ignore op alias schemas, so a graph compiled
+        # by another checkout could replay here.
+        env["TORCHINDUCTOR_FORCE_DISABLE_CACHES"] = "1"
+    result = _run_snippet(_AITER_PREAMBLE + textwrap.dedent(body), env, timeout=1800)
     if result.returncode == 99:
         pytest.skip("AITER prefill unavailable here")
     assert result.returncode == 0, f"failed:\n{result.stderr[-4000:]}"
@@ -513,6 +516,49 @@ assert int(first[9]) == 1 and int(second[9]) == 1, (first, second)
 assert not torch.equal(first, second), (first, second)
 close(out, with_lse(decode("fa2", ws_ref, 1, 16384).run, 1, q2, kv2))
 """
+    )
+
+
+@_needs_custom_ops
+def test_torch_compile_aiter_decode_reduce_overhead_rerecords():
+    """AITER decode's first call inside a reduce-overhead warm-up must leave no
+    untracked allocation in the CUDA-graph pool, across re-records."""
+    _run_aiter_snippet(
+        """\
+        w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD", backend="aiter")
+        w.plan(i32(*range(0, 129, 16)), torch.arange(128, dtype=torch.int32, device=dev),
+               i32(*[16] * 8), 32, 8, 128, 16, q_data_type=dt)
+        assert w.backend == "aiter", w.backend
+
+        class Attn(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.register_buffer("kv", torch.randn(128, 2, 16, 8, 128, device=dev, dtype=dt))
+
+            def forward(self, x, q):
+                return x * 2, w.run(q, self.kv)
+
+        m = Attn()
+        q = torch.randn(8, 32, 256, device=dev, dtype=dt)[..., :128]  # the shim copies it
+        # Reference from fa2 before compiling: an eager AITER call would create
+        # the shim's state outside the graph pool.
+        ref_w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+            torch.empty(64 << 20, dtype=torch.uint8, device=dev), "NHD", backend="fa2")
+        ref_w.plan(i32(*range(0, 129, 16)), torch.arange(128, dtype=torch.int32, device=dev),
+                   i32(*[16] * 8), 32, 8, 128, 16, q_data_type=dt)
+        ref = ref_w.run(q, m.kv)
+        kv_before = m.kv.clone()
+        f = torch.compile(m, mode="reduce-overhead")
+        for _ in range(3):  # the first AITER call of this process is the warm-up
+            f(torch.randn(64, device=dev), q)
+        for n in (128, 256):  # new shapes: new tree paths
+            f(torch.randn(n, device=dev), q)
+            f(torch.randn(n, device=dev), q)
+        out = f(torch.randn(64, device=dev), q)[1].clone()
+        torch.testing.assert_close(out, ref, rtol=2e-2, atol=2e-2)
+        assert torch.equal(m.kv, kv_before), "cache changed"
+        """,
+        fresh_inductor=True,
     )
 
 
