@@ -52,7 +52,8 @@ minutes. Outside the image, take torch 2.12 from its base image,
 `python -c "import torch; assert torch.version.hip"`, and build `amd-aiter`
 from source at its tag as
 [`backends.md`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md#installing-aiter) describes;
-without it every AITER route silently runs on `fa2`.
+without it `auto` prefill and decode silently run on `fa2`, and MLA,
+`aiter_fused_moe` and any explicit `backend="aiter"` call raise.
 [CONTRIBUTING.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md) covers wheel and ahead-of-time
 builds, and
 [`amd-flashinfer-jit-cache`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/amd-flashinfer-jit-cache/README.md)
