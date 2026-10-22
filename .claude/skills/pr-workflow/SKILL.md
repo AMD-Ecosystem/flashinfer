@@ -266,7 +266,8 @@ Run this gate on the branch's full diff before `gh pr create`, in order:
 
    | Where | Covers |
    | :--- | :--- |
-   | `README.md` | Support matrix, env vars, quick start, supported versions |
+   | `README.md` | Support matrix, quick start, the four common env vars, supported versions |
+   | `docs/rocm/environment.md`, `docs/rocm/torch-compile.md` | Runtime env vars; `torch.compile` support and its known issue |
    | `docs/rocm/backends.md` | Routing rules, per-op constraints, unavailable modules, AITER install |
    | `CONTRIBUTING.md` | Build, tests, coverage, code structure, upstream-sync procedure |
    | `CLAUDE.md`, `.claude/skills/` | Commands, gotchas and workflows an agent will act on |

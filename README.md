@@ -31,41 +31,33 @@ docker run -it --privileged --network=host --device=/dev/kfd --device=/dev/dri \
   -v "$PWD":/workspace -w /workspace flashinfer-dev:rocm10.1
 ```
 
-The image carries no source — `-v "$PWD":/workspace` is what puts it there.
-The `--build-arg` trio matches the container user to yours; without it the
-image runs as UID 1003 and the editable install cannot write to your mounted
-tree. `render` must be the host's **numeric** GID: the name resolves against
-the image's own group. Then, inside the container:
+The image build takes about 35 minutes, most of it prebuilding AITER. The image
+carries no source: `-v "$PWD":/workspace` mounts your checkout, so run it from
+the repository root. The `--build-arg` trio and the numeric `render` GID keep
+file ownership and GPU access right; [CONTRIBUTING.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md#setting-up-a-development-environment)
+explains both. Then, inside the container:
 
 ```bash
 python -m pip install --no-build-isolation -ve .
 python -c "import flashinfer; print(flashinfer.__version__)"
 ```
 
-[CONTRIBUTING.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md)
-has the full recipe: the `docker run` GPU flags, the wheel build, and the
-ahead-of-time kernel build.
-
-**Bringing your own environment?** The image is the supported path because of
-torch: `repo.radeon.com` publishes no `rocm-rel-` directory for ROCm 10.1, so
-the torch 2.12 build this release is tested against comes from the base image
-(`rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.12.0`). Whatever
-you assemble, check you did not land on a CPU-only wheel:
-
-```bash
-python -c "import torch; assert torch.version.hip, 'not a ROCm build'"
-```
-
-Kernels JIT-compile on first use — a minute or so for an in-tree HIP kernel,
-several minutes for a cold AITER variant. The development image prebuilds
-every AITER prefill variant; AITER batch decode compiles its paged-attention
-kernel at `plan()`, and AITER MoE and the opt-in norm, rope and activation shims
-build on first use. The optional
+Kernels JIT-compile on first use: about a minute for an in-tree HIP kernel,
+several for a cold AITER variant. The image prebuilds every AITER prefill
+variant; AITER batch decode compiles its kernel at `plan()`, and AITER MoE and
+the opt-in shims build on first use, so a first call can sit silent for
+minutes. Outside the image, take torch 2.12 from its base image,
+`rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.12.0`
+(`repo.radeon.com` has no ROCm 10.1 build), check it is a ROCm build with
+`python -c "import torch; assert torch.version.hip"`, and build `amd-aiter`
+from source at its tag as
+[`backends.md`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md#installing-aiter) describes;
+without it every AITER route silently runs on `fa2`.
+[CONTRIBUTING.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md) covers wheel and ahead-of-time
+builds, and
 [`amd-flashinfer-jit-cache`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/amd-flashinfer-jit-cache/README.md)
-ships the default in-tree kernel set prebuilt, one wheel per architecture with
-the architecture in the version's local segment (`0.6.18+amd.2.gfx942`). Pin
-it in full: an unqualified requirement resolves to whichever architecture sorts
-highest.
+builds the default in-tree kernel set into one wheel per architecture; none is
+published.
 
 ## Basic usage
 
@@ -110,16 +102,11 @@ architectures:
 | OS | Ubuntu 24.04 |
 | `amd-aiter` | 0.1.21.post2 (source build) |
 
-Nothing rejects another combination at install time, and older ROCm and torch
-releases have worked here before — but they are untested, uncovered by the
-matrix below, and not what a bug report will be reproduced against.
-
-The pins move together, which is why the supported configuration is an image
-rather than a list of versions: `amd-aiter` is built from source against the
-image's own ROCm and torch, since no wheel targets ROCm 10; torch 2.12 is the
-version tested, and its ROCm 10.1 build exists only in the base image. Torch
-2.13 is untested, and a prebuilt `amd-aiter` wheel would additionally fail on
-it, since 2.13 drops a `c10` symbol those wheels' prefill kernels link against.
+The suite needs a git checkout: four tests read the git index. Torch 2.12's
+ROCm 10.1 build exists only in the base image named in the quick start. Other
+combinations are not rejected at install time, but they are untested and
+not what a bug report is reproduced against: the pins move together, since
+`amd-aiter` is built from source against the image's ROCm and torch.
 
 ## Support matrix
 
@@ -152,18 +139,12 @@ has the full routing rules, per-op constraints, AITER install instructions and
 unavailable-module lists.** Read it before relying on an AITER path — several
 attention kwargs are silently ignored there rather than rejected.
 
-**One row per (op, backend) pair, not per op.** The eight ops with both
-backends appear twice, which is why the `Backend` column also says whether
-`auto` takes that row by default. `cascade` is the odd one: only its merge
-kernels are HIP, and each attention level routes on its own.
-
-The table is generated from
-[`flashinfer/rocm/arch_caps.py`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/flashinfer/rocm/arch_caps.py) —
-what `backend="auto"` consults at runtime, so the rows and support marks come
-from the same capability entries that gate routing; the Notes column is
-hand-written prose in that file, not derived from the gates. Do not edit the
-table by hand; run
-`python3 scripts/gen_arch_support_matrix.py`.
+One row per (op, backend) pair, so ops with both backends appear twice. The
+table is generated from
+[`flashinfer/rocm/arch_caps.py`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/flashinfer/rocm/arch_caps.py),
+the capability table `auto` routes on; the Notes column is hand-written there,
+not derived from the gates. Regenerate it with
+`python3 scripts/gen_arch_support_matrix.py` rather than editing it.
 
 <!-- BEGIN GENERATED: arch support matrix -- scripts/gen_arch_support_matrix.py -->
 
@@ -205,6 +186,11 @@ Every row is covered by the default `pytest` selection — most by a matching
 `tests/rocm/test_*.py`, `single_decode` from the batch-decode, sliding-window
 and logits-cap files, and `quantization` by `tests/utils/test_quantization.py`.
 
+**gfx942 and gfx950 route some cases differently** — soft-capped causal
+prefill, long bf16 single prefill, and short-query paged and ragged prefill. The
+[per-op notes](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md#per-op-notes) give the exact
+conditions.
+
 ### What upstream has that this does not
 
 The table above is what works. Upstream v0.6.18 is larger, and the rest of it
@@ -233,64 +219,19 @@ has the complete lists and the evidence for each entry;
 names a kernel source `csrc/rocm` does not have, so the second group cannot
 grow unnoticed.
 
-**Soft-capped causal single and ragged prefill fall back to `fa2` on gfx950,
-except on the measured toolchain: TheRock ROCm 10.1.0 (HIP 7.16.26385, torch
-HIP the same) with amd-aiter 0.1.21.post2.** AITER's `mha_varlen_fwd` miscomputes `logits_soft_cap` at
-`head_dim=128` there, so `auto` declines it and `backend="aiter"` raises rather
-than returning wrong numbers. That toolchain builds it correctly; `auto` there
-keeps only short queries on `fa2`, where AITER is slower. Paged prefill on the native
-paging route is exempt — it dispatches `mha_batch_prefill`, which is exact — and
-gfx942 is unaffected at every route.
-See
-[per-op notes](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md#per-op-notes).
-
-**Long single prefill uses AITER's asm kernel on MI350X/MI355X.** An unwindowed,
-uncapped bf16 `head_dim=128` call at `qo_len >= 2048` outside HIP graph capture is
-about 1.14× faster there; the same kernel is non-monotonic on MI300X/MI325X, so
-CDNA3 stays on CK Tile — see
-[per-op notes](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/backends.md#per-op-notes).
-
 ## `torch.compile`
 
 Set `FLASHINFER_USE_TORCH_CUSTOM_OPS=1` **before** importing `flashinfer` to
-register the kernels as `torch.library` custom ops so TorchDynamo can trace
-them (PyTorch ≥ 2.4). Each eager call pays a host-side dispatch cost, measured
-at 21 µs and 11 µs per single prefill on our MI300X and MI355X hosts. Measured
-in bf16 on gfx942 and gfx950 (identical) on the fa2 and AITER backends, each
-compiled result checked against eager:
-
-| Op | Flag off | Flag on | Flag on, `fullgraph=True` |
-|---|---|---|---|
-| Paged and ragged prefill, batch decode `run()` | fails | compiles | compiles¹ |
-| Single prefill, `aiter_fused_moe` | fails | compiles | fails |
-| MLA | compiles | compiles | fails |
-| `append_paged_kv_cache`, `append_paged_mla_kv_cache` | fails | compiles | compiles² |
-
-¹ Except AITER decode with `return_lse=True`, which breaks the graph to build
-its fa2 LSE plan eagerly; use `backend="fa2"` there.
-² Except `append_paged_kv_cache(backend="aiter")`, which breaks the graph.
-
-Ops outside the table were not measured beyond the known issue below; sampling
-ops that take a `generator`, POD, `jit_args` custom variants, the
-fp8-quantizing norms and AITER's opt-in norm, RoPE and activation backends are
-not registered. Call `plan()` outside the compiled region: its ops are not
-registered either. With the flag off the error is often torch's `RuntimeError
-when making fake tensor call` rather than a message naming the flag.
-
-**Known issue:** under every `dynamic` setting, PyTorch 2.12 can miscompile an
-op that writes into a view of a larger tensor, silently or with a GPU fault.
-That covers an `out=` slice, an in-place norm on part of a buffer, K and V
-caches carved from one allocation (a layer of a multi-layer pool, the halves of
-a `[2, pages, ...]` tensor), and the single `[pages, 2, ...]` cache
-`append_paged_kv_cache` accepts, which it splits into K and V views itself.
-Allocate every tensor an op writes as its own buffer up front, rather than
-slicing it from a larger one, and pass append two separately allocated caches;
-a `.clone()` per call is not a fix, since the write never reaches the original.
-In-place RoPE on `qkv.split` views and MLA's `torch.split(buf, [512, 64],
-dim=-1)` cache layout measured exact, so keep those. Under
-`mode="reduce-overhead"`, a KV cache passed as an argument is copied into the
-CUDA graph on every replay (measured with AITER decode); register it as a
-module buffer (`persistent=False`) instead.
+register the kernels as custom ops so TorchDynamo can trace them, and call
+`plan()` outside the compiled region. Paged and ragged prefill, batch decode and
+append compile, mostly under `fullgraph=True`; single prefill, MLA and
+`aiter_fused_moe` compile with graph breaks. **Known issue:** PyTorch 2.12 can
+silently miscompile an op that writes into a view of a larger tensor, including
+the K and V halves append splits from a single `[pages, 2, ...]` cache: pass
+append two separately allocated caches and give `out=` a whole tensor.
+[`docs/rocm/torch-compile.md`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/torch-compile.md) has
+the measured per-op table, the ops the flag does not register, the full known
+issue and the `mode="reduce-overhead"` advice.
 
 ## Running the tests
 
@@ -315,76 +256,30 @@ python flashinfer_benchmark.py --testlist rocm/testlist_rocm.txt \
     --output_path run-$(date +%F).csv
 ```
 
-Each attention line requests both `fa2` and `auto` with its own `--refcheck`,
-so the two compare side by side **where both survive capability filtering** —
-the Llama-3.1-405B rows lose `fa2` to its GQA group-size set and run unverified,
-so count rows per config rather than assuming two. **Read `backend_resolved`**:
-`auto` is a request, not a result, and `backend_fallback_reason` says why AITER
-was declined. Per-op drivers are in
-[`benchmarks/rocm/`](https://github.com/AMD-Ecosystem/flashinfer/tree/amd-integration/benchmarks/rocm);
+Read `backend_resolved` in the output: `auto` is a request, not a result. Rows
+where `fa2` cannot run (the Llama-3.1-405B lines) have no reference and are not
+refchecked, so count rows per config.
 [`benchmarks/rocm/README.md`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/benchmarks/rocm/README.md)
-documents the output columns.
+documents the columns and the per-op drivers.
 
 ## Environment variables
 
-Read at runtime or import time:
-
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
-| `FLASHINFER_USE_TORCH_CUSTOM_OPS` | `0` | Wrap kernels for `torch.compile`; set before importing `flashinfer`. See above. |
-| `FLASHINFER_AITER_STRICT` | `0` | `1` raises instead of degrading: when AITER cannot serve a page size natively, and when an AITER kernel bootstrap fails under `auto`. Set in CI to catch coverage regressions rather than absorb them as a slowdown. |
-| `FLASHINFER_AITER_ASM_PREFILL` | `1` | Exactly `0` keeps single prefill on AITER's CK Tile kernel; any other value leaves the asm arm on. Read once per process. AITER aborts the process on several asm failure modes rather than returning an error, so this is the supported way out. |
-| `FLASHINFER_AITER_ASM_VERBOSE` | `0` | Any value except `0` logs to stderr which prefill arm ran. The two arms agree numerically, so this is the only way to tell asm from CK Tile. |
-| `FLASHINFER_ARCH_ALLOW_KNOWN_BAD` | `0` | `1` runs an (op, backend, arch) combination the capability table marks known-broken on your toolchain. No row carries such a window in this release, and it does not lift the gfx950 soft-cap gate. |
-| `FLASHINFER_HIP_FUSED_CASCADE` | `0` | In `MultiLevelCascadeAttentionWrapper` only, pass each level's partial state into the next prefill call instead of merging afterwards; AITER levels and the shared-prefix wrappers ignore it. Both paths tested. Read once at import, so set it first. |
-| `FLASHINFER_WORKSPACE_BASE` | `$HOME` | Parent of the JIT cache (`.cache/flashinfer/`); point at fast local disk when `$HOME` is on NFS. Prefer an absolute path: the value is wrapped in `pathlib.Path` unvalidated, so a relative one resolves against the working directory and `~` becomes a literal `./~` directory. |
-| `FLASHINFER_DISABLE_JIT` | unset | **Any non-empty value** — including `0` — loads only AOT or jit-cache kernels: it refuses to compile, and refuses modules already in `~/.cache/flashinfer` too. The AITER shims are never prebuilt, so an `auto` call that picks AITER raises `MissingJITCacheError` rather than falling back. |
-| `FLASHINFER_DISABLE_VERSION_CHECK` | unset | Any non-empty value skips the JIT-cache package version check. |
+| `FLASHINFER_USE_TORCH_CUSTOM_OPS` | `0` | Wrap kernels for `torch.compile`; set before importing `flashinfer`. |
+| `FLASHINFER_WORKSPACE_BASE` | `$HOME` | Parent of the JIT cache (`.cache/flashinfer/`); point at fast local disk when `$HOME` is on NFS. |
+| `FLASHINFER_AITER_STRICT` | `0` | `1` raises instead of degrading: when AITER cannot serve a page size natively, and when an AITER kernel bootstrap fails under `auto`. |
 | `FLASHINFER_LOGGING_LEVEL` | `INFO` | Logger verbosity (`DEBUG`, `INFO`, `WARNING`, …). Affects AITER fallback warnings and JIT build messages. |
-| `FLASHINFER_LOGLEVEL` | `0` | API call logging, distinct from `FLASHINFER_LOGGING_LEVEL`: `1` logs function names, `3` adds inputs and outputs, `5` adds tensor statistics, `10` also dumps tensors to disk. |
-| `FLASHINFER_LOGDEST` | `stdout` | Where `FLASHINFER_LOGLEVEL` output goes: `stdout`, `stderr`, or a file path (`%i` becomes the process ID). |
-| `FLASHINFER_TRACE_APPLY` | unset | `1` enables upstream's opt-in kernel substitution at import, from the mapping `FLASHINFER_TRACE_APPLY_PATH` names; any other value except `0` warns and leaves it off. A failure to enable it warns rather than breaking the import. |
-| `FLASHINFER_DISABLE_AOT_ARCH_CHECK` | unset | Any non-empty value — including `0` — uses jit-cache kernels even when their architecture does not match the running GPU. By default a mismatch discards them, with a warning, and everything JIT-compiles. |
-| `ROCM_PATH` / `ROCM_HOME` | `/opt/rocm` | Where `flashinfer.rocm.hip_utils` looks for ROCm. Override only for non-standard layouts. |
-| `AITER_JIT_DIR` | AITER's own | Where the C++ shim `dlopen`s AITER's built `.so` files, overriding the path compiled in at build time. |
-| `FLASHINFER_AITER_VARIANT_DIR` | FlashInfer's stores | `os.pathsep`-separated prebuilt AITER variant stores to load from instead of the cache and jit-cache stores; `AITER_JIT_DIR` is still tried first. |
-| `AITER_ASM_DIR` | set by `import aiter` | Where AITER reads its asm code objects. Unset or empty, single prefill stays on CK Tile rather than let AITER abort. |
-| `GPU_ARCHS` | autodetected | AITER's own JIT architecture. A shim build overrides it from `FLASHINFER_ROCM_ARCH_LIST` and restores your value afterwards, leaving the derived one only if you had not set it. |
 
-Build-time variables — `FLASHINFER_ROCM_ARCH_LIST`, `PYTORCH_ROCM_ARCH`,
-`FLASHINFER_JIT_VERBOSE`, `FLASHINFER_EXTRA_{LDFLAGS,CFLAGS,CUDAFLAGS}`,
-`FLASHINFER_OWN_HEADERS_NON_SYSTEM`, `MAX_JOBS` — live in
-[CONTRIBUTING.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md),
-as does `FLASHINFER_JIT_DEBUG`, the debug-build switch.
-
-## Runtime helpers
-
-```python
-import torch
-
-from flashinfer.rocm.aiter_utils import is_aiter_supported
-from flashinfer.rocm.hip_utils import check_torch_rocm_compatibility
-
-# True on gfx942/gfx950 with a ROCm torch build. Does *not* verify the
-# `aiter` package imports — wrap in try/except ImportError if you need that.
-if is_aiter_supported(torch.device("cuda")):
-    ...
-
-# Warns when torch's ROCm version differs from the system's. A CPU-only torch
-# never gets here: importing flashinfer already raises.
-check_torch_rocm_compatibility()
-```
-
-## Building from source
-
-See [CONTRIBUTING.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md) for the development container, the
-editable and wheel builds, the ahead-of-time kernel build, and how to run
-the test suite.
+[`docs/rocm/environment.md`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/environment.md) has the full
+runtime table and the runtime helpers;
+[CONTRIBUTING.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md) has the build-time ones.
 
 ## Contributing
 
-Contributions are welcome. Please run `pre-commit run -a` and the relevant
-`pytest` selection before opening a PR.
+Contributions are welcome — read
+[CONTRIBUTING.md](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/CONTRIBUTING.md) first, and run
+`pre-commit run -a` and the relevant `pytest` selection before opening a PR.
 
 ## Security
 
