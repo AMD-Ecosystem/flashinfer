@@ -441,7 +441,7 @@ with concrete examples.
 # Build / JIT Gotchas
 
 **Build-time environment variables.** These affect compilation only; the
-runtime ones are tabulated in [README.md](README.md#environment-variables).
+runtime ones are tabulated in [docs/rocm/environment.md](docs/rocm/environment.md).
 
 | Variable | Purpose |
 | :--- | :--- |
