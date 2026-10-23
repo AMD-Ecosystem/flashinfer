@@ -851,8 +851,10 @@ class TestRegistrationInProcess:
 
         assert op(torch.zeros(1), None).item() == 1
         monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
-        with pytest.raises(RuntimeError, match="custom ops are not enabled"):
+        # The flag is already on, so the message must give the real cause.
+        with pytest.raises(RuntimeError, match="could not be registered") as e:
             op(torch.zeros(1), None)
+        assert "FLASHINFER_USE_TORCH_CUSTOM_OPS" not in str(e.value)
 
     def test_register_fake_op_is_inert_while_the_flag_is_off(self):
         tc = self._tc()
