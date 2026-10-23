@@ -5,11 +5,10 @@ description: Tutorial for debugging HIP kernel crashes in FlashInfer+ROCm using 
 
 # Debugging ROCm Crashes in FlashInfer+ROCm
 
-> **Note:** earlier revisions of this skill (and CLAUDE.md) described a `@flashinfer_api`
-> decorator with `FLASHINFER_LOGLEVEL` / `FLASHINFER_LOGDEST` env vars. **That machinery does
-> not exist in this fork** — no matches in code (`git grep` under `flashinfer/` and `include/`
-> returns nothing; the only hits are this disclaimer). Don't try to set those env vars —
-> use the HIP/ROCm tooling below instead.
+> **API logging:** `FLASHINFER_LOGLEVEL=3` (with `FLASHINFER_LOGDEST`) logs each public
+> call's name and input shapes, dtypes and strides *before* the kernel runs; with
+> `HIP_LAUNCH_BLOCKING=1` (below) the last line before a fault names the faulting call. Levels are in
+> [`docs/rocm/environment.md`](../../../docs/rocm/environment.md). Pair it with the tooling below.
 
 ## The magic env-var combo
 
@@ -22,7 +21,7 @@ export HIP_LAUNCH_BLOCKING=1    # synchronous launches; tracebacks point at the 
 
 Both are near-zero-overhead and reasonable to leave on while iterating on a new kernel.
 
-For an in-script view of what's being passed, wrap the suspect call with `print(input.shape, input.dtype, input.device, input.is_contiguous())` and `torch.cuda.synchronize()` immediately before the FlashInfer call — this gives you the same info `@flashinfer_api` would have, manually.
+For a call API logging does not cover, print `input.shape, input.dtype, input.device, input.stride()` and `torch.cuda.synchronize()` immediately before it.
 
 ## Per-error recipe
 

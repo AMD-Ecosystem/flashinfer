@@ -28,6 +28,7 @@ from .aiter_utils import handle_aiter_probe_failure
 from .api_compat import ignore_enable_pdl, reject_cuda_only
 from .arch_caps import capability_reason, require_capability
 from .torch_compile import extension_custom_op
+from ..api_logging import flashinfer_api
 from ..jit.core import logger
 from ..jit.rocm import aiter_variants as _variants
 from ..jit.rocm.modules import _check_fa2_fp8_dtypes
@@ -1921,6 +1922,7 @@ def get_batch_prefill_jit_module(module_name: str, jit_module: Any):
     )
 
 
+@flashinfer_api
 def single_prefill_with_kv_cache_with_jit_module(
     jit_module: Any,
     q: torch.Tensor,
@@ -2011,6 +2013,7 @@ def single_prefill_with_kv_cache(
 ) -> Tuple[torch.Tensor, torch.Tensor]: ...
 
 
+@flashinfer_api
 def single_prefill_with_kv_cache(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -2462,6 +2465,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
     wrapper class manages the lifecycle of these data structures.
     """
 
+    @flashinfer_api
     def __init__(
         self,
         float_workspace_buffer: torch.Tensor,
@@ -2731,6 +2735,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
             "workspace buffers as documented on the constructor instead."
         )
 
+    @flashinfer_api
     def plan(
         self,
         qo_indptr: torch.Tensor,
@@ -3465,6 +3470,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         scale_v: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]: ...
 
+    @flashinfer_api
     def run(
         self,
         q: torch.Tensor,
@@ -3903,6 +3909,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
     wrapper class manages the lifecycle of these data structures.
     """
 
+    @flashinfer_api
     def __init__(
         self,
         float_workspace_buffer: torch.Tensor,
@@ -4070,6 +4077,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             pin_memory=True,
         )
 
+    @flashinfer_api
     def plan(
         self,
         qo_indptr: torch.Tensor,
@@ -4511,6 +4519,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         kv_cache_sf: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]: ...
 
+    @flashinfer_api
     def run(
         self,
         q: torch.Tensor,

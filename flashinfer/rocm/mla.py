@@ -11,6 +11,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 
+from ..api_logging import flashinfer_api
 from .api_compat import reject_cuda_only
 from .arch_caps import require_capability
 
@@ -183,6 +184,7 @@ class BatchMLAPagedAttentionWrapper:
         or ``"aiter"``. Any other value raises ``ValueError``.
     """
 
+    @flashinfer_api
     def __init__(
         self,
         float_workspace_buffer: torch.Tensor,
@@ -223,6 +225,7 @@ class BatchMLAPagedAttentionWrapper:
         # run() warns at most once per wrapper about a non-adjacent KV cache.
         self._warned_separate_kv: bool = False
 
+    @flashinfer_api
     def plan(
         self,
         qo_indptr: torch.Tensor,
@@ -341,6 +344,7 @@ class BatchMLAPagedAttentionWrapper:
         self._sm_scale = sm_scale
         self._max_seqlen_q = max_seqlen_q
 
+    @flashinfer_api
     def run(
         self,
         q_nope: torch.Tensor,

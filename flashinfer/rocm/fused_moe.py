@@ -23,6 +23,7 @@ import torch
 
 from .aiter_utils import require_aiter
 from .torch_compile import extension_custom_op
+from ..api_logging import flashinfer_api
 from ..jit.rocm.aiter_source import resolve_aiter_build_arch
 from ..jit.rocm.fused_moe import SUPPORTED_DTYPES, gen_fused_moe_aiter_module
 
@@ -194,6 +195,7 @@ def shuffle_moe_weight(w: torch.Tensor) -> torch.Tensor:
     )
 
 
+@flashinfer_api
 def aiter_fused_moe(
     hidden_states: torch.Tensor,
     w1_shuffled: torch.Tensor,

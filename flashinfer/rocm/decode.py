@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 import torch
 
 from .api_compat import ignore_enable_pdl, reject_cuda_only
+from ..api_logging import flashinfer_api
 from ..jit import (
     gen_batch_decode_aiter_module,
     gen_batch_decode_module,
@@ -621,6 +622,7 @@ def _aiter_pa_v1_available(
     return resolved, None
 
 
+@flashinfer_api
 def single_decode_with_kv_cache_with_jit_module(
     jit_module: Any,
     q: torch.Tensor,
@@ -693,6 +695,7 @@ def single_decode_with_kv_cache(
 ) -> Tuple[torch.Tensor, torch.Tensor]: ...
 
 
+@flashinfer_api
 def single_decode_with_kv_cache(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -956,6 +959,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
     manages the lifecycle of these data structures.
     """
 
+    @flashinfer_api
     def __init__(
         self,
         float_workspace_buffer: torch.Tensor,
@@ -1232,6 +1236,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
             "workspace buffers as documented on the constructor instead."
         )
 
+    @flashinfer_api
     def plan(
         self,
         indptr: torch.Tensor,
@@ -2032,6 +2037,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
         kv_cache_sf: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]: ...
 
+    @flashinfer_api
     def run(
         self,
         q: torch.Tensor,
