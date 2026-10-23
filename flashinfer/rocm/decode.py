@@ -630,6 +630,7 @@ def single_decode_with_kv_cache_with_jit_module(
 ):
     device = q.device
     tmp = _get_cache_buf("single_decode_with_kv_cache_tmp", 32 * 1024 * 1024, device)
+    q = q.contiguous()  # one token: cheap, and o is allocated like q
     o = torch.empty_like(q)
     if return_lse:
         lse = torch.empty((q.size(0)), dtype=torch.float32, device=device)
@@ -786,6 +787,9 @@ def single_decode_with_kv_cache(
     """
     _check_pos_encoding_mode(pos_encoding_mode)
     _check_kv_layout(kv_layout)
+    # q is one token, so a copy is cheap; both kernels read it packed and size
+    # `out` from it.
+    q = q.contiguous()
     tmp = _get_cache_buf("single_decode_with_kv_cache_tmp", 32 * 1024 * 1024, q.device)
     head_dim = q.shape[-1]
     if logits_soft_cap is None:

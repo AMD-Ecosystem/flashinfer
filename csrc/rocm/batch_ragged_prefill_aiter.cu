@@ -53,6 +53,9 @@ void batch_ragged_prefill_with_kv_cache_aiter(at::Tensor q, at::Tensor k, at::Te
               "AITER backend supports fp16/bf16 only; got dtype=", q_dtype);
   TORCH_CHECK(k.scalar_type() == q_dtype && v.scalar_type() == q_dtype, "q, k, v must share dtype");
   TORCH_CHECK(o.is_contiguous(), "AITER backend requires a contiguous output tensor");
+  CHECK_LAST_DIM_CONTIGUOUS(q);
+  CHECK_LAST_DIM_CONTIGUOUS(k);
+  CHECK_LAST_DIM_CONTIGUOUS(v);
   TORCH_CHECK(o.scalar_type() == q_dtype,
               "AITER backend requires output dtype to match input dtype; got o=", o.scalar_type(),
               " q=", q_dtype);

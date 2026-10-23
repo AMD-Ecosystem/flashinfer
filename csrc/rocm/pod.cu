@@ -50,6 +50,17 @@ void pod_with_kv_cache_tensor(
     bool enable_pdl) {
   CHECK_KV_DTYPES_MATCH(k_p, v_p);
   CHECK_KV_DTYPES_MATCH(paged_k_cache_d, paged_v_cache_d);
+  CHECK_LAST_DIM_CONTIGUOUS(k_p);
+  CHECK_LAST_DIM_CONTIGUOUS(v_p);
+  CHECK_LAST_DIM_CONTIGUOUS(paged_k_cache_d);
+  CHECK_LAST_DIM_CONTIGUOUS(paged_v_cache_d);
+  CHECK_LAST_DIM_CONTIGUOUS(q_p);
+  CHECK_LAST_DIM_CONTIGUOUS(q_d);
+  // Both outputs are written packed, and the wrappers allocate them like q.
+  TORCH_CHECK(o_p.is_contiguous(), "o_p must be contiguous: pass a contiguous q_p");
+  TORCH_CHECK(o_d.is_contiguous(), "o_d must be contiguous: pass a contiguous q_d");
+  TORCH_CHECK(!maybe_lse_p || maybe_lse_p->is_contiguous(), "maybe_lse_p must be contiguous");
+  TORCH_CHECK(!maybe_lse_d || maybe_lse_d->is_contiguous(), "maybe_lse_d must be contiguous");
   QKVLayout kv_layout_p = static_cast<QKVLayout>(layout_p);
   uint32_t qo_len_p = q_p.size(0);
   uint32_t num_qo_heads = q_p.size(1);

@@ -78,6 +78,12 @@ void BatchPrefillWithRaggedKVCacheRun(at::Tensor float_workspace_buffer,
                                       std::optional<at::Tensor> maybe_lse, int64_t mask_mode_code,
                                       int64_t layout, int64_t window_left ADDITIONAL_FUNC_PARAMS) {
   CHECK_KV_DTYPES_MATCH(k, v);
+  CHECK_LAST_DIM_CONTIGUOUS(q);
+  CHECK_LAST_DIM_CONTIGUOUS(k);
+  CHECK_LAST_DIM_CONTIGUOUS(v);
+  TORCH_CHECK(o.is_contiguous(),
+              "o must be contiguous (an output allocated like q keeps q's layout)");
+  TORCH_CHECK(!maybe_lse || maybe_lse->is_contiguous(), "maybe_lse must be contiguous");
   PrefillPlanInfo plan_info;
   plan_info.FromVector(tensor_to_vec(plan_info_vec));
   QKVLayout kv_layout = static_cast<QKVLayout>(layout);
@@ -209,6 +215,12 @@ void BatchPrefillWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
                                      std::optional<at::Tensor> maybe_partial_o = std::nullopt,
                                      std::optional<at::Tensor> maybe_partial_lse = std::nullopt) {
   CHECK_KV_DTYPES_MATCH(paged_k_cache, paged_v_cache);
+  CHECK_LAST_DIM_CONTIGUOUS(q);
+  CHECK_LAST_DIM_CONTIGUOUS(paged_k_cache);
+  CHECK_LAST_DIM_CONTIGUOUS(paged_v_cache);
+  TORCH_CHECK(o.is_contiguous(),
+              "o must be contiguous (an output allocated like q keeps q's layout)");
+  TORCH_CHECK(!maybe_lse || maybe_lse->is_contiguous(), "maybe_lse must be contiguous");
   PrefillPlanInfo plan_info;
   plan_info.FromVector(tensor_to_vec(plan_info_vec));
   QKVLayout kv_layout = static_cast<QKVLayout>(layout);
@@ -232,6 +244,14 @@ void BatchPrefillWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
   }
   TORCH_CHECK(maybe_partial_o.has_value() == maybe_partial_lse.has_value(),
               "partial_o and partial_lse must both be provided or both be absent");
+  if (maybe_partial_o) {  // merged into o with o's packed strides
+    TORCH_CHECK(maybe_partial_o->is_contiguous() && maybe_partial_o->sizes() == o.sizes(),
+                "partial_o must be contiguous and shaped like the output");
+    TORCH_CHECK(maybe_partial_lse->is_contiguous() && maybe_partial_lse->dim() == 2 &&
+                    maybe_partial_lse->size(0) == q.size(0) &&
+                    maybe_partial_lse->size(1) == q.size(1),
+                "partial_lse must be contiguous and shaped [q rows, heads]");
+  }
 
   void* float_buffer_ptr = static_cast<void*>(float_workspace_buffer.data_ptr());
   void* int_buffer_ptr = static_cast<void*>(int_workspace_buffer.data_ptr());

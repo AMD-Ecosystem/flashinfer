@@ -64,6 +64,7 @@ void batch_prefill_with_paged_kv_cache_aiter(
   TORCH_CHECK(paged_k_cache.scalar_type() == q_dtype && paged_v_cache.scalar_type() == q_dtype,
               "q, k, v must share dtype");
   TORCH_CHECK(o.is_contiguous(), "AITER backend requires a contiguous output tensor");
+  CHECK_LAST_DIM_CONTIGUOUS(q);
   // fp8 in, bf16 out: AITER ships no fp8-output prefill kernel.
   TORCH_CHECK(o.scalar_type() == (is_fp8 ? at::kBFloat16 : q_dtype),
               "AITER backend requires output dtype ", (is_fp8 ? at::kBFloat16 : q_dtype),
@@ -201,6 +202,9 @@ void batch_prefill_with_paged_kv_cache_aiter(
     // those to the gather (arch_caps._AITER_NATIVE_PAGED_HEAD_DIMS), this backstops it.
     TORCH_CHECK(HEAD_DIM_QK == 128 || HEAD_DIM_QK == 256,
                 "AITER native paged prefill reads past the KV cache at head_dim ", HEAD_DIM_QK);
+    // Only the page, token and head strides are passed; head_dim is read packed.
+    CHECK_LAST_DIM_CONTIGUOUS(paged_k_cache);
+    CHECK_LAST_DIM_CONTIGUOUS(paged_v_cache);
     const int32_t num_total_pages = static_cast<int32_t>(paged_k_cache.size(0));
 
     status = flashinfer::BatchPrefillNativePagedDispatched<HEAD_DIM_QK, HEAD_DIM_VO, DTypeQ,

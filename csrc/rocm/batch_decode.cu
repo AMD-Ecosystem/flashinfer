@@ -88,6 +88,12 @@ void BatchDecodeWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
                                     int64_t kv_layout_code,
                                     int64_t window_left ADDITIONAL_FUNC_PARAMS) {
   CHECK_KV_DTYPES_MATCH(paged_k_cache, paged_v_cache);
+  CHECK_LAST_DIM_CONTIGUOUS(q);
+  CHECK_LAST_DIM_CONTIGUOUS(paged_k_cache);
+  CHECK_LAST_DIM_CONTIGUOUS(paged_v_cache);
+  TORCH_CHECK(o.is_contiguous(),
+              "o must be contiguous (an output allocated like q keeps q's layout)");
+  TORCH_CHECK(!maybe_lse || maybe_lse->is_contiguous(), "maybe_lse must be contiguous");
   DecodePlanInfo plan_info;
   const size_t size = plan_info_vec.numel();
   const int64_t* first = plan_info_vec.data_ptr<int64_t>();

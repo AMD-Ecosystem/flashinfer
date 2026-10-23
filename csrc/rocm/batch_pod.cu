@@ -55,6 +55,17 @@ void batch_pod_with_kv_cache_tensor(
     bool enable_pdl, at::Tensor sm_aware_sched) {
   CHECK_KV_DTYPES_MATCH(paged_k_cache_p, paged_v_cache_p);
   CHECK_KV_DTYPES_MATCH(paged_k_cache_d, paged_v_cache_d);
+  CHECK_LAST_DIM_CONTIGUOUS(paged_k_cache_p);
+  CHECK_LAST_DIM_CONTIGUOUS(paged_v_cache_p);
+  CHECK_LAST_DIM_CONTIGUOUS(paged_k_cache_d);
+  CHECK_LAST_DIM_CONTIGUOUS(paged_v_cache_d);
+  CHECK_LAST_DIM_CONTIGUOUS(q_p);
+  CHECK_LAST_DIM_CONTIGUOUS(q_d);
+  // Both outputs are written packed, and the wrappers allocate them like q.
+  TORCH_CHECK(o_p.is_contiguous(), "o_p must be contiguous: pass a contiguous q_p");
+  TORCH_CHECK(o_d.is_contiguous(), "o_d must be contiguous: pass a contiguous q_d");
+  TORCH_CHECK(!maybe_lse_p || maybe_lse_p->is_contiguous(), "maybe_lse_p must be contiguous");
+  TORCH_CHECK(!maybe_lse_d || maybe_lse_d->is_contiguous(), "maybe_lse_d must be contiguous");
   // Prefill setup
   PrefillPlanInfo plan_info_p;
   plan_info_p.FromVector(tensor_to_vec(plan_info_vec_p));
