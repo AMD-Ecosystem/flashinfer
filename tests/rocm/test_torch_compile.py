@@ -429,6 +429,28 @@ def test_torch_compile_aiter_paged_prefill_replanned():
 
 
 @_needs_custom_ops
+def test_torch_compile_replans_with_new_token_counts():
+    """run()'s plan check must trace without adding a recompile per plan()."""
+    _run_aiter_snippet(
+        """\
+        from torch._dynamo.testing import CompileCounterWithBackend
+        ws = torch.empty(128 << 20, dtype=torch.uint8, device=dev)
+        w = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(ws, "NHD", backend="fa2")
+        q = torch.randn(64, 8, 128, device=dev, dtype=dt)
+        k, v = torch.randn_like(q), torch.randn_like(q)
+        cnt = CompileCounterWithBackend("inductor")
+        f = torch.compile(w.run, backend=cnt, fullgraph=True)
+        # Fixed (padded) shapes: only the planned counts move between plans.
+        for rows in (16, 32, 48, 64):
+            w.plan(i32(0, rows), i32(0, rows), 8, 8, 128, causal=True, q_data_type=dt)
+            torch.testing.assert_close(
+                f(q, k, v)[:rows], w.run(q, k, v)[:rows], rtol=2e-2, atol=2e-2)
+        assert cnt.frame_count <= 2, cnt.frame_count  # the base compiles 2 here
+        """
+    )
+
+
+@_needs_custom_ops
 def test_torch_compile_aiter_ragged_prefill():
     _run_aiter_snippet(
         """\

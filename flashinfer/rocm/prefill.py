@@ -96,6 +96,81 @@ def _reject_descale_tensors(
         )
 
 
+# plan() parks _planned_shapes here once it starts rewriting the wrapper, so a
+# plan() that raises part-way leaves run() refusing rather than half-planned.
+_REPLAN_REQUIRED: Tuple = ()
+
+_PlannedShapes = Tuple[int, int, int, int, Optional[int], Optional[int], Optional[int]]
+
+
+def _check_run_matches_plan(
+    planned: Optional[_PlannedShapes],
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    kv_layout: str,
+) -> None:
+    """Refuse run() tensors the planned kernels would read or write out of bounds.
+
+    *planned* is ``(num_qo_heads, num_kv_heads, head_dim_qk, head_dim_vo,
+    page_size, q_rows, kv_rows)``; None entries are not checked. Row counts are
+    minimums, since a CUDA-graph caller may pad q.
+    """
+    if planned is None:
+        return
+    if not planned:  # _REPLAN_REQUIRED; an identity test would not trace
+        raise ValueError(
+            "the last plan() raised after it began updating this wrapper; "
+            "call plan() again before run()"
+        )
+    qo, kvh, dqk, dvo, page, q_rows, kv_rows = planned
+    h, p = (-2, -3) if kv_layout == "NHD" else (-3, -2)
+    n = -3 if kv_layout == "NHD" else -2  # ragged k/v token dim
+    kv_rank = 3 if page is None else 4  # paged caches arrive unpacked to k and v
+    qs, ks, vs = q.shape, k.shape, v.shape
+    if (
+        len(qs) == 3
+        and len(ks) == kv_rank
+        and len(vs) == kv_rank
+        and qs[-2] == qo
+        and qs[-1] == dqk
+        and ks[h] == kvh
+        and ks[-1] == dqk
+        and vs[h] == kvh
+        and vs[-1] == dvo
+        and (page is None or (ks[p] == page and vs[p] == page))
+        and (q_rows is None or qs[0] >= q_rows)
+        and (kv_rows is None or (ks[n] >= kv_rows and vs[n] >= kv_rows))
+    ):
+        return  # every run() takes this branch, so it stays a flat compare
+    for what, got, want in (("q", qs, 3), ("k", ks, kv_rank), ("v", vs, kv_rank)):
+        if len(got) != want:
+            raise ValueError(f"run() got a {len(got)}-D {what}; expected {want}-D.")
+    checks = [
+        ("q heads", qs[-2], qo),
+        ("q head_dim", qs[-1], dqk),
+        ("k heads", ks[h], kvh),
+        ("k head_dim", ks[-1], dqk),
+        ("v heads", vs[h], kvh),
+        ("v head_dim", vs[-1], dvo),
+    ]
+    if page is not None:
+        checks += [("k page_size", ks[p], page), ("v page_size", vs[p], page)]
+    rows = [("q tokens", qs[0], q_rows)]
+    if kv_rows is not None:
+        rows += [("k tokens", ks[n], kv_rows), ("v tokens", vs[n], kv_rows)]
+    for what, got, want in checks:
+        if got != want:
+            raise ValueError(
+                f"run() got {what}={got} but plan() was called with {want}; "
+                "re-plan for these tensors."
+            )
+    for what, got, want in rows:
+        if want is not None and got < want:
+            raise ValueError(f"run() got {what}={got} but plan() covers {want}.")
+    raise ValueError("run() tensors do not match what plan() was called with.")
+
+
 @functools.cache
 def _aiter_paged_route_page_sizes(dtype: torch.dtype) -> frozenset:
     """Page sizes we will *route* through the native paged kernel, head dim permitting.
@@ -2544,7 +2619,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._paged_kv_last_page_len_buf = paged_kv_last_page_len_buf
         self._custom_mask_buf = custom_mask_buf
         self._mask_indptr_buf = mask_indptr_buf
-        self._max_total_num_rows = None
+        self._max_total_num_rows: Optional[int] = None
         self._backend = backend
         # plan() overwrites _backend with the concrete choice, so it cannot say
         # whether the *caller* asked for auto. Later plan() calls need that: the
@@ -2556,6 +2631,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         # unlike every other constraint here its verdict must not stick.
         self._backend_short_query_demoted = False
         self._plan_info: Optional[torch.Tensor] = None
+        self._planned_shapes: Optional[_PlannedShapes] = None
         self._cached_module = None
         self._seq_lens_kv = None
         self._seq_lens_q = None
@@ -2824,6 +2900,39 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 f"only output dtype ROCm prefill can write for q_data_type="
                 f"{q_data_type}."
             )
+
+        batch_size = len(qo_indptr) - 1
+        qo_indptr_host = qo_indptr.to("cpu")
+        total_num_rows = int(
+            qo_indptr_host[-1]
+        )  # a CPU qo_indptr is the caller's buffer
+        if self.is_cuda_graph_enabled:
+            if (
+                self._max_total_num_rows is not None
+                and total_num_rows > self._max_total_num_rows
+            ):
+                raise ValueError(
+                    "The total number of rows in qo_indptr {} in cuda graph mode cannot "
+                    "exceed the number of rows set during initialization {}.".format(
+                        total_num_rows, self._max_total_num_rows
+                    )
+                )
+
+            if batch_size != self._fixed_batch_size:
+                raise ValueError(
+                    "The batch size should be fixed during the lifecycle of the wrapper in "
+                    "cuda graph mode, the runtime batch size {} mismatches the batch size {} "
+                    " set during initialization.".format(
+                        batch_size, self._fixed_batch_size
+                    )
+                )
+            if len(paged_kv_indices) > len(self._paged_kv_indices_buf):
+                raise ValueError(
+                    "The length of paged_kv_indices exceeds the allocated buffer size."
+                )
+
+        # The batch-shape checks above precede every write to the wrapper.
+        self._planned_shapes = _REPLAN_REQUIRED  # until this plan() completes
         self._cached_o_data_type = o_data_type
 
         if logits_soft_cap is None:
@@ -2831,7 +2940,6 @@ class BatchPrefillWithPagedKVCacheWrapper:
         if head_dim_vo is None:
             head_dim_vo = head_dim_qk
 
-        batch_size = len(qo_indptr) - 1
         self._batch_size = batch_size
         self._num_qo_heads = num_qo_heads
         self._num_kv_heads = num_kv_heads
@@ -2855,8 +2963,6 @@ class BatchPrefillWithPagedKVCacheWrapper:
         self._token_pos_in_items_len = token_pos_in_items_len
         self._max_item_len_ptr = max_item_len_ptr
 
-        qo_indptr_host = qo_indptr.to("cpu")
-        total_num_rows = qo_indptr_host[-1]
         self._max_q_len = int((qo_indptr_host[1:] - qo_indptr_host[:-1]).max().item())
 
         paged_kv_indptr_host = paged_kv_indptr.to("cpu")
@@ -2875,27 +2981,6 @@ class BatchPrefillWithPagedKVCacheWrapper:
         if self.is_cuda_graph_enabled:
             if self._max_total_num_rows is None:
                 self._max_total_num_rows = total_num_rows
-            elif total_num_rows > self._max_total_num_rows:
-                raise ValueError(
-                    "The total number of rows in qo_indptr {} in cuda graph mode cannot "
-                    "exceed the number of rows set during initialization {}.".format(
-                        total_num_rows, self._max_total_num_rows
-                    )
-                )
-
-            if batch_size != self._fixed_batch_size:
-                raise ValueError(
-                    "The batch size should be fixed during the lifecycle of the wrapper in "
-                    "cuda graph mode, the runtime batch size {} mismatches the batch size {} "
-                    " set during initialization.".format(
-                        batch_size, self._fixed_batch_size
-                    )
-                )
-            if len(paged_kv_indices) > len(self._paged_kv_indices_buf):
-                raise ValueError(
-                    "The length of paged_kv_indices exceeds the allocated buffer size."
-                )
-
             self._qo_indptr_buf.copy_(qo_indptr, non_blocking=non_blocking)
             self._paged_kv_indptr_buf.copy_(paged_kv_indptr, non_blocking=non_blocking)
             self._paged_kv_last_page_len_buf.copy_(
@@ -3292,6 +3377,15 @@ class BatchPrefillWithPagedKVCacheWrapper:
         else:
             self._aiter_flat_gather_idx = None
             self._aiter_flat_kv_indptr = None
+        self._planned_shapes = (
+            num_qo_heads,
+            num_kv_heads,
+            head_dim_qk,
+            head_dim_vo,
+            page_size,
+            int(qo_indptr_host[-1]),
+            None,
+        )
 
     begin_forward = plan
 
@@ -3483,6 +3577,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 "These features are only available in CUDA implementation."
             )
         k_cache, v_cache = _unpack_paged_kv_cache(paged_kv_cache, self._kv_layout)
+        _check_run_matches_plan(
+            self._planned_shapes, q, k_cache, v_cache, self._kv_layout
+        )
         _check_cached_qkv_data_type(
             q, k_cache, self._cached_q_data_type, self._cached_kv_data_type
         )
@@ -3921,13 +4018,14 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         self._kv_indptr_buf = kv_indptr_buf
         self._custom_mask_buf = custom_mask_buf
         self._mask_indptr_buf = mask_indptr_buf
-        self._max_total_num_rows = None
+        self._max_total_num_rows: Optional[int] = None
         self._backend = backend
         # See the paged wrapper: _backend goes concrete after the first plan(),
         # so the caller's original request has to be kept separately.
         self._backend_requested = backend
         self._backend_fallback_reason: Optional[str] = None
         self._plan_info: Optional[torch.Tensor] = None
+        self._planned_shapes: Optional[_PlannedShapes] = None
         self._cached_module = None
 
     @property
@@ -4128,7 +4226,6 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                 f"only output dtype ROCm prefill can write for q_data_type="
                 f"{q_data_type}."
             )
-        self._cached_o_data_type = o_data_type
         if head_dim_vo is None:
             head_dim_vo = head_dim_qk
 
@@ -4154,12 +4251,15 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         qo_indptr_host = qo_indptr.to("cpu")
         kv_indptr_host = kv_indptr.to("cpu")
 
-        total_num_rows = qo_indptr_host[-1]
+        total_num_rows = int(
+            qo_indptr_host[-1]
+        )  # a CPU qo_indptr is the caller's buffer
 
         if self.is_cuda_graph_enabled:
-            if self._max_total_num_rows is None:
-                self._max_total_num_rows = total_num_rows
-            elif total_num_rows > self._max_total_num_rows:
+            if (
+                self._max_total_num_rows is not None
+                and total_num_rows > self._max_total_num_rows
+            ):
                 raise ValueError(
                     "The total number of rows in qo_indptr {} in cuda graph mode cannot "
                     "exceed the number of rows set during initialization {}.".format(
@@ -4174,6 +4274,13 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                         batch_size, self._fixed_batch_size
                     )
                 )
+
+        # The batch-shape checks above precede every write to the wrapper.
+        self._planned_shapes = _REPLAN_REQUIRED  # until this plan() completes
+        self._cached_o_data_type = o_data_type
+        if self.is_cuda_graph_enabled:
+            if self._max_total_num_rows is None:
+                self._max_total_num_rows = total_num_rows
             self._qo_indptr_buf.copy_(qo_indptr, non_blocking=non_blocking)
             self._kv_indptr_buf.copy_(kv_indptr, non_blocking=non_blocking)
             if packed_custom_mask is not None:
@@ -4347,6 +4454,15 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         self._plan_info = plan_info_vec_as_tensor(
             self._plan_info, device=self._float_workspace_buffer.device
         )
+        self._planned_shapes = (
+            num_qo_heads,
+            num_kv_heads,
+            head_dim_qk,
+            head_dim_vo,
+            None,
+            int(qo_indptr_host[-1]),
+            int(kv_indptr_host[-1]),
+        )
 
         self._causal: bool = causal
         self._pos_encoding_mode: str = pos_encoding_mode
@@ -4453,6 +4569,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
 
         # ROCm has no PDL: the default resolves to off, and only an explicit request warns.
         enable_pdl = ignore_enable_pdl(enable_pdl)
+        _check_run_matches_plan(self._planned_shapes, q, k, v, self._kv_layout)
         _check_cached_qkv_data_type(
             q, k, self._cached_q_data_type, self._cached_kv_data_type
         )
