@@ -117,6 +117,7 @@ void batch_prefill_with_paged_kv_cache_aiter(
   const int32_t total_qo = static_cast<int32_t>(q.size(0));
   const int32_t num_qo_heads = static_cast<int32_t>(q.size(1));
   const int32_t num_kv_heads = static_cast<int32_t>(paged_k_cache.size(2));
+  CHECK_GQA_HEAD_DIVISIBLE(num_qo_heads, num_kv_heads);
 
   // LSE scratch: AITER returns [num_qo_heads, total_qo_len] in natural-log scale.
   // FlashInfer expects [total_qo_len, num_qo_heads] in log2 scale.

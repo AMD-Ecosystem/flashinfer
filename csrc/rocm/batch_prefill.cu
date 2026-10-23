@@ -47,6 +47,7 @@ at::Tensor BatchPrefillWithKVCachePlan(
     at::Tensor kv_len_arr, int64_t total_num_rows, int64_t batch_size, int64_t num_qo_heads,
     int64_t num_kv_heads, int64_t page_size, bool enable_cuda_graph, int64_t head_dim_qk,
     int64_t head_dim_vo, bool causal) {
+  CHECK_GQA_HEAD_DIVISIBLE(num_qo_heads, num_kv_heads);
   size_t float_workspace_size_in_bytes =
       float_workspace_buffer.size(0) * float_workspace_buffer.element_size();
   size_t int_workspace_size_in_bytes =
@@ -91,6 +92,7 @@ void BatchPrefillWithRaggedKVCacheRun(at::Tensor float_workspace_buffer,
   int64_t num_qo_heads = q.size(1);
   int64_t head_dim_qk = q.size(2);
   int64_t num_kv_heads = (kv_layout == QKVLayout::kNHD) ? k.size(1) : k.size(0);
+  CHECK_GQA_HEAD_DIVISIBLE(num_qo_heads, num_kv_heads);
   uint32_t q_stride_n = q.stride(0), q_stride_h = q.stride(1), k_stride_n, k_stride_h, v_stride_n,
            v_stride_h;
   if (kv_layout == QKVLayout::kNHD) {
@@ -236,6 +238,7 @@ void BatchPrefillWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
     page_size = paged_k_cache.size(1);
     num_kv_heads = paged_k_cache.size(2);
   }
+  CHECK_GQA_HEAD_DIVISIBLE(num_qo_heads, num_kv_heads);
 
   if (maybe_lse) {
     const auto& lse = *maybe_lse;

@@ -100,6 +100,7 @@ void pod_with_kv_cache_tensor(
   }
   TORCH_CHECK(num_qo_heads == (uint32_t)q_d.size(1), "POD: prefill/decode QO heads must match");
   TORCH_CHECK(num_kv_heads == (uint32_t)num_kv_heads_d, "POD: prefill/decode KV heads must match");
+  CHECK_GQA_HEAD_DIVISIBLE(num_qo_heads, num_kv_heads);
 
   void* float_buffer_ptr = float_workspace_buffer_d.data_ptr();
   void* int_buffer_ptr = int_workspace_buffer_d.data_ptr();

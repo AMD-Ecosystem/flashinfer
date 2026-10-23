@@ -69,6 +69,7 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
     v_stride_h = v.stride(0);
     v_stride_n = v.stride(1);
   }
+  CHECK_GQA_HEAD_DIVISIBLE(num_qo_heads, num_kv_heads);
   if (maybe_lse) {
     const auto& lse = *maybe_lse;
     TORCH_CHECK(lse.size(0) == qo_len, lse.size(0), q.size(0));

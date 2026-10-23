@@ -119,6 +119,7 @@ void batch_pod_with_kv_cache_tensor(
   TORCH_CHECK(num_kv_heads_p == num_kv_heads_d,
               "BatchPOD: prefill/decode KV heads must match; prefill: ", num_kv_heads_p,
               ", decode: ", num_kv_heads_d);
+  CHECK_GQA_HEAD_DIVISIBLE(num_qo_heads, num_kv_heads_p);
 
   void* float_buffer_ptr_d = float_workspace_buffer_d.data_ptr();
   void* int_buffer_ptr_d = int_workspace_buffer_d.data_ptr();

@@ -80,6 +80,7 @@ void batch_ragged_prefill_with_kv_cache_aiter(at::Tensor q, at::Tensor k, at::Te
   const int32_t total_kv = static_cast<int32_t>(k.size(0));
   const int32_t num_qo_heads = static_cast<int32_t>(q.size(1));
   const int32_t num_kv_heads = static_cast<int32_t>(k.size(1));
+  CHECK_GQA_HEAD_DIVISIBLE(num_qo_heads, num_kv_heads);
 
   // AITER LSE layout: [num_qo_heads, total_qo] in nats.
   // FlashInfer expects [total_qo, num_qo_heads] in log2 — convert below.

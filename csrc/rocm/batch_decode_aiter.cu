@@ -144,6 +144,7 @@ void batch_decode_with_paged_kv_cache_aiter(
   const int64_t num_heads = q.size(1);
   const int64_t head_size = q.size(2);
   const int64_t num_kv_heads = paged_k_cache.size(2);  // NHD: [blocks, page, heads, hd]
+  CHECK_GQA_HEAD_DIVISIBLE(num_heads, num_kv_heads);
   const int64_t page_size = paged_k_cache.size(1);
 
   auto [block_tables, context_lens] =

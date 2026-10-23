@@ -231,9 +231,10 @@ _PLAN_ROUTES = [
 
 
 def _planned_wrapper_and_inputs(
-    route, workspace, device, q_heads, kv_heads, head_dim, page_size
+    route, workspace, device, q_heads, kv_heads, head_dim, page_size, plan_heads=None
 ):
     kind, backend, *tc = route.split("-")
+    qh, kh = plan_heads or (HEADS, HEADS)
     i32 = lambda *v: torch.tensor(v, dtype=torch.int32, device=device)  # noqa: E731
     rand = lambda *s: torch.randn(*s, dtype=torch.float16, device=device)  # noqa: E731
     paged = (i32(0, 1), i32(0), i32(PAGE_SIZE))
@@ -241,7 +242,7 @@ def _planned_wrapper_and_inputs(
         w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
             workspace, "NHD", backend=backend, use_tensor_cores=bool(tc)
         )
-        w.plan(*paged, HEADS, HEADS, HEAD_DIM, PAGE_SIZE, q_data_type=torch.float16)
+        w.plan(*paged, qh, kh, HEAD_DIM, PAGE_SIZE, q_data_type=torch.float16)
         return w, (
             rand(1, q_heads, head_dim),
             rand(1, 2, page_size, kv_heads, head_dim),
@@ -250,7 +251,7 @@ def _planned_wrapper_and_inputs(
         w = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
             workspace, "NHD", backend=backend
         )
-        w.plan(i32(0, 4), *paged, HEADS, HEADS, HEAD_DIM, PAGE_SIZE, causal=True)
+        w.plan(i32(0, 4), *paged, qh, kh, HEAD_DIM, PAGE_SIZE, causal=True)
         return w, (
             rand(4, q_heads, head_dim),
             rand(1, 2, page_size, kv_heads, head_dim),
@@ -258,7 +259,7 @@ def _planned_wrapper_and_inputs(
     w = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
         workspace, "NHD", backend=backend
     )
-    w.plan(i32(0, 4), i32(0, 4), HEADS, HEADS, HEAD_DIM, causal=True)
+    w.plan(i32(0, 4), i32(0, 4), qh, kh, HEAD_DIM, causal=True)
     return w, (
         rand(4, q_heads, head_dim),
         rand(4, kv_heads, head_dim),
@@ -378,6 +379,30 @@ def test_run_refuses_tensors_of_the_wrong_rank(route, workspace, device):
         k, v = rest
         with pytest.raises(ValueError, match=r"run\(\) got a 2-D k; expected 3-D"):
             wrapper.run(q, k.flatten(1), v)
+
+
+@pytest.mark.parametrize("route", _PLAN_ROUTES)
+def test_heads_that_do_not_divide_are_refused(route, workspace, device):
+    """12 q heads over 8 kv heads truncates the group size to 1: a wrong answer."""
+    # AITER decode's plan() refused this already, as a ValueError.
+    with pytest.raises(
+        (RuntimeError, ValueError), match=r"divisible by num_kv_heads ?\(8\)"
+    ):
+        wrapper, inputs = _planned_wrapper_and_inputs(
+            route, workspace, device, 12, 8, HEAD_DIM, PAGE_SIZE, plan_heads=(12, 8)
+        )
+        wrapper.run(*inputs)
+
+
+@pytest.mark.parametrize(
+    "backend", ["fa2", pytest.param("aiter", marks=requires_aiter)]
+)
+@pytest.mark.parametrize("q_heads", [12, 4])
+def test_single_prefill_refuses_heads_that_do_not_divide(backend, q_heads, device):
+    q = torch.randn(64, q_heads, HEAD_DIM, dtype=torch.float16, device=device)
+    k = torch.randn(64, 8, HEAD_DIM, dtype=torch.float16, device=device)
+    with pytest.raises(RuntimeError, match=r"must be divisible by num_kv_heads\(8\)"):
+        flashinfer.single_prefill_with_kv_cache(q, k, k, causal=True, backend=backend)
 
 
 def test_a_rejected_ragged_plan_leaves_the_last_plan_usable(workspace, device):
