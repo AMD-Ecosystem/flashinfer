@@ -25,7 +25,7 @@ def _record(sources) -> None:
     for src in sources or ():
         name = Path(str(src)).name
         if name.endswith((".cu", ".cc")):
-            # Match on basename: jit/attention/modules_hip.py copies each source
+            # Match on basename: jit/rocm/modules.py copies each source
             # into FLASHINFER_GEN_SRC_DIR and registers the copy, so the
             # recorded path points into the JIT cache, not into csrc/rocm/.
             _reached.add(name)

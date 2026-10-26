@@ -157,10 +157,14 @@ class TestCudaOnlyArgumentsRaise:
             with pytest.raises(NotImplementedError, match=pname):
                 method(*_MINIMAL_PLAN_ARGS[type(wrapper).__name__], **{pname: value})
 
-    def test_decode_rejects_multi_token_query(self):
+    def test_decode_multi_token_query_needs_tensor_cores(self):
+        """Multi-token decode is supported, but only on the tensor-core path --
+        the default wrapper is use_tensor_cores=False, so it declines rather
+        than silently serving one token per request. Numerics and the cudagraph
+        contract live in test_batch_decode_speculative.py."""
         ws = torch.empty(128 * 1024 * 1024, dtype=torch.int8, device="cuda")
         wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD")
-        with pytest.raises(NotImplementedError, match="q_len_per_req"):
+        with pytest.raises(ValueError, match="use_tensor_cores"):
             wrapper.plan(
                 *_MINIMAL_PLAN_ARGS["BatchDecodeWithPagedKVCacheWrapper"],
                 q_len_per_req=2,

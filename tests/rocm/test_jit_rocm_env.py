@@ -68,7 +68,7 @@ def test_an_arch_tagged_cache_version_is_not_skew(monkeypatch, tmp_path, arch):
     """Every shipped wheel's version ends in the architecture it holds.
 
     build_backend appends it so the two arch builds get distinct filenames; the
-    comparison here is a startswith, which has to keep tolerating that.
+    version check has to keep tolerating that.
     """
     import sys
     import types
@@ -83,6 +83,25 @@ def test_an_arch_tagged_cache_version_is_not_skew(monkeypatch, tmp_path, arch):
     monkeypatch.delenv("FLASHINFER_DISABLE_VERSION_CHECK", raising=False)
 
     assert get_aot_dir(pathlib.Path("/unused"), lambda: True) == tmp_path
+
+
+@pytest.mark.parametrize("suffix", ["2.gfx942", ".dev3.gfx942", ".gfx942.extra"])
+def test_a_longer_release_is_skew_not_an_arch_tag(monkeypatch, suffix):
+    """0.6.18+amd.1 must not accept amd.12: a bare startswith did."""
+    import sys
+    import types
+
+    from flashinfer._version import __version__
+    from flashinfer.jit.rocm.env import get_aot_dir
+
+    fake = types.ModuleType("amd_flashinfer_jit_cache")
+    fake.__version__ = f"{__version__}{suffix}"
+    fake.get_jit_cache_dir = lambda: "/cache/should-not-be-reached"
+    monkeypatch.setitem(sys.modules, "amd_flashinfer_jit_cache", fake)
+    monkeypatch.delenv("FLASHINFER_DISABLE_VERSION_CHECK", raising=False)
+
+    with pytest.raises(RuntimeError, match="does not match"):
+        get_aot_dir(pathlib.Path("/unused"), lambda: True)
 
 
 def _wheel_with_manifest(monkeypatch, tmp_path, manifest_text, device_arch):
@@ -222,7 +241,7 @@ def test_a_fat_wheel_covers_this_gpu(monkeypatch, tmp_path):
 
 
 def test_a_semicolon_separated_manifest_is_still_understood(monkeypatch, tmp_path):
-    """`;` is documented for this same arch list in jit/aiter_source.py."""
+    """`;` is documented for this same arch list in jit/rocm/aiter_source.py."""
     from flashinfer.jit.rocm.env import get_aot_dir
 
     cache = _wheel_with_manifest(
@@ -378,6 +397,7 @@ def test_verbose_drops_ndebug(monkeypatch):
     from flashinfer.jit.core import current_compilation_context
     from flashinfer.jit.rocm.core import build_flags
 
+    monkeypatch.delenv("FLASHINFER_JIT_DEBUG", raising=False)
     monkeypatch.setenv("FLASHINFER_JIT_VERBOSE", "1")
     _, verbose_flags = build_flags(current_compilation_context)
     monkeypatch.setenv("FLASHINFER_JIT_VERBOSE", "0")
@@ -385,6 +405,37 @@ def test_verbose_drops_ndebug(monkeypatch):
 
     assert "-DNDEBUG" not in verbose_flags
     assert "-DNDEBUG" in quiet_flags
+
+
+@pytest.mark.parametrize("verbose", ["0", "1"])
+def test_jit_debug_builds_unoptimised(monkeypatch, verbose):
+    """FLASHINFER_JIT_DEBUG=1 must reach both flag groups with no -O3 left.
+
+    The hip_compile rule ends with $cflags, so an -O3 surviving there would
+    outrank any -O0 placed in cuda_cflags.
+    """
+    from flashinfer.jit.rocm.core import _warn_debug_build, build_flags
+
+    class _StubContext:
+        def get_hipcc_flags_list(self):
+            return ["--offload-arch=gfx942"]
+
+    monkeypatch.setenv("FLASHINFER_JIT_VERBOSE", verbose)
+    monkeypatch.setenv("FLASHINFER_JIT_DEBUG", "1")
+    _warn_debug_build.cache_clear()
+    # Ambient, so it would reach a jit-cache wheel build unannounced.
+    with pytest.warns(UserWarning, match="FLASHINFER_JIT_DEBUG=1"):
+        cflags, cuda_cflags = build_flags(_StubContext())
+    for flags in (cflags, cuda_cflags):
+        assert "-O0" in flags and "-g" in flags
+        assert "-O3" not in flags
+    assert "-DNDEBUG" not in cuda_cflags
+
+    monkeypatch.setenv("FLASHINFER_JIT_DEBUG", "0")
+    cflags, cuda_cflags = build_flags(_StubContext())
+    for flags in (cflags, cuda_cflags):
+        assert "-O3" in flags and "-O0" not in flags
+    _warn_debug_build.cache_clear()
 
 
 def test_activation_template_targets_the_forked_rocm_header():

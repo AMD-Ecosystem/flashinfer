@@ -6,14 +6,14 @@ Shared plumbing for FlashInfer's C++-level AITER backends (ROCm).
 FlashInfer wraps AITER kernels by compiling a small ``csrc/rocm/*_aiter.cu`` shim
 that calls AITER's C++ entry point directly and links the symbol-visible AITER
 ``.so``. Prefer ``#include``-ing AITER's real header, so a signature change is a
-compile error rather than a load-time ``undefined symbol``. Fall back to a
-forward declaration only for headers that still pull in pybind11, which clashes
-with FlashInfer's ``-DPy_LIMITED_API`` build (``rope.h``, ``rmsnorm.h`` as of
-0.1.16); there ``torch::Tensor`` is ``at::Tensor``, so the linker still resolves.
+compile error rather than a load-time ``undefined symbol``. Since 0.1.21 the
+norm and rope headers are POD-only, so every shim now includes the real one; a
+forward declaration remains the fallback only for a header that still pulls in
+pybind11, which clashes with ``-DPy_LIMITED_API``.
 
-AITER's installed wheel builds its modules with ``-fvisibility=hidden``, so the
-kernel symbols (e.g. ``rope_cached_positions_2c_fwd_impl``) are not linkable. This
-helper rebuilds the needed AITER module once with ``AITER_SYMBOL_VISIBLE=1`` via
+AITER builds its own modules with ``-fvisibility=hidden``, so the kernel
+symbols (e.g. ``rope_cached_positions_2c_fwd_impl``) are not linkable. This
+helper builds the needed AITER module once with ``AITER_SYMBOL_VISIBLE=1`` via
 AITER's own ``aiter.jit.core.build_module`` (which also runs CK blob codegen for CK
 ops), caches the result under FlashInfer's cache dir as ``lib<module>.so``, and
 hands back the include/link flags for ``gen_jit_spec``.
@@ -23,6 +23,7 @@ and a CK GEMM module), and a module may be built in a *specialized* form -- see
 :class:`AiterModule`.
 """
 
+import contextlib
 import functools
 import inspect
 import os
@@ -31,7 +32,7 @@ import shutil
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Iterator, List, Optional, Sequence, Tuple, Union
 
 from filelock import FileLock
 
@@ -50,6 +51,10 @@ _ARCH_RE = re.compile(r"^gfx[0-9a-f]+$")
 # in a path separator or a flag-looking prefix. \Z, not $: $ also matches before a
 # trailing newline, which would reach the ninja link line intact.
 _LIB_NAME_RE = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9_.+-]*\Z")
+
+# The assembled cache tag becomes a directory name and reaches a -L/-rpath flag,
+# so it is checked against a positive class, not a list of denied characters.
+_TAG_RE = re.compile(r"\A[A-Za-z0-9._+-]+\Z")
 
 # Guards the env-mutating build in _build_aiter_lib; see ensure_aiter_lib.
 _BUILD_LOCK = threading.Lock()
@@ -200,25 +205,27 @@ def resolve_aiter_build_arch() -> str:
     return _DEFAULT_BUILD_ARCH
 
 
-def _aiter_cache_tag() -> str:
-    """A filesystem-safe tag keying the lib cache by target arch and AITER version.
+def _rocm_version() -> str:
+    """The ROCm/HIP version these artifacts were compiled against."""
+    try:
+        import torch
 
-    Without the arch component, a lib built for one arch would be silently reused
-    on a machine with a different arch. Without the version component, an AITER
-    upgrade (which can change the C++ ABI the FlashInfer shim links against) would
-    silently reuse the stale .so. The FlashInfer JIT dir already keys by its own
-    version+arch, but this cache sits outside it.
+        return torch.version.hip or "unknown"
+    except Exception:
+        return "unknown"
 
-    Keyed on the *resolved* architecture -- the one actually compiled for -- so
-    the tag cannot disagree with the contents of the directory it names."""
-    arch = resolve_aiter_build_arch()
-    # The tag is joined onto the cache root to create a directory, so
-    # "filesystem-safe" above has to be enforced, not just asserted in prose.
-    # _env_arch_list already rejects anything that is not an architecture name;
-    # this keeps the guarantee true for the other two sources of `arch` (the
-    # device probe and the default) and for any future caller. Loud rather than
-    # silently sanitized: an arch that needs rewriting means the resolver is
-    # wrong, and a quietly renamed cache directory would hide that.
+
+def compose_cache_tag(arch: Optional[str] = None) -> str:
+    """``<arch>__aiter-<ver>__rocm-<ver>``, the key both AITER caches use.
+
+    Staleness is structural rather than detected: bump the arch, AITER's ABI or
+    the toolchain and the tag names a different directory, so a mismatched
+    artifact is never found. ``arch`` defaults to the *resolved* build arch.
+    """
+    arch = arch or resolve_aiter_build_arch()
+    # The tag becomes a directory name, so enforce that rather than assume it.
+    # Loud rather than silently sanitized: an arch that needs rewriting means the
+    # resolver is wrong, and a quietly renamed cache directory would hide that.
     if not arch or arch != Path(arch).name or arch.startswith("."):
         raise ValueError(
             f"refusing to build a cache directory name from architecture "
@@ -230,52 +237,41 @@ def _aiter_cache_tag() -> str:
         version = _md.version("amd-aiter")
     except Exception:
         version = "unknown"
-    return f"{arch}__aiter-{version}"
+    # ROCm is a component because a source-built AITER's version is bare
+    # ("0.1.21.post2") where a wheel's carried "+rocm..." and keyed ROCm by
+    # accident; without it, two toolchains would share one tag.
+    tag = f"{arch}__aiter-{version}__rocm-{_rocm_version()}"
+    # These versions come from package metadata and torch, neither of which this
+    # module controls, so the tag gets the same check the arch did -- on the
+    # character class the cache-tag test asserts on.
+    if tag != Path(tag).name or tag.startswith(".") or not _TAG_RE.match(tag):
+        raise ValueError(
+            f"refusing to build a cache directory name from {tag!r}: "
+            f"not a single safe path component"
+        )
+    return tag
+
+
+def _aiter_cache_tag() -> str:
+    return compose_cache_tag()
 
 
 @functools.lru_cache(maxsize=1)
 def _aiter_libs_dir() -> Path:
-    # Keyed by arch + AITER version so a cached lib is never reused across an
-    # incompatible arch or a changed AITER ABI.
+    # Keyed by arch + AITER version + ROCm so a cached lib is never reused across
+    # an incompatible arch, a changed AITER ABI, or a different toolchain.
     d = jit_env.FLASHINFER_CACHE_DIR / "aiter_libs" / _aiter_cache_tag()
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def refresh_aiter_jitspec(spec: JitSpec) -> JitSpec:
-    """Regenerate ``build.ninja`` so a changed AITER library path takes effect.
+    """Rewrite ``build.ninja`` so a changed AITER library path takes effect.
 
-    The AITER shim libs live outside the JIT tree, under
-    ``aiter_libs/<arch>__aiter-<version>/``, and reach the module only as an
-    ``-L``/``-rpath`` on the link line. ``JitSpec.build()`` writes ``build.ninja``
-    only when it is missing, so once a module has been built the recorded link
-    line is never revisited -- the module keeps loading whichever AITER lib it
-    was first built against, even after the resolved architecture changes.
-
-    That is not a stale-build annoyance: the ``.so`` retains a RUNPATH into the
-    old directory, so a module cached under ``.../gfx950/`` can go on loading a
-    gfx942 library and **segfault**, and clearing ``FLASHINFER_ROCM_ARCH_LIST``
-    or setting it correctly does not fix it. Only deleting the cache does.
-
-    ``write_ninja`` funnels through ``write_if_different``, so this is free when
-    nothing changed and rewrites exactly when the link line moves; ninja then
-    relinks on its own.
-
-    Only the JIT path is touched. An AOT-prebuilt module is loaded straight from
-    ``aot_path`` and a ``FLASHINFER_DISABLE_JIT`` run raises before ninja is
-    consulted, so in both cases the manifest has no reader and rewriting it would
-    be pure filesystem noise.
-
-    The write takes ``spec.lock_path`` -- the same lock ``JitSpec.build()`` holds
-    while ninja runs -- because ``write_if_different`` truncates in place. Without
-    it a concurrent builder (``pytest -n auto`` shares one JIT cache across
-    processes) could have the manifest emptied under it mid-read.
-
-    Args:
-        spec: The freshly created :class:`~flashinfer.jit.core.JitSpec`.
-
-    Returns:
-        The same spec, for use as ``return refresh_aiter_jitspec(gen_jit_spec(...))``.
+    The AITER libs reach the module only as an ``-L``/``-rpath`` on the link line,
+    and a stale RUNPATH can load a wrong-arch lib and segfault. ``JitSpec.build()``
+    and ``build_jit_specs()`` also rewrite it before every build, so this is a cheap
+    ``write_if_different`` under ``spec.lock_path``; skipped for AOT and no-JIT runs.
     """
     # v0.6.18 made JitSpec an ABC; is_aot and write_ninja live on JitSpecNvcc,
     # which is what gen_jit_spec() actually returns under its JitSpec annotation.
@@ -288,18 +284,66 @@ def refresh_aiter_jitspec(spec: JitSpec) -> JitSpec:
 
 @functools.lru_cache(maxsize=1)
 def _aiter_csrc_include_dir() -> Path:
-    """The aiter_meta C++ public header dir (rmsnorm.h / activation.h / rope.h)."""
+    """The AITER C++ public header dir (rmsnorm.h / activation.h / rope.h).
+
+    Normally ``aiter_meta/csrc/include``. An editable AITER install has no
+    ``aiter_meta`` at all -- ``setup.py develop`` takes a branch that sets
+    ``packages = ["aiter"]`` -- so fall back to AITER's own ``AITER_CSRC_DIR``,
+    which resolves to the clone's ``csrc/`` in that layout and honours an
+    ``AITER_META_DIR`` override in any layout.
+    """
     # aiter ships its C++ sources/headers in the sibling aiter_meta package,
     # which is a namespace package (no __file__) — resolve via __path__.
-    import aiter_meta
+    try:
+        import aiter_meta
 
-    for p in aiter_meta.__path__:
-        inc = Path(p) / "csrc" / "include"
+        for p in aiter_meta.__path__:
+            inc = Path(p) / "csrc" / "include"
+            if inc.exists():
+                return inc
+    except ImportError:
+        pass
+
+    # Only reached when aiter_meta is missing or incomplete, which is also the
+    # only case where importing aiter (and needing a live GPU for it) is no
+    # worse than the RuntimeError below.
+    try:
+        from ...rocm.aiter_utils import _ensure_aiter_gpu_archs
+
+        _ensure_aiter_gpu_archs()
+        from aiter.jit.core import AITER_CSRC_DIR
+
+        inc = Path(AITER_CSRC_DIR) / "include"
         if inc.exists():
             return inc
+    except Exception:
+        pass
+
     raise RuntimeError(
-        "Could not locate aiter_meta/csrc/include; is the aiter source package installed?"
+        "Could not locate AITER's csrc/include, via either aiter_meta or "
+        "aiter.jit.core.AITER_CSRC_DIR; is the aiter source package installed?"
     )
+
+
+@functools.lru_cache(maxsize=1)
+def aiter_ck_include_paths() -> Tuple[str, ...]:
+    """``(<include>,)`` of the composable_kernel tree AITER builds against, else ``()``.
+
+    The prefill bridge passes ``ck_tile::stream_config`` into AITER, so it should
+    compile against AITER's CK; ``()`` leaves ``ck_tile`` to ROCm's own headers,
+    which the ROCm 10.1 pip SDK does not ship.
+    """
+    try:
+        from ...rocm.aiter_utils import _ensure_aiter_gpu_archs
+
+        # Usually loaded by the callers' `import aiter` (not under
+        # AITER_TRITON_ONLY); the exact tree AITER compiles against.
+        _ensure_aiter_gpu_archs()
+        from aiter.jit.core import CK_3RDPARTY_DIR
+    except Exception:
+        return ()
+    inc = Path(CK_3RDPARTY_DIR) / "include"
+    return (str(inc),) if (inc / "ck_tile").is_dir() else ()
 
 
 def ensure_aiter_lib(module: Union[str, AiterModule]) -> Path:
@@ -332,6 +376,60 @@ def ensure_aiter_lib(module: Union[str, AiterModule]) -> Path:
         return _build_aiter_lib(module_name, md_name, module.blob_gen_cmd, lib_path)
 
 
+@contextlib.contextmanager
+def _aiter_env_scope(
+    build_dir: Optional[Path], *, symbol_visible: bool
+) -> Iterator[None]:
+    """Point AITER's process-global build knobs at ``build_dir``, then restore.
+
+    ``build_dir=None`` leaves ``AITER_JIT_DIR`` alone, which any build whose
+    artifact AITER then *imports* needs: it puts that directory on ``sys.path``
+    at its own import time, so a later value yields ``ModuleNotFoundError``.
+    ``symbol_visible=False`` keeps AITER's default visibility, for artifacts
+    resolved by mangled name rather than linked.
+
+    Callers must hold :data:`_BUILD_LOCK`: this is process-global state.
+    """
+    prev = {
+        "AITER_SYMBOL_VISIBLE": os.environ.get("AITER_SYMBOL_VISIBLE"),
+        "AITER_JIT_DIR": os.environ.get("AITER_JIT_DIR"),
+        "GPU_ARCHS": os.environ.get("GPU_ARCHS"),
+        "ROCM_HOME": os.environ.get("ROCM_HOME"),
+    }
+    try:
+        # Inside the try so a failure here still restores the environment: a
+        # leaked AITER_JIT_DIR sends the *next* module's .so hunt to the wrong
+        # directory.
+        from ...rocm.hip_utils import get_rocm_home
+
+        # Set *or clear*: an ambient AITER_SYMBOL_VISIBLE=1 from the operator or
+        # the image would otherwise compile a dlopen'd variant with the linkable
+        # flags -- same filename, different build, silently shipped.
+        if symbol_visible:
+            os.environ["AITER_SYMBOL_VISIBLE"] = "1"
+        else:
+            os.environ.pop("AITER_SYMBOL_VISIBLE", None)
+        if build_dir is not None:
+            os.environ["AITER_JIT_DIR"] = str(build_dir)
+        # AITER splits GPU_ARCHS on ';' and validates each entry, so a
+        # comma-joined list reaches it as one unparseable token. A single
+        # architecture sidesteps the separator entirely -- and is required
+        # regardless; see resolve_aiter_build_arch.
+        os.environ["GPU_ARCHS"] = resolve_aiter_build_arch()
+        os.environ["ROCM_HOME"] = get_rocm_home()
+        yield
+    finally:
+        for key, value in prev.items():
+            if value is None:
+                # GPU_ARCHS is the exception: AITER's own Python ops build
+                # outside this scope and assert on an unset value, and this is
+                # the arch _ensure_aiter_gpu_archs would resolve anyway.
+                if key != "GPU_ARCHS":
+                    os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _build_aiter_lib(
     module_name: str,
     md_name: str,
@@ -348,29 +446,8 @@ def _build_aiter_lib(
     aiter_build_dir = libs_dir / "build"
     aiter_build_dir.mkdir(parents=True, exist_ok=True)
 
-    prev = {
-        "AITER_SYMBOL_VISIBLE": os.environ.get("AITER_SYMBOL_VISIBLE"),
-        "AITER_JIT_DIR": os.environ.get("AITER_JIT_DIR"),
-        "GPU_ARCHS": os.environ.get("GPU_ARCHS"),
-        "ROCM_HOME": os.environ.get("ROCM_HOME"),
-    }
-
     built: Optional[Path] = None
-    try:
-        # Inside the try so a failure here still restores the environment: a
-        # leaked AITER_JIT_DIR sends the *next* module's .so hunt to the wrong
-        # directory.
-        from ...rocm.hip_utils import get_rocm_home
-
-        os.environ["AITER_SYMBOL_VISIBLE"] = "1"
-        os.environ["AITER_JIT_DIR"] = str(aiter_build_dir)
-        # AITER splits GPU_ARCHS on ';' and validates each entry, so a
-        # comma-joined list reaches it as one unparseable token. A single
-        # architecture sidesteps the separator entirely -- and is required
-        # regardless; see resolve_aiter_build_arch.
-        os.environ["GPU_ARCHS"] = resolve_aiter_build_arch()
-        os.environ["ROCM_HOME"] = get_rocm_home()
-
+    with _aiter_env_scope(aiter_build_dir, symbol_visible=True):
         from aiter.jit import core as aiter_core
         from aiter.jit.core import build_module, get_args_of_build
 
@@ -429,16 +506,6 @@ def _build_aiter_lib(
         built = _find_built_so(
             md_name, aiter_build_dir, Path(aiter_core.get_user_jit_dir())
         )
-    finally:
-        for k, v in prev.items():
-            if v is None:
-                # GPU_ARCHS is the exception: AITER's own Python ops build
-                # outside this scope and assert on an unset value, and this is
-                # the arch _ensure_aiter_gpu_archs would resolve anyway.
-                if k != "GPU_ARCHS":
-                    os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
 
     if built is None:
         raise RuntimeError(

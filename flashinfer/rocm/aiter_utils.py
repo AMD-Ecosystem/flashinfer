@@ -50,11 +50,10 @@ def _ensure_aiter_gpu_archs() -> None:
         os.environ["GPU_ARCHS"] = arch
 
 
-# 0.1.20 renamed the RMSNorm entry points and added a gemma_norm parameter, so
-# an older AITER cannot resolve the shim's symbols at all. The vendored prefill
-# structs travel by value through dlsym'd pointers, where a mismatch corrupts
-# silently -- hence a hard floor rather than a warning.
-AITER_MIN_VERSION = "0.1.20"
+# 0.1.21 moved rmsnorm and the cos/sin-cache rope from at::Tensor to the POD
+# aiter_tensor_t, so csrc/rocm/{norm,rope}_aiter.cu cannot resolve their mangled
+# symbols against anything older, and the vendored arg structs assume this layout.
+AITER_MIN_VERSION = "0.1.21"
 
 
 def _aiter_installed_version() -> Optional[str]:
@@ -98,8 +97,11 @@ def _aiter_importable() -> bool:
     try:
         _ensure_aiter_gpu_archs()
         import aiter  # noqa: F401
-        import aiter_meta  # noqa: F401
         from aiter.jit import core as _core  # noqa: F401
+
+        # Deliberately no header-tree check: this answers "can AITER run?", and
+        # the shim may already be built or AOT-cached. The build path raises with
+        # the real cause when the headers are the thing that is missing.
     except Exception:
         return False
     return _aiter_version_supported()
@@ -117,8 +119,7 @@ def is_aiter_available(device: torch.device, op: str) -> bool:
         device: The device the op would run on.
         op: The capability-table op name, e.g. ``"rmsnorm"``. Required, and it
             changes the answer: support is per ``(op, arch)``, so one op can be
-            gated on a toolchain where another is fine -- AITER batch prefill is
-            gated on one architecture and toolchain while every other op stays open.
+            gated on a toolchain where another is fine.
             The name must match a row in :data:`flashinfer.rocm.arch_caps.CAPABILITIES`
             or the lookup treats it as undeclared and returns False.
     """
@@ -129,9 +130,10 @@ def require_aiter(device: torch.device, op: str) -> None:
     """Validate the explicit ``backend="aiter"`` opt-in, raising a clear error.
 
     The architecture half is delegated to the capability table, so this op can be
-    gated on more than "is the arch in the allowlist" -- e.g. a toolchain in which
-    the kernel is known to be miscompiled. ``ArchCapabilityError`` subclasses
-    ``ValueError``, so the previous contract is unchanged for callers.
+    gated on more than "is the arch in the allowlist" -- e.g. a known_bad window
+    for a toolchain that miscompiles the kernel (no row carries one today).
+    ``ArchCapabilityError`` subclasses ``ValueError``, so the previous contract is
+    unchanged for callers.
 
     The package check stays here: a missing ``aiter`` is a different condition
     from an unusable architecture, and it keeps raising a ``ValueError`` rather

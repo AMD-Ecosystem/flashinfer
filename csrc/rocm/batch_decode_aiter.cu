@@ -3,7 +3,7 @@
 //
 // PyTorch entry point for the AITER PA v1 (paged_attention_v1) C++ harness.
 // The variant .so is built lazily by AITER on the Python plan() side via
-// aiter.csrc.cpp_itfs.pa.pa_v1.compile(); plan() resolves (so_path, func_name)
+// AITER's csrc.cpp_itfs.pa.pa_v1.compile(); plan() resolves (so_path, func_name)
 // from the returned ctypes function pointer and threads both strings through
 // to this run() entry.
 //
@@ -24,17 +24,24 @@
 
 #include "pytorch_extension_utils.h"
 
-// AITER PA v1 always dereferences k_scale/v_scale pointers (no nullptr branch in
-// the jinja-generated kernel). For non-quant (kv_cache_dtype="auto") paths we
-// pass two on-device float[1] sentinels = 1.0f. Cache them per-device so we
-// don't allocate every call.
-static at::Tensor get_unit_scale(at::Device device) {
-  static thread_local std::unordered_map<int, at::Tensor> cache;
-  const int idx = device.index() >= 0 ? device.index() : 0;
+// The k/v scale passed to PA v1, in static device memory: an allocator tensor
+// made inside a torch CUDA-graph pool would be an untracked pool allocation.
+static __device__ float kUnitScale = 1.0f;
+
+// Keyed by the current device, which hipGetSymbolAddress resolves against.
+static const float* get_unit_scale() {
+  static thread_local std::unordered_map<int, const float*> cache;
+  int idx = 0;
+  TORCH_CHECK(hipGetDevice(&idx) == hipSuccess, "hipGetDevice failed");
   auto it = cache.find(idx);
   if (it == cache.end()) {
-    it = cache.emplace(idx, at::ones({1}, at::TensorOptions().dtype(at::kFloat).device(device)))
-             .first;
+    void* ptr = nullptr;
+    const hipError_t status = hipGetSymbolAddress(&ptr, HIP_SYMBOL(kUnitScale));
+    if (status != hipSuccess) {
+      (void)hipGetLastError();  // do not leave it for a later launch check to report
+      TORCH_CHECK(false, "hipGetSymbolAddress(kUnitScale) failed: ", hipGetErrorString(status));
+    }
+    it = cache.emplace(idx, static_cast<const float*>(ptr)).first;
   }
   return it->second;
 }
@@ -93,7 +100,7 @@ static std::pair<at::Tensor, at::Tensor> build_block_tables_and_ctxlens(
 //   paged_kv_indices        [total_pages] int32
 //   paged_kv_last_page_len  [num_seqs]   int32
 //   o                       [num_seqs, num_heads, head_size]
-//   so_path, func_name      resolved by Python plan() side from aiter.pa_v1.compile()
+//   so_path, func_name      resolved by Python plan() side from csrc.cpp_itfs.pa.pa_v1.compile()
 //   max_context_len, partition_size, sliding_window — resolved at plan() time
 //   logits_soft_cap, sm_scale
 //   max_blocks_per_seq      precomputed by plan() to avoid GPU sync at run()
@@ -110,6 +117,16 @@ void batch_decode_with_paged_kv_cache_aiter(
               "AITER PA v1 supports fp16/bf16 only; got dtype=", q_dtype);
   TORCH_CHECK(paged_k_cache.scalar_type() == q_dtype && paged_v_cache.scalar_type() == q_dtype,
               "q, k, v must share dtype");
+  // PA v1 takes K's strides for both caches, a dense head_dim, and only q's
+  // token stride. Page counts may differ: only indexed pages are read.
+  TORCH_CHECK(paged_k_cache.sizes().slice(1) == paged_v_cache.sizes().slice(1) &&
+                  paged_k_cache.strides() == paged_v_cache.strides() &&
+                  paged_k_cache.device() == device && paged_v_cache.device() == device,
+              "k/v caches must share page shape, strides and q's device");
+  TORCH_CHECK(paged_k_cache.stride(3) == 1, "AITER PA v1 requires a dense head_dim in the cache");
+  if (q.stride(2) != 1 || (q.size(1) > 1 && q.stride(1) != q.size(2))) {
+    q = q.contiguous();  // decode q is small
+  }
   TORCH_CHECK(o.is_contiguous(), "AITER PA v1 requires a contiguous output tensor");
   TORCH_CHECK(o.scalar_type() == q_dtype, "AITER PA v1 requires output dtype to match input dtype");
   TORCH_CHECK(paged_kv_indptr.scalar_type() == at::kInt);
@@ -142,8 +159,7 @@ void batch_decode_with_paged_kv_cache_aiter(
   at::Tensor workspace_buffer = at::empty({static_cast<int64_t>(ws_bytes)},
                                           at::TensorOptions().dtype(at::kByte).device(device));
 
-  // k_scale/v_scale sentinels (= 1.0f) — PA v1 unconditionally dereferences these.
-  at::Tensor unit_scale = get_unit_scale(device);
+  const float* unit_scale = get_unit_scale();  // k_scale/v_scale: see kUnitScale
 
   const hipStream_t stream = c10::hip::getCurrentHIPStream();
 
@@ -154,8 +170,7 @@ void batch_decode_with_paged_kv_cache_aiter(
       /*cu_query_lens_ptr=*/nullptr,  // pure decode (one Q token per seq)
       static_cast<const int32_t*>(context_lens.data_ptr()),
       /*alibi_slopes_ptr=*/nullptr,
-      /*q_scale_ptr=*/nullptr, static_cast<const float*>(unit_scale.data_ptr()),
-      static_cast<const float*>(unit_scale.data_ptr()),
+      /*q_scale_ptr=*/nullptr, unit_scale, unit_scale,
       /*fp8_out_scale_ptr=*/nullptr, static_cast<float>(sm_scale),
       static_cast<int>(max_blocks_per_seq), static_cast<int>(max_num_partitions),
       static_cast<float>(logits_soft_cap), static_cast<int>(num_seqs),

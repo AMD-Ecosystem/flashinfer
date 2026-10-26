@@ -19,7 +19,7 @@ pip install dist/amd_flashinfer-*.whl \
             amd-flashinfer-jit-cache/dist/amd_flashinfer_jit_cache-*.gfx942-*.whl
 ```
 
-The architecture rides in the local version segment because a wheel tag cannot carry it, so if these are ever published, pin it in full (`amd-flashinfer-jit-cache==0.6.18+amd.1.gfx942`): an unqualified requirement resolves to whichever architecture sorts highest, which need not be yours.
+The architecture rides in the local version segment because a wheel tag cannot carry it, so if these are ever published, pin it in full (`amd-flashinfer-jit-cache==0.6.18+amd.2.gfx942`): an unqualified requirement resolves to whichever architecture sorts highest, which need not be yours.
 
 ## Contents
 
@@ -27,7 +27,15 @@ The architecture rides in the local version segment because a wheel tag cannot c
   sliding-window and logits-soft-cap combinations in `get_default_config()`.
 - The ops `backend="auto"` always resolves to a native HIP kernel: `rmsnorm`,
   rope, paged-KV append, sampling, quantization, cascade, and the gated
-  activations. Build without them via `--add-misc false` / `--add-act false`.
+  activations.
+- The AITER attention variant store, if the build host ran
+  `python -m flashinfer.rocm.prebuild_aiter_variants` first. A store is
+  single-architecture, so one wheel build carries at most the store for the
+  architecture it ran on, under `aiter_variants/<arch>__aiter-<ver>__rocm-<ver>/`.
+
+The wheel build always uses the default set; `--add-misc false` and
+`--add-act false` are flags of `python -m flashinfer.rocm.aot`, for an AOT
+build outside the wheel.
 
 The AITER shims are deliberately absent: they link against a per-user,
 per-architecture AITER cache directory, so a prebuilt one cannot be relocated
@@ -74,7 +82,7 @@ architectures.
 
 - `FLASHINFER_ROCM_ARCH_LIST`: Target architectures. Unset, the supported GPUs
   present are used, and only a host with none falls back to `gfx942`.
-- `HIP_PATH`: Path to ROCm/HIP installation (auto-detected if not set)
+- `ROCM_PATH` / `ROCM_HOME`: Path to the ROCm installation (`/opt/rocm` if not set)
 
 ## License
 

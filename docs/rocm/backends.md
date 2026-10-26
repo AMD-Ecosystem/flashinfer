@@ -12,6 +12,7 @@ constraints that are easy to trip over.
   * [NVIDIA-only, but not gated](#nvidia-only-but-not-gated)
   * [Blocked on a missing package](#blocked-on-a-missing-package-not-on-rocm)
 * [Installing AITER](#installing-aiter)
+  * [Prebuilding the variants](#prebuilding-the-variants)
 * [How `backend="auto"` resolves](#how-backendauto-resolves)
 * [CUDA-only arguments](#cuda-only-arguments)
 * [Known limitations](#known-limitations)
@@ -88,6 +89,13 @@ ninja: error: '.../csrc/rocm/topk.cu', needed by '.../topk.cuda.o', missing
   want of `tvm_ffi`, which the image does not ship.
 * `flashinfer.diffusion_ops` — it re-exports four fused DiT entry points from
   `flashinfer.norm`, and `csrc/rocm/norm.cu` defines none of them.
+* `flashinfer.norm`'s `layernorm`, `layernorm_quant`, `rmsnorm_quant` and
+  `fused_add_rmsnorm_quant`. These fail differently: the JIT source exists and
+  builds, but `csrc/rocm/flashinfer_norm_binding.cu` binds only `rmsnorm`,
+  `fused_add_rmsnorm`, `gemma_rmsnorm` and `gemma_fused_add_rmsnorm`, so the
+  call dies on a bare `AttributeError`. AITER's CK `layernorm2d` cannot stand in
+  for `layernorm`: it reads fp32 `gamma`/`beta` as the input dtype and returns
+  NaN, and casting them down misses the op's 1e-2 bf16 tolerance.
 * `flashinfer.trace.templates.gemm`, through the `nv_internal` FP4 sources.
 * Three side paths of otherwise supported modules: `utils.set_log_level()`,
   the opt-in GPU stats counter in `api_logging`, and `norm`'s fused
@@ -101,8 +109,12 @@ their templates directly, and fused rmsnorm+silu copies its source before any
 build starts.
 
 `tests/rocm/test_kernel_source_coverage.py` holds this list. It fails when a
-newly vendored op names a kernel source absent from `csrc/rocm`, so the set
-above cannot grow unnoticed.
+newly vendored op names a kernel source absent from `csrc/rocm`.
+
+It only sees missing *files*, though, which is how the unbound `norm` entry
+points above went unnoticed — there the file exists and the symbol does not.
+`tests/rocm/test_norm_entry_points.py` covers that case for `norm`, asserting
+the unresolvable set in both directions so porting one is also a test change.
 
 ### NVIDIA-only, but not gated
 
@@ -135,49 +147,76 @@ That says nothing about their ROCm support either way.
 
 ## Installing AITER
 
-Unless you are using the prebuilt Docker image, AITER is a separate
-install. `amd-aiter` is **not** on the top-level `pypi.amd.com/simple`
-index, and the ROCm-versioned channels carry no wheel at or above the
-supported floor, so install from the nightlies index:
+**The supported install is a source build at a pinned tag**, which is what
+`docker/Dockerfile.rocm` performs:
 
 ```bash
-pip install amd-aiter==0.1.20+rocm10.1.0a20260819.3135022 \
-  --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/
+# --no-build-isolation means pip installs no build requirements for you.
+pip install "setuptools>=80,<82" "setuptools-scm>=9.2" "packaging>=24"
+
+git clone --recursive --depth 1 --shallow-submodules \
+  --branch v0.1.21.post2 https://github.com/ROCm/aiter.git
+( cd aiter && PREBUILD_KERNELS=0 GPU_ARCHS="gfx942;gfx950" \
+  AITER_USE_SYSTEM_TRITON=1 python3 -m pip install --no-build-isolation . )
+python3 -m pip check
 ```
 
-Use `--extra-index-url`, not `--index-url`, so AITER's own dependencies
-still resolve from PyPI, and spell the version out in full including the
-local `+rocm...` segment — pip will not select a local version from a loose
-specifier. Check afterwards that the install did not pull a CPU-only torch
-over your ROCm one: `python -c "import torch; assert torch.version.hip"`.
+The subshell matters: the prebuild below is a FlashInfer script and has to run
+from the FlashInfer checkout, not from the AITER clone.
 
-**`aiter_utils.AITER_MIN_VERSION` (0.1.20) is a hard floor**, enforced
+`AITER_USE_SYSTEM_TRITON=1` is not optional: without it AITER's `setup.py`
+replaces your torch's pinned triton with its own build — on ROCm 10.1 a ROCm 7.2
+one — and `pip install` reports nothing. `pip check` catches it.
+The `<82` ceiling on setuptools is torch 2.12's own requirement.
+
+Source rather than a wheel because no `amd-aiter` wheel is built against
+ROCm 10; the published ones are retargets of the same revision. A source
+build compiles against the ROCm actually present, and it is the only route to
+a tagged release on this stack.
+
+Three details are load-bearing. Use the **tag**, not a branch: a clone that
+loses its tag makes `setuptools_scm` invent a `.dev` version that falls under
+the floor below, and every AITER path silently degrades to `fa2`. Non-editable,
+not `setup.py develop`: the develop branch installs no `aiter_meta`, and
+`aiter_meta/csrc/include` is what every C++ shim compiles against.
+`PREBUILD_KERNELS=0` leaves the install with **no AITER modules at all**, which
+the image compensates for by running `docker/prebuild_aiter_attention.py` (see
+[Prebuilding the variants](#prebuilding-the-variants)). A standalone install
+should do the same — it needs no GPU and also builds the asm loader modules:
+
+```bash
+GPU_ARCHS="gfx942;gfx950" python3 docker/prebuild_aiter_attention.py --jobs 2
+```
+
+Without it every variant compiles in-process on first use, and single prefill
+on gfx950 loses its asm arm: the loader throws on the missing
+`module_fmha_v3_fwd`, the shim catches it, and the call stays on CK Tile —
+correct, but without the speedup. `FLASHINFER_AITER_ASM_VERBOSE=1` prints which
+arm ran.
+
+`PREBUILD_KERNELS=0` because `=1` needs a live GPU — and its prebuilt modules
+are no loss, since FlashInfer builds its own `lib<module>.so` from the same
+sources.
+
+Check afterwards that the install did not pull a CPU-only torch over your ROCm
+one: `python -c "import torch; assert torch.version.hip"`.
+
+**`aiter_utils.AITER_MIN_VERSION` (0.1.21) is a hard floor**, enforced
 before routing. FlashInfer links AITER's C++ symbols by mangled name
 (`csrc/rocm/aiter_loader.cc`) and vendors its argument structs
-(`include/flashinfer/rocm/attention/aiter/`) at the 0.1.20 layout, so an older
-release shifts field offsets instead of failing to load -- and 0.1.20 renamed
-the RMSNorm entry points, so an older one cannot resolve them. Below the floor
-`auto` will not select AITER and an explicit `backend="aiter"` raises.
+(`include/flashinfer/rocm/attention/aiter/`), so an older release shifts field
+offsets instead of failing to load. 0.1.21 also moved `rmsnorm` and the
+cos/sin-cache `rope` from `at::Tensor` to the POD `aiter_tensor_t`, so those
+shims cannot resolve against 0.1.20 at all. Below the floor `auto` will not
+select AITER and an explicit `backend="aiter"` raises.
 
-The development image (`docker/Dockerfile.rocm`) bundles that wheel, on
-CPython 3.12, and needs no separate install -- it is the one supported
-configuration, so in practice this section is only for someone assembling
-their own.
+The development image needs none of this: it performs the build above and
+prebuilds the attention variants, so a container starts with them present. It
+is the one supported configuration, so in practice this section is only for
+someone assembling their own.
 
-Every 0.1.20 wheel is cp312 only, which is what fixes the interpreter. None
-is built against ROCm 10.0 directly; the pin above is the nearest retarget
-of the same source revision (build id `3135022`).
-
-A source build tracks master, which is many releases ahead of the pin
-**with a different C ABI** — symbols the shim expects are renamed, hidden
-rather than `extern "C"`, or absent:
-
-```bash
-git clone --recursive https://github.com/ROCm/aiter.git
-cd aiter && python3 setup.py develop
-```
-
-Nothing stops you running one, but treat it as untested here.
+A source build follows whichever Python is present, so CPython 3.12 is a
+property of the base image rather than of AITER.
 
 ### C++-level integration
 
@@ -190,34 +229,114 @@ JIT compiles a small HIP shim that calls AITER's C++ kernels
 
 The first JIT build of each op builds the corresponding AITER module once
 with `AITER_SYMBOL_VISIBLE=1` and caches it under
-`~/.cache/flashinfer/aiter_libs/`. The `module_rmsnorm_quant` build is large
+`~/.cache/flashinfer/aiter_libs/<arch>__aiter-<version>__rocm-<version>/`. The
+`module_rmsnorm_quant` build is large
 and can take many minutes the first time.
 
-### `mha_fwd` ships no prebuilt kernels at all
+### Not all of AITER is Composable Kernel
 
-AITER ships prebuilt `mha_varlen_fwd_*.so` files and no `mha_fwd*` — only
-`mha_fwd_kernels.cu` source. Single prefill is the op that routes through the
-non-varlen `mha_fwd` template (batch=1 needs no seqstart plumbing, see
-[PR 246](https://github.com/AMD-Ecosystem/flashinfer/pull/246)), so **every**
-one of its `(dtype, needs_mask, has_lse)` variants JIT-builds on first call. `needs_mask` is `causal or window_left >= 0`: AITER
-splits that `.so` on whether anything is masked, not on causality.
+Worth knowing before comparing backends: the modules linked where `auto` picks
+the in-tree kernel are AITER's own hand-written HIP, not CK.
 
-**Absence of `mha_fwd*.so` is expected, not a broken install.** AITER
-prebuilds what vLLM and SGLang call, which is the varlen path; the
-non-varlen variant space is not in that set.
+| AITER module | backing | used for |
+| :--- | :--- | :--- |
+| `module_rmsnorm_quant`, `module_activation`, `module_rope_*` | AITER HIP (no `ck_tile` references) | norm, activation, rope |
+| `module_norm` | CK-tile | `layernorm2d` only — it exports no rmsnorm |
+| `mha_fwd`, `mha_varlen_fwd`, `mha_batch_prefill` | CK-tile | prefill |
 
-The shipped varlen set is not full coverage either, so this is a difference
-of degree rather than a unique case: batch prefill lazily builds whichever
-varlen variants are missing. Single prefill builds every variant; batch
-prefill builds the gaps.
+So an "AITER lost to the in-tree kernel" result for norm, activation or rope is
+a HIP-vs-HIP comparison and says nothing about CK. CK-tile `layernorm2d` was
+measured for `layernorm` and rejected on contract, not speed: it derives one
+dtype from the input and reads this API's fp32 `gamma`/`beta` as bf16, which
+returns silent garbage rather than an error (see *Not ported yet*).
 
-Two consequences worth planning for:
+### A source install ships no attention variants
 
-* Budget **20+ minutes** for a cold variant. This is the same first-build
-  cost as the C++ AITER modules above, not a separate surprise.
+A `PREBUILD_KERNELS=0` install ships none of the per-variant `.so` files the
+attention shims `dlopen`, and none of the three whole loader modules
+(`module_fmha_v3_fwd`, `module_aiter_core`, `module_mla_asm`). A variant is one
+`(family, dtype, logits cap, mask, LSE)` combination, and one `.so` serves every
+head dimension. `needs_mask` is `causal or window_left >= 0`: AITER splits that
+`.so` on whether anything is masked, not on causality.
+
+Two consequences worth planning for when nothing is prebuilt:
+
+* A cold variant costs a CK-tile compile, inside the serving process. Measured at
+  `MAX_JOBS=32` on gfx942 (MI300X, ROCm 10.0), one variant per family: `mha_fwd`
+  280-360 s, `mha_batch_prefill` 119 s, `mha_varlen_fwd` 74 s. A 16-core gfx950
+  box took roughly 2x each, tracking core count rather than architecture. It is
+  paid once per *variant*, and again on any restart that does not persist
+  `site-packages`.
 * A read-only or foreign-owned `site-packages/aiter/jit/` lets the build
-  succeed but the install step fail. That error currently propagates out of
-  `backend="auto"` instead of falling back to `fa2`.
+  succeed but the install step fail. Under `auto` that demotes to `fa2` with a
+  warning; under `backend="aiter"` it raises.
+
+Both are what the prebuild below exists to remove.
+
+### Prebuilding the variants
+
+**The supported route is `docker/prebuild_aiter_attention.py`**, which
+`docker/Dockerfile.rocm` runs at image build with no GPU. It builds every
+attention variant the loader can ask for — 8 `mha_fwd`, 16 `mha_varlen_fwd` and
+20 `mha_batch_prefill`, 4 of them fp8, so 44 per architecture — plus the three
+loader modules, into AITER's own `jit/` directory. It needs no device because it
+reaches AITER's builder the way AITER's own `setup.py` does, through a flat
+`sys.path` import of `jit.core` that never runs `aiter/__init__.py`.
+
+AITER's `jit/` directory is the only place `mha_batch_prefill`'s bootstrap finds
+a prebuilt variant. That bootstrap doubles as the `page_size` capability probe,
+and the variant filename has no page-size axis, so it runs whether or not
+FlashInfer's own store holds the artifact.
+
+**`python -m flashinfer.rocm.prebuild_aiter_variants` fills FlashInfer's own
+store instead**, which `plan()` consults before asking AITER to build a variant
+and which the `amd-flashinfer-jit-cache` wheel can carry. It covers the 40
+non-fp8 variants, not the asm loader modules:
+
+```bash
+python -m flashinfer.rocm.prebuild_aiter_variants --list    # what the default set covers
+python -m flashinfer.rocm.prebuild_aiter_variants           # build the missing ones
+python -m flashinfer.rocm.prebuild_aiter_variants --prune   # report stores from an older pin
+```
+
+Its default set is `mha_fwd` and `mha_varlen_fwd` — 24 of the 40 variants, from
+16 builds. `mha_batch_prefill` is excluded for the probe reason above:
+prebuilding that family into the store costs ~32 min on gfx942 for files nothing
+ever saves time on. Pass `--only mha_batch_prefill` to build them anyway.
+
+**This driver needs a GPU**: it emits a variant by calling the op, which
+launches a kernel, so run it as a GPU-attached job.
+
+AITER batch decode, MoE and the opt-in norm, rope and activation shims are
+covered by neither route: decode compiles its paged-attention kernel at
+`plan()`, the rest on first use.
+
+The store lives under FlashInfer's cache directory, at
+`aiter_variants/<arch>__aiter-<version>__rocm-<version>/`. That cache is
+`~/.cache/flashinfer` unless `FLASHINFER_WORKSPACE_BASE` moves it; there is no
+`FLASHINFER_CACHE_DIR` environment variable.
+All three components are in the tag on purpose: these are CK-tile objects that
+travel between machines, so bumping AITER or ROCm names a directory that does
+not exist, and the lookup misses into a rebuild rather than loading a
+mismatched artifact. Nothing prunes the old ones — each is ~165 MB per
+architecture — hence `--prune`, which is dry-run unless you add `--yes`.
+
+`FLASHINFER_AITER_VARIANT_DIR` points the loader at a store somewhere else, for
+an image that ships one. `AITER_JIT_DIR` still takes precedence over both, so an
+operator pointing at a custom AITER build is unaffected.
+
+The `amd-flashinfer-jit-cache` wheel carries a store when one was built before
+the wheel was, under `aiter_variants/<tag>/`. The layout allows one subdirectory
+per tag so a consumer can pick its own, but a single wheel build packages only
+the architecture it ran on — a variant can only be produced on the device it
+targets, so a two-architecture wheel is assembled from two builds. The tag is the whole compatibility check, which is why this is not recorded
+in the AOT manifest: that names a comma-joined list of architectures, and a
+store is always single-arch. A wheel built without running the prebuild simply
+carries none, and variants are built on demand exactly as before.
+
+The store covers 40 non-fp8 variants per architecture, not 64: `has_alibi` is
+hard-coded false at every call site, and `mha_fwd` has no `_logits` arm. One
+`.so` serves every head dim.
 
 ## How `backend="auto"` resolves
 
@@ -282,6 +401,13 @@ runs it in CI.
 
 ## Known limitations
 
+**`pos_encoding_mode="ROPE_LLAMA"` on the fa2 prefill kernel is
+non-deterministic.** It returns a different result on every call from identical
+inputs — measured on gfx942, spread 0.2-1.4 over repeats, at every KV dtype
+including plain fp16, and already present at a single KV tile. `"NONE"` is
+bitwise reproducible. No prefill test covers RoPE, which is how it survived;
+treat in-kernel RoPE prefill as unusable and rotate q/k beforehand instead.
+
 AITER constraints fall into two groups. The first errors out under
 `backend="aiter"` and triggers fallback under `backend="auto"`. The second
 is worse: the call runs, but the flag is silently dropped.
@@ -295,13 +421,19 @@ kwargs below are parameters of it.
 * GPU is not gfx942 or gfx950
 * `kv_layout` is not `NHD`
 * a custom attention mask tensor is supplied
-* `q_dtype` is not `float16` / `bfloat16` (no fp32, fp8, or int8)
+* `q_dtype` is not `float16` / `bfloat16` (no fp32 or int8). fp8 is the one
+  exception: it is served on the natively paged batch-prefill route, and
+  declined everywhere else
 * `q_dtype != kv_dtype` — mixed-precision Q/KV is unsupported
 * `head_dim_qk != head_dim_vo` (e.g. DeepSeek-style MLA with 192/128)
 * `pos_encoding_mode != "NONE"` — AITER attention supports only `"NONE"`
-* batch decode: `use_tensor_cores=True`, or `use_cuda_graph=True` without a
-  declared `max_seq_len`
+* batch decode: `use_tensor_cores=True`
 * the `aiter` Python package is not importable
+
+Batch decode under `use_cuda_graph=True` without a declared `max_seq_len` sits
+outside both: `auto` stays on the in-tree kernel, while an explicit
+`backend="aiter"` warns and runs (see
+[Batch decode: CUDA-graph capture](#batch-decode-cuda-graph-capture)).
 
 ### Accepted but not honoured
 
@@ -311,8 +443,6 @@ backend fixes only the first group.
 
 **Dropped on the AITER path; pass `backend="fa2"` if you need them:**
 
-* attention sinks (`sinks`)
-* FP8 dequant scales (`scale_q` / `scale_k` / `scale_v`)
 * `use_fp16_qk_reduction`
 * RoPE scaling kwargs (`rope_scale`, `rope_theta`) — only meaningful
   alongside `pos_encoding_mode != "NONE"`, which AITER attention rejects
@@ -321,9 +451,25 @@ backend fixes only the first group.
 **Dropped on *both* ROCm paths — there is no backend that honours them.**
 These at least log a warning rather than failing silently:
 
-* `enable_pdl`
+* `enable_pdl=True` on the paged/ragged prefill and decode wrappers (the
+  default resolves to off and stays quiet); upstream's block-sparse and POD
+  wrappers drop it without a warning
 * multi-modal / prefix-cache helpers (`maybe_prefix_len_ptr`,
   `maybe_token_pos_in_items_ptr`, `maybe_max_item_len_ptr`)
+
+### Refused rather than ignored
+
+Ignoring these would return wrong numbers, so ROCm raises instead:
+
+* attention sinks — `sinks=` on the paged prefill and decode `run()`, and
+  `_sinks` set on the ragged prefill wrapper. No ROCm kernel applies them.
+* fp8 descale tensors (`scale_q` / `scale_k` / `scale_v`) anywhere but the
+  natively paged AITER batch-prefill route, where they are required. A paged
+  call that resolves to `fa2`, single prefill, and `BlockSparseAttentionWrapper`
+  all raise; for an fp8 KV cache with a 2-byte query pass the float `k_scale` /
+  `v_scale` instead. One exception, inherited from upstream: a block-sparse plan
+  with `R * (num_qo_heads // num_kv_heads) < 4` and no mask takes the decode
+  kernel, and upstream's `sparse.py` passes it no scale, so there they are dropped.
 
 ALiBi is not in either list: `maybe_alibi_slopes` is filled internally
 from the head count, and the user-facing route to it is
@@ -332,20 +478,177 @@ being ignored.
 
 ## Per-op notes
 
+### Single prefill takes AITER's asm kernel on CDNA4 only
+
+`aiter::mha_fwd` is a two-arm dispatcher in AITER's source — hand-written
+gfx9 asm first, CK Tile second — but the arms are compiled into separate
+modules. The per-variant `.so` files this port loads are built `-DFAV2_ON=1`
+with no `-DFAV3_ON`, so they contain CK Tile only; the asm arm lives in a
+prebuilt `module_fmha_v3_fwd.so` that has to be opened explicitly.
+
+It is worth opening only where it wins, and that differs by architecture.
+Over a 60-cell sweep at bf16 `head_dim` 128 (batch 1 and 4 × 16/32/64 q-heads
+× `seqlen` 256-6144), asm against CK Tile:
+
+* **gfx950** — the per-`seqlen` geomean climbs with length above 1024: 1.01,
+  1.09, 1.15, 1.14, 1.19, 1.19. The one step down (3072) is inside the A/A
+  floor. At and above `qo_len` 2048, 11 of the 12 batch-1 cells win: geomean
+  1.14, worst cell 0.98 (16 heads, `seqlen` 2048). That is the shipping
+  threshold. Over all 24 cells the same region reads 1.17.
+* **gfx942** — non-monotonic, and the oscillation does not damp with length:
+  1.08 at `seqlen` 2048, 0.97 at 3072, 1.06 at 4096, 0.99 at 6144. Every one of
+  those steps is outside the A/A floor, so no threshold holds and the arm stays
+  unreachable. The batch-1 gate region is a net loss there — geomean 0.98 with 8
+  of 12 cells regressing, the worst at 0.81.
+
+Single prefill is one request, so the dispatcher hard-codes `args.batch = 1` and
+only the batch-1 half of the sweep is reachable through this entry point. Those
+12 cells are what the routing decision rests on. The batch-4 half describes no
+shipping path — batched prefill uses group-mode `mha_varlen_fwd` with the asm
+arm off, or `mha_batch_prefill` — and is retained only so the earlier mixed
+figures remain reproducible.
+
+Measured on an idle node against a batch-1 A/A floor of 0.991-1.005 (gfx942) and
+0.995-1.008 (gfx950), so the one gfx950 cell at 0.98 is a real if small loss
+rather than noise.
+
+The mechanism is occupancy: the asm kernel tiles 256 rows of Q at a time, so at
+batch 1 with few heads there are too few workgroups to fill the device, and it
+loses. That is also why the gate reads `qo_len` rather than `kv_len` — a
+prefill-with-history shape (`qo` 512, `kv` 4096) measures 0.73× on gfx950 and
+must stay on CK Tile.
+
+Re-run with `python benchmarks/rocm/bench_asm_vs_cktile.py --aa` for the noise
+floor and then without `--aa`; read the A/A first, since a margin inside it is
+not a result. `FLASHINFER_AITER_ASM_PREFILL=0` pins CK Tile.
+
+The sweep is square (`qo_len == kv_len`) apart from one point, so a long cached
+context with `qo_len >= 2048` — chunked prefill — takes the asm arm on speed
+evidence from square shapes only. Correctness there is covered:
+`test_aiter_asm_routing.py` runs `kv_len == 4 * qo_len` above the threshold and
+checks output and LSE against fp32 on the execution that reached asm. If the
+speedup matters for that shape, measure it, and use
+`FLASHINFER_AITER_ASM_VERBOSE=1` to confirm which arm ran.
+
 ### Soft-capped causal prefill avoids one AITER kernel
 
 AITER's
 `mha_varlen_fwd` miscomputes `logits_soft_cap` for causal prefill at
-`head_dim=128` (through amd-aiter 0.1.21) — from `kv_len >= 512` on gfx942, at
-*every* length on gfx950, so the threshold lives in `arch_caps.py` rather than
-at the call sites. Single and ragged prefill always dispatch through that
-kernel, so `auto` serves them with `fa2` and `backend="aiter"` raises rather
-than returning wrong numbers.
+`head_dim=128` — on **gfx950 with any toolchain not measured clean**, and
+there at every length, so which architecture and toolchain are
+affected lives in `arch_caps.py` rather than at the call sites. Single and
+ragged prefill always dispatch through that kernel, so there `auto` serves them
+with `fa2` and `backend="aiter"` raises rather than returning wrong numbers.
+ROCm 10.1.0 (TheRock HIP 7.16.26385) with amd-aiter 0.1.21.post2 builds the
+same kernel correctly — 140 shapes × caps exact against an fp32 reference — so
+on exactly that toolchain the gate lifts and the crossover below takes its
+place; torch's HIP must match too. Any other ROCm or AITER build stays gated
+until measured, as does an `AITER_JIT_DIR` pointing outside the installed
+amd-aiter package, whose build toolchain the version probes cannot see. gfx942 measures clean over a `qo_len` × `kv_len` sweep at
+every cap and uses AITER as normal.
 
-Paged prefill keeps AITER at a native page size, since that route takes
+Paged prefill keeps AITER on the native paging route, since that takes
 `mha_batch_prefill` instead — measured exact on amd-aiter 0.1.20 against an
 fp32 reference on both architectures — and falls back only when the run-time
 probe demotes it to a flat gather. Every other soft-cap shape is unaffected.
+
+### Short soft-capped prefill stays on `fa2` on gfx950
+
+Where the soft-cap gate lifts, AITER's soft-capped kernel still loses to `fa2`
+on short queries against a long context, so `auto` keeps those on `fa2` and
+`backend_fallback_reason` names the threshold. gfx950 / ROCm 10.1, cap 30,
+GQA 4 and 8, kv 512–32768; batch 8 for ragged and paged:
+
+| route | routed to `fa2` when the query length is | AITER time ÷ `fa2` time, gated range | AITER faster from |
+| :--- | :--- | :--- | :--- |
+| single | ≤ 192 | 1.18–18.5× at kv ≥ 4096 | 512 (0.52–0.60×; 256 is a tie) |
+| ragged | ≤ 16 | 1.37–3.85× at kv ≥ 4096 | 32 (0.67–0.80×) |
+| paged, flat gather | ≤ 32 | 1.46–4.5× to 16, 0.95–1.22× at 32 | 64 (0.47–0.81×) |
+
+The gate keys on query length only, so at kv 512 it gives up a little: there
+AITER is 0.77–0.82× on single and 0.79–0.99× on ragged inside the gated range.
+
+The native paging route dispatches `mha_batch_prefill` and is not gated. gfx942 never
+had a soft-cap gate and has no row: its soft cap is correct (140 cases on 10.1,
+smaller sweeps on 10.0), its ragged and flat-gather short queries already hit the
+gates below, but its single route still loses to `fa2` at q ≤ 64 (1.67–15× at
+kv ≥ 4096) and is not yet gated. Under graph capture this gate keeps the same
+cudagraph exceptions as the two short-query gates below.
+
+### Short-query paged prefill avoids AITER's flat gather
+
+Off AITER's native paging route, its paged prefill first
+`index_select`s the whole KV cache into a contiguous buffer. That copy is
+`O(kv)` against an `O(q·kv)` attention, so its cost decays as `1/q`: a long
+query amortises it, a short one pays it in full. `auto` therefore serves
+short queries with `fa2`, and `backend_fallback_reason` names the threshold.
+
+One exception: once a cudagraph-enabled wrapper has planned AITER's
+flat-gather path, later short-query plans stay on AITER. Demoting would null
+the gather buffers a captured graph still points at. Use a separate wrapper
+per query-length regime if you need both routed correctly under capture.
+
+| arch | routed to `fa2` when `max_q_len` is | AITER slower by |
+| :--- | :--- | :--- |
+| gfx942 | ≤ 16 | 1.35–4.6× |
+| gfx950 | ≤ 8 | 1.25–4.6× |
+
+### Short-query ragged prefill avoids AITER on gfx942
+
+Ragged dispatches through `mha_varlen_fwd` on already-contiguous KV, so there is
+no gather to amortise — what a short query loses is fixed kernel cost, and only
+gfx942 pays enough of it to be worth steering. The shape this fires on is a
+short query against a long context, i.e. a chat turn landing on a cached prefix.
+
+| arch | routed to `fa2` when `max_q_len` is | AITER slower by |
+| :--- | :--- | :--- |
+| gfx942 | ≤ 16 | 1.18–4.74× |
+| gfx950 | never gated | — |
+
+gfx950 is ungated because one measured shape (bs 32 / kv 2048) favours AITER at
+every query length, so no threshold serves it.
+
+Same cudagraph exception as the paged gate, in the other direction: a
+capture-mode wrapper that demotes on one short batch stays on `fa2` for its
+lifetime, since re-promoting would swap the module a captured graph points at.
+Use a separate wrapper per query-length regime if you need both.
+
+Two paths are deliberately **not** gated. The native paging route has no gather and
+beat `fa2` even at one query row (0.93× on gfx942, 0.54× on gfx950). Decode is
+ungated on measurement rather than assertion: AITER wins every cell at 64 query
+heads (up to 7.7× on gfx950), and the 32-head cells it loses cost 5–26 µs — a
+fixed-cost gap of ~10 µs per call, visible only while both kernels are
+launch-bound. A length-keyed threshold would mis-route 64-head decode by up to
+7.7×; 128-head was not swept, but it sits on the same side of the trend. Numbers
+in the commit.
+
+Those launches were all eager, so the figures describe eager decode. `auto`
+reaches AITER under graph capture too when the wrapper is given `max_seq_len`,
+and an explicit `backend="aiter"` reaches it either way; neither was timed
+here.
+
+Uncapped single prefill is not gated either: the sweep behind the table above
+ran through the ragged wrapper, and no uncapped single-prefill measurement at
+these query lengths exists to base a threshold on.
+
+An explicit `backend="aiter"` is honoured throughout — these are routing
+preferences, not wrong answers, so the other side stays measurable.
+
+### `fa2` decode does not scale past GQA group 4
+
+At 64 query heads `fa2` decode reaches 12% of peak bandwidth where AITER reaches
+59% — 0.61 against 3.11 TB/s at batch 256 / kv 4096 on MI300X, both moving the
+same 4.3 GB of K+V. It holds ~5.3 TFLOPS there whatever the shape. gfx950 is the
+same picture, AITER ahead in every 64-head cell by up to 7.7×.
+
+Use `backend="aiter"` for a 70B or 405B decode. Under graph capture `auto`
+resolves to `fa2` unless the wrapper is given `max_seq_len` — see
+[Batch decode: CUDA-graph capture](#batch-decode-cuda-graph-capture).
+
+The cause is unresolved. Grid starvation is ruled out (the 64/32-head ratio is
+flat at ~4.6× from batch 32 to 256), and two `BatchDecodeBdz` settings were
+tried and did not help; that constant carries the detail. Settling it needs
+counter profiling of the inner loop, not another tuning constant.
 
 ### `fused_add_rmsnorm` and `gemma_fused_add_rmsnorm` at large `hidden_size`
 
@@ -361,16 +664,35 @@ above the threshold: the Gemma variant has no `backend=` argument, and
 
 ### Batch prefill: page size and the flat-gather path
 
-AITER's CK FMHA kernels natively serve page sizes `{128, 256, 1024}` at
-every release at or above the supported floor. Other sizes still work but go
-through an extra GPU gather that flattens the paged KV cache before the
-AITER call — inside the timed region, which matters when benchmarking.
+AITER's CK FMHA kernels natively serve page sizes `{1, 16, 1024}` — the same
+set for fp16, bf16 and fp8, measured by sweeping the kernel itself. For fp16
+and bf16, other sizes still work but go through an extra GPU gather that
+flattens the paged KV cache before the AITER call — inside the timed region,
+which matters when benchmarking. **For fp8 they do not work at all**: the
+gather route is `mha_varlen_fwd`, which has no fp8 kernel, so a non-routed page
+size raises `NotImplementedError` rather than falling back.
+
+**Being able to serve a page size natively is not a reason to.** For fp16 and
+bf16 the gather measured equal to or faster than the native kernel at every
+batch size, so `auto` keeps them on it and reaches for native paging only at
+page size 1024. fp8 has no gather — its flat-gather route would be
+`mha_varlen_fwd`, which has no fp8 kernel — so it pages natively at all three.
 
 That list is a starting point, not a guarantee. `plan()` confirms it by
-building the kernel, and a page size the installed AITER cannot actually
-serve also falls back to the gather with a warning naming the reason.
+building the kernel, and for fp16/bf16 a page size the installed AITER cannot
+actually serve falls back to the gather with a warning naming the reason. fp8
+has no gather to fall back to, so the same probe failure raises
+`NotImplementedError` instead.
 Builds installed from an AITER source commit (as SGLang and vLLM do) are
 the usual case where a "native" page size is rejected.
+
+**Native paging also needs `head_dim` 128 or 256.** At 64 and 96
+`mha_batch_prefill` reads past the end of the KV cache on both architectures —
+a GPU memory fault or a hang when the cache ends at an unmapped page; other
+head dims are unmeasured and gated the same way. fp16/bf16 take the gather at
+every page size and fp8 raises `NotImplementedError`. The set is
+`_AITER_NATIVE_PAGED_HEAD_DIMS` in `flashinfer/rocm/arch_caps.py`, and `plan()`
+does not probe outside it.
 
 Set `FLASHINFER_AITER_STRICT=1` to raise instead of falling back — useful
 in CI, where a silent slowdown is easy to absorb and hard to notice.
@@ -402,9 +724,44 @@ the capacity rather than attending to its full context.
 `run(..., return_lse=True)` raises on this backend under capture — PA v1
 emits no LSE and the FA2 shadow plan it borrows is not capture-safe.
 
-Multi-token decode (`q_len_per_req > 1`) raises `NotImplementedError` on
-ROCm regardless of backend, as does an output dtype that differs from the
-query dtype.
+Multi-token decode (`q_len_per_req > 1`), for speculative-decode verify,
+needs `use_tensor_cores=True` — that path runs the batch-prefill kernel,
+which is what supplies the causal mask, and AITER decode requires
+`use_tensor_cores=False`. Every request needs `kv_len >= q_len_per_req`,
+since the draft tokens must already be in the KV cache. Under graph
+capture the value is part of the frozen shape: use one wrapper per
+`q_len_per_req`.
+
+At `head_dim < 256` the cost steps with `q_len_per_req * gqa_group_size`,
+not with `q_len_per_req` alone — the query tile is 16 at or below 16 and 64
+above (`FA2DetermineCtaTileQ` in `include/flashinfer/rocm/utils.cuh`). At GQA 32/8 a draft length
+of 4 is free and 8 costs a step (1.2-1.6x on gfx942, 1.4-2.0x on gfx950); at
+64/8 the step arrives at 2. `head_dim >= 256` takes the 64 tile
+unconditionally, so no draft length is free there.
+
+That rule describes **eager** planning only. Under `enable_cuda_graph` the
+scheduler cannot see per-request lengths, so it bounds them by
+`total_num_rows - batch_size + 1` and sizes the tile from that
+(`PrefillSplitQOKVIndptr` in `include/flashinfer/rocm/attention/scheduler.cuh`).
+The tile is therefore 64 whenever
+`(batch_size * (q_len_per_req - 1) + 1) * gqa_group_size > 16` — at batch 4 /
+draft 4 / GQA 4 that is `13 * 4 = 52`, so capture takes the 64 tile where eager
+takes 16. Any draft length above 1 crosses it at a large enough batch, so
+measure under capture rather than carrying the eager figures over.
+
+**Chain drafts only.** The verify mask is causal, so the draft tokens are
+taken as one linear sequence per request — which fits vanilla speculative
+decoding, DeepSeek MTP, n-gram/prompt-lookup, and EAGLE run in chain mode.
+It does **not** fit tree drafts (EAGLE-2, Medusa's multi-head tree,
+SpecInfer): a causal mask lets a draft token attend to a sibling on another
+branch, so a tree would return plausible but wrong numbers rather than an
+error. Tree verification needs a topology mask, which this path does not
+accept — build it with `custom_mask` on
+`BatchPrefillWithPagedKVCacheWrapper` instead. Note the acceptance step is
+chain-only too: `chain_speculative_sampling` takes
+`(batch_size, num_speculate_tokens)`, not a tree.
+
+An output dtype that differs from the query dtype still raises.
 
 ### MLA
 
@@ -422,8 +779,8 @@ query dtype.
 * `run()` hands AITER a zero-copy view when `ckv_cache` and `kpe_cache`
   are adjacent halves of one allocation (the vLLM / SGLang layout).
   Otherwise it builds the combined cache with `torch.cat` on every call
-  and warns once *per wrapper* — a 60-layer model with a wrapper per layer
-  emits 60 warnings. 4-D caches are rejected outright.
+  and warns at most once per wrapper, which the default warnings filter
+  further collapses to once per call site. 4-D caches are rejected outright.
 
 ### Fused MoE
 
@@ -473,9 +830,10 @@ partial case — its own kernels are HIP, but what it calls is not:
   never consult the flag. Opt-in, both paths tested, read once at import. **The attention underneath is not HIP-only**: each of the
   three wrappers builds an ordinary entry point internally at
   `backend="auto"` — `BatchPrefillWithPagedKVCacheWrapper` for the
-  multi-level and shared-prefix-prefill wrappers,
-  `BatchDecodeWithPagedKVCacheWrapper` plus `single_prefill_with_kv_cache`
-  for the shared-prefix decode one — so each level routes to AITER whenever
+  multi-level wrapper, and `single_prefill_with_kv_cache` for the shared
+  prefix plus `BatchPrefillWithPagedKVCacheWrapper` or
+  `BatchDecodeWithPagedKVCacheWrapper` for the unique part in the two
+  shared-prefix wrappers — so each level routes to AITER whenever
   a plain call of that shape would. Measured: a two-level
   `MultiLevelCascadeAttentionWrapper.plan()` at page_size 128 resolves both
   levels to `aiter`. None of the three takes a `backend=` argument, so
@@ -484,18 +842,71 @@ partial case — its own kernels are HIP, but what it calls is not:
 * **POD attention** — `PODWithPagedKVCacheWrapper` and
   `BatchPODWithPagedKVCacheWrapper`. JIT-only, excluded from AOT builds,
   matching upstream CUDA.
-* **LayerNorm / Gemma RMSNorm**, **sampling** (Top-K / Top-P / Min-P /
+* **Gemma RMSNorm**, **sampling** (Top-K / Top-P / Min-P /
   OnlineSoftmax / SamplingFromLogits), the **logits processor** pipeline,
   and **quantization** (`packbits`, `segment_packbits`).
 
-### fp8 on the HIP path
+### fp8 on the HIP path: KV cache only
 
-* Batch decode accepts an fp8 KV-cache (`float8_e4m3fnuz`).
+Single prefill, batch prefill (paged and ragged), single decode, batch decode,
+and decode with `use_tensor_cores=True` all accept an fp8 KV-cache in
+`float8_e4m3fnuz` or `float8_e5m2fnuz`. The prefill-backed paths dequantize
+the cache into a 2-byte LDS tile on the way in; plain decode keeps an fp8 LDS
+tile and converts values to float when consuming them. Either way, the saving
+is HBM traffic and cache capacity, not math.
+
+* **The query and output stay 2-byte.** The prefill/tensor-core MFMA path is
+  f16f16f32, so an fp8 query is refused at module build; plain decode is limited
+  to the same public query and output dtype allowlist.
+* **Only the fnuz spellings.** `torch.float8_e4m3fn` and `torch.float8_e5m2` are
+  OCP encodings, and the HIP types they map to use an exponent bias one greater
+  (E4M3 7 vs 8, E5M2 15 vs 16), so passing one would be silently 2x wrong. Both
+  are refused.
+* **POD refuses fp8 KV.** `pod.cuh` sizes its tiles independently of the prefill
+  dispatchers, so it can ask for a geometry nothing has tested. Run the two
+  phases unfused.
+* **JIT-only.** No fp8 prefill or decode module is prebuilt, so first use pays a
+  cold `hipcc` build.
+* **The dequantize is hardware on gfx942, software on gfx950.** CDNA4 sets
+  `HIP_FP8_TYPE_FNUZ=0`, so the fnuz->float leg is a ~15-op routine rather than
+  a `cvt` instruction. Correctness is verified on both.
+* **Measured as capacity, not speed.** Prefill came out flat and only
+  `use_tensor_cores=True` decode gained. Note the produce path still issues one
+  4-byte load per lane where a 2-byte cache issues 8, so the instruction count
+  does not fall with the byte count -- the flat result is not yet known to be
+  inherent.
 * RoPE has a fused RoPE + fp8-quantize + paged-KV-append path covering
   `float8_e4m3fnuz` and `float8_e5m2fnuz`, alongside LLaMA and LLaMA 3.1
   scaling.
 
-fp8 on the AITER attention paths is work in progress.
+### fp8 on the AITER path: paged prefill only
+
+`BatchPrefillWithPagedKVCacheWrapper` serves an fp8 query and KV cache, at
+**1.22-1.66x** over bf16 through the wrapper (gfx942, page size 16, GQA 32/8,
+causal). The constraints, all of them AITER's:
+
+* **`head_dim` must be 128 or 256** — the native paged kernel reads past the KV
+  cache at 64 and 96 (others unmeasured), and fp8 has no gather to fall back to.
+* **Output is bf16**, whatever the query dtype — there is no fp8-output kernel.
+  `plan()` defaults `o_data_type` accordingly and rejects anything else.
+* **Descales are required and must be per-tensor** — a single float32 each for
+  `scale_q`, `scale_k`, `scale_v`, passed to `run()`. AITER reads element 0 of
+  whatever it is given, so a per-head tensor would silently apply head 0's scale
+  to every head; the shim rejects it instead.
+* **The fp8 encoding must be the architecture's own** — `aiter.dtypes.fp8`,
+  which is `e4m3fnuz` on gfx942 and OCP `e4m3fn` on gfx950. Both are 8 bits and
+  neither AITER nor the `.so` name distinguishes them, so the other one is read
+  under the wrong exponent bias and returns NaN; the shim rejects it.
+* **`return_lse` is unavailable.** AITER builds no LSE instance of the fp8
+  kernel at any page size, so it raises rather than degrading.
+* Every other prefill route — single, ragged, and the paged flat-gather path —
+  reaches `mha_fwd`/`mha_varlen_fwd`, which have no fp8 kernel. Ragged and the
+  flat-gather path raise `NotImplementedError` naming fp8 on either backend;
+  single prefill raises `NotImplementedError` on fa2 and `RuntimeError` from
+  AITER's own dtype check on `backend="aiter"`. What none of them do is reach
+  a kernel `static_assert`, which surfaces as a compiler log. All of this is
+  about an fp8 *query*; an fp8 KV cache with a 2-byte query is served in tree,
+  on fa2 — see above.
 
 ## Tests
 

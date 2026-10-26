@@ -14,12 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 cos/sin-cache RoPE benchmark: native (in-tree HIP JIT) vs AITER, sweeping nnz
-(number of tokens) across the decode -> prefill range so the small-batch regime
-where native's lower launch overhead wins is visible alongside the large-batch
-regime where AITER's kernel pulls ahead. This is the comparison behind the
-``backend="auto"`` policy in ``flashinfer/rope.py`` (see PR #252 / #259); unlike
-the upstream ``benchmarks/bench_rope.py`` it has no vLLM dependency and adds an
-accuracy axis, since the auto policy turns partly on bf16 numerical error.
+(number of tokens) across the decode -> prefill range. This is the comparison
+behind the ``backend="auto"`` policy in ``flashinfer/rocm/rope.py``, which
+resolves to native unconditionally; unlike the upstream
+``benchmarks/bench_rope.py`` it has no vLLM dependency and adds a bf16 accuracy
+axis.
 
 Like ``apply_rope_with_cos_sin_cache_inplace``, this kernel is memory-bandwidth
 bound (reads + writes q and k per token), so the roofline sits on the HBM
@@ -55,8 +54,7 @@ from rocm_profiler import KernelConfig, RocmProfiler
 
 _OUTPUT_DIR = str(Path(__file__).parent)
 
-# nnz sweep crosses the native->aiter crossover: tiny (decode), small batch, up
-# through prefill-scale where AITER's higher throughput dominates launch cost.
+# nnz sweep: tiny (decode), small batch, up through prefill scale.
 _NNZ = [8, 32, 64, 128, 256, 512, 1024, 2048, 8192, 32768]
 # Llama-3 8B attention shape: 32 q heads / 8 kv heads, head_size 128, full rotary.
 _NUM_Q_HEADS = 32
@@ -69,8 +67,8 @@ _DTYPES = [(torch.float16, "f16"), (torch.bfloat16, "bf16")]
 _BACKENDS = ["native", "aiter"]
 # Both op modes: inplace rotates q/k in place; out-of-place returns fresh
 # tensors. They differ for AITER — the out-of-place path uses the zero-copy
-# `_impl` entry point (no q/k copy), which is where AITER's largest wins land
-# (see PR #252). The default `--op` runs both; restrict with --op inplace|outplace.
+# `_impl` entry point (no q/k copy). The default `--op` runs both; restrict with
+# --op inplace|outplace.
 _OP_MODES = ["inplace", "outplace"]
 
 

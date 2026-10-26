@@ -22,6 +22,21 @@ def get_jit_cache_dir() -> str:
     return str(jit_cache_dir)
 
 
+def get_aiter_variant_dir() -> str:
+    """Path to the prebuilt AITER attention variants, if this wheel carries any.
+
+    Holds one subdirectory per ``<arch>__aiter-<version>__rocm-<version>`` tag,
+    so a wheel built for several architectures can ship several and the consumer
+    selects the one matching its own install. The directory need not exist: a
+    wheel built without running the prebuild simply has none, and FlashInfer
+    falls back to building variants on demand as it always did.
+
+    Returns:
+        str: Absolute path to the aiter_variants directory
+    """
+    return str(jit_cache_dir / "aiter_variants")
+
+
 try:
     from ._version import __version__ as __version__
 except (ModuleNotFoundError, ImportError):
@@ -29,5 +44,6 @@ except (ModuleNotFoundError, ImportError):
 
 __all__ = [
     "__version__",
+    "get_aiter_variant_dir",
     "get_jit_cache_dir",
 ]

@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """The amd-aiter ABI floor.
 
-The vendored structs under include/flashinfer/rocm/attention/aiter/ follow the 0.1.20
-layout and travel by value through dlsym'd pointers, so an older AITER shifts
-field offsets instead of failing to load. Nothing downstream can detect that,
-which is why the floor is enforced before routing rather than at the call.
+The floor is enforced before routing rather than at the call: the vendored structs
+travel by value through dlsym'd pointers, so a layout change shifts field offsets
+instead of failing to load. The 0.1.21 bump is the norm/rope POD ABI move -- the
+prefill structs are byte-identical to 0.1.20's.
 """
 
 import pathlib
@@ -42,9 +42,12 @@ def _doc_references():
         # 0.1.16 declared rmsnorm without gemma_norm, so its mangled name differs.
         ("0.1.16", False),
         ("0.1.20.dev0", False),
-        ("0.1.20", True),
+        # 0.1.21 moved rmsnorm and rope from at::Tensor to the POD aiter_tensor_t,
+        # so the shims no longer link against 0.1.20 at all.
+        ("0.1.20", False),
+        ("0.1.21.dev0", False),
         # A .dev0 *of post3* sorts above 0.1.16, which is what makes the
-        # nightly-vs-prerelease distinction non-obvious -- still below 0.1.20.
+        # nightly-vs-prerelease distinction non-obvious -- still below the floor.
         ("0.1.16.post3.dev0+g620287969.d20260725", False),
         ("0.1.21", True),
         ("0.2.0", True),

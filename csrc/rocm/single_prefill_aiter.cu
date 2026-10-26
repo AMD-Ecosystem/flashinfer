@@ -136,8 +136,13 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
   hipError_t status = flashinfer::SinglePrefillWithKVCacheDispatched<HEAD_DIM_QK, HEAD_DIM_VO>(
       params, causal, dtype_str, dtype_enum, cu_seqlens_q_ptr, cu_seqlens_k_ptr,
       static_cast<DTypeO*>(tmp.data_ptr()), stream);
+  // hipErrorNoBinaryForGpu here means AITER matched no kernel instance and launched
+  // nothing, rather than a launch that failed -- the output would be untouched.
   TORCH_CHECK(status == hipSuccess,
-              "AITER SinglePrefill kernel launch failed: ", hipGetErrorString(status));
+              status == hipErrorNoBinaryForGpu
+                  ? "AITER SinglePrefill: no kernel instance matched these traits, so nothing ran"
+                  : "AITER SinglePrefill kernel launch failed: ",
+              status == hipErrorNoBinaryForGpu ? "" : hipGetErrorString(status));
 
   if (maybe_lse) {
     aiter_lse_scratch.div_(std::log(2.0));

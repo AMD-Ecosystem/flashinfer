@@ -40,7 +40,15 @@ constexpr uint32_t BatchDecodeBdx() {
   return bdx;
 }
 
-/*! \brief KV chunks a block processes concurrently. */
+/*! \brief KV chunks a block processes concurrently.
+ *
+ * Targets a 128-thread block; at 2-byte KV / HEAD_DIM 128 that leaves bdz 1 at
+ * GROUP_SIZE 8. Two settings buy bdz 2 there and neither recovers the 64-head
+ * collapse: floor 256 is 1.10-1.28x *worse* at those cells (5-28% over all 12
+ * gfx942 cells), and floor 256 with NUM_STAGES_SMEM halved is 1.01-1.03x, i.e.
+ * flat. Neither isolates bdz -- both also move smem and block size -- so this
+ * rules out the settings, not the hypothesis. git log has the numbers.
+ */
 template <typename DTypeKV, uint32_t HEAD_DIM, uint32_t GROUP_SIZE>
 constexpr uint32_t BatchDecodeBdz() {
   constexpr uint32_t plane = BatchDecodeBdx<DTypeKV, HEAD_DIM>() * GROUP_SIZE;

@@ -270,6 +270,14 @@ inline constexpr uint32_t pack_u16(uint16_t a, uint16_t b) {
 
 #define CHECK_GE(a, b) TORCH_CHECK((a) >= (b), "CHECK_GE(" #a ", " #b ") failed. ", a, " vs ", b)
 
+// The kernel compiles one KV dtype, taken from k, and reads v with it, so a
+// mismatch reinterprets v's bytes instead of converting them.
+#define CHECK_KV_DTYPES_MATCH(k, v)                                                        \
+  TORCH_CHECK((k).scalar_type() == (v).scalar_type(), #k " has dtype ", (k).scalar_type(), \
+              " but " #v " has ", (v).scalar_type(),                                       \
+              "; ROCm attention compiles a single KV dtype and would "                     \
+              "reinterpret " #v "'s bytes as " #k "'s")
+
 inline bool is_float8_tensor(const at::Tensor& tensor) {
   return tensor.scalar_type() == at::ScalarType::Float8_e4m3fnuz ||
          tensor.scalar_type() == at::ScalarType::Float8_e5m2fnuz;

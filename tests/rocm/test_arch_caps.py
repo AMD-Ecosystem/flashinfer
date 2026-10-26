@@ -12,6 +12,7 @@ lets it run as a hardware-less CI job on every pull request
 """
 
 import dataclasses
+import os
 import importlib.util
 import pathlib
 import subprocess
@@ -256,7 +257,7 @@ class TestTableWellFormed:
 
         pkg = pathlib.Path(arch_caps.__file__).parent
         # Both the aiter_utils wrappers and the capability API they delegate to:
-        # mla_rocm and page.py call require_capability / capability_available
+        # rocm/mla.py and page.py call require_capability / capability_available
         # directly, and those op strings drift just as easily. All five take the
         # op second, so one alternation covers them.
         pattern = re.compile(
@@ -268,11 +269,11 @@ class TestTableWellFormed:
             used |= set(pattern.findall(src.read_text()))
 
         # Coverage is not total, and pretending otherwise would be worse than
-        # the gap: prefill_rocm and decode_rocm pass `op` as a variable, so no
+        # the gap: rocm/prefill.py and rocm/decode.py pass `op` as a variable, so no
         # literal-matching scan can see batch_prefill / batch_decode /
         # single_prefill. Those are reached by the runtime tests instead.
         assert used, "scan found no op names; the pattern has rotted"
-        # `mla` is reached *only* through require_capability (mla_rocm.py), never
+        # `mla` is reached *only* through require_capability (rocm/mla.py), never
         # through the aiter_utils wrappers. Its presence is what proves the
         # alternation still covers the capability API directly; drop it and the
         # scan silently narrows back to the wrappers while still passing.
@@ -291,6 +292,46 @@ class TestTableWellFormed:
         assert used <= declared, (
             f"ops passed by the library but absent from the table: "
             f"{sorted(used - declared)}"
+        )
+
+    def test_benchmark_registry_ops_are_declared(self):
+        """The benchmark registry names capability ops; check the targets exist.
+
+        Parsed rather than imported: this lane has no torch, and support.py
+        reaches flashinfer. It is also why the regex scan above cannot cover it
+        -- support.py passes `op` as a variable, so the strings live in a dict
+        literal and never appear at a call site.
+
+        `layernorm` sat here until arch_caps stopped declaring it; git merged
+        both changes cleanly and two Gemma routines silently stopped producing
+        rows. tests/rocm/test_benchmark_harness.py catches it too, but runs on
+        no CI lane.
+        """
+        import ast
+
+        root = pathlib.Path(__file__).resolve().parents[2]
+        src = root / "benchmarks" / "routines" / "rocm" / "support.py"
+        tree = ast.parse(src.read_text())
+        referenced = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not any(
+                isinstance(t, ast.Name) and t.id == "_ROCM_ROUTINE_TO_CAP_OP"
+                for t in node.targets
+            ):
+                continue
+            for value in node.value.values:
+                op = value.elts[0]
+                assert isinstance(op, ast.Constant), f"non-literal cap op: {op!r}"
+                referenced.add(op.value)
+
+        assert referenced, "no capability ops parsed; the registry moved or renamed"
+        assert "rmsnorm" in referenced, "parse found no known op; the shape changed"
+        declared = {c.op for c in arch_caps.CAPABILITIES if c.backend == "hip"}
+        assert referenced <= declared, (
+            "benchmark registry names capability ops with no hip row: "
+            f"{sorted(referenced - declared)}"
         )
 
     def test_known_bad_rows_explain_themselves(self):
@@ -405,7 +446,7 @@ class TestGating:
         assert f"backend={suggested!r}" in reason
 
     def test_no_fallback_is_suggested_when_none_exists(self, as_arch):
-        """mla accepts only 'auto'/'aiter' (mla_rocm.py:112), so naming any
+        """mla accepts only 'auto'/'aiter' (rocm/mla.py), so naming any
         alternative would be a dead end. Say nothing rather than something
         wrong."""
         as_arch("unknown")
@@ -649,18 +690,273 @@ class TestLegend:
         assert "**not available**" in self._render_only(archs=archs)
 
 
-class TestAiterSoftcapFloor:
-    """The kv_len where AITER's causal soft-cap defect starts is per-arch.
+class TestAiterSoftcapDefectArchs:
+    """AITER's causal soft-cap defect depends on arch and toolchain, not kv_len."""
 
-    gfx950 is wrong at every length on amd-aiter 0.1.20 while gfx942 is only
-    wrong from 512 up, so a single literal cannot express both.
-    """
+    def test_both_architectures_are_declared(self):
+        # Without this, the gfx942 assertion below would pass on a missing key:
+        # the accessor defaults to False, so "declared clean" and "never
+        # declared" are indistinguishable through it.
+        assert set(arch_caps._AITER_SOFTCAP_DEFECT_ARCHS) == {"gfx942", "gfx950"}
 
-    def test_gfx942_keeps_the_512_floor(self):
-        assert arch_caps.aiter_softcap_defect_min_kv_len("gfx942") == 512
+    def test_gfx942_is_not_affected(self):
+        assert arch_caps.aiter_softcap_defect_arch("gfx942") is False
 
-    def test_gfx950_has_no_safe_kv_len(self):
-        assert arch_caps.aiter_softcap_defect_min_kv_len("gfx950") == 0
+    CLEAN = ("7.16.26385", "0.1.21.post2")
+
+    @pytest.mark.parametrize(
+        "rocm,aiter",
+        [
+            ("10.0.0", "0.1.21.post2"),  # measured wrong
+            ("7.15.26333", "0.1.21.post2"),
+            ("7.16.26384", "0.1.21.post2"),  # any other build, either side
+            ("7.16.27000", "0.1.21.post2"),
+            ("7.16", "0.1.21.post2"),
+            ("10.1.0", "0.1.21.post2"),  # the non-TheRock spelling was not measured
+            ("10.2.0", "0.1.21.post2"),
+            ("7.16.26385", "0.1.21"),
+            ("7.16.26385", "0.1.22"),
+            ("", "0.1.21.post2"),
+            ("7.16.26385", ""),
+        ],
+    )
+    def test_gfx950_is_affected_unless_the_toolchain_was_measured(self, rocm, aiter):
+        assert arch_caps.aiter_softcap_defect_arch("gfx950", rocm, aiter) is True
+
+    def test_gfx950_is_clean_on_the_measured_toolchain(self):
+        assert arch_caps.aiter_softcap_defect_arch("gfx950", *self.CLEAN) is False
+
+    @pytest.mark.parametrize(
+        "live,torch_hip,expected",
+        [
+            (CLEAN, None, False),
+            (CLEAN, "7.16.26385", False),
+            (CLEAN, "7.15.26333", True),  # caches are keyed on torch's HIP
+            (("10.0.0", "0.1.21.post2"), None, True),
+            ((None, "0.1.21.post2"), None, True),
+            (("7.16.26385", None), None, True),
+        ],
+    )
+    def test_default_reads_the_live_toolchain(
+        self, monkeypatch, as_toolchain, trusted_jit, live, torch_hip, expected
+    ):
+        """``trusted_jit``: faking the versions must fake a coherent install too,
+        or the override checks below gate wherever amd-aiter is absent."""
+        as_toolchain(*live)
+        monkeypatch.setattr(arch_caps, "_torch_hip", lambda: torch_hip)
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is expected
+
+    def test_arch_qualifiers_are_normalized(self):
+        defect = arch_caps.aiter_softcap_defect_arch
+        assert defect("gfx950:sramecc+:xnack-", "10.0.0", "0.1.21.post2") is True
+        assert defect("gfx950:sramecc+:xnack-", *self.CLEAN) is False
+
+    @pytest.fixture
+    def trusted_jit(self, monkeypatch, tmp_path):
+        """A box whose amd-aiter is the package that would be imported."""
+        trusted = str(tmp_path / "pkg" / "jit")
+        monkeypatch.setattr(arch_caps, "_aiter_jit_dir", lambda: trusted)
+        monkeypatch.delenv("AITER_JIT_DIR", raising=False)
+        monkeypatch.delenv("FLASHINFER_AITER_VARIANT_DIR", raising=False)
+        return trusted
+
+    def _clean(self, monkeypatch, as_toolchain):
+        as_toolchain(*self.CLEAN)
+        monkeypatch.setattr(arch_caps, "_torch_hip", lambda: self.CLEAN[0])
+
+    def test_a_foreign_aiter_jit_dir_stays_gated(
+        self, monkeypatch, as_toolchain, trusted_jit
+    ):
+        """AITER_JIT_DIR replaces the variant store, so its build is unverifiable."""
+        self._clean(monkeypatch, as_toolchain)
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is False
+
+        monkeypatch.setenv("AITER_JIT_DIR", "/elsewhere/jit")
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is True
+        # Explicit versions are a query about those versions, not the live box.
+        assert arch_caps.aiter_softcap_defect_arch("gfx950", *self.CLEAN) is False
+
+        monkeypatch.setenv("AITER_JIT_DIR", trusted_jit)
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is False
+
+    def test_a_shadowed_aiter_package_stays_gated(
+        self, monkeypatch, as_toolchain, trusted_jit
+    ):
+        """The metadata version describes code a PYTHONPATH shadow stops us loading."""
+        self._clean(monkeypatch, as_toolchain)
+        monkeypatch.setattr(arch_caps, "_aiter_jit_dir", lambda: None)
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is True
+
+    def test_an_operator_set_variant_store_stays_gated(
+        self, monkeypatch, as_toolchain, trusted_jit
+    ):
+        """FlashInfer names its own stores for the toolchain; nothing else is checkable."""
+        self._clean(monkeypatch, as_toolchain)
+        tag = f"gfx950__aiter-{self.CLEAN[1]}__rocm-{self.CLEAN[0]}"
+        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", f"/cache/{tag}")
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is False
+
+        # One foreign entry in the os.pathsep list is enough.
+        monkeypatch.setenv(
+            "FLASHINFER_AITER_VARIANT_DIR",
+            os.pathsep.join([f"/cache/{tag}", "/cache/operator-store"]),
+        )
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is True
+        assert arch_caps.aiter_softcap_defect_arch("gfx950", *self.CLEAN) is False
+
+        # A store cannot be checked against a torch HIP we cannot read.
+        monkeypatch.setenv("FLASHINFER_AITER_VARIANT_DIR", f"/cache/{tag}")
+        monkeypatch.setattr(arch_caps, "_torch_hip", lambda: None)
+        assert arch_caps.aiter_softcap_defect_arch("gfx950") is True
+
+    @pytest.mark.parametrize(
+        "imported_at,trusted",
+        [("/dist/aiter", "/dist/aiter/jit"), ("/shadow/aiter", None)],
+    )
+    def test_the_trusted_jit_dir_is_the_distributions(
+        self, monkeypatch, imported_at, trusted
+    ):
+        """find_spec answers for sys.path; only amd-aiter's own tree is vouched for."""
+        import importlib.metadata
+        import importlib.util
+
+        class _Dist:
+            @staticmethod
+            def locate_file(name):
+                return f"/dist/{name}"
+
+        class _Spec:
+            submodule_search_locations = [imported_at]
+
+        monkeypatch.setattr(importlib.metadata, "distribution", lambda name: _Dist())
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: _Spec())
+        arch_caps._aiter_jit_dir.cache_clear()
+        try:
+            assert arch_caps._aiter_jit_dir() == trusted
+        finally:
+            arch_caps._aiter_jit_dir.cache_clear()
+
+    def test_detail_names_the_override_that_gated(
+        self, monkeypatch, as_toolchain, trusted_jit
+    ):
+        """A user whose versions all match must be told which override to remove."""
+        self._clean(monkeypatch, as_toolchain)
+        assert "kernels cannot be matched" not in arch_caps.aiter_softcap_defect_detail(
+            "gfx950"
+        )
+
+        monkeypatch.setenv("AITER_JIT_DIR", "/elsewhere/jit")
+        detail = arch_caps.aiter_softcap_defect_detail("gfx950")
+        assert "AITER_JIT_DIR=/elsewhere/jit is outside" in detail
+
+    def test_detail_names_detected_and_measured(self, monkeypatch, as_toolchain):
+        as_toolchain(None, "0.1.21.post2")
+        monkeypatch.setattr(arch_caps, "_torch_hip", lambda: None)
+        detail = arch_caps.aiter_softcap_defect_detail("gfx950")
+        assert "detected system version unknown" in detail
+        assert "both 7.16.26385 + amd-aiter 0.1.21.post2" in detail
+        monkeypatch.setattr(arch_caps, "_AITER_SOFTCAP_CLEAN_TOOLCHAINS", {})
+        assert "no toolchain measured correct" in arch_caps.aiter_softcap_defect_detail(
+            "gfx950"
+        )
 
     def test_unknown_arch_disarms_rather_than_blocks(self):
-        assert arch_caps.aiter_softcap_defect_min_kv_len("unknown") is None
+        assert arch_caps.aiter_softcap_defect_arch("unknown") is False
+
+
+class TestAiterFlatGatherQLenGate:
+    """Below this query length AITER's flat-gather paged prefill loses to fa2.
+
+    The gather copies the whole KV cache (O(kv)) before an O(q*kv) attention, so
+    the overhead decays as 1/q and the crossover differs by architecture:
+    median-of-3 has gfx942 still losing at q=16 (1.35x) while gfx950 flips at
+    exactly q=9, where its GQA-8 configurations reach 0.91x.
+    """
+
+    def test_gfx942_gates_through_16(self):
+        assert arch_caps.aiter_flat_gather_gated_q_len("gfx942") == 16
+
+    def test_gfx950_gates_through_8(self):
+        assert arch_caps.aiter_flat_gather_gated_q_len("gfx950") == 8
+
+    def test_unknown_arch_disarms_rather_than_blocks(self):
+        assert arch_caps.aiter_flat_gather_gated_q_len("unknown") is None
+
+
+class TestAiterSoftcapQLenGate:
+    """Below these lengths AITER's soft-capped varlen kernel loses to fa2 on gfx950.
+
+    Only arches the defect table gates have a row; gfx942's soft-capped single
+    route is measured slower below q=64 but not gated yet.
+    """
+
+    @pytest.mark.parametrize(
+        "route,gated", [("single", 192), ("ragged", 16), ("paged", 32)]
+    )
+    def test_gfx950_thresholds(self, route, gated):
+        assert arch_caps.aiter_softcap_gated_q_len("gfx950", route) == gated
+
+    @pytest.mark.parametrize("route", ["single", "ragged", "paged"])
+    def test_gfx942_is_not_steered(self, route):
+        assert arch_caps.aiter_softcap_gated_q_len("gfx942", route) is None
+
+    def test_every_gated_arch_is_a_defect_arch(self):
+        assert set(arch_caps._AITER_SOFTCAP_GATED_Q_LEN) <= {
+            a for a, bad in arch_caps._AITER_SOFTCAP_DEFECT_ARCHS.items() if bad
+        }
+
+    def test_unknown_arch_or_route_disarms(self):
+        assert arch_caps.aiter_softcap_gated_q_len("unknown", "single") is None
+        assert arch_caps.aiter_softcap_gated_q_len("gfx950", "decode") is None
+
+
+class TestAiterRaggedQLenGate:
+    """Below this query length AITER's ragged prefill loses to fa2, on gfx942 only.
+
+    No gather here -- mha_varlen_fwd takes contiguous KV -- so what a short query
+    loses is fixed kernel cost. gfx942 loses all five measured shapes at q<=16
+    (1.18-4.74x); gfx950 has one (bs32/kv2048) that favours AITER at every length
+    measured, so no gfx950 threshold serves and the row is None.
+    """
+
+    def test_gfx942_gates_through_16(self):
+        assert arch_caps.aiter_ragged_gated_q_len("gfx942") == 16
+
+    def test_gfx950_is_never_gated(self):
+        assert arch_caps.aiter_ragged_gated_q_len("gfx950") is None
+
+    def test_gfx950_row_is_present_not_merely_absent(self):
+        # The accessor is a bare dict.get, so a deleted gfx950 row answers None
+        # too and the test above would still pass. Assert membership: the None is
+        # a measured verdict, not a gap.
+        assert "gfx950" in arch_caps._AITER_RAGGED_GATED_Q_LEN
+
+    def test_unknown_arch_disarms_rather_than_blocks(self):
+        assert arch_caps.aiter_ragged_gated_q_len("unknown") is None
+
+
+class TestAiterNativePagedHeadDims:
+    """AITER's native paged prefill reads past the KV cache outside these head dims.
+
+    A memory-safety gate, so it fails closed on an unknown arch; data in git log.
+    """
+
+    @pytest.mark.parametrize("arch", ["gfx942", "gfx950"])
+    @pytest.mark.parametrize(
+        "head_dim,overreads", [(64, True), (96, True), (128, False), (256, False)]
+    )
+    def test_measured_cells(self, arch, head_dim, overreads):
+        assert arch_caps.aiter_native_paged_overreads(arch, head_dim) is overreads
+
+    def test_every_supported_arch_has_a_row(self):
+        # A missing row fails closed, so a newly allowlisted arch would quietly
+        # lose native paging at every head dim rather than fail a test.
+        assert set(SUPPORTED_ARCHS) <= set(arch_caps._AITER_NATIVE_PAGED_HEAD_DIMS)
+
+    def test_unmeasured_arch_has_no_head_dims(self):
+        assert arch_caps.aiter_native_paged_head_dims("unknown") is None
+        assert arch_caps.aiter_native_paged_head_dims("gfx950") == frozenset({128, 256})
+
+    @pytest.mark.parametrize("head_dim", [64, 128])
+    def test_unknown_arch_fails_closed(self, head_dim):
+        assert arch_caps.aiter_native_paged_overreads("unknown", head_dim) is True

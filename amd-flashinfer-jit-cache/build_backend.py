@@ -71,7 +71,7 @@ def _scm_version() -> str:
 def _pin_arch_tagged_version() -> tuple[str, str]:
     """``(version, architectures)``, with the architectures named in the version.
 
-    ``0.6.18+amd.1`` -> ``0.6.18+amd.1.gfx942``. Nothing else in a wheel's name
+    ``0.6.18+amd.2`` -> ``0.6.18+amd.2.gfx942``. Nothing else in a wheel's name
     carries the architecture, so without this the gfx942 and gfx950 builds are
     the same filename and one silently replaces the other on an index. Set
     ``FLASHINFER_ROCM_ARCH_LIST`` to choose; there is deliberately no separate
@@ -146,7 +146,14 @@ def _build_aot_modules():
         _compile_jit_cache(aot_package_dir)
 
         # Verify that some modules were actually compiled
-        so_files = list(aot_package_dir.rglob("*.so"))
+        # Exclude the AITER variant store: it lives under the same jit_cache
+        # root, and counting it would let a build with zero compiled kernels
+        # satisfy the guard whose whole purpose is to catch that.
+        so_files = [
+            f
+            for f in aot_package_dir.rglob("*.so")
+            if "aiter_variants" not in f.relative_to(aot_package_dir).parts
+        ]
         if not so_files:
             raise RuntimeError("No .so files were generated during AOT compilation")
 

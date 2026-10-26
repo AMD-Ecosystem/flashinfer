@@ -144,7 +144,24 @@ _bench_parser.add_argument(
         f"Default: {_DEFAULT_BATCH_Q_LEN} (chunked-prefill burst, matches AITER bench)."
     ),
 )
+_bench_parser.add_argument(
+    "--kv-dtype",
+    choices=["fp16", "fp8_e4m3fnuz", "fp8_e5m2fnuz"],
+    default="fp16",
+    help=(
+        "KV cache dtype. The query and output stay fp16 -- the MFMA path is "
+        "f16f16f32 -- so fp8 buys HBM bandwidth, not math. Default: fp16."
+    ),
+)
 _bench_args, _ = _bench_parser.parse_known_args()
+
+_KV_DTYPES = {
+    "fp16": torch.float16,
+    "fp8_e4m3fnuz": torch.float8_e4m3fnuz,
+    "fp8_e5m2fnuz": torch.float8_e5m2fnuz,
+}
+_kv_dtype: torch.dtype = _KV_DTYPES[_bench_args.kv_dtype]
+_kv_itemsize: int = _kv_dtype.itemsize
 
 _counters = _bench_args.counters
 _model: str = _bench_args.model
@@ -160,6 +177,9 @@ _label = (
     if _bench_args.label is not None
     else ("fa2" if _counters == "roofline" else f"fa2_{_counters}")
 )
+# Without this an fp8 run overwrites the fp16 CSV it is meant to be compared to.
+if _bench_args.label is None and _kv_dtype is not torch.float16:
+    _label = f"{_label}_{_bench_args.kv_dtype}"
 
 # ---------------------------------------------------------------------------
 # Shape presets (seq_len, num_qo_heads, num_kv_heads, head_dim, causal)
@@ -204,10 +224,19 @@ def _flops(
     return attended * num_qo_heads * head_dim * 4
 
 
+def _kv_randn(*shape: int) -> torch.Tensor:
+    """KV tensor in the selected cache dtype; randn has no fp8 overload."""
+    return torch.randn(*shape, dtype=torch.half, device="cuda").to(_kv_dtype)
+
+
 def _bytes(
     q_len: int, kv_len: int, num_qo_heads: int, num_kv_heads: int, head_dim: int
 ) -> int:
-    return 2 * head_dim * (2 * q_len * num_qo_heads + 2 * kv_len * num_kv_heads)
+    # q read + o write are always 2-byte; k and v follow the cache dtype, so an
+    # fp8 cache halves the KV term. Hardcoding 2 here reports fp8 bandwidth ~2x.
+    qo = 2 * 2 * q_len * num_qo_heads * head_dim
+    kv = 2 * kv_len * num_kv_heads * head_dim * _kv_itemsize
+    return qo + kv
 
 
 # ---------------------------------------------------------------------------
@@ -223,12 +252,8 @@ def _make_configs() -> list[KernelConfig]:
         q = torch.randn(
             seq_len, num_qo_heads, head_dim, dtype=torch.half, device="cuda"
         )
-        k = torch.randn(
-            seq_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
-        )
-        v = torch.randn(
-            seq_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
-        )
+        k = _kv_randn(seq_len, num_kv_heads, head_dim)
+        v = _kv_randn(seq_len, num_kv_heads, head_dim)
 
         flops = _flops(seq_len, seq_len, num_qo_heads, head_dim, causal)
         theo_bytes = _bytes(seq_len, seq_len, num_qo_heads, num_kv_heads, head_dim)
@@ -258,12 +283,8 @@ def _make_configs() -> list[KernelConfig]:
             q = torch.randn(
                 _q_len_asym, num_qo_heads, head_dim, dtype=torch.half, device="cuda"
             )
-            k = torch.randn(
-                kv_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
-            )
-            v = torch.randn(
-                kv_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
-            )
+            k = _kv_randn(kv_len, num_kv_heads, head_dim)
+            v = _kv_randn(kv_len, num_kv_heads, head_dim)
 
             flops = _flops(_q_len_asym, kv_len, num_qo_heads, head_dim, causal=True)
             theo_bytes = _bytes(
@@ -300,12 +321,8 @@ def _make_batch_configs(batch_size: int, q_len: int) -> list[KernelConfig]:
         q = torch.randn(
             batch_size * q_len, num_qo_heads, head_dim, dtype=torch.half, device="cuda"
         )
-        k = torch.randn(
-            batch_size * kv_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
-        )
-        v = torch.randn(
-            batch_size * kv_len, num_kv_heads, head_dim, dtype=torch.half, device="cuda"
-        )
+        k = _kv_randn(batch_size * kv_len, num_kv_heads, head_dim)
+        v = _kv_randn(batch_size * kv_len, num_kv_heads, head_dim)
         qo_indptr = torch.arange(
             0, (batch_size + 1) * q_len, q_len, dtype=torch.int32, device="cuda"
         )
@@ -317,7 +334,14 @@ def _make_batch_configs(batch_size: int, q_len: int) -> list[KernelConfig]:
             workspace, "NHD", backend="fa2"
         )
         wrapper.plan(
-            qo_indptr, kv_indptr, num_qo_heads, num_kv_heads, head_dim, causal=True
+            qo_indptr,
+            kv_indptr,
+            num_qo_heads,
+            num_kv_heads,
+            head_dim,
+            causal=True,
+            q_data_type=torch.float16,
+            kv_data_type=_kv_dtype,
         )
 
         flops = batch_size * _flops(q_len, kv_len, num_qo_heads, head_dim, causal=True)
@@ -357,15 +381,7 @@ def _make_paged_configs(
         q = torch.randn(
             batch_size * q_len, num_qo_heads, head_dim, dtype=torch.half, device="cuda"
         )
-        kv_cache = torch.randn(
-            total_pages,
-            2,
-            page_size,
-            num_kv_heads,
-            head_dim,
-            dtype=torch.half,
-            device="cuda",
-        )
+        kv_cache = _kv_randn(total_pages, 2, page_size, num_kv_heads, head_dim)
 
         qo_indptr = torch.arange(
             0, (batch_size + 1) * q_len, q_len, dtype=torch.int32, device="cuda"
@@ -398,6 +414,8 @@ def _make_paged_configs(
             head_dim,
             page_size,
             causal=True,
+            q_data_type=torch.float16,
+            kv_data_type=_kv_dtype,
         )
 
         flops = batch_size * _flops(q_len, kv_len, num_qo_heads, head_dim, causal=True)

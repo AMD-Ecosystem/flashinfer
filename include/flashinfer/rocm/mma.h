@@ -141,6 +141,34 @@ __device__ __forceinline__ void load_fragment(uint32_t* R, const T* smem_ptr) {
   R[1] = reinterpret_cast<const uint32_t*>(smem_ptr)[1];
 }
 
+// The one place the CDNA4 transposing LDS read is switched on. Everything that
+// has to agree with it -- the per-lane seed and the load itself -- keys off this
+// constant rather than repeating the guard.
+#if defined(__HIP_DEVICE_COMPILE__) && defined(__gfx950__)
+inline constexpr bool kHasTransposingLdsRead = true;
+#else
+inline constexpr bool kHasTransposingLdsRead = false;
+#endif
+
+/// @brief CDNA4 transposing LDS read: one `ds_read_b64_tr_b16` replacing the six
+///        `ds_bpermute_b32` of `transpose_mma_tile`.
+///
+/// Redistributes as out(16g+4a+b)[j] = in(16g+4j+a)[b], so it needs its own
+/// per-lane address -- see `smem_t::trans_frag_row`/`trans_frag_col`.
+/// `smem_ptr` must be LDS-resident and 16-bit; `KernelTraits::DTypeKVSmem`
+/// guarantees the latter for every KV dtype (prefill.cuh static_asserts it).
+__device__ __forceinline__ void load_transposed_fragment(uint32_t* R, const void* smem_ptr) {
+#if defined(__HIP_DEVICE_COMPILE__) && defined(__gfx950__)
+  // __fp16, not this header's _Float16 f16x4: the builtin rejects that spelling.
+  using h4 = __fp16 __attribute__((ext_vector_type(4)));
+  const h4 v =
+      __builtin_amdgcn_ds_read_tr16_b64_v4f16((h4 __attribute__((address_space(3)))*)(smem_ptr));
+  __builtin_memcpy(R, &v, sizeof(v));
+#else
+  __builtin_trap();  // unreachable: callers gate on kHasTransposingLdsRead
+#endif
+}
+
 // MMA operation for FP16 inputs with FP32 accumulator
 template <typename T, mma::MMAMode mma_mode = mma::MMAMode::kInplaceUpdate>
 __device__ __forceinline__ void mma_sync_m16n16k16_row_col_f16f16f32(float* C, uint32_t* A,
@@ -197,16 +225,8 @@ __device__ __forceinline__ void load_quad_transposed_fragment(uint32_t* R, const
   transpose_intra_quad_fragments(R);
 }
 
-// TODO: Verify correct matrix multiplication order for rowsum on CDNA3
-// Current assumption: s_frag × ones_vector = row_sums
-// Need to validate:
-// 1. How compute_qk stores Q×K^T result in s_frag for CDNA3
-// 2. Whether K is pre-transposed or transposed during fragment loading
-// 3. If we need s_frag × M1 or M1 × s_frag for correct row sums
-//
-// Test with known input matrices to verify:
-// - s_frag layout matches expected Q×K^T result
-// - rowsum produces correct per-row sums
+// Row sums of the s_frag tile (already in A-matrix layout), accumulated into d by an
+// MFMA against a ones B-matrix.
 template <typename DType>
 __device__ __forceinline__ void m16k16_rowsum_f16f16f32(float* d, DType* s_frag) {
   static_assert(sizeof(DType) == 2, "DType must be 16-bit type");
@@ -235,8 +255,7 @@ __device__ __forceinline__ void m16k16_rowsum_f16f16f32(float* d, DType* s_frag)
   d[3] = out.w;
 }
 
-// TODO (rimaddur) : After release 2025.08
-// FP8 operations - not implemented for MI300 yet
+// TODO (rimaddur): FP8 operations - not implemented for MI300 yet
 template <typename T>
 __device__ __forceinline__ void mma_sync_m16n16k32_row_col_f8f8f32(float* c_frag, T* a_frag,
                                                                    T* b_frag) {

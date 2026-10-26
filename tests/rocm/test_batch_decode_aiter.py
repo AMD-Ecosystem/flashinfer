@@ -61,7 +61,12 @@ def _build_paged_kv(
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("batch_size", [1, 4, 17])
 @pytest.mark.parametrize("page_size", [16, 32])
-@pytest.mark.parametrize("num_qo_heads,num_kv_heads", [(8, 8), (16, 4), (32, 8)])
+# (64, 8) is GQA ratio 8, which nothing else here covers -- (16,4) and (32,8)
+# are both ratio 4. It is also where AITER's decode advantage is largest, so an
+# unverified ratio-8 kernel would let a fast-but-wrong result read as a win.
+@pytest.mark.parametrize(
+    "num_qo_heads,num_kv_heads", [(8, 8), (16, 4), (32, 8), (64, 8)]
+)
 @pytest.mark.parametrize("head_dim", [128])
 @pytest.mark.parametrize("max_kv_len", [64, 1024, 2048])
 def test_batch_decode_aiter_vs_fa2(
@@ -188,6 +193,81 @@ def test_batch_decode_aiter_rejects_invalid_config():
 
 
 @requires_aiter
+def test_batch_decode_aiter_kv_and_q_layouts():
+    """PA v1 reads V with K's strides and q with only its token stride: a V
+    laid out differently must raise, a q with spread-out heads must still be
+    read correctly, and K/V pools may differ in page count."""
+    torch.manual_seed(0xA17E5)
+    device = torch.device("cuda:0")
+    k, v, indptr, indices, last = _build_paged_kv(
+        1, [64], 16, 8, 128, torch.bfloat16, device
+    )
+    ws = lambda: torch.zeros(8 << 20, dtype=torch.uint8, device=device)
+    w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws(), "NHD", backend="aiter")
+    w.plan(indptr, indices, last, 8, 8, 128, 16, q_data_type=torch.bfloat16)
+    ref_w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws(), "NHD", backend="fa2")
+    ref_w.plan(indptr, indices, last, 8, 8, 128, 16, q_data_type=torch.bfloat16)
+
+    v_hnd = v.transpose(1, 2).contiguous().transpose(1, 2)  # same shape, HND strides
+    with pytest.raises(RuntimeError, match="page shape, strides"):
+        w.run(torch.randn(1, 8, 128, dtype=torch.bfloat16, device=device), (k, v_hnd))
+
+    # Scaled so the softmax is peaked: a misread q then moves the output.
+    q_wide = 8 * torch.randn(1, 8, 256, dtype=torch.bfloat16, device=device)
+    q_layouts = (
+        q_wide[..., :128],  # heads 256 apart
+        q_wide.as_strided((1, 8, 128), (2048, 128, 2)),  # strided head_dim only
+    )
+    for q in q_layouts:
+        torch.testing.assert_close(
+            w.run(q, (k, v)), ref_w.run(q.contiguous(), (k, v)), rtol=2e-2, atol=2e-2
+        )
+    q = q_wide[..., :128]
+    torch.testing.assert_close(
+        w.run(q, (k, v[:-2])), ref_w.run(q.contiguous(), (k, v)), rtol=2e-2, atol=2e-2
+    )
+
+
+@requires_aiter
+def test_batch_decode_aiter_batched_q_layouts():
+    """At batch > 1, every decode route reads a q sliced from a fused QKV tensor
+    (wide token stride) and a head-major q correctly, into a contiguous out."""
+    torch.manual_seed(0xA17E6)
+    device = torch.device("cuda:0")
+    k, v, indptr, indices, last = _build_paged_kv(
+        3, [64, 40, 17], 16, 2, 128, torch.bfloat16, device
+    )
+    # Scaled so the softmax is peaked: a misread q then moves the output.
+    qkv = 8 * torch.randn(3, (8 + 2 * 2) * 128, dtype=torch.bfloat16, device=device)
+    q_fused = qkv[:, : 8 * 128].view(3, 8, 128)
+    q_head_major = (
+        8 * torch.randn(8, 3, 128, dtype=torch.bfloat16, device=device)
+    ).transpose(0, 1)
+    routes = {}
+    for name, backend, tc in (
+        ("fa2", "fa2", False),
+        ("fa2 tensor cores", "fa2", True),
+        ("aiter", "aiter", False),
+    ):
+        w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+            torch.zeros(8 << 20, dtype=torch.uint8, device=device),
+            "NHD",
+            backend=backend,
+            use_tensor_cores=tc,
+        )
+        w.plan(indptr, indices, last, 8, 2, 128, 16, q_data_type=torch.bfloat16)
+        routes[name] = w
+    for q in (q_fused, q_head_major):
+        ref = routes["fa2"].run(q.contiguous(), (k, v))
+        for name, w in routes.items():
+            out = w.run(q, (k, v))
+            assert out.is_contiguous(), name
+            torch.testing.assert_close(
+                out, ref, rtol=2e-2, atol=2e-2, msg=lambda m: f"{name}: {m}"
+            )
+
+
+@requires_aiter
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("batch_size", [1, 8])
 @pytest.mark.parametrize("page_size", [16])
@@ -207,7 +287,7 @@ def test_batch_decode_aiter_sliding_window_vs_fa2(
 ):
     """AITER PA v1 with sliding_window=window_left+1 must match FA2 with window_left.
 
-    Covers (a) the convention mapping fix in decode_rocm.py and (b) the in-kernel
+    Covers (a) the convention mapping fix in rocm/decode.py and (b) the in-kernel
     masking logic in AITER's pa_kernels.cuh. Includes the saturation regime
     (window_left >= max_kv_len-1) to exercise the no-op branch.
     """

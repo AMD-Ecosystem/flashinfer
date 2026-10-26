@@ -87,6 +87,7 @@ void BatchDecodeWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
                                     at::Tensor o, std::optional<at::Tensor> maybe_lse,
                                     int64_t kv_layout_code,
                                     int64_t window_left ADDITIONAL_FUNC_PARAMS) {
+  CHECK_KV_DTYPES_MATCH(paged_k_cache, paged_v_cache);
   DecodePlanInfo plan_info;
   const size_t size = plan_info_vec.numel();
   const int64_t* first = plan_info_vec.data_ptr<int64_t>();

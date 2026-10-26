@@ -62,7 +62,7 @@ class TestAiterNativePageSizes:
     @pytest.mark.parametrize("installed", ["0.1.10", "0.1.11", "1.0.0"])
     def test_at_or_after_the_native_paging_release(self, monkeypatch, installed):
         self._with_version(monkeypatch, installed)
-        assert prefill_rocm._aiter_native_page_sizes() == frozenset({128, 256, 1024})
+        assert prefill_rocm._aiter_native_page_sizes() == frozenset({1, 16, 1024})
 
     def test_before_the_native_paging_release(self, monkeypatch):
         self._with_version(monkeypatch, "0.1.9")
@@ -73,7 +73,7 @@ class TestAiterNativePageSizes:
         wide and plan() probes for real support."""
         self._with_version(monkeypatch, "9.9.9")
 
-        assert prefill_rocm._aiter_native_page_sizes() == frozenset({128, 256, 1024})
+        assert prefill_rocm._aiter_native_page_sizes() == frozenset({1, 16, 1024})
 
     @pytest.mark.parametrize(
         "failure",
@@ -184,6 +184,115 @@ class TestAutoBackendSelection:
         assert backend == "fa2"
         assert fragment in reason
 
+    def test_short_query_on_a_gathering_page_size_declines_aiter(self, device):
+        """A page size AITER cannot page natively makes it copy the whole KV
+        cache first; a short query cannot amortise that. Measured 1.25-4.6x
+        slower at or below the threshold on both arches."""
+        from flashinfer.rocm.arch_caps import (
+            _device_arch,
+            aiter_flat_gather_gated_q_len,
+        )
+
+        gated = aiter_flat_gather_gated_q_len(_device_arch(device))
+        if gated is None:
+            pytest.skip("no flat-gather threshold for this architecture")
+
+        backend, reason = _auto(device, max_q_len=gated)
+        assert backend == "fa2"
+        if "flat gather" not in (reason or ""):
+            # The gate sits last in the elif chain, so a constant constraint
+            # (a gated capability row, a toolchain the table blocks) answers
+            # first. That is an environment fact, not this test's subject.
+            pytest.skip(f"AITER declined for another reason: {reason}")
+        assert f"<= {gated}" in reason, reason
+
+    def test_query_above_the_threshold_keeps_aiter(self, device):
+        from flashinfer.rocm.arch_caps import (
+            _device_arch,
+            aiter_flat_gather_gated_q_len,
+        )
+
+        gated = aiter_flat_gather_gated_q_len(_device_arch(device))
+        if gated is None:
+            pytest.skip("no flat-gather threshold for this architecture")
+
+        backend, reason = _auto(device, max_q_len=gated + 1)
+        if backend == "fa2" and "flat gather" not in (reason or ""):
+            pytest.skip(f"AITER unavailable here for another reason: {reason}")
+        assert (backend, reason) == ("aiter", None)
+
+    def test_short_ragged_query_declines_aiter_where_the_arch_gates(self, device):
+        """Ragged has no gather, so this is fixed kernel cost rather than a copy.
+        Only gfx942 is gated; gfx950's row is None and must fall through."""
+        from flashinfer.rocm.arch_caps import _device_arch, aiter_ragged_gated_q_len
+
+        gated = aiter_ragged_gated_q_len(_device_arch(device))
+        if gated is None:
+            backend, reason = _auto(device, ragged_q_len=1)
+            if backend == "fa2":
+                pytest.skip(f"AITER unavailable here for another reason: {reason}")
+            assert (backend, reason) == ("aiter", None)
+            return
+
+        backend, reason = _auto(device, ragged_q_len=gated)
+        assert backend == "fa2"
+        if "ragged KV" not in (reason or ""):
+            pytest.skip(f"AITER declined for another reason: {reason}")
+        assert f"<= {gated}" in reason, reason
+
+    def test_ragged_query_above_the_threshold_keeps_aiter(self, device):
+        from flashinfer.rocm.arch_caps import _device_arch, aiter_ragged_gated_q_len
+
+        gated = aiter_ragged_gated_q_len(_device_arch(device))
+        if gated is None:
+            pytest.skip("this architecture does not gate ragged prefill")
+
+        backend, reason = _auto(device, ragged_q_len=gated + 1)
+        if backend == "fa2" and "ragged KV" not in (reason or ""):
+            pytest.skip(f"AITER unavailable here for another reason: {reason}")
+        assert (backend, reason) == ("aiter", None)
+
+    def test_the_two_perf_gates_do_not_share_a_reason(self, device):
+        """The paged reason blames a gather ragged never makes, and the paged
+        demotion site matches its string by equality -- so a shared string would
+        both misreport and cross-trigger."""
+        assert prefill_rocm._ragged_short_query_reason(
+            16
+        ) != prefill_rocm._flat_gather_short_query_reason(16)
+
+    def test_max_q_len_none_disarms_the_gate(self, device):
+        """None is how the paged planner says the page size pages natively --
+        that route has no gather and beats fa2 even at one query row, so it must
+        not be steered away."""
+        backend, reason = _auto(device, max_q_len=None)
+        if backend == "fa2":
+            pytest.skip(f"AITER unavailable here: {reason}")
+        assert (backend, reason) == ("aiter", None)
+
+    def test_the_gate_warns_once_across_different_query_lengths(self, device):
+        """The reason names the threshold, not the observed length. Embedding the
+        length would add a _aiter_auto_warned entry per distinct query length, so
+        a serving loop with varying draft lengths would re-warn forever."""
+        from flashinfer.rocm.arch_caps import (
+            _device_arch,
+            aiter_flat_gather_gated_q_len,
+        )
+
+        gated = aiter_flat_gather_gated_q_len(_device_arch(device))
+        if gated is None or gated < 2:
+            pytest.skip("needs a threshold with room for two distinct lengths")
+
+        before = len(prefill_rocm._aiter_auto_warned)
+        first = _auto(device, max_q_len=1)[1]
+        second = _auto(device, max_q_len=gated)[1]
+        # Without this the test passes vacuously wherever AITER is declined for
+        # some unrelated constant reason: both calls return that reason, so they
+        # trivially match and add exactly one entry.
+        if "flat gather" not in (first or ""):
+            pytest.skip(f"AITER declined for another reason here: {first}")
+        assert first == second
+        assert len(prefill_rocm._aiter_auto_warned) - before == 1
+
     def test_the_warning_fires_once_per_device_and_reason(self, device):
         """Asserted through the warn-once set, not the log: flashinfer's logger
         installs its own handlers, so records are not reliably observable from a
@@ -209,8 +318,15 @@ class TestAutoBackendSelection:
         assert first == second is not None
 
     def test_a_missing_aiter_package_is_its_own_reason(self, device, monkeypatch):
+        from flashinfer.rocm import aiter_utils
+
         prefill_rocm._aiter_ops_importable.cache_clear()
         monkeypatch.setattr(prefill_rocm, "_aiter_ops_importable", lambda: False)
+        # Pin absence, not just unimportability: with an installed AITER below
+        # the ABI floor the other branch answers first, so this asserted on
+        # whatever the host happened to have -- like the class below, which pins
+        # both branches for exactly this reason.
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: None)
 
         backend, reason = _auto(device)
 

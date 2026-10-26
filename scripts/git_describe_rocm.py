@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Custom git describe for setuptools_scm that handles tags with + (like v0.2.6+rocm.1)
+Custom git describe for setuptools_scm that handles tags with + (like v0.6.18+amd.1)
 
 Output format:
 - When distance > 0 and tag contains '+': base+local.devN-0-ghash
@@ -82,7 +82,7 @@ def main():
 
         # If there are commits after the tag, embed .devN in the local part
         if min_distance > 0 and "+" in closest_tag:
-            # Split tag into base and local: v0.2.6+rocm.1 -> v0.2.6, rocm.1
+            # Split tag into base and local: v0.6.18+amd.1 -> v0.6.18, amd.1
             base, local = closest_tag.split("+", 1)
             modified_tag = f"{base}+{local}.dev{min_distance}"
             # Output with distance set to 0 to prevent version_scheme from modifying it
@@ -98,5 +98,5 @@ def main():
         return 1
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     sys.exit(main())

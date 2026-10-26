@@ -13,14 +13,15 @@ which owns *whether the AITER package is importable*.
    Do not add a module-level ``import torch``; keep every torch import
    function-local.
 
-   ``hip_utils`` imports this module at module scope, and ``hip_utils`` is used
-   very early -- ``tests/conftest.py`` calls it to pick a GPU *before* pinning
-   ``HIP_VISIBLE_DEVICES``, and it must do so without touching the HIP runtime
-   (hence its use of ``rocminfo`` rather than ``torch.cuda``). Staying torch-free
-   is what keeps this module usable on that path.
+   ``hip_utils`` imports this module at module scope, and ``hip_utils`` answers
+   "which architecture" on build hosts with neither torch nor a GPU (hence
+   ``rocminfo``, not ``torch.cuda``). The CPU-only arch-caps CI lane relies on
+   the same; ``test_suite_loads_without_torch`` enforces it.
 """
 
 import os
+import sys
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import lru_cache
@@ -34,8 +35,15 @@ __all__ = [
     "Capability",
     "KnownBad",
     "Support",
+    "aiter_asm_prefill_min_qo_len",
     "aiter_fallback_backend",
-    "aiter_softcap_defect_min_kv_len",
+    "aiter_flat_gather_gated_q_len",
+    "aiter_native_paged_head_dims",
+    "aiter_native_paged_overreads",
+    "aiter_ragged_gated_q_len",
+    "aiter_softcap_defect_arch",
+    "aiter_softcap_defect_detail",
+    "aiter_softcap_gated_q_len",
     "capability_available",
     "capability_reason",
     "normalize_arch",
@@ -75,10 +83,8 @@ class ArchCapabilityError(ValueError, RuntimeError):
 
     - ``ValueError`` -- ``aiter_utils.require_aiter`` raised ``ValueError``, and
       ``tests/rocm/test_activation_aiter.py:67`` asserts on it.
-    - ``RuntimeError`` -- ``prefill_rocm`` and ``mla_rocm`` raised
-      ``RuntimeError``, and
-      ``tests/rocm/test_batch_prefill_bf16_custom_mask.py:157``
-      catches it.
+    - ``RuntimeError`` -- ``flashinfer.rocm.prefill`` and ``flashinfer.rocm.mla``
+      raised ``RuntimeError``.
 
     Deliberately *not* an ``ImportError``: a missing ``aiter`` package is a
     different condition from an unsupported architecture, and the import probes
@@ -87,10 +93,8 @@ class ArchCapabilityError(ValueError, RuntimeError):
     Deliberately *not* a :class:`flashinfer.utils.GPUArchitectureError` either,
     though that would be the tidier hierarchy. That class lives in
     ``flashinfer/utils.py``, which imports torch at module scope, and this module
-    must stay torch-free -- ``hip_utils`` imports it at module scope, and
-    ``tests/conftest.py`` uses ``hip_utils`` to choose a GPU *before* pinning
-    ``HIP_VISIBLE_DEVICES``. Inheriting would drag torch onto that path and
-    silently defeat the pinning. Re-declaring the base locally was considered and
+    must stay torch-free (see the module docstring); inheriting would drag torch
+    onto torch-less build hosts and the CPU-only CI lane. Re-declaring the base locally was considered and
     rejected: a same-named copy is a different class, so ``except
     GPUArchitectureError`` would not catch it -- worse than not claiming the
     relationship at all. No ROCm path raised ``GPUArchitectureError`` before this
@@ -151,7 +155,9 @@ class KnownBad:
 
     No row carries one today. The mechanism stays for the next defect.
 
-    Bounds are half-open: ``rocm_min`` inclusive, ``rocm_max`` exclusive.
+    Bounds are half-open (``rocm_min`` inclusive, ``rocm_max`` exclusive) against
+    ``get_system_rocm_version()``, which spells ROCm 10.1 ``"7.16"`` on TheRock:
+    one row per spelling.
     """
 
     rocm_min: Optional[str] = None
@@ -243,15 +249,15 @@ class Capability:
 # The table.
 #
 # Keyed by (op, backend) because every call site already passes both halves
-# separately -- `require_aiter(input.device, "rmsnorm")` (norm.py:116) -- so
+# separately -- `require_aiter(input.device, "rmsnorm")` (rocm/norm.py) -- so
 # routing them through here changes no signatures.
 #
 # `evidence` is only filled in where a suite was actually run on that board. An
 # empty string means "declared, nobody recorded a run". The AITER rows carry
 # evidence; the HIP rows deliberately do not yet.
 #
-# Both architectures are validated on the one supported configuration --
-# ROCm 10.0 (HIP 7.15.26333), torch 2.12.0, amd-aiter 0.1.20. The gfx942
+# Both architectures were validated on ROCm 10.0 (HIP 7.15.26333), torch
+# 2.12.0, amd-aiter 0.1.20, which is what the strings below record. The gfx942
 # AITER-backed op suites gave 8725 passed / 3581 skipped for the v0.6.18
 # release.
 # --------------------------------------------------------------------------
@@ -266,26 +272,246 @@ _MEASURED_950_MLA = (
 )
 
 
-# AITER's soft-cap defect is parameter-dependent, so it is not a KnownBad row:
-# those gate a whole (op, backend, arch) on toolchain version and would also
-# disable the logits_soft_cap=0 path, which measures clean. Only the kv_len
-# threshold differs by architecture, so that is what lives here.
-#
-# Measured on amd-aiter 0.1.20 against an fp32 reference, causal head_dim=128:
-#   gfx942  clean below 512 (full suite passes), wrong at/above it
-#   gfx950  wrong at every length tried -- 37..511 gave 0.53-3.38 abs err, NaN
-#           at 256, where logits_soft_cap=0 stays at ~0.001
-_AITER_SOFTCAP_DEFECT_MIN_KV_LEN = {"gfx942": 512, "gfx950": 0}
+# Not a KnownBad row: those gate a whole (op, backend, arch) on toolchain
+# version and would also disable the clean logits_soft_cap=0 path. What varies
+# by architecture is whether the kernel is affected, not at which length.
+# Re-measured on 0.1.21.post2 / ROCm 10.0: gfx950 wrong at every capped shape,
+# gfx942 clean at every one, cap=0 clean on both.
+_AITER_SOFTCAP_DEFECT_ARCHS = {"gfx942": False, "gfx950": True}
+
+# Exact (HIP, amd-aiter) builds on which a gated arch measured clean -- the defect
+# is in toolchain codegen. HIP spelling only: once torch is loaded the live check
+# requires torch.version.hip to equal it. Anything else stays gated until measured.
+_AITER_SOFTCAP_CLEAN_TOOLCHAINS = {"gfx950": (("7.16.26385", "0.1.21.post2"),)}
 
 
-def aiter_softcap_defect_min_kv_len(arch: str) -> Optional[int]:
-    """Smallest kv_len at which AITER miscomputes a causal soft cap on ``arch``.
+# Off the native paging route (page size or head dim) AITER gathers the KV
+# before attending, an O(kv) copy against an O(q*kv) attention -- so the overhead
+# decays as 1/q and only short queries lose. The crossover differs by arch
+# because the two kernels' throughputs do; measured on amd-aiter 0.1.20,
+# ratio table in git log.
+_AITER_FLAT_GATHER_GATED_Q_LEN = {"gfx942": 16, "gfx950": 8}
 
-    ``0`` means no length is safe, so compare with ``is not None`` rather than
-    truthiness. ``None`` means the architecture is unknown, which disarms the
-    guard rather than refusing to route on a machine that is probably fine.
+
+def aiter_flat_gather_gated_q_len(arch: str) -> Optional[int]:
+    """Largest ``max_q_len`` that should avoid AITER's flat-gather paged prefill.
+
+    Compare with ``<=``. ``None`` for an unknown architecture disarms the gate
+    rather than steering a machine that is probably fine, matching
+    :func:`aiter_softcap_defect_arch`. Applies only off AITER's native paging
+    route; native paging is faster than fa2 even at ``q=1`` and must not be
+    gated.
+
+    Measured over head_dim 128, GQA groups {4, 8}, kv_len {512, 4096, 32768}.
+    It is a per-arch scalar, so a much larger head_dim or GQA group is steered
+    on an extrapolation -- re-measure before trusting it there.
     """
-    return _AITER_SOFTCAP_DEFECT_MIN_KV_LEN.get(normalize_arch(arch))
+    return _AITER_FLAT_GATHER_GATED_Q_LEN.get(normalize_arch(arch))
+
+
+# Ragged has no gather, so the table above does not describe it: what a short
+# ragged query loses is AITER's fixed per-call cost, which only gfx942 pays
+# enough of to steer. Measured on amd-aiter 0.1.20; ratio tables in git log.
+_AITER_RAGGED_GATED_Q_LEN = {"gfx942": 16, "gfx950": None}
+
+
+def aiter_ragged_gated_q_len(arch: str) -> Optional[int]:
+    """Largest ``max_q_len`` that should avoid AITER's ragged prefill.
+
+    Compare with ``<=``. ``None`` disarms, and for gfx950 that is the measured
+    verdict rather than a gap -- indistinguishable from a deleted row through
+    this accessor, so ``test_arch_caps`` asserts membership too.
+    """
+    return _AITER_RAGGED_GATED_Q_LEN.get(normalize_arch(arch))
+
+
+# AITER's native paged prefill (mha_batch_prefill) reads past the end of the KV
+# cache at head_dim 64 and 96, at every page size it pages natively: a fault or
+# hang when the cache ends at an unmapped page. Other head dims are unmeasured,
+# so gated too. Tail-guarded on amd-aiter 0.1.21.post2 / ROCm 10.1; data in git log.
+_AITER_NATIVE_PAGED_HEAD_DIMS = {
+    "gfx942": frozenset({128, 256}),
+    "gfx950": frozenset({128, 256}),
+}
+
+
+def aiter_native_paged_head_dims(arch: str) -> Optional[frozenset]:
+    """Head dims AITER's native paged prefill stays in bounds at; None if unmeasured."""
+    return _AITER_NATIVE_PAGED_HEAD_DIMS.get(normalize_arch(arch))
+
+
+def aiter_native_paged_overreads(arch: str, head_dim: int) -> bool:
+    """Whether AITER's native paged prefill may read past the KV cache at head_dim.
+
+    True for an unknown architecture: unlike the performance gates this one
+    guards memory safety. Failing closed costs fp16/bf16 the flat gather and
+    makes fp8, which has none, raise.
+    """
+    safe = aiter_native_paged_head_dims(arch)
+    return safe is None or head_dim not in safe
+
+
+# Where a toolchain fix opened soft-capped causal prefill to AITER, its varlen
+# logits kernel still loses to fa2 up to these query lengths, per route. ROCm
+# 10.1; batches of 8, GQA 4/8, kv 512-32768; ratio tables in git log.
+_AITER_SOFTCAP_GATED_Q_LEN = {"gfx950": {"single": 192, "ragged": 16, "paged": 32}}
+
+
+def aiter_softcap_gated_q_len(arch: str, route: str) -> Optional[int]:
+    """Largest query length at which soft-capped causal prefill stays on fa2.
+
+    ``route`` is ``"single"``, ``"ragged"`` or ``"paged"``; compare with ``<=``.
+    ``None`` where no gate is set, which includes every arch the defect table
+    never gated (gfx942's single route measures slower below q=64 but is ungated).
+    """
+    return _AITER_SOFTCAP_GATED_Q_LEN.get(normalize_arch(arch), {}).get(route)
+
+
+@lru_cache(maxsize=1)
+def _aiter_jit_dir() -> Optional[str]:
+    """``aiter/jit`` of the amd-aiter distribution ``_live_versions`` measured.
+
+    ``None`` when the package that would be imported is not that distribution's
+    -- a ``PYTHONPATH`` shadow leaves the metadata version describing code
+    nothing loads, so no directory here can be vouched for.
+    """
+    try:
+        import importlib.metadata
+        import importlib.util
+
+        dist = os.path.realpath(
+            str(importlib.metadata.distribution("amd-aiter").locate_file("aiter/jit"))
+        )
+        spec = importlib.util.find_spec("aiter")
+    except Exception:
+        return None
+    imported = [
+        os.path.realpath(os.path.join(p, "jit"))
+        for p in ((spec.submodule_search_locations or []) if spec else [])
+    ]
+    return dist if imported == [dist] else None
+
+
+def _softcap_override_reason(
+    arch: str, aiter: str, torch_hip: Optional[str]
+) -> Optional[str]:
+    """Why this box's AITER kernels cannot be tied to the measured build.
+
+    The loader takes ``AITER_JIT_DIR``, else the stores in
+    ``FLASHINFER_AITER_VARIANT_DIR`` (``aiter_loader.cc``), so either can serve
+    .so files built by a toolchain the version probes never see.
+    """
+    trusted = _aiter_jit_dir()
+    if trusted is None:
+        return "the aiter package that would be imported is not amd-aiter's"
+    override = os.environ.get("AITER_JIT_DIR")
+    if override and os.path.realpath(override) != trusted:
+        return f"AITER_JIT_DIR={override} is outside {trusted}"
+    stores = [
+        q
+        for q in os.environ.get("FLASHINFER_AITER_VARIANT_DIR", "").split(os.pathsep)
+        if q
+    ]
+    if not stores:
+        return None
+    if not torch_hip:
+        return "FLASHINFER_AITER_VARIANT_DIR is set and torch's HIP is unreadable"
+    # export_variant_store() names flashinfer's own stores for the toolchain that
+    # built them (aiter_source.compose_cache_tag), so the name is the check.
+    expected = f"{arch}__aiter-{aiter}__rocm-{torch_hip}"
+    foreign = [q for q in stores if os.path.basename(os.path.normpath(q)) != expected]
+    if foreign:
+        return f"{foreign[0]} is not a {expected} store"
+    return None
+
+
+def _torch_hip() -> Optional[str]:
+    """``torch.version.hip`` if torch is already imported; never imports it."""
+    return getattr(getattr(sys.modules.get("torch"), "version", None), "hip", None)
+
+
+def aiter_softcap_defect_arch(
+    arch: str, rocm: Optional[str] = None, aiter: Optional[str] = None
+) -> bool:
+    """Does AITER miscompute a causal soft cap on ``arch`` with this toolchain?
+
+    ``rocm`` / ``aiter`` default to the live versions; the live path also needs
+    torch's HIP to agree, since AITER variant caches are keyed on it, and stays
+    gated under an ``AITER_JIT_DIR`` pointing outside the installed package. Unknown
+    arch answers ``False``; an unmeasured or unreadable toolchain stays gated.
+    """
+    arch = normalize_arch(arch)
+    if not _AITER_SOFTCAP_DEFECT_ARCHS.get(arch, False):
+        return False
+    # Captured before the live lookups below overwrite rocm: the override checks
+    # describe this box, so an explicit-version query must not run them.
+    live = rocm is None
+    torch_hip = _torch_hip() if live else None
+    if rocm is None or aiter is None:
+        live_rocm, live_aiter = _live_versions()
+        rocm = live_rocm if rocm is None else rocm
+        aiter = live_aiter if aiter is None else aiter
+    if not rocm or not aiter:
+        return True
+    for clean_rocm, clean_aiter in _AITER_SOFTCAP_CLEAN_TOOLCHAINS.get(arch, ()):
+        if _compare(rocm, clean_rocm) == 0 and aiter == clean_aiter:
+            if torch_hip is None or _compare(torch_hip, clean_rocm) == 0:
+                if live and _softcap_override_reason(arch, aiter, torch_hip):
+                    return True
+                return False
+    return True
+
+
+def aiter_softcap_defect_detail(arch: str) -> str:
+    """The live toolchain against the measured-clean ones, for error messages."""
+    rocm, aiter = _live_versions()
+    override = ""
+    if rocm and aiter:
+        reason = _softcap_override_reason(normalize_arch(arch), aiter, _torch_hip())
+        if reason:
+            override = f"kernels cannot be matched to it ({reason}); "
+    clean = " or ".join(
+        f"system version and torch HIP both {r} + amd-aiter {a}"
+        for r, a in _AITER_SOFTCAP_CLEAN_TOOLCHAINS.get(normalize_arch(arch), ())
+    )
+    return (
+        f"detected system version {rocm or 'unknown'} (the HIP version on "
+        "TheRock builds), "
+        f"torch HIP {_torch_hip() or 'unknown'}, "
+        f"amd-aiter {aiter or 'unknown'}; "
+        + (override or "")
+        + (
+            f"measured correct only on {clean}"
+            if clean
+            else "no toolchain measured correct"
+        )
+    )
+
+
+# AITER's asm forward beats its CK Tile arm only where there is enough q-side
+# parallelism to fill the device, and where that starts differs by architecture.
+# Not a KnownBad row for the same reason as the soft cap above: this gates a
+# shape range, not a whole (op, backend, arch).
+#
+# Measured on amd-aiter 0.1.20, bf16 head_dim=128, asm/CK Tile over a 60-cell
+# sweep (batch 1 and 4 x 16/32/64 q-heads x seqlen 256..6144), A/A-controlled at
+# a +/-1.3% noise floor:
+# Single prefill is batch=1, so only the batch-1 half of the sweep is reachable
+# here; those 12 cells are what the threshold rests on.
+#   gfx950  climbs with length above seqlen 1024; at/above 2048 the batch-1
+#           cells give a 1.14x geomean, worst 0.98 at 16 heads / seqlen 2048
+#   gfx942  non-monotonic and undamped, and the batch-1 gate region is a net
+#           loss (0.98x geomean, 8 of 12 regressing) -- asm stays unreachable
+_AITER_ASM_PREFILL_MIN_QO_LEN = {"gfx942": None, "gfx950": 2048}
+
+
+def aiter_asm_prefill_min_qo_len(arch: str) -> Optional[int]:
+    """Smallest qo_len at which AITER's asm prefill is worth taking on ``arch``.
+
+    ``None`` means never route to asm there, which covers both an architecture
+    measured as a loss and an unrecognised one -- the safe answer is the same.
+    """
+    return _AITER_ASM_PREFILL_MIN_QO_LEN.get(normalize_arch(arch))
 
 
 def _archs(gfx942: ArchSupport, gfx950: ArchSupport) -> Mapping[str, ArchSupport]:
@@ -336,7 +562,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "single_prefill",
         "aiter",
         _archs(_OK_942, _OK_950),
-        note="MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. fp8 WIP.",
+        note="MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. No fp8 query (`mha_fwd` has no fp8 kernel); an fp8 KV cache with a 2-byte query runs on fa2. On gfx950 an unwindowed, uncapped bf16 head_dim 128 call at `qo_len` >= 2048 takes AITER's asm kernel, outside HIP graph capture; everything else is CK Tile.",
         fallback="fa2",
     ),
     Capability(
@@ -346,7 +572,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
             _OK_942,
             ArchSupport(Support.SUPPORTED, evidence=_MEASURED_950),
         ),
-        note="Paged and ragged, with sliding window. Page sizes 128/256/1024 are served natively; others take a flat gather.",
+        note="Paged and ragged, with sliding window. fp8 query/KV on the paged route at head_dim 128/256 (bf16 out, per-tensor descales, no LSE). Page sizes 1/16/1024 are native at head_dim 128/256 only, since AITER's paged kernel reads past the KV cache at 64/96 (others unmeasured); fp16/bf16 are routed there only at 1024 and flat-gather otherwise.",
         fallback="fa2",
     ),
     # No alternative backend -- hence no fallback=.
@@ -354,7 +580,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "mla",
         "aiter",
         _archs(_OK_942, ArchSupport(Support.SUPPORTED, evidence=_MEASURED_950_MLA)),
-        note="DeepSeek-style 192/128 head-dim split; fp16/bf16. No HIP kernel exists, so `auto` resolves here.",
+        note="512 compressed-KV + 64 rope (DeepSeek V2/V3); fp16/bf16. No HIP kernel exists, so `auto` resolves here.",
     ),
     Capability(
         "rope",
@@ -409,31 +635,31 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "single_decode",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="MHA / GQA / MQA.",
+        note="MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ, E5M2FNUZ). No fp8 module is prebuilt, so first use pays a cold build.",
     ),
     Capability(
         "batch_decode",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ) and CUDA-graph capture.",
+        note="MHA / GQA / MQA; fp8 KV-cache (E4M3FNUZ, E5M2FNUZ) on both the plain and `use_tensor_cores=True` paths, and CUDA-graph capture.",
     ),
     Capability(
         "single_prefill",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="MHA / GQA / MQA, including custom attention masks.",
+        note="MHA / GQA / MQA, including custom attention masks. fp8 KV-cache (E4M3FNUZ, E5M2FNUZ) with a 2-byte query, JIT-only; the OCP spellings are refused, since they would be read under the fnuz exponent bias.",
     ),
     Capability(
         "batch_prefill",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="Paged and ragged; MHA / GQA / MQA, including custom attention masks.",
+        note="Paged and ragged; MHA / GQA / MQA, including custom attention masks. fp8 KV-cache (E4M3FNUZ, E5M2FNUZ) with a 2-byte query, JIT-only -- no fp8 prefill module is prebuilt, so first use pays a cold build.",
     ),
     Capability(
         "block_sparse",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="`BlockSparseAttentionWrapper` and the variable-block variant. Native HIP FA2 only -- `determine_attention_backend` never returns `aiter` here.",
+        note="`BlockSparseAttentionWrapper` and the variable-block variant. Native HIP FA2 only -- `determine_attention_backend` never returns `aiter` here. Both wrappers build through the batch-prefill module, so the fp8 KV-cache dtypes and refusals are the same as `batch_prefill`.",
     ),
     Capability(
         "cascade",
@@ -446,7 +672,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "pod",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="`PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream.",
+        note="`PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream. An fp8 KV-cache is refused: POD sizes its tiles independently of the prefill dispatchers and no geometry there has been tested.",
     ),
     Capability(
         "rope",
@@ -472,11 +698,14 @@ CAPABILITIES: Tuple[Capability, ...] = (
         _archs(_HIP_942, _HIP_950),
         note="What `auto` always picks: 1.6-1.8x faster than AITER on both arches.",
     ),
+    # `layernorm` was declared here until it turned out to have no ROCm kernel
+    # behind it. It is now listed with the other unported ops in
+    # docs/rocm/backends.md; a row is a promise that the op routes.
     Capability(
-        "layernorm",
+        "gemma_rmsnorm",
         "hip",
         _archs(_HIP_942, _HIP_950),
-        note="`layernorm` plus the Gemma RMSNorm variants. No AITER path.",
+        note="`gemma_rmsnorm` and `gemma_fused_add_rmsnorm`. No AITER path.",
     ),
     Capability(
         "sampling",
@@ -525,6 +754,9 @@ def _index(caps: Tuple[Capability, ...]) -> Mapping[Tuple[str, str], Capability]
 _BY_KEY = _index(CAPABILITIES)
 
 
+_LIVE_VERSIONS_LOCK = threading.Lock()
+
+
 @lru_cache(maxsize=1)
 def _live_versions() -> Tuple[Optional[str], Optional[str]]:
     """``(rocm_version, aiter_version)``, either ``None`` when undetectable.
@@ -542,7 +774,9 @@ def _live_versions() -> Tuple[Optional[str], Optional[str]]:
 
         from .hip_utils import get_system_rocm_version
 
-        with contextlib.redirect_stdout(io.StringIO()):
+        # redirect_stdout swaps the process-wide sys.stdout; two unserialised
+        # first calls can restore each other's StringIO and leave it in place.
+        with _LIVE_VERSIONS_LOCK, contextlib.redirect_stdout(io.StringIO()):
             rocm = get_system_rocm_version()
     except Exception:
         pass
@@ -590,8 +824,8 @@ def _blocking_reason(op: str, backend: str, arch: str) -> Optional[str]:
     if entry.support is Support.UNSUPPORTED:
         return f"{backend} {op} is not supported on {arch}"
     if not entry.known_bad:
-        # The common case: 24 of 25 rows have no window, so they never pay for
-        # version detection at all.
+        # No row carries a known_bad window today, so no row pays for version
+        # detection.
         return None
 
     rocm, aiter = _live_versions()

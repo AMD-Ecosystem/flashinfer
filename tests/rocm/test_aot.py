@@ -106,11 +106,20 @@ def test_gen_all_modules_deduplication():
     assert len(names) == len(set(names)), "Found duplicate module names"
 
 
+def test_aot_build_refuses_a_debug_environment(monkeypatch, tmp_path):
+    """build_flags honours FLASHINFER_JIT_DEBUG, so a wheel built under it would ship -O0."""
+    monkeypatch.setenv("FLASHINFER_JIT_DEBUG", "1")
+    with pytest.raises(RuntimeError, match="FLASHINFER_JIT_DEBUG=1"):
+        compile_and_package_modules(
+            out_dir=None, build_dir=tmp_path, project_root=tmp_path
+        )
+
+
 def test_compile_and_package_minimal():
     """Test the full compile and package workflow with minimal config.
 
-    This tests the complete AOT pipeline without slow compilation.
-    Uses skip_prebuilt=True to avoid actual compilation.
+    skip_prebuilt=True skips only modules whose AOT artifact already exists, so
+    on a cold tree this compiles everything the config selects.
     """
     # Create temporary directories
     build_dir = Path(tempfile.mkdtemp())
@@ -126,15 +135,13 @@ def test_compile_and_package_minimal():
             "use_logits_soft_cap": [False],
         }
 
-        # Test with skip_prebuilt=True to avoid actual compilation
-        # This verifies the pipeline works without spending time compiling
         compile_and_package_modules(
             out_dir=None,  # Don't copy, just test generation
             build_dir=build_dir,
             project_root=project_root,
             config=config,
             verbose=False,
-            skip_prebuilt=True,  # Skip actual compilation
+            skip_prebuilt=True,  # Skip modules already built as AOT artifacts
         )
 
     finally:
@@ -148,7 +155,7 @@ def test_failed_validation_leaves_the_environment_alone(monkeypatch):
 
     compile_and_package_modules publishes the resolved list into the process
     environment on purpose -- the AITER shim reads it from there
-    (jit/aiter_source.py) and an AOT build has no other channel to reach it.
+    (jit/rocm/aiter_source.py) and an AOT build has no other channel to reach it.
     That side effect outlives the call, so it must only happen once the list is
     known good; otherwise a build that dies on an unsupported ROCm version
     silently repoints whatever runs next in the same process.
@@ -578,7 +585,7 @@ class TestCopyBuiltKernels:
         from flashinfer.jit.rocm.env import AOT_MANIFEST_NAME
 
         pyproject = (
-            Path(aot_hip.__file__).parents[1]
+            Path(__file__).resolve().parents[2]
             / "amd-flashinfer-jit-cache"
             / "pyproject.toml"
         )

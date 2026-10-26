@@ -110,6 +110,9 @@ CUDA_ONLY_PARAMS: Dict[str, str] = {
     "window_right": "cute-dsl backend only",
     "v_indptr": "CUDA ragged-prefill scheduler input",
     "o_indptr": "CUDA ragged-prefill scheduler input",
+    "max_token_per_sequence": "cuDNN prefill backend input",
+    "max_sequence_kv": "cuDNN prefill backend input",
+    "sinks": "attention sinks; no ROCm kernel applies them",
 }
 
 # Methods a ROCm twin may leave out. Keyed "<upstream path>::<Class>.<method>".
@@ -509,5 +512,5 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return EXIT_DIVERGED if findings else EXIT_OK
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     sys.exit(main())

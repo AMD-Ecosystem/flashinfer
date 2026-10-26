@@ -48,6 +48,8 @@ void pod_with_kv_cache_tensor(
     std::optional<at::Tensor> maybe_mask_indptr_d, std::optional<at::Tensor> maybe_alibi_slopes_d,
     double logits_soft_cap_d, double sm_scale_d, double rope_rcp_scale_d, double rope_rcp_theta_d,
     bool enable_pdl) {
+  CHECK_KV_DTYPES_MATCH(k_p, v_p);
+  CHECK_KV_DTYPES_MATCH(paged_k_cache_d, paged_v_cache_d);
   QKVLayout kv_layout_p = static_cast<QKVLayout>(layout_p);
   uint32_t qo_len_p = q_p.size(0);
   uint32_t num_qo_heads = q_p.size(1);

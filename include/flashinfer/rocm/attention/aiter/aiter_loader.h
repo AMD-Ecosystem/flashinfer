@@ -10,7 +10,9 @@
 namespace flashinfer::aiter {
 
 struct VariantKey {
-  enum class Dtype : uint8_t { kFp16, kBf16 };
+  // kFp8Bf16 is fp8 in, bf16 out -- AITER has no fp8-out prefill kernel, which
+  // is why the .so segment spells both halves.
+  enum class Dtype : uint8_t { kFp16, kBf16, kFp8Bf16 };
   Dtype dtype;
   // AITER splits the .so on "is there any mask", not on causality: a non-causal
   // sliding window needs the _mask variant too. Set it to causal || windowed.
@@ -18,10 +20,14 @@ struct VariantKey {
   bool has_lse;
   bool has_alibi;
   bool has_logits_cap;
+  // Per-tensor q/k/v descales. Required by the fp8 kernels: the nqscale fp8
+  // variant compiles but resolves to no kernel instance.
+  bool has_qscale = false;
 
   bool operator==(VariantKey const& o) const noexcept {
     return dtype == o.dtype && needs_mask == o.needs_mask && has_lse == o.has_lse &&
-           has_alibi == o.has_alibi && has_logits_cap == o.has_logits_cap;
+           has_alibi == o.has_alibi && has_logits_cap == o.has_logits_cap &&
+           has_qscale == o.has_qscale;
   }
 };
 
@@ -32,13 +38,16 @@ struct VariantKeyHash {
     h = h * 31 + k.has_lse;
     h = h * 31 + k.has_alibi;
     h = h * 31 + k.has_logits_cap;
+    h = h * 31 + k.has_qscale;
     return h;
   }
 };
 
 // Returns the raw dlsym function pointer for aiter::mha_fwd(mha_fwd_args, stream_config const&)
 // out of AITER's mha_fwd template .so. The CK Tile kernel instances baked in are batch-mode
-// (matching is_group_mode=false); the ASM v3 path is still reachable via use_asm_v3=true.
+// (matching is_group_mode=false). These .so files are built -DFAV2_ON=1 with no -DFAV3_ON, so
+// aiter::mha_fwd here is CK Tile only and use_asm_v3 is ignored; the asm arm is a separate
+// module, reached via get_aiter_mha_fwd_asm_handle().
 // This is the preferred loader for single-sequence prefill on shapes that don't need
 // logits_soft_cap or min_seqlen_q semantics — it lets us skip group-mode seqstart
 // [0, seqlen] plumbing entirely.
@@ -47,6 +56,21 @@ struct VariantKeyHash {
 // _logits/_nlogits arm); callers must verify has_logits_cap==false before invoking,
 // otherwise the resulting kernel ignores logits_soft_cap.
 void* get_aiter_mha_fwd_handle(VariantKey const& key);
+
+// Returns the raw dlsym function pointer for aiter::mha_fwd out of AITER's
+// module_fmha_v3_fwd.so — the hand-written gfx9 asm arm. That module is built
+// -DFAV3_ON=1 -DENABLE_CK=0, so the same symbol dispatches to asm only and returns a
+// negative value, having launched nothing, for any traits its config table does not
+// carry. Callers must check the return and fall back to CK Tile.
+//
+// Only the dev image's AITER prebuild (docker/prebuild_aiter_attention.py) builds it. It is
+// trait-generic (AITER resolves dtype/hdim/mask/mode from its own table per call), so
+// there is no VariantKey and no JIT bootstrap to trigger.
+//
+// Throws if the .so or symbol is missing, or if AITER_ASM_DIR is unset — the asm kernels
+// are .co files read from that directory at launch time, and AITER calls std::abort()
+// rather than returning an error when it cannot find them. A throw means "use CK Tile".
+void* get_aiter_mha_fwd_asm_handle();
 
 // Returns the raw dlsym function pointer for aiter::mha_fwd out of AITER's mha_varlen_fwd
 // template .so. The CK Tile kernel instances baked in are group-mode only. Use this for
@@ -60,13 +84,14 @@ using BatchPrefillVariantKey = VariantKey;
 using BatchPrefillVariantKeyHash = VariantKeyHash;
 
 // Returns the raw dlsym function pointer for aiter::mha_batch_prefill(...).
-// The JIT directory is resolved from FLASHINFER_AITER_JIT_DIR / AITER_JIT_DIR env vars at
-// runtime; no jit_dir argument is needed. The .so is built lazily by AITER — bootstrap
-// by calling aiter.ops.mha.mha_batch_prefill_func once before invoking this function.
+// Searched in AITER_JIT_DIR, then each FLASHINFER_AITER_VARIANT_DIR entry, then the
+// compile-time FLASHINFER_AITER_JIT_DIR (skipped when AITER_JIT_DIR is set). The .so is
+// built lazily by AITER — bootstrap by calling aiter.ops.mha.mha_batch_prefill_func once
+// before invoking this function.
 // Throws std::runtime_error if the variant .so is not found or the symbol is missing.
 void* get_aiter_mha_batch_prefill_handle(BatchPrefillVariantKey const& key);
 
-// Generic helper for AITER's per-variant `extern "C"` JIT outputs (e.g. PA v1, MLA).
+// Generic helper for AITER's per-variant `extern "C"` JIT outputs (e.g. PA v1).
 // AITER's compile_template_op produces lib.so files keyed by an md5 hash of all
 // template params; the Python plan() side calls the AITER compile() helper and
 // passes the resolved (so_path, func_name) to the C++ run() entry, which dlopens

@@ -69,13 +69,14 @@ built. Details: `pr-workflow` skill.
 ## Installing Torch
 
 Torch comes from the development image, not from pip. `repo.radeon.com`
-publishes no `rocm-rel-` directory for ROCm 10.0, so there is no pip recipe
+publishes no `rocm-rel-` directory for ROCm 10.1, so there is no pip recipe
 for the supported torch 2.12 at all — `docker/Dockerfile.rocm` takes it from
-the `rocm/pytorch:rocm10.0_*` base image.
+the `rocm/pytorch:rocm10.1.0_*` base image.
 
-Do not raise torch to 2.13: it removes
-`c10::impl::cow::materialize_cow_storage`, which every published `amd-aiter`
-build's prebuilt prefill kernels link against.
+Torch 2.12 is the version tested; 2.13 is untested. A prebuilt `amd-aiter`
+wheel would additionally fail on 2.13, which removes
+`c10::impl::cow::materialize_cow_storage` that those wheels' prefill kernels
+link against.
 
 If you ever install torch by hand on another stack, use `-f`
 (`--find-links`) and **not** `--index-url` — that repo is a flat wheel
@@ -85,17 +86,16 @@ PyPI, so an unpinned install can pick a CPU-only wheel. Verify with
 
 ## Non-Obvious Gotchas
 
-**JIT build.ninja caching**: `JitSpec.build()` only writes `build.ninja` when
-the file is missing. Changing env vars (`FLASHINFER_ROCM_ARCH_LIST`, extra
-cflags) is a **silent no-op** unless you call `spec.write_ninja()` first.
+**Where a flag change does not reach**: `JitSpec.build()` rewrites
+`build.ninja` when its content changes and ninja rebuilds, but a prebuilt AOT or
+jit-cache `.so` is loaded and never rebuilt, `FLASHINFER_ROCM_ARCH_LIST` is
+resolved once at import, and a `functools.cache`d module getter keeps its spec
+for the life of the process.
 
-**`FLASHINFER_JIT_DEBUG=1` is a no-op on ROCm/HIP**: the env var is read in
-[`flashinfer/jit/core.py`](flashinfer/jit/core.py) only on the `IS_CUDA` branch
-(where it adds `-O0 -g -G`). The `IS_HIP` branch ignores it entirely. To get a
-debug build on ROCm, append `"-O0", "-g"` via `extra_cuda_cflags` in the op's
-JIT generator (the HIP path injects `-O3` before `extra_cuda_cflags`, so trailing
-`-O0` is what actually overrides it on the hipcc command line) and clear
-`~/.cache/flashinfer/`.
+**`FLASHINFER_JIT_DEBUG=1` on ROCm** builds `-O0 -g` without `-DNDEBUG`
+(`flashinfer/jit/rocm/core.py::build_flags`), and the AOT build refuses it. The
+`hip_compile` rule ends with `$cflags`, so an `-O` level passed through
+`extra_cuda_cflags` or `FLASHINFER_EXTRA_CUDAFLAGS` is silently outranked.
 
 **Framework separation**: Torch headers **must not** be included in `include/`
 files. `include/` is framework-agnostic (raw pointers only);
@@ -111,29 +111,23 @@ marking a test retires it, so do not reach for it to speed a lane up.
 gfx950 at `-n 1`, so 92% of a first run is compilation. Clearing
 `~/.cache/flashinfer` before timing anything makes the result meaningless.
 
-**AITER is version-pinned.** The development image bundles the wheel, so no
-separate install is needed there. `aiter_utils.AITER_MIN_VERSION` (0.1.20) is
-the hard floor below which the vendored struct layouts stop matching, and
-every 0.1.20 build is cp312 only — which is what fixes the interpreter.
+**AITER is a source build at a pinned tag.** `docker/Dockerfile.rocm` clones
+`v0.1.21.post2` and installs it non-editable with `PREBUILD_KERNELS=0`, so the
+image needs no separate install. `aiter_utils.AITER_MIN_VERSION` (0.1.21) is
+the hard floor: 0.1.21 moved `rmsnorm` and `rope` from `at::Tensor` to the POD
+`aiter_tensor_t`, so the shims cannot resolve their symbols against anything
+older. The vendored prefill structs are unchanged from 0.1.20.
 
-```bash
-pip install amd-aiter==0.1.20+rocm10.1.0a20260819.3135022 \
-  --extra-index-url https://rocm.frameworks-nightlies.amd.com/whl-multi-arch/
-```
+Build it by **tag**, never a branch — a clone that loses its tag makes
+`setuptools_scm` invent a `.dev` version that falls under the floor, and every
+AITER path then silently degrades to `fa2`. Use a non-editable install:
+`setup.py develop` ships no `aiter_meta`, which is what the C++ shims compile
+against. `prefill.py` records whatever is validated as `_AITER_LAST_VALIDATED`,
+and [`docs/rocm/backends.md`](docs/rocm/backends.md) has the full recipe.
 
-Spell the version out in full including the local `+rocm...` segment; pip will
-not select a local version from a loose specifier. `prefill.py` records
-whatever is validated as `_AITER_LAST_VALIDATED`, and
-[`docs/rocm/backends.md`](docs/rocm/backends.md) explains the index choice.
-
-A source build (`git clone --recursive https://github.com/ROCm/aiter.git &&
-cd aiter && python3 setup.py develop`) tracks master, which is **many releases
-ahead of the pin with a different C ABI** — symbols the shim expects are
-renamed, hidden rather than `extern "C"`, or absent. Nothing stops you running
-one, but treat it as untested here.
-
-That gap is a trap when working on the C++ shim: read the **installed** tree,
-never a source checkout, before designing against an AITER symbol.
+When working on the C++ shim, read the **installed** tree before designing
+against an AITER symbol — never a source checkout, which is generally at a
+different revision with a different C ABI.
 
 ```bash
 nm -D --defined-only -C <site-packages>/aiter/jit/module_<x>.so | grep '<fn>('
@@ -141,6 +135,22 @@ sed -n '/<fn>/,/;/p' <site-packages>/aiter_meta/csrc/include/<hdr>.h
 ```
 
 Check availability in code: `from flashinfer.rocm.aiter_utils import is_aiter_supported`
+
+**Bind AITER in C++, never through `aiter.ops.*` from the Python API.** Python
+is for capability probes, JIT bootstrap, and backend routing; the call itself
+belongs in `csrc/rocm/`. `mla.py` is the one remaining exception.
+
+**Resolving a dispatcher symbol does not mean you get its arms.** AITER splits
+one entry point across modules built with different flags: `aiter::mha_fwd`
+tries asm then CK-Tile in source, but `module_mha_fwd` compiles `-DFAV2_ON=1`
+only, and the asm arm lives in a separate `module_fmha_v3_fwd`
+(`-DFAV3_ON=1 -DENABLE_CK=0`). Read `flags_extra_cc` before designing against
+an arm, or the arg that selects it is a dead store:
+
+```bash
+python -c 'import aiter,json,os;d=os.path.dirname(aiter.__file__);print(json.load(open(d+"/jit/optCompilerConfig.json"))["module_mha_fwd"]["flags_extra_cc"])'
+strings -a <variant>.so | grep -c fmha_fwd_v3    # 0 => the asm arm is not in this binary
+```
 
 ## Arch ↔ codename
 

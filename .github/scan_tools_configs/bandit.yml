@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# bandit configuration
+# Reference: https://bandit.readthedocs.io/en/latest/config.html
+# Local scan: bandit --recursive . --configfile .github/scan_tools_configs/bandit.yml
+#
+# Bandit configuration for this repository's security scans.
+#
+# This file defines the complete scanner policy;
+# Keep repository-specific suppressions and tuning here.
+
+# Environment and generated-output exclusions support local scans; these
+# paths are absent from clean CI checkouts.
+# Bandit also matches each entry as a plain substring of the path, so a bare
+# `build` would drop build_backend_rocm.py and `.git` all of .github/; anchor
+# every entry as a */dir/* glob.
+exclude_dirs:
+  - "*/.git/*"
+  - "*/.venv*/*"
+  - "*/venv*/*"
+  - "*/build/*"
+  - "*/dist/*"
+  - "*/node_modules/*"
+  - "*/__pycache__/*"
+  # Reviewed HIGH findings in upstream files, which take no `# nosec` here:
+  # constant-command shell=True, md5/sha1 as cache and store keys, and an
+  # extractall that passes filter="data" wherever tarfile.data_filter exists.
+  - "*/flashinfer/collect_env.py"
+  - "*/flashinfer/deep_gemm.py"
+  - "*/flashinfer/moe_ep/core/bootstrap_utils.py"
+  - "*/scripts/check_pr_document.py"
+
+# pytest asserts would bury the weekly code-scanning results; library asserts
+# stay reported.
+assert_used:
+  skips: ["*/tests/*", "*/test_*.py"]

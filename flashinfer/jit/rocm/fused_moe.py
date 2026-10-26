@@ -15,7 +15,7 @@ from .aiter_source import AiterModule, aiter_jitspec_flags, refresh_aiter_jitspe
 from ..core import JitSpec, gen_jit_spec
 
 # AITER's `dtype2str_dict` (aiter/ops/moe_op.py) spellings, for the codegen flags.
-# The keys double as the supported-dtype set; flashinfer/fused_moe_rocm.py
+# The keys double as the supported-dtype set; flashinfer/rocm/fused_moe.py
 # validates against SUPPORTED_DTYPES rather than keeping its own copy.
 _DTYPE_TAG = {
     torch.bfloat16: "b16",

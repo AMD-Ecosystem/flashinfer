@@ -220,6 +220,59 @@ def copy_built_kernels(
             json.dumps({"rocm_arch_list": rocm_arch_list}) + "\n"
         )
 
+    _copy_aiter_variant_store(out_dir)
+
+
+def _copy_aiter_variant_store(out_dir: Path) -> None:
+    """Package the prebuilt AITER variants, if this box has built any.
+
+    Kept out of the AOT manifest: that is a comma-joined multi-arch list and a
+    store is always single-arch, so each store carries its own
+    ``<arch>__aiter-<ver>__rocm-<ver>`` name and the consumer matches its tag.
+    One build therefore packages one architecture; a two-arch wheel has to be
+    assembled from two, since ``copy_built_kernels`` opens with an ``rmtree``.
+    """
+    from ..jit.rocm.aiter_variants import (
+        reachable_variants,
+        so_name,
+        variant_store_dir,
+    )
+
+    try:
+        store = variant_store_dir()
+    except Exception:
+        return
+    if not store.is_dir():
+        return
+    artifacts = sorted(store.glob("*.so"))
+    if not artifacts:
+        return
+
+    dst = out_dir / "aiter_variants" / store.name
+    dst.mkdir(parents=True, exist_ok=True)
+    for src in artifacts:
+        # Same tmp+replace as the prebuild driver's _publish: an interrupted
+        # wheel build would otherwise leave a truncated .so that still satisfies
+        # a filename lookup on the consumer.
+        tmp = dst / f".{src.name}.{os.getpid()}.tmp"
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dst / src.name)
+    print(f"  packaged {len(artifacts)} AITER variant(s) from {store}")
+
+    # Against the driver's default set, not every reachable variant: the paged
+    # family is deliberately not prebuilt, so its absence is not a gap.
+    expected = {
+        so_name(k) for k in reachable_variants() if k.family.servable_from_store
+    }
+    missing = expected - {p.name for p in artifacts}
+    if missing:
+        # A partial store is legitimate (--only, or a family that failed), but it
+        # would ship silently otherwise and every gap rebuilds at plan() forever.
+        print(
+            f"  WARNING: store is missing {len(missing)} of {len(expected)} "
+            f"prebuildable variants; consumers will build those on demand"
+        )
+
 
 @contextlib.contextmanager
 def _redirected_jit_env(build_dir: Path) -> Iterator[None]:
@@ -279,6 +332,14 @@ def compile_and_package_modules(
         verbose: Whether to print verbose build output
         skip_prebuilt: Whether to skip pre-built modules
     """
+    from ..jit.rocm.core import jit_debug_enabled
+
+    # build_flags reads it from the environment, which a wheel build inherits.
+    if jit_debug_enabled():
+        raise RuntimeError(
+            "FLASHINFER_JIT_DEBUG=1 would build the packaged AOT modules -O0 -g; "
+            "unset it to build them."
+        )
     with _redirected_jit_env(build_dir):
         _compile_and_package_modules(
             out_dir, build_dir, project_root, config, verbose, skip_prebuilt
@@ -305,15 +366,13 @@ def _compile_and_package_modules(
     #
     # Publishing the result back into the environment is deliberate, not
     # incidental bookkeeping: the AITER shim resolves its own build architecture
-    # from FLASHINFER_ROCM_ARCH_LIST (jit/aiter_source.py), and an AOT build has
+    # from FLASHINFER_ROCM_ARCH_LIST (jit/rocm/aiter_source.py), and an AOT build has
     # no other channel to tell it what this build targets. Without this, a shim
     # built during an AOT run on a mixed or GPU-less host can disagree with the
     # kernels it is packaged alongside.
     #
-    # It is a process-global side effect that outlives the call, which is worth
-    # replacing with an explicit parameter threaded through the AOT -> JIT
-    # boundary. That is a wider change than this one; leaving the lifetime
-    # unchanged here keeps this commit to the resolution bug it is fixing.
+    # It is a process-global side effect that outlives the call: no explicit
+    # parameter carries the architecture across the AOT -> JIT boundary.
     from .compilation_context import CompilationContext
 
     # Publish the *validated* list, not the resolved one. Validation filters as
@@ -449,7 +508,7 @@ def main():
         "--f8-dtype",
         nargs="*",
         choices=["float8_e4m3fn", "float8_e5m2"],
-        help="8-bit data type",
+        help="Ignored; kept for CLI compatibility",
     )
     parser.add_argument(
         "--use-sliding-window", nargs="*", help="Use sliding window attention"
@@ -468,7 +527,7 @@ def main():
     args = parser.parse_args()
 
     # Setup paths
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parents[2]
     build_dir = Path(args.build_dir) if args.build_dir else Path.cwd()
     out_dir: Optional[Path] = Path(args.out_dir) if args.out_dir else None
 
@@ -503,5 +562,5 @@ def main():
     )
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

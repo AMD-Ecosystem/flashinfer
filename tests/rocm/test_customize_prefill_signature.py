@@ -19,7 +19,7 @@ import flashinfer
 from flashinfer.rocm.device_utils import IS_HIP
 
 pytestmark = pytest.mark.skipif(
-    not IS_HIP, reason="modules_hip is only importable on ROCm"
+    not IS_HIP, reason="flashinfer.jit.rocm.modules is only importable on ROCm"
 )
 
 _PKG_DIR = pathlib.Path(flashinfer.__file__).parent

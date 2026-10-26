@@ -105,9 +105,7 @@ def test_restricted_files_under_the_package_are_excluded_from_the_wheel():
 def _fires_on_this_fork(triggers: dict) -> bool:
     """A push/pull_request trigger with no `branches:` filter reaches our branch.
 
-    The ones upstream gates on `main`, or on a schedule against the default
-    branch, are left untouched on purpose -- editing a dormant upstream file
-    buys a permanent conflict on every sync.
+    Upstream's workflows are deleted on sync (CONTRIBUTING.md).
     """
     for event in ("push", "pull_request", "pull_request_target"):
         spec = triggers.get(event)

@@ -50,8 +50,8 @@ inline void act_and_mul_launch_dims(int d, int64_t num_tokens, uint32_t vec_size
 // 2D grid: blockIdx.x selects the token (row), blockIdx.y selects a column-tile
 // of that row. Output elements are independent (no cross-element reduction), so a
 // row can be split across gridDim.y blocks with no atomics. When gridDim.y == 1
-// (e.g. any 1D launch, including the CUDA path) this collapses to one block per
-// token with the same memory-access pattern as the original kernel.
+// (e.g. any 1D launch) this collapses to one block per token with the same
+// memory-access pattern as the original kernel.
 template <typename T, float (*Activation)(const float&)>
 __global__ void act_and_mul_kernel(T* __restrict__ out, const T* __restrict__ input, const int d) {
   constexpr uint32_t vec_size = 16 / sizeof(T);

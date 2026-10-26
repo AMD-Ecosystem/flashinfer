@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""URI and JitSpec generation in jit/attention/modules_hip.py.
+"""URI and JitSpec generation in jit/rocm/modules.py.
 
 Only the generator is exercised -- no source is compiled and no kernel runs.
 The branches covered here are the ones a gfx942 suite never takes: the ``fa3``
@@ -122,6 +122,18 @@ class TestAdditionalParams:
         assert "maybe_custom_mask" in decl
         assert "sm_scale" in func_params
         assert "static_cast<uint8_t*>" in setter
+
+    def test_schema_tail_follows_the_parameter_lists(self):
+        assert (
+            modules_hip._additional_params_schema(
+                ["maybe_m", "t"], ["s", "n", "b"], ["double", "int64_t", "bool"]
+            )
+            == ", Tensor? maybe_m, Tensor t, float s, int n, bool b"
+        )
+
+    def test_schema_tail_refuses_a_scalar_type_torch_cannot_take(self):
+        with pytest.raises(ValueError, match="'s' has type 'float'"):
+            modules_hip._additional_params_schema([], ["s"], ["float"])
 
     def test_default_template_still_names_every_parameter(self):
         decl, func_params, setter = modules_hip._generate_additional_params_hip(

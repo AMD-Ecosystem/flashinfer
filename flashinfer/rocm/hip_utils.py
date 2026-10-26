@@ -5,6 +5,9 @@
 import functools
 import logging
 import os
+import re
+from types import MappingProxyType
+from typing import Mapping, Sequence, Tuple
 
 # arch_caps imports nothing (in particular, not torch), so importing it here
 # keeps this module importable without torch -- which the hardware-less
@@ -18,7 +21,7 @@ FLASHINFER_SUPPORTED_ROCM_ARCHS = ["gfx942", "gfx950"]
 
 
 # The architecture assumed when nothing else can be determined. Must stay equal
-# to ``jit/aiter_source.py``'s ``_DEFAULT_BUILD_ARCH``: the two are consulted
+# to ``jit/rocm/aiter_source.py``'s ``_DEFAULT_BUILD_ARCH``: the two are consulted
 # independently on a GPU-less host, and a shim built for one architecture beside
 # kernels built for another faults at run time.
 _GPULESS_FALLBACK_ARCH = "gfx942"
@@ -59,7 +62,7 @@ def _canonical_arch_list(raw: str) -> str:
     ``"gfx942;gfx950"``, matches nothing, and
     :func:`validate_flashinfer_rocm_arch` raises "FlashInfer does not support any
     of the requested ROCm architectures". ``";"`` is worth accepting because
-    ``jit/aiter_source.py`` already documents it for this same variable, and the
+    ``jit/rocm/aiter_source.py`` already documents it for this same variable, and the
     two must not disagree about their own env var.
 
     Only *syntax* is normalized. Unknown architectures are passed through so the
@@ -125,7 +128,7 @@ def resolve_target_archs(arch_list: str = None) -> str:
 
     # Deliberately the *existing* default, not "every architecture we support".
     #
-    # A fat list looks like the safer answer here and is not. `aot_hip` publishes
+    # A fat list looks like the safer answer here and is not. `rocm.aot` publishes
     # this value into FLASHINFER_ROCM_ARCH_LIST, and `resolve_aiter_build_arch()`
     # returns `env_archs[0]` when no device is visible -- so "gfx942,gfx950"
     # ships gfx950 HIP kernels beside a gfx942-only AITER shim, which faults on a
@@ -296,7 +299,7 @@ def get_system_rocm_version():
     For TheRock builds, ``hipconfig`` is used directly because it reports the
     HIP runtime version (consistent with ``torch.version.hip``), unlike
     ``.info/version`` which reports the TheRock SDK version (for example,
-    ``"7.12.0"`` when HIP is ``7.3``).
+    ``"10.1.0"`` while HIP reports ``7.16``).
 
     Returns:
         str: ROCm version like "7.1.0" or None if not detectable
@@ -321,6 +324,75 @@ def get_system_rocm_version():
     return None
 
 
+def _compat_matrix(
+    groups: Sequence[Tuple[Sequence[str], Sequence[str]]],
+) -> Mapping[str, Tuple[str, ...]]:
+    """Flatten ``(versions, archs)`` groups into a read-only version -> archs map.
+
+    Raises on a key the major.minor lookup could never hit, or on a version
+    listed twice, which would let the later entry silently narrow its archs.
+    """
+    matrix = {}
+    for versions, archs in groups:
+        for version in versions:
+            if not re.fullmatch(r"\d+\.\d+", version):
+                raise RuntimeError(
+                    f"ROCm version {version!r} in _ROCM_ARCH_GROUPS is not major.minor"
+                )
+            if version in matrix:
+                raise RuntimeError(
+                    f"ROCm version {version!r} is listed twice in _ROCM_ARCH_GROUPS"
+                )
+            matrix[version] = tuple(archs)
+    return MappingProxyType(matrix)
+
+
+# ROCm compatibility matrix: version -> supported gfx architectures
+# Refer: https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html
+#        https://github.com/ROCm/TheRock/blob/main/SUPPORTED_GPUS.md#rocm-on-linux
+# Update lists for adding or removing a version or arch
+# Add new tuple for adding a new version group
+_ROCM_ARCH_GROUPS = [
+    (
+        # Both names for ROCm 10: a TheRock build, pip SDK included, reports the
+        # HIP version via hipconfig (ROCm 10.1.0 is 7.16); "10.x" covers an
+        # install that reports .info/version instead.
+        [
+            "10.1",
+            "10.0",
+            "7.16",
+            "7.15",
+            "7.14",
+            "7.13",
+            "7.12",
+            "7.11",
+            "7.3",
+            "7.2",
+            "7.1",
+            "7.0",
+        ],
+        [
+            "gfx950",
+            "gfx1201",
+            "gfx1200",
+            "gfx1101",
+            "gfx1100",
+            "gfx1030",
+            "gfx942",
+            "gfx90a",
+            "gfx908",
+        ],
+    ),
+    (
+        ["6.4", "6.3"],
+        ["gfx1100", "gfx1030", "gfx942", "gfx90a", "gfx908"],
+    ),
+]
+
+
+ROCM_COMPAT_MATRIX = _compat_matrix(_ROCM_ARCH_GROUPS)
+
+
 def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
     """
     Validate ROCm architecture against system ROCm version.
@@ -336,51 +408,6 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
     Raises:
         RuntimeError: If ROCm not found or architectures not supported
     """
-
-    # ROCm compatibility matrix: version -> supported gfx architectures
-    # Refer: https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html
-    #        https://github.com/ROCm/TheRock/blob/main/SUPPORTED_GPUS.md#rocm-on-linux
-    # Update lists for adding or removing a version or arch
-    # Add new tuple for adding a new version group
-    _ROCM_ARCH_GROUPS = [
-        (
-            # Both names for ROCm 10: a stock install reports "10.0" via
-            # .info/version, while a pip-SDK build short-circuits to hipconfig,
-            # which gives the HIP version instead.
-            [
-                "10.0",
-                "7.15",
-                "7.14",
-                "7.13",
-                "7.12",
-                "7.11",
-                "7.3",
-                "7.2",
-                "7.1",
-                "7.0",
-            ],
-            [
-                "gfx950",
-                "gfx1201",
-                "gfx1200",
-                "gfx1101",
-                "gfx1100",
-                "gfx1030",
-                "gfx942",
-                "gfx90a",
-                "gfx908",
-            ],
-        ),
-        (
-            ["6.4", "6.3"],
-            ["gfx1100", "gfx1030", "gfx942", "gfx90a", "gfx908"],
-        ),
-    ]
-
-    # Build the compatibility matrix
-    ROCM_COMPAT_MATRIX = {
-        version: archs for versions, archs in _ROCM_ARCH_GROUPS for version in versions
-    }
 
     # Get architecture list from parameter, env var, or default
     if arch_list is None:
@@ -400,7 +427,7 @@ def validate_rocm_arch(arch_list: str = None, verbose: bool = False) -> str:
 
     # Validate architectures against compatibility matrix
     requested_archs = [arch.strip() for arch in arch_list.split(",")]
-    supported_archs = ROCM_COMPAT_MATRIX.get(rocm_version_key, [])
+    supported_archs = ROCM_COMPAT_MATRIX.get(rocm_version_key, ())
 
     if not supported_archs:
         raise RuntimeError(
@@ -727,10 +754,10 @@ def check_torch_rocm_compatibility() -> None:
             "     form a shell would read as a redirection)\n\n"
             "Pin the version. -f only *adds* to PyPI, so an unpinned install\n"
             "can pick a newer CPU-only wheel from there and land you back here.\n"
-            "Which version pairs with your ROCm release, and what to do when\n"
-            "repo.radeon.com publishes no rocm-rel- directory for it (as with\n"
-            "ROCm 10.0 in the development image), are in the Quick start:\n"
-            "https://github.com/AMD-Ecosystem/flashinfer#quick-start\n" + "=" * 70
+            "The supported ROCm/torch pairing, and why the development image\n"
+            "is the only route on ROCm 10.1 (repo.radeon.com publishes no\n"
+            'rocm-rel- directory for it), are under "Supported hardware and\n'
+            'toolchain" in https://github.com/AMD-Ecosystem/flashinfer\n' + "=" * 70
         )
 
     # ROCm version compatibility warning
