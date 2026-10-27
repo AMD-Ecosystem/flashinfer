@@ -1732,7 +1732,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     pos_encoding_mode,
                     window_left,
                     logits_soft_cap,
-                    indptr_host,
+                    # Built at the first return_lse run; a CPU indptr is the caller's buffer.
+                    indptr_host.clone(),
                     batch_size,
                     num_qo_heads,
                     num_kv_heads,
