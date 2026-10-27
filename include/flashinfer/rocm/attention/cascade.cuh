@@ -84,9 +84,11 @@ template <uint32_t vec_size, typename DType>
 __global__ void MergeStateInPlaceKernel(DType* __restrict__ v, float* __restrict__ s,
                                         DType* __restrict__ v_other, float* __restrict__ s_other,
                                         uint8_t* __restrict__ mask, uint32_t num_heads,
-                                        uint32_t head_dim) {
+                                        uint32_t head_dim,
+                                        const uint32_t* __restrict__ seq_len_ptr) {
   uint32_t pos = blockIdx.x;
 
+  if (seq_len_ptr != nullptr && pos >= *seq_len_ptr) return;  // a graph launch past this batch
   if (mask != nullptr && mask[pos] == 0) return;
 
   uint32_t tx = threadIdx.x, ty = threadIdx.y;
@@ -596,7 +598,7 @@ hipError_t MergeState(DTypeIn* v_a, float* s_a, DTypeIn* v_b, float* s_b, DTypeO
 template <typename DType>
 hipError_t MergeStateInPlace(DType* v, float* s, DType* v_other, float* s_other, uint32_t seq_len,
                              uint32_t num_heads, uint32_t head_dim, uint8_t* mask = nullptr,
-                             hipStream_t stream = nullptr) {
+                             hipStream_t stream = nullptr, uint32_t* seq_len_ptr = nullptr) {
   DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
     constexpr uint32_t vec_size = std::max(16U / sizeof(DType), HEAD_DIM / 32U);
     uint32_t bdx = HEAD_DIM / vec_size;
@@ -604,7 +606,7 @@ hipError_t MergeStateInPlace(DType* v, float* s, DType* v_other, float* s_other,
     dim3 nblks(seq_len);
     dim3 nthrs(bdx, bdy);
     auto kernel = MergeStateInPlaceKernel<vec_size, DType>;
-    void* args[] = {&v, &s, &v_other, &s_other, &mask, &num_heads, &head_dim};
+    void* args[] = {&v, &s, &v_other, &s_other, &mask, &num_heads, &head_dim, &seq_len_ptr};
     FI_HIP_CALL(hipLaunchKernel((void*)kernel, nblks, nthrs, args, 0, stream));
   });
   return hipSuccess;

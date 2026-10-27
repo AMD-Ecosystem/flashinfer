@@ -532,3 +532,35 @@ def test_a_rejected_aiter_decode_plan_leaves_the_last_plan_usable(workspace, dev
             q_data_type=torch.float16,
         )
     torch.testing.assert_close(w.run(q, kv), expected)
+
+
+def test_partial_state_after_a_shrinking_cuda_graph_replan(workspace, device):
+    """The graph-mode merge into partial_state stops at this batch's rows."""
+    i32 = lambda *v: torch.tensor(v, dtype=torch.int32, device=device)  # noqa: E731
+    rand = lambda *s: torch.randn(*s, dtype=torch.float16, device=device)  # noqa: E731
+    paged = (i32(0, 1), i32(0), i32(PAGE_SIZE), HEADS, HEADS, HEAD_DIM, PAGE_SIZE)
+    kv = rand(1, 2, PAGE_SIZE, HEADS, HEAD_DIM)
+    q, po = rand(8, HEADS, HEAD_DIM), rand(8, HEADS, HEAD_DIM)
+    plse = torch.randn(8, HEADS, dtype=torch.float32, device=device)
+    ref = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
+        torch.empty_like(workspace), "NHD", backend="fa2"
+    )
+    ref.plan(i32(0, 8), *paged)
+    expected = ref.run(q, kv, partial_state=(po, plse))
+
+    w = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
+        workspace,
+        "NHD",
+        use_cuda_graph=True,
+        qo_indptr_buf=i32(0, 0),
+        paged_kv_indptr_buf=i32(0, 0),
+        paged_kv_indices_buf=i32(0),
+        paged_kv_last_page_len_buf=i32(0),
+        backend="fa2",
+    )
+    w.plan(i32(0, 16), *paged)
+    w.plan(i32(0, 8), *paged)
+    buf = torch.full((16, HEADS, HEAD_DIM), 7.0, dtype=torch.float16, device=device)
+    w.run(q, kv, out=buf[:8], partial_state=(po, plse))
+    torch.testing.assert_close(buf[:8], expected, rtol=1e-3, atol=1e-3)
+    assert bool((buf[8:] == 7.0).all()), "the merge wrote past this batch's rows"

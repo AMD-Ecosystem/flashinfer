@@ -254,6 +254,8 @@ void BatchPrefillWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
                     maybe_partial_lse->size(0) == q.size(0) &&
                     maybe_partial_lse->size(1) == q.size(1),
                 "partial_lse must be contiguous and shaped [q rows, heads]");
+    // The split-KV merge reads lse unconditionally.
+    TORCH_CHECK(!plan_info.split_kv || maybe_lse, "partial_state needs maybe_lse on this plan");
   }
 
   void* float_buffer_ptr = static_cast<void*>(float_workspace_buffer.data_ptr());

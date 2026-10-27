@@ -2630,7 +2630,7 @@ hipError_t BatchPrefillWithPagedKVCacheDispatched(Params params, typename Params
           if (params.partial_o != nullptr) {
             FI_HIP_CALL(MergeStateInPlace(o, lse, params.partial_o, params.partial_lse,
                                           params.max_total_num_rows, num_qo_heads, HEAD_DIM_VO,
-                                          nullptr, stream));
+                                          nullptr, stream, params.total_num_rows));
           }
         } else {
           FI_HIP_CALL(VariableLengthAttentionSum(tmp_v, params.merge_indptr, o,
