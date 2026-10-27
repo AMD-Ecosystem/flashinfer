@@ -412,6 +412,42 @@ def test_batch_decode_aiter_return_lse_via_fa2(dtype, window_left):
 
 
 @requires_aiter
+def test_batch_decode_aiter_lse_plan_uses_the_planned_indptr():
+    """The FA2 shadow plan is built at the first return_lse run, after a caller
+    may have reused its CPU indptr buffer for the next batch."""
+    device = torch.device("cuda:0")
+    dtype, page_size, num_qo_heads, num_kv_heads, head_dim = (
+        torch.float16,
+        16,
+        16,
+        4,
+        128,
+    )
+    kv_lens = [128, 256, 512, 1024]
+    k_cache, v_cache, indptr, indices, last_page_len = _build_paged_kv(
+        len(kv_lens), kv_lens, page_size, num_kv_heads, head_dim, dtype, device
+    )
+    indptr_cpu = indptr.cpu()
+    q = torch.randn(len(kv_lens), num_qo_heads, head_dim, dtype=dtype, device=device)
+    args = (indices, last_page_len, num_qo_heads, num_kv_heads, head_dim, page_size)
+    workspace = torch.zeros(128 * 1024 * 1024, dtype=torch.uint8, device=device)
+    ref = flashinfer.BatchDecodeWithPagedKVCacheWrapper(workspace, "NHD", backend="fa2")
+    ref.plan(indptr_cpu, *args, q_data_type=dtype)
+    o_ref, lse_ref = ref.run(q, (k_cache, v_cache), return_lse=True)
+
+    cand = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+        torch.zeros_like(workspace), "NHD", backend="aiter"
+    )
+    cand.plan(indptr_cpu, *args, q_data_type=dtype)
+    # The next batch, same total pages, staged into the same buffer.
+    pages = torch.tensor([64, 32, 16, 8], dtype=torch.int32)
+    indptr_cpu[1:] = torch.cumsum(pages, 0)
+    o, lse = cand.run(q, (k_cache, v_cache), return_lse=True)
+    torch.testing.assert_close(o.float(), o_ref.float(), rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(lse, lse_ref, rtol=1e-3, atol=1e-3)
+
+
+@requires_aiter
 def test_batch_decode_auto_routes_cuda_graph_to_fa2():
     """backend='auto' with use_cuda_graph=True and NO max_seq_len routes to fa2.
     fa2's graph path is capacity-based (correct regardless of capture-vs-replay

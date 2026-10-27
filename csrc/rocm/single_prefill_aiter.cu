@@ -86,6 +86,9 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
               "AITER backend requires output dtype to match input dtype; got o=", o.scalar_type(),
               " q=", q_dtype);
   TORCH_CHECK(o.is_contiguous(), "AITER backend requires a contiguous output tensor");
+  CHECK_LAST_DIM_CONTIGUOUS(q);
+  CHECK_LAST_DIM_CONTIGUOUS(k);
+  CHECK_LAST_DIM_CONTIGUOUS(v);
 
   const hipStream_t stream = c10::hip::getCurrentHIPStream();
   const bool causal = (mask_mode == MaskMode::kCausal);
@@ -110,6 +113,7 @@ void single_prefill_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::
     params.lse = nullptr;
   }
 
+  CHECK_GQA_HEAD_DIVISIBLE(q.size(1), k.size(1));
   params.num_qo_heads = static_cast<uint32_t>(q.size(1));
   params.num_kv_heads = static_cast<uint32_t>(k.size(1));
   params.qo_len = static_cast<uint32_t>(q.size(0));

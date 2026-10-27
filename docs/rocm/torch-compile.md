@@ -31,6 +31,7 @@ That covers an `out=` slice, an in-place norm on part of a buffer, K and V
 caches carved from one allocation (a layer of a multi-layer pool, the halves of
 a `[2, pages, ...]` tensor), and the single `[pages, 2, ...]` cache
 `append_paged_kv_cache` accepts, which it splits into K and V views itself.
+It is a PyTorch defect, present in 2.13 too, that FlashInfer cannot work around.
 Allocate every tensor an op writes as its own buffer up front, rather than
 slicing it from a larger one, and pass append two separately allocated caches;
 a `.clone()` per call is not a fix, since the write never reaches the original.

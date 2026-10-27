@@ -47,6 +47,7 @@ at::Tensor BatchPrefillWithKVCachePlan(
     at::Tensor kv_len_arr, int64_t total_num_rows, int64_t batch_size, int64_t num_qo_heads,
     int64_t num_kv_heads, int64_t page_size, bool enable_cuda_graph, int64_t head_dim_qk,
     int64_t head_dim_vo, bool causal) {
+  CHECK_GQA_HEAD_DIVISIBLE(num_qo_heads, num_kv_heads);
   size_t float_workspace_size_in_bytes =
       float_workspace_buffer.size(0) * float_workspace_buffer.element_size();
   size_t int_workspace_size_in_bytes =
@@ -78,6 +79,12 @@ void BatchPrefillWithRaggedKVCacheRun(at::Tensor float_workspace_buffer,
                                       std::optional<at::Tensor> maybe_lse, int64_t mask_mode_code,
                                       int64_t layout, int64_t window_left ADDITIONAL_FUNC_PARAMS) {
   CHECK_KV_DTYPES_MATCH(k, v);
+  CHECK_LAST_DIM_CONTIGUOUS(q);
+  CHECK_LAST_DIM_CONTIGUOUS(k);
+  CHECK_LAST_DIM_CONTIGUOUS(v);
+  TORCH_CHECK(o.is_contiguous(),
+              "o must be contiguous (an output allocated like q keeps q's layout)");
+  TORCH_CHECK(!maybe_lse || maybe_lse->is_contiguous(), "maybe_lse must be contiguous");
   PrefillPlanInfo plan_info;
   plan_info.FromVector(tensor_to_vec(plan_info_vec));
   QKVLayout kv_layout = static_cast<QKVLayout>(layout);
@@ -85,6 +92,7 @@ void BatchPrefillWithRaggedKVCacheRun(at::Tensor float_workspace_buffer,
   int64_t num_qo_heads = q.size(1);
   int64_t head_dim_qk = q.size(2);
   int64_t num_kv_heads = (kv_layout == QKVLayout::kNHD) ? k.size(1) : k.size(0);
+  CHECK_GQA_HEAD_DIVISIBLE(num_qo_heads, num_kv_heads);
   uint32_t q_stride_n = q.stride(0), q_stride_h = q.stride(1), k_stride_n, k_stride_h, v_stride_n,
            v_stride_h;
   if (kv_layout == QKVLayout::kNHD) {
@@ -209,6 +217,12 @@ void BatchPrefillWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
                                      std::optional<at::Tensor> maybe_partial_o = std::nullopt,
                                      std::optional<at::Tensor> maybe_partial_lse = std::nullopt) {
   CHECK_KV_DTYPES_MATCH(paged_k_cache, paged_v_cache);
+  CHECK_LAST_DIM_CONTIGUOUS(q);
+  CHECK_LAST_DIM_CONTIGUOUS(paged_k_cache);
+  CHECK_LAST_DIM_CONTIGUOUS(paged_v_cache);
+  TORCH_CHECK(o.is_contiguous(),
+              "o must be contiguous (an output allocated like q keeps q's layout)");
+  TORCH_CHECK(!maybe_lse || maybe_lse->is_contiguous(), "maybe_lse must be contiguous");
   PrefillPlanInfo plan_info;
   plan_info.FromVector(tensor_to_vec(plan_info_vec));
   QKVLayout kv_layout = static_cast<QKVLayout>(layout);
@@ -224,6 +238,7 @@ void BatchPrefillWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
     page_size = paged_k_cache.size(1);
     num_kv_heads = paged_k_cache.size(2);
   }
+  CHECK_GQA_HEAD_DIVISIBLE(num_qo_heads, num_kv_heads);
 
   if (maybe_lse) {
     const auto& lse = *maybe_lse;
@@ -232,6 +247,16 @@ void BatchPrefillWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
   }
   TORCH_CHECK(maybe_partial_o.has_value() == maybe_partial_lse.has_value(),
               "partial_o and partial_lse must both be provided or both be absent");
+  if (maybe_partial_o) {  // merged into o with o's packed strides
+    TORCH_CHECK(maybe_partial_o->is_contiguous() && maybe_partial_o->sizes() == o.sizes(),
+                "partial_o must be contiguous and shaped like the output");
+    TORCH_CHECK(maybe_partial_lse->is_contiguous() && maybe_partial_lse->dim() == 2 &&
+                    maybe_partial_lse->size(0) == q.size(0) &&
+                    maybe_partial_lse->size(1) == q.size(1),
+                "partial_lse must be contiguous and shaped [q rows, heads]");
+    // The split-KV merge reads lse unconditionally.
+    TORCH_CHECK(!plan_info.split_kv || maybe_lse, "partial_state needs maybe_lse on this plan");
+  }
 
   void* float_buffer_ptr = static_cast<void*>(float_workspace_buffer.data_ptr());
   void* int_buffer_ptr = static_cast<void*>(int_workspace_buffer.data_ptr());

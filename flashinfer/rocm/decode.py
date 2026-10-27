@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 import torch
 
 from .api_compat import ignore_enable_pdl, reject_cuda_only
+from ..api_logging import flashinfer_api
 from ..jit import (
     gen_batch_decode_aiter_module,
     gen_batch_decode_module,
@@ -42,6 +43,9 @@ from .prefill import (
     _aiter_bootstrap_lock,
     _auto_select_prefill_backend,
     _check_kv_dtypes_match,
+    _REPLAN_REQUIRED,
+    _check_run_matches_plan,
+    _PlannedShapes,
     get_batch_prefill_jit_module,
     get_batch_prefill_module,
     get_single_prefill_module,
@@ -618,6 +622,7 @@ def _aiter_pa_v1_available(
     return resolved, None
 
 
+@flashinfer_api
 def single_decode_with_kv_cache_with_jit_module(
     jit_module: Any,
     q: torch.Tensor,
@@ -630,6 +635,7 @@ def single_decode_with_kv_cache_with_jit_module(
 ):
     device = q.device
     tmp = _get_cache_buf("single_decode_with_kv_cache_tmp", 32 * 1024 * 1024, device)
+    q = q.contiguous()  # one token: cheap, and o is allocated like q
     o = torch.empty_like(q)
     if return_lse:
         lse = torch.empty((q.size(0)), dtype=torch.float32, device=device)
@@ -689,6 +695,7 @@ def single_decode_with_kv_cache(
 ) -> Tuple[torch.Tensor, torch.Tensor]: ...
 
 
+@flashinfer_api
 def single_decode_with_kv_cache(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -786,6 +793,9 @@ def single_decode_with_kv_cache(
     """
     _check_pos_encoding_mode(pos_encoding_mode)
     _check_kv_layout(kv_layout)
+    # q is one token, so a copy is cheap; both kernels read it packed and size
+    # `out` from it.
+    q = q.contiguous()
     tmp = _get_cache_buf("single_decode_with_kv_cache_tmp", 32 * 1024 * 1024, q.device)
     head_dim = q.shape[-1]
     if logits_soft_cap is None:
@@ -949,6 +959,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
     manages the lifecycle of these data structures.
     """
 
+    @flashinfer_api
     def __init__(
         self,
         float_workspace_buffer: torch.Tensor,
@@ -1138,6 +1149,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
         # frozen-shape check can test them directly. None means "never planned";
         # plan() commits both only once its C++ plan has succeeded.
         self._plan_info: Optional[torch.Tensor] = None
+        self._planned_shapes: Optional[_PlannedShapes] = None
         self._batch_size: int = 0
         self._q_len_per_req: Optional[int] = None
 
@@ -1224,6 +1236,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
             "workspace buffers as documented on the constructor instead."
         )
 
+    @flashinfer_api
     def plan(
         self,
         indptr: torch.Tensor,
@@ -1482,19 +1495,17 @@ class BatchDecodeWithPagedKVCacheWrapper:
 
         # An over-capacity demotion is a property of one batch, not of the device, so
         # unlike the capability-driven resolution it must not stick: re-resolve.
-        if self._backend_capacity_demoted:
-            self._backend = self._backend_requested
-            self._backend_capacity_demoted = False
-            self._backend_fallback_reason = None
+        backend = (
+            self._backend_requested if self._backend_capacity_demoted else self._backend
+        )
 
-        # Validate a declared graph capacity before touching any persistent buffer:
-        # the caller may keep replaying its captured graph, so a rejected batch has to
-        # leave the wrapper exactly as it was.
+        # Validate before touching any wrapper state: the caller may keep replaying
+        # its captured graph, so a rejected batch has to leave the wrapper as it was.
         over_capacity_reason = None
         if (
             self._aiter_graph_max_seq_len is not None
             and not self.use_tensor_cores
-            and self._backend in ("auto", "aiter")
+            and backend in ("auto", "aiter")
         ):
             over = _aiter_graph_capacity_overrun(
                 indptr_host,
@@ -1522,6 +1533,39 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 raise ValueError(
                     "The size of indices should be less than or equal to the allocated buffer"
                 )
+        # Explicit AITER, or auto resolved to it by an earlier plan(); over capacity
+        # an auto wrapper demotes instead. Auto never resolves to AITER past these.
+        if backend == "aiter" and over_capacity_reason is None:
+            if self.use_tensor_cores:
+                raise ValueError("AITER decode backend requires use_tensor_cores=False")
+            if self._kv_layout != "NHD":
+                raise ValueError(
+                    f"AITER decode backend requires NHD kv_layout, got {self._kv_layout!r}"
+                )
+            if pos_encoding_mode != "NONE":
+                raise ValueError(
+                    f"AITER decode backend requires pos_encoding_mode='NONE', "
+                    f"got {pos_encoding_mode!r}"
+                )
+
+        if data_type is not None:
+            if q_data_type is None:
+                q_data_type = data_type
+            if kv_data_type is None:
+                kv_data_type = data_type
+
+        q_data_type = canonicalize_torch_dtype(q_data_type)
+        if kv_data_type is None:
+            kv_data_type = q_data_type
+        kv_data_type = canonicalize_torch_dtype(kv_data_type)
+
+        self._planned_shapes = _REPLAN_REQUIRED  # until this plan() completes
+        if self._backend_capacity_demoted:
+            self._backend = self._backend_requested
+            self._backend_capacity_demoted = False
+            self._backend_fallback_reason = None
+
+        if self.is_cuda_graph_enabled:
             self._paged_kv_indptr_buf.copy_(indptr, non_blocking=non_blocking)
             self._paged_kv_last_page_len_buf.copy_(
                 last_page_len, non_blocking=non_blocking
@@ -1539,17 +1583,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
             self._paged_kv_last_page_len_buf = last_page_len.to(
                 self.device, non_blocking=non_blocking
             )
-
-        if data_type is not None:
-            if q_data_type is None:
-                q_data_type = data_type
-            if kv_data_type is None:
-                kv_data_type = data_type
-
-        q_data_type = canonicalize_torch_dtype(q_data_type)
-        if kv_data_type is None:
-            kv_data_type = q_data_type
-        kv_data_type = canonicalize_torch_dtype(kv_data_type)
 
         self._cached_q_data_type = q_data_type
         self._cached_kv_data_type = kv_data_type
@@ -1598,17 +1631,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     )
                 )
         if self._backend == "aiter":
-            if self.use_tensor_cores:
-                raise ValueError("AITER decode backend requires use_tensor_cores=False")
-            if self._kv_layout != "NHD":
-                raise ValueError(
-                    f"AITER decode backend requires NHD kv_layout, got {self._kv_layout!r}"
-                )
-            if pos_encoding_mode != "NONE":
-                raise ValueError(
-                    f"AITER decode backend requires pos_encoding_mode='NONE', "
-                    f"got {pos_encoding_mode!r}"
-                )
             if self._aiter_graph_max_seq_len is not None:
                 # Size the grid / .so variant / partition workspace from the declared
                 # capacity rather than this batch, so capture and replay decouple.
@@ -1710,7 +1732,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     pos_encoding_mode,
                     window_left,
                     logits_soft_cap,
-                    indptr_host,
+                    # Built at the first return_lse run; a CPU indptr is the caller's buffer.
+                    indptr_host.clone(),
                     batch_size,
                     num_qo_heads,
                     num_kv_heads,
@@ -1722,6 +1745,15 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 # construction (it requires use_tensor_cores=False).
                 self._batch_size = batch_size
                 self._q_len_per_req = q_len_per_req
+                self._planned_shapes = (
+                    num_qo_heads,
+                    num_kv_heads,
+                    head_dim,
+                    head_dim,
+                    page_size,
+                    None,  # q rows: run() already checks them exactly
+                    None,
+                )
                 if not self.is_cuda_graph_enabled:
                     # Set unconditionally in eager mode before the tail moved,
                     # so keep setting it here rather than leaving the attribute
@@ -1825,13 +1857,19 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 self._plan_info, device=self._float_workspace_buffer.device
             )
 
-        # Past the C++ plan() above, which is the last thing that can raise.
-        # run() reads all three, and a captured graph reads _qo_indptr_buf, so a
-        # rejected plan must not leave them describing a plan that never took.
-        # Only these three: the paged-KV buffers above are still written first,
-        # so a failed plan() is not transactional overall.
+        # Past the C++ plan(), the last thing that can raise: a captured graph reads
+        # _qo_indptr_buf, so a plan that raised must not leave it describing that plan.
         self._batch_size = batch_size
         self._q_len_per_req = q_len_per_req
+        self._planned_shapes = (
+            num_qo_heads,
+            num_kv_heads,
+            head_dim,
+            head_dim,
+            page_size,
+            None,
+            None,
+        )
         if self.is_cuda_graph_enabled:
             # __init__ already baked arange(batch+1); only a multi-token plan
             # changes it. The buffer exists there only for tensor cores.
@@ -2000,6 +2038,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
         kv_cache_sf: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]: ...
 
+    @flashinfer_api
     def run(
         self,
         q: torch.Tensor,
@@ -2087,6 +2126,10 @@ class BatchDecodeWithPagedKVCacheWrapper:
         # cannot stand in for "has a plan" -- the check has to be on plan state.
         if self._plan_info is None:
             raise ValueError("plan info is not initialized; call plan() first")
+        k_cache, v_cache = _unpack_paged_kv_cache(paged_kv_cache, self._kv_layout)
+        _check_run_matches_plan(
+            self._planned_shapes, q, k_cache, v_cache, self._kv_layout
+        )
         planned_q_len = self._q_len_per_req or 1
         actual_batch_size = self._batch_size
         if q_len_per_req is not None:
@@ -2140,7 +2183,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
 
         # ROCm has no PDL: the default resolves to off, and only an explicit request warns.
         enable_pdl = ignore_enable_pdl(enable_pdl)
-        k_cache, v_cache = _unpack_paged_kv_cache(paged_kv_cache, self._kv_layout)
         if self._kv_layout == "NHD":
             page_size = k_cache.shape[1]
         else:

@@ -38,6 +38,9 @@ void single_decode_with_kv_cache(at::Tensor q, at::Tensor k, at::Tensor v, at::T
   CHECK_INPUT(k);
   CHECK_INPUT(v);
   CHECK_INPUT(tmp);
+  TORCH_CHECK(o.is_contiguous(),
+              "o must be contiguous (an output allocated like q keeps q's layout)");
+  TORCH_CHECK(!maybe_lse || maybe_lse->is_contiguous(), "maybe_lse must be contiguous");
   auto device = q.device();
   CHECK_EQ(k.device(), device);
   CHECK_EQ(v.device(), device);

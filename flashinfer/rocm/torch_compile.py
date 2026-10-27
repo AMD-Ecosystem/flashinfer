@@ -41,18 +41,30 @@ def use_torch_custom_ops_enabled() -> bool:
     return _USE_TORCH_CUSTOM_OPS
 
 
-def _guard_compile(f: Callable, op_name: str) -> Callable:
-    """Wrap ``f`` to raise if traced by torch.compile while registration is off."""
+def _guard_compile(f: Callable, op_name: str, reason: Optional[str] = None) -> Callable:
+    """Wrap ``f`` to raise if traced by torch.compile.
+
+    Without *reason* the op is unregistered because the flag is off; with it, the
+    flag is on and registration failed for that reason, so the flag is no remedy.
+    """
+    if reason is None:
+        message = (
+            f"torch.compile traced into flashinfer op '{op_name}' but "
+            "custom ops are not enabled. Set the environment variable "
+            "FLASHINFER_USE_TORCH_CUSTOM_OPS=1 before importing "
+            "flashinfer to use torch.compile."
+        )
+    else:
+        message = (
+            f"torch.compile traced into flashinfer op '{op_name}', which could "
+            f"not be registered as a torch.library custom op ({reason}). Call it "
+            "outside the compiled region."
+        )
 
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
         if torch.compiler.is_compiling():
-            raise RuntimeError(
-                f"torch.compile traced into flashinfer op '{op_name}' but "
-                "custom ops are not enabled. Set the environment variable "
-                "FLASHINFER_USE_TORCH_CUSTOM_OPS=1 before importing "
-                "flashinfer to use torch.compile."
-            )
+            raise RuntimeError(message)
         return f(*args, **kwargs)
 
     return wrapper
@@ -78,18 +90,18 @@ def register_custom_op(
                 device_types=device_types,
                 schema=schema,
             )
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
             # Schema inference rejects some parameter types, e.g.
             # Optional[torch.Generator]. Fall back to the guard so tracing
             # still fails loudly instead of entering the extension.
+            reason = (str(e).strip().splitlines() or [type(e).__name__])[0]
             warnings.warn(
                 f"Could not register '{name}' as a torch.library custom op "
-                "(unsupported parameter type in schema inference); falling back "
-                "to compile guard. torch.compile will raise a RuntimeError if it "
-                "traces into this op.",
+                f"({reason}); falling back to compile guard. torch.compile will "
+                "raise a RuntimeError if it traces into this op.",
                 stacklevel=2,
             )
-            return _guard_compile(f, name)
+            return _guard_compile(f, name, reason=reason)
 
     if fn is not None:
         return decorator(fn)

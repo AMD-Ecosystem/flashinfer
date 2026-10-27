@@ -39,6 +39,7 @@ at::Tensor BatchDecodeWithPagedKVCachePlan(
     int64_t num_qo_heads, int64_t num_kv_heads, int64_t page_size, bool enable_cuda_graph,
     int64_t window_left, double logits_soft_cap, int64_t head_dim_qk, int64_t head_dim_vo,
     at::Tensor empty_q_data, at::Tensor empty_kv_data) {
+  CHECK_GQA_HEAD_DIVISIBLE(num_qo_heads, num_kv_heads);
   size_t float_workspace_size_in_bytes =
       float_workspace_buffer.size(0) * float_workspace_buffer.element_size();
   size_t int_workspace_size_in_bytes =
@@ -88,6 +89,12 @@ void BatchDecodeWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
                                     int64_t kv_layout_code,
                                     int64_t window_left ADDITIONAL_FUNC_PARAMS) {
   CHECK_KV_DTYPES_MATCH(paged_k_cache, paged_v_cache);
+  CHECK_LAST_DIM_CONTIGUOUS(q);
+  CHECK_LAST_DIM_CONTIGUOUS(paged_k_cache);
+  CHECK_LAST_DIM_CONTIGUOUS(paged_v_cache);
+  TORCH_CHECK(o.is_contiguous(),
+              "o must be contiguous (an output allocated like q keeps q's layout)");
+  TORCH_CHECK(!maybe_lse || maybe_lse->is_contiguous(), "maybe_lse must be contiguous");
   DecodePlanInfo plan_info;
   const size_t size = plan_info_vec.numel();
   const int64_t* first = plan_info_vec.data_ptr<int64_t>();
@@ -106,6 +113,7 @@ void BatchDecodeWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
     page_size = paged_k_cache.size(1);
     num_kv_heads = paged_k_cache.size(2);
   }
+  CHECK_GQA_HEAD_DIVISIBLE(num_qo_heads, num_kv_heads);
   uint32_t head_dim_qk = q.size(2);
   uint32_t head_dim_vo = paged_v_cache.size(3);
 
