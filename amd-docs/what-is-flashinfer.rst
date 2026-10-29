@@ -14,8 +14,8 @@ for graphics processing units (GPUs). FlashInfer focuses on LLM serving and infe
 as advanced performance across diverse scenarios.
 
 FlashInfer features highly efficient attention kernels, load-balanced scheduling, and memory-optimized
-techniques, while supporting customized attention variants. It’s compatible with ``torch.compile``, and
-offers high-performance LLM-specific operators, with easy integration through PyTorch, and C++ APIs.
+techniques, while supporting customized attention variants. It’s compatible with ``torch.compile`` and
+offers high-performance LLM-specific operators, with easy integration through PyTorch and C++ APIs.
 
 FlashInfer on ROCm supports both stages of LLM inference:
 

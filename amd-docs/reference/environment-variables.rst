@@ -58,7 +58,7 @@ These variables control ``torch.compile``, JIT compilation, and the on-disk kern
 AITER
 ====================================================================
 
-These variables control the `AITER <https://github.com/ROCm/aiter>`__ backend and the kernels it selects. For operation coverage, see the :doc:`kernel support matrix <../what-is-flashinfer>`.
+These variables control the `AITER <https://github.com/ROCm/aiter>`__ backend and the kernels it selects. For operation coverage, see the `kernel support matrix <https://rocm.docs.amd.com/projects/flashinfer/en/docs-26.10/what-is-flashinfer.html#kernel-support-matrix>`__.
 
 .. list-table::
    :header-rows: 1

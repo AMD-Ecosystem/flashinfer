@@ -19,7 +19,7 @@ as well as advanced performance across diverse scenarios.
 
 FlashInfer on ROCm includes capabilities such as load balancing,
 sparse and dense attention optimizations, and single and batch decode, alongside
-prefill for high‑performance execution on AMD Instinct MI300X, MI325X, and MI355X GPUs.
+prefill for high‑performance execution on AMD Instinct MI300X, MI325X, MI350X, and MI355X GPUs.
 FlashInfer features highly efficient attention kernels, load-balanced scheduling,
 and memory-optimized techniques, while supporting customized attention variants.
 It’s compatible with ``torch.compile``, and offers high-performance LLM-specific
