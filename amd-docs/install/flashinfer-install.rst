@@ -53,11 +53,17 @@ Build FlashInfer from source
       docker run -it --rm \
       --privileged --network=host --device=/dev/kfd \
       --device=/dev/dri --group-add video \
+      --group-add "$(getent group render | cut -d: -f3)" \
       --cap-add=SYS_PTRACE \
       --security-opt seccomp=unconfined \
       --shm-size 16G \
       -v $PWD:/workspace \
       rocm-flashinfer-dev
+
+   Pass ``render`` as the host's numeric GID, as shown. The image runs as a
+   non-root user, so ``--privileged`` on its own does not grant access, and
+   passing the group by name picks up the image's own ``render`` group, whose
+   GID does not match the device.
 
 4. Once you are inside the container, you can now install FlashInfer inside it.
 

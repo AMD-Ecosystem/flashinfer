@@ -10,7 +10,7 @@ Run a FlashInfer example
 
 AITER supports single and batch prefill, along with other operations listed in the `kernel support matrix <https://rocm.docs.amd.com/projects/flashinfer/en/docs-26.10/what-is-flashinfer.html#kernel-support-matrix>`__.
 The ``auto`` backend calls the most optimized kernels from AITER or the in-tree HIP kernels, based on the benchmarking results.
-To use AITER as the backend for any operation explicitly, use the ``backend="aiter"`` keyword argument to invoke the kernels.
+To select AITER explicitly for an operation that exposes a ``backend`` argument, pass ``backend="aiter"``.
 
 1. Save the following code snippet to a Python script named ``flashinfer_example.py``.
 

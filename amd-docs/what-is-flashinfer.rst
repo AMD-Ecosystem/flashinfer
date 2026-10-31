@@ -92,12 +92,11 @@ FlashInfer on ROCm supports the following attention modes:
 - **Grouped-Query Attention (GQA):** Groups of query heads share keys and values, reducing KV cache size and memory traffic.
 - **Multi-Query Attention (MQA):** All query heads share a single key and value stream, minimizing KV cache size.
 
-The `AITER <https://github.com/ROCm/aiter>`__ backend is the first-class citizen in
-FlashInfer. Where supported, operations run on AITER and fall back to in-tree HIP
-kernels otherwise. For APIs exposing a ``backend`` argument, its default is
-``"auto"``. Single/batch prefill and batch decode use AITER only for compatible
-calls and otherwise fall back to HIP. Other defaults are listed in the
-**Default** column.
+For APIs exposing a ``backend`` argument, its default is ``"auto"``. Single and
+batch prefill and batch decode use the `AITER <https://github.com/ROCm/aiter>`__
+backend for compatible calls and otherwise fall back to HIP. RMSNorm, fused add
+RMSNorm, activation, RoPE, and append paged KV cache always use HIP, with AITER
+opt-in. MLA is AITER only, as no HIP kernel exists.
 
 Where supported, select AITER with ``backend="aiter"`` or HIP with
 ``backend="fa2"`` (attention) or ``backend="native"`` (other routed operations).
@@ -125,7 +124,7 @@ All operations listed below are supported on AMD Instinct MI300X, MI325X, MI350X
      - ✅
      - ✅
      - AITER
-     - MHA, GQA, and MQA; sliding window; FP8 KV cache; graph capture
+     - MHA, GQA, and MQA; sliding window; graph capture; FP8 KV cache (HIP)
    * - Single prefill
      - ✅
      - ✅
@@ -144,13 +143,13 @@ All operations listed below are supported on AMD Instinct MI300X, MI325X, MI350X
    * - Cascade attention
      - ✅
      - ✅
-     - HIP
-     - Shared-prefix attention; each level is routed independently
+     - Per level
+     - Shared-prefix attention; HIP provides the merge kernels and each level is routed independently
    * - POD attention
      - ✅
      - —
      - HIP
-     - Fused prefill and decode
+     - Fused prefill and decode; no FP8 KV cache
    * - Multi-head latent attention (MLA)
      - —
      - ✅
@@ -160,7 +159,7 @@ All operations listed below are supported on AMD Instinct MI300X, MI325X, MI350X
      - —
      - ✅
      - AITER
-     - FP16, BF16, and FP8 weights
+     - FP16, BF16, and FP8 weights; weights must be pre-shuffled with ``shuffle_moe_weight`` or results are silently wrong
    * - RoPE
      - ✅
      - ✅
@@ -170,7 +169,7 @@ All operations listed below are supported on AMD Instinct MI300X, MI325X, MI350X
      - ✅
      - ✅
      - HIP
-     - FP8 KV cache
+     - FP8 KV cache (HIP)
    * - RMSNorm and fused add RMSNorm
      - ✅
      - ✅
@@ -197,7 +196,9 @@ All operations listed below are supported on AMD Instinct MI300X, MI325X, MI350X
      - HIP
      - ``packbits`` and ``segment_packbits``
 
-For per-operation constraints, backend selection rules, and the list of
-upstream modules that are not available on ROCm, refer to the
+Each backend carries its own constraints on dtypes, layouts, page sizes, FP8
+spellings, and the conditions under which ``auto`` declines AITER. For those,
+the backend selection rules, and the list of upstream modules that are not
+available on ROCm, refer to the
 `support matrix <https://github.com/AMD-Ecosystem/flashinfer#support-matrix>`__
 in the FlashInfer on ROCm ``README``.
