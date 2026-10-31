@@ -1,0 +1,32 @@
+defaults:
+  numbered: False
+  maxdepth: 6
+root: index
+subtrees:
+- entries:
+  - file: what-is-flashinfer.rst
+    title: What is FlashInfer?
+
+- caption: Install
+  entries:
+  - file: install/flashinfer-install.rst
+    title: Install FlashInfer
+
+- caption: Examples
+  entries:
+  - file: examples/flashinfer-examples.rst
+    title: Run a FlashInfer example
+
+- caption: Reference
+  entries:
+  - file: reference/environment-variables.rst
+    title: Environment variables
+  - url: https://docs.flashinfer.ai/
+    title: API reference (upstream)
+
+- caption: About
+  entries:
+  - url: https://rocm.blogs.amd.com/artificial-intelligence/flashinfer-release2/README.html
+    title: ROCm FlashInfer blog
+  - file: about/license.rst
+    title: License
