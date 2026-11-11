@@ -689,6 +689,28 @@ class TestRecordedBase:
         assert "clean merge -- nothing to do" in out
         assert theirs[:7] in out, "position should name the recorded base"
 
+    def test_a_diverged_upstream_is_priced_against_the_record(
+        self, repo, monkeypatch, capsys
+    ):
+        """The v0.6.18 -> v0.7.3 shape. A merge-base would name `base` instead."""
+        _git(repo, "checkout", "-q", "-b", "release")
+        _write(repo, "release.cu", "release only\n")
+        _commit(repo, "release-only fix")
+        recorded = _rev(repo)
+        _git(repo, "checkout", "-q", "theirs")
+        _write(repo, "next.cu", "next release\n")
+        _commit(repo, "next release")
+        _git(repo, "checkout", "-q", "main")
+        _write(repo, "release.cu", "release only\n")
+        _write(repo, uc.upstream_base.FILENAME, f"release {recorded}\n")
+        _commit(repo, "squashed sync")
+        monkeypatch.chdir(repo)
+
+        uc.run(_args())
+
+        line = re.search(r"^base\s+:\s+(\S+)", capsys.readouterr().out, re.M)
+        assert line is not None and recorded.startswith(line.group(1))
+
     def test_missing_record_announces_the_fallback(self, repo, monkeypatch, capsys):
         _diverge(repo)
         monkeypatch.chdir(repo)

@@ -5,7 +5,7 @@
 
 """Report what an upstream sync would cost, without performing one.
 
-Prints how far the fork and upstream have moved from the merge base, the
+Prints how far the fork and upstream have moved from the sync's base, the
 conflicts a merge would raise, and upstream churn on the headers that
 ``rocm/`` forked -- those conflict with nothing and go stale silently.
 
@@ -241,7 +241,7 @@ def _report_position(
     base_desc: str, ours: Tuple[int, int], theirs: Tuple[int, int]
 ) -> None:
     print("== position ==")
-    print(f"merge base : {base_desc}")
+    print(f"base       : {base_desc}")
     print(f"ours       : {ours[0]:>6} commits, {ours[1]:>5} files changed")
     print(f"upstream   : {theirs[0]:>6} commits, {theirs[1]:>5} files changed")
     print()
@@ -358,10 +358,16 @@ def run(args: argparse.Namespace) -> int:
         print(
             upstream_base.missing_note(f"{ours[:12]}:{upstream_base.FILENAME}") + "\n"
         )
-    base, _ = upstream_base.select(_run, repo, ours, theirs, recorded)
+    base, source = upstream_base.sync_base(_run, repo, ours, theirs, recorded)
+    if source == "reachable":
+        print("NOTE: ours already reaches upstream, so it is priced as absorbed.")
+        print(
+            "      Reachability does not prove its content landed: an `-s ours`\n"
+            "      merge adds ancestry only.\n"
+        )
 
-    anchor = recorded.sha if recorded else ours
-    if upstream_base.multiple_bases(_run, repo, anchor, theirs):
+    # A recorded base is used as-is, so only the ancestry fallback can be ambiguous.
+    if recorded is None and upstream_base.multiple_bases(_run, repo, ours, theirs):
         print("NOTE: multiple merge bases -- churn and the merge below both use")
         print("      the one shown; a real `git merge` will build a virtual base.\n")
 

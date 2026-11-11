@@ -346,7 +346,10 @@ Sync PRs are squash-merged like every other PR, so there is no merge parent for
 fork point and misreports the whole delta.
 
 That makes `git merge v0.6.19` from `amd-integration` wrong: it resolves against
-that stale base. Produce the merge from the recorded base instead:
+a merge-base, which right after a squash-merged sync is the previous fork point,
+and on a diverged release branch counts the recorded release's own commits as
+ours. Produce the merge from the recorded base instead, the base
+`upstream_canary.py` prices it with:
 
 ```bash
 BASE=$(python3 -c "import sys; sys.path.insert(0, 'scripts'); import upstream_base as u; print(u.read_worktree('.').sha)")
@@ -408,8 +411,8 @@ Reachability is not free: it inflates any `git rev-list <tag>..HEAD` walk that
 counts every parent. `git_describe_rocm.py` therefore measures `.devN` along
 `--first-parent` — see `test_an_absorbed_upstream_branch_does_not_inflate_the_distance`
 for why counting the merged side breaks version ordering outright. The canary's
-`ours` commit count does rise by the release branch's length; that one is
-cosmetic.
+`ours` commit count still includes release-only commits on lines the record does
+not contain (v0.5.3's today, v0.6.18's after the next sync); that one is cosmetic.
 
 # Adding a Kernel
 
