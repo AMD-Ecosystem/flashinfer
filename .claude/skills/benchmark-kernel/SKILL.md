@@ -9,6 +9,12 @@ For a real driver script to copy, see
 [`benchmarks/rocm/bench_fa2_prefill.py`](../../../benchmarks/rocm/bench_fa2_prefill.py) and [`benchmarks/rocm/bench_aiter_prefill.py`](../../../benchmarks/rocm/bench_aiter_prefill.py)
 For the in-repo profiler wrapper, see [`profiler/rocm/rocm_profiler.py`](../../../profiler/rocm/rocm_profiler.py).
 
+## The target is the roofline, per arch
+
+- **Report every result as %-of-roofline on each arch**: HBM bandwidth or the MFMA peak *for the kernel's dtype*, whichever binds. `rocm_profiler`'s `KNOWN_HW` holds only the fp16 matrix peak and HBM bandwidth, for one SKU per arch (MI300X, MI350X), so scale the compute ceiling for fp8 and MX formats, and use the board's own peaks on MI325X or MI355X, before quoting a percentage. A speedup with no ceiling next to it is half a result.
+- **Optimize gfx942 and gfx950 separately wherever the hardware differs.** That means LDS 64 KB vs 160 KB, 304 vs 256 CUs, `e4m3fnuz` vs OCP fp8, and gfx950-only scaled MFMA and transposing LDS reads. Which backend serves an op on each arch is a `Capability` row in `flashinfer/rocm/arch_caps.py`; tile and launch choices inside a kernel dispatch on the arch in that kernel's own code.
+- **Stop only near the ceiling, or once the remaining gap has a named cause.**
+
 ## Timing method matrix
 
 | Method | When | How |
