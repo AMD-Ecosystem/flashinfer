@@ -7,7 +7,8 @@
 
 Recorded in a file rather than read off ancestry: a squash-merged sync leaves no
 merge parent, so ``merge-base(HEAD, <upstream tag>)`` silently returns the
-*previous* fork point. Both callers must agree on the rule, so it lives here.
+*previous* fork point. The rules live here so callers share them: ``select()``
+for ownership (amd_coverage), ``sync_base()`` for pricing a sync (the canary).
 """
 
 from __future__ import annotations
@@ -135,8 +136,8 @@ def select(
     """``(base_sha, source)`` — the anchor is the recorded commit, not our tip.
 
     ``merge-base(recorded, theirs)`` degrades to the recorded commit itself for a
-    release we have absorbed, and still finds the real divergence point for a
-    moving branch like ``upstream/main``.
+    release we have absorbed, and finds the divergence point for a moving branch
+    like ``upstream/main``. Pricing a merge needs :func:`sync_base` instead.
     """
     if recorded is None:
         anchor, source = ours, "ancestry"
@@ -151,6 +152,50 @@ def select(
             f"'{theirs}' shares no history with {anchor[:12]}.{detail}"
         )
     return proc.stdout.strip(), source
+
+
+def sync_base(
+    run: Runner,
+    repo: str,
+    ours: str,
+    theirs: str,
+    recorded: Optional[UpstreamBase],
+) -> Tuple[str, str]:
+    """``(base_sha, source)`` for pricing a sync: the base the sync itself uses.
+
+    The record wins wherever it applies: a ``theirs`` it contains is its own
+    base, and one descending from it -- or on a diverged line such as the next
+    release branch -- is priced against it. Only a diverged ``theirs`` that ours
+    reaches is its own base, and that one says so with ``"reachable"``.
+    """
+    base, source = select(run, repo, ours, theirs, recorded)
+    if recorded is None:
+        return base, source
+    theirs_sha = _commit_sha(run, repo, theirs)
+    if base in (theirs_sha, recorded.sha):
+        return base, source
+    if _is_ancestor(run, repo, theirs_sha, ours):
+        return theirs_sha, "reachable"
+    return recorded.sha, source
+
+
+def _commit_sha(run: Runner, repo: str, ref: str) -> str:
+    proc = run(
+        repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False
+    )
+    if proc.returncode:
+        raise UpstreamBaseError(f"'{ref}' does not name a commit")
+    return proc.stdout.strip()
+
+
+def _is_ancestor(run: Runner, repo: str, ancestor: str, descendant: str) -> bool:
+    proc = run(repo, "merge-base", "--is-ancestor", ancestor, descendant, check=False)
+    if proc.returncode not in (0, 1):
+        raise UpstreamBaseError(
+            f"cannot tell whether {ancestor[:12]} is an ancestor of "
+            f"{descendant[:12]}:\n{proc.stderr.strip()}"
+        )
+    return proc.returncode == 0
 
 
 def multiple_bases(run: Runner, repo: str, base_anchor: str, theirs: str) -> bool:
