@@ -46,6 +46,7 @@ from .prefill import (
     _REPLAN_REQUIRED,
     _check_run_matches_plan,
     _PlannedShapes,
+    _require_aiter_runtime,
     get_batch_prefill_jit_module,
     get_batch_prefill_module,
     get_single_prefill_module,
@@ -1015,7 +1016,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
             If set to ``auto``, the wrapper will automatically choose the backend based on the
             device architecture and kernel availability. ``aiter`` selects AMD AITER's
             paged_attention_v1 kernel and requires gfx942/gfx950 plus NHD layout, fp16/bf16,
-            no positional encoding, and ``use_tensor_cores=False``.
+            no positional encoding, and ``use_tensor_cores=False``. The constructor raises
+            if the GPU or the installed amd-aiter cannot serve it.
 
             Notes on AITER-specific behavior:
 
@@ -1069,6 +1071,10 @@ class BatchDecodeWithPagedKVCacheWrapper:
         else:
             self._jit_module = None
 
+        if backend == "aiter":
+            # Also the first AITER import on this path: it puts AITER's csrc on
+            # sys.path for _aiter_pa_v1_resolve.
+            _require_aiter_runtime(float_workspace_buffer.device, "batch_decode")
         self._kv_layout = kv_layout
         self._float_workspace_buffer = float_workspace_buffer
         self.device = float_workspace_buffer.device

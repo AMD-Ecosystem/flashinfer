@@ -333,6 +333,55 @@ class TestAutoBackendSelection:
         assert backend == "fa2"
         assert "aiter package not installed" in reason
 
+    def test_an_installed_aiter_that_fails_to_import_names_the_cause(
+        self, device, monkeypatch
+    ):
+        from flashinfer.rocm import aiter_utils
+
+        monkeypatch.delenv("FLASHINFER_AITER_STRICT", raising=False)
+        monkeypatch.setattr(prefill_rocm, "_aiter_ops_importable", lambda: False)
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: "0.1.29")
+        monkeypatch.setattr(aiter_utils, "_aiter_version_supported", lambda: True)
+        monkeypatch.setattr(
+            aiter_utils, "_aiter_import_error", lambda: "ImportError: libflydsl.so"
+        )
+
+        backend, reason = _auto(device)
+
+        assert backend == "fa2"
+        assert reason == (
+            "amd-aiter 0.1.29 is installed but failed to import: ImportError: libflydsl.so"
+        )
+
+    def test_strict_mode_raises_instead_of_falling_back_on_a_broken_install(
+        self, device, monkeypatch
+    ):
+        from flashinfer.rocm import aiter_utils
+
+        monkeypatch.setattr(prefill_rocm, "_aiter_ops_importable", lambda: False)
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: "0.1.29")
+        monkeypatch.setattr(aiter_utils, "_aiter_version_supported", lambda: True)
+        monkeypatch.setattr(
+            aiter_utils, "_aiter_import_error", lambda: "ImportError: libflydsl.so"
+        )
+        monkeypatch.setenv("FLASHINFER_AITER_STRICT", "1")
+
+        with pytest.raises(RuntimeError, match="failed to import: ImportError"):
+            _auto(device)
+
+    def test_strict_mode_still_falls_back_when_aiter_is_absent(
+        self, device, monkeypatch
+    ):
+        from flashinfer.rocm import aiter_utils
+
+        monkeypatch.setattr(prefill_rocm, "_aiter_ops_importable", lambda: False)
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: None)
+        monkeypatch.setenv("FLASHINFER_AITER_STRICT", "1")
+
+        backend, reason = _auto(device)
+
+        assert backend == "fa2" and "aiter package not installed" in reason
+
 
 class TestRequireAiterRuntime:
     """Both branches are pinned to the state they name, so which one raises does

@@ -56,8 +56,12 @@ def _ensure_aiter_gpu_archs() -> None:
 AITER_MIN_VERSION = "0.1.21"
 
 
+@functools.lru_cache(maxsize=1)
 def _aiter_installed_version() -> Optional[str]:
-    """The installed amd-aiter version, or None when it is not installed."""
+    """The installed amd-aiter version, or None when it is not installed.
+
+    Cached like the import probe, since the auto selector's fallback asks on
+    every call."""
     try:
         import importlib.metadata as _md
 
@@ -85,26 +89,72 @@ def _aiter_version_supported() -> bool:
 
 
 @functools.lru_cache(maxsize=1)
-def _aiter_importable() -> bool:
-    """True when the AITER packages needed for the C++ backends actually import.
+def _aiter_import_error() -> Optional[str]:
+    """What importing AITER's Python packages raised, one line, or None if they import.
 
-    Uses a real import (not ``find_spec``) so a broken or partially-installed AITER
-    — where the spec exists but importing the compiled extension fails, e.g. missing
-    ROCm deps — is reported as unavailable rather than routing ``auto`` into a path
-    that raises at build/load time. Too-old AITER counts as unavailable for the same
-    reason: ``auto`` must not route into an ABI it would corrupt.
+    An installed amd-aiter that fails to import (e.g. a FlyDSL that will not load)
+    is warned about once, so the fallback to fa2/native is never silent.
     """
     try:
         _ensure_aiter_gpu_archs()
-        import aiter  # noqa: F401
+        import aiter.ops  # noqa: F401
         from aiter.jit import core as _core  # noqa: F401
 
         # Deliberately no header-tree check: this answers "can AITER run?", and
         # the shim may already be built or AOT-cached. The build path raises with
         # the real cause when the headers are the thing that is missing.
-    except Exception:
-        return False
-    return _aiter_version_supported()
+    except Exception as exc:
+        error = one_line(exc)
+        installed = _aiter_installed_version()
+        if installed is not None:
+            logger.warning(
+                "amd-aiter %s is installed but failed to import, so every AITER "
+                "backend is unavailable: %s",
+                installed,
+                error,
+            )
+        return error
+    return None
+
+
+def one_line(exc: BaseException) -> str:
+    """``"<Type>: <message>"`` on one bounded line.
+
+    These strings reach the benchmark CSV's backend_fallback_reason column, where
+    an embedded traceback or newline would corrupt the row.
+    """
+    return f"{type(exc).__name__}: {' '.join(str(exc).split())[:200]}"
+
+
+def aiter_unavailable_reason() -> Optional[str]:
+    """Why an *installed* amd-aiter cannot run, or None if it can or is absent.
+
+    The one ranking every caller reports: below the ABI floor, then a failed import.
+    """
+    installed = _aiter_installed_version()
+    if installed is None:
+        return None
+    if not _aiter_version_supported():
+        return (
+            f"amd-aiter {installed} is below the {AITER_MIN_VERSION} ABI floor; the "
+            "vendored struct layouts do not match older releases"
+        )
+    error = _aiter_import_error()
+    if error is None:
+        return None
+    return f"amd-aiter {installed} is installed but failed to import: {error}"
+
+
+@functools.lru_cache(maxsize=1)
+def _aiter_importable() -> bool:
+    """True when the AITER packages needed for the C++ backends actually import.
+
+    Uses a real import (not ``find_spec``) so a broken or partially-installed AITER
+    is reported as unavailable rather than routing ``auto`` into a path that raises
+    at build/load time. Too-old AITER counts as unavailable for the same reason:
+    ``auto`` must not route into an ABI it would corrupt.
+    """
+    return _aiter_version_supported() and _aiter_import_error() is None
 
 
 def is_aiter_available(device: torch.device, op: str) -> bool:
@@ -147,13 +197,11 @@ def require_aiter(device: torch.device, op: str) -> None:
         # does not accept.
         alt = aiter_fallback_backend(op)
         advice = f"use backend={alt!r}" if alt else "use a non-AITER backend"
-        installed = _aiter_installed_version()
-        if installed is not None and not _aiter_version_supported():
+        reason = aiter_unavailable_reason()
+        if reason is not None:
             raise ValueError(
-                f"backend='aiter' for {op} requires amd-aiter >= {AITER_MIN_VERSION}, "
-                f"but {installed} is installed; the vendored struct layouts do not "
-                f"match older releases and would corrupt arguments silently. Upgrade "
-                f"amd-aiter or {advice}."
+                f"backend='aiter' for {op} requires amd-aiter >= {AITER_MIN_VERSION} "
+                f"that imports: {reason}. Fix amd-aiter or {advice}."
             )
         raise ValueError(
             f"backend='aiter' for {op} requires the aiter package, which is not "
@@ -186,12 +234,8 @@ def handle_aiter_probe_failure(exc: BaseException, *, op: str) -> str:
     if os.environ.get("FLASHINFER_AITER_STRICT", "0") == "1":
         raise exc
 
-    # Single-line and bounded: this string reaches a CSV column in the benchmark
-    # harness, where an embedded traceback would corrupt the row.
-    detail = " ".join(str(exc).split())[:200]
     reason = (
-        f"aiter {op} kernel bootstrap failed on this install: "
-        f"{type(exc).__name__}: {detail} "
+        f"aiter {op} kernel bootstrap failed on this install: {one_line(exc)} "
         "(set FLASHINFER_AITER_STRICT=1 to raise instead)"
     )
     logger.warning("auto backend falling back to fa2: %s", reason)

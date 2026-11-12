@@ -1239,12 +1239,17 @@ class TestPrebuildGuards:
         drv._select_device(3)
 
     def test_an_unimportable_aiter_stops_the_run(self, monkeypatch):
+        from flashinfer.rocm import aiter_utils
         from flashinfer.rocm import prebuild_aiter_variants as drv
         from flashinfer.rocm import prefill as pf
 
         _isolate_variant_env(monkeypatch)
         monkeypatch.setattr(pf, "_aiter_ops_importable", lambda: False)
-        with pytest.raises(RuntimeError, match="nothing can be prebuilt"):
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: "0.1.29")
+        monkeypatch.setattr(aiter_utils, "_aiter_import_error", lambda: "OSError: x")
+        with pytest.raises(
+            RuntimeError, match="0.1.29 is installed but failed to import: OSError: x"
+        ):
             drv.prebuild([], arch="gfx950")
 
 

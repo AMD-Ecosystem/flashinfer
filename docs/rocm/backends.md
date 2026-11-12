@@ -175,7 +175,8 @@ actually present, and the attention prebuild below runs against its tree.
 
 Three details are load-bearing. Use the **tag**, not a branch: a clone that
 loses its tag makes `setuptools_scm` invent a `.dev` version that falls under
-the floor below, and every AITER path silently degrades to `fa2`. Non-editable,
+the floor below, and every AITER path degrades to `fa2` behind a one-time
+warning. Non-editable,
 not `setup.py develop`: the develop branch installs no `aiter_meta`, and
 `aiter_meta/csrc/include` is what every C++ shim compiles against.
 `PREBUILD_KERNELS=0` leaves the install with **no AITER modules at all**, which
@@ -206,8 +207,10 @@ before routing. FlashInfer links AITER's C++ symbols by mangled name
 (`include/flashinfer/rocm/attention/aiter/`), so an older release shifts field
 offsets instead of failing to load. 0.1.21 also moved `rmsnorm` and the
 cos/sin-cache `rope` from `at::Tensor` to the POD `aiter_tensor_t`, so those
-shims cannot resolve against 0.1.20 at all. Below the floor `auto` will not
-select AITER and an explicit `backend="aiter"` raises.
+shims cannot resolve against 0.1.20 at all. Below the floor, or when an
+installed amd-aiter fails to import, `auto` will not select AITER and an
+explicit `backend="aiter"` raises naming the cause; with
+`FLASHINFER_AITER_STRICT=1`, `auto` prefill and decode raise too.
 
 The development image needs none of this: it performs the build above and
 prebuilds the attention variants, so a container starts with them present. It

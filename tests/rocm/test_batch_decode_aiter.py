@@ -202,6 +202,30 @@ def test_batch_decode_aiter_serves_an_empty_batch(return_lse):
 
 
 @requires_aiter
+def test_auto_decode_resolved_to_aiter_never_runs_the_explicit_guard(monkeypatch):
+    """The runtime guard is for backend="aiter" at construction; an auto wrapper
+    that resolved to AITER keeps re-planning without it."""
+    from flashinfer.rocm import decode as decode_rocm
+
+    def _guard(*a, **k):
+        raise AssertionError("auto wrapper ran _require_aiter_runtime")
+
+    monkeypatch.setattr(decode_rocm, "_require_aiter_runtime", _guard)
+    device = torch.device("cuda:0")
+    k, v, indptr, indices, last = _build_paged_kv(
+        2, [64, 33], 16, 2, 128, torch.bfloat16, device
+    )
+    w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+        torch.empty(64 * 1024 * 1024, dtype=torch.uint8, device=device), "NHD"
+    )
+    w.plan(indptr, indices, last, 8, 2, 128, 16, q_data_type=torch.bfloat16)
+    if w.backend != "aiter":  # a capability gate or failed build; other tests own that
+        pytest.skip(f"auto chose {w.backend}: {w.backend_fallback_reason}")
+    w.plan(indptr, indices, last, 8, 2, 128, 16, q_data_type=torch.bfloat16)
+    assert w.backend == "aiter", w.backend_fallback_reason
+
+
+@requires_aiter
 def test_batch_decode_aiter_rejects_invalid_config():
     """plan() should reject unsupported configs with a clear error."""
     device = torch.device("cuda:0")
