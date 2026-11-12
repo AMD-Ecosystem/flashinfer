@@ -716,6 +716,9 @@ class TestAiterSoftcapDefectArchs:
             ("10.2.0", "0.1.21.post2"),
             ("7.16.26385", "0.1.21"),
             ("7.16.26385", "0.1.22"),
+            ("7.16.26385", "0.1.28"),  # between the two measured releases
+            ("7.16.26385", "0.1.29.post1"),
+            ("10.0.0", "0.1.29"),
             ("", "0.1.21.post2"),
             ("7.16.26385", ""),
         ],
@@ -723,8 +726,11 @@ class TestAiterSoftcapDefectArchs:
     def test_gfx950_is_affected_unless_the_toolchain_was_measured(self, rocm, aiter):
         assert arch_caps.aiter_softcap_defect_arch("gfx950", rocm, aiter) is True
 
-    def test_gfx950_is_clean_on_the_measured_toolchain(self):
-        assert arch_caps.aiter_softcap_defect_arch("gfx950", *self.CLEAN) is False
+    @pytest.mark.parametrize("aiter", ["0.1.21.post2", "0.1.29"])
+    def test_gfx950_is_clean_on_the_measured_toolchains(self, aiter):
+        assert (
+            arch_caps.aiter_softcap_defect_arch("gfx950", "7.16.26385", aiter) is False
+        )
 
     @pytest.mark.parametrize(
         "live,torch_hip,expected",
@@ -855,6 +861,7 @@ class TestAiterSoftcapDefectArchs:
         detail = arch_caps.aiter_softcap_defect_detail("gfx950")
         assert "detected system version unknown" in detail
         assert "both 7.16.26385 + amd-aiter 0.1.21.post2" in detail
+        assert "both 7.16.26385 + amd-aiter 0.1.29" in detail
         monkeypatch.setattr(arch_caps, "_AITER_SOFTCAP_CLEAN_TOOLCHAINS", {})
         assert "no toolchain measured correct" in arch_caps.aiter_softcap_defect_detail(
             "gfx950"

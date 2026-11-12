@@ -544,17 +544,17 @@ there at every length, so which architecture and toolchain are
 affected lives in `arch_caps.py` rather than at the call sites. Single and
 ragged prefill always dispatch through that kernel, so there `auto` serves them
 with `fa2` and `backend="aiter"` raises rather than returning wrong numbers.
-ROCm 10.1.0 (TheRock HIP 7.16.26385) with amd-aiter 0.1.21.post2 builds the
-same kernel correctly — 140 shapes × caps exact against an fp32 reference — so
-on exactly that toolchain the gate lifts and the crossover below takes its
-place; torch's HIP must match too. Any other ROCm or AITER build stays gated
+ROCm 10.1.0 (TheRock HIP 7.16.26385) with amd-aiter 0.1.21.post2 or 0.1.29
+builds the same kernel correctly — within max(2× the uncapped error, 2e-2) of
+an fp32 reference over a `qo_len` × `kv_len` × cap sweep — so on exactly those
+toolchains the gate lifts and the crossover below takes its place; torch's HIP must match too. Any other ROCm or AITER build stays gated
 until measured, as does an `AITER_JIT_DIR` pointing outside the installed
 amd-aiter package, whose build toolchain the version probes cannot see. gfx942 measures clean over a `qo_len` × `kv_len` sweep at
 every cap and uses AITER as normal.
 
 Paged prefill keeps AITER on the native paging route, since that takes
-`mha_batch_prefill` instead — measured exact on amd-aiter 0.1.20 against an
-fp32 reference on both architectures — and falls back only when the run-time
+`mha_batch_prefill` instead — measured against an fp32 reference on amd-aiter
+0.1.20 and 0.1.29 on both architectures — and falls back only when the run-time
 probe demotes it to a flat gather. Every other soft-cap shape is unaffected.
 
 ### Short soft-capped prefill stays on `fa2` on gfx950
