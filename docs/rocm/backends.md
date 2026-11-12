@@ -155,7 +155,7 @@ That says nothing about their ROCm support either way.
 pip install "setuptools>=80,<82" "setuptools-scm>=9.2" "packaging>=24"
 
 git clone --recursive --depth 1 --shallow-submodules \
-  --branch v0.1.21.post2 https://github.com/ROCm/aiter.git
+  --branch v0.1.29 https://github.com/ROCm/aiter.git
 ( cd aiter && PREBUILD_KERNELS=0 GPU_ARCHS="gfx942;gfx950" \
   AITER_USE_SYSTEM_TRITON=1 python3 -m pip install --no-build-isolation . )
 python3 -m pip check
@@ -169,10 +169,9 @@ replaces your torch's pinned triton with its own build — on ROCm 10.1 a ROCm 7
 one — and `pip install` reports nothing. `pip check` catches it.
 The `<82` ceiling on setuptools is torch 2.12's own requirement.
 
-Source rather than a wheel because no `amd-aiter` wheel is built against
-ROCm 10; the published ones are retargets of the same revision. A source
-build compiles against the ROCm actually present, and it is the only route to
-a tagged release on this stack.
+Source rather than the release wheel, even though 0.1.29 publishes a
+`+rocm10.1` cp312 one: a source build compiles against the ROCm and torch
+actually present, and the attention prebuild below runs against its tree.
 
 Three details are load-bearing. Use the **tag**, not a branch: a clone that
 loses its tag makes `setuptools_scm` invent a `.dev` version that falls under

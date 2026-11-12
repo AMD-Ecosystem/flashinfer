@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Vendored fmha_batch_prefill_args, following the amd-aiter 0.1.21 layout
-// (field-for-field identical to 0.1.20's; only the norm and rope APIs moved).
+// (field-for-field identical from 0.1.20 through 0.1.29).
 // Extracted from
 // aiter_meta/3rdparty/composable_kernel/example/ck_tile/01_fmha/fmha_fwd.hpp.
 //

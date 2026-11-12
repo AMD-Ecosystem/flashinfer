@@ -101,7 +101,7 @@ architectures:
 | PyTorch+ROCm | 2.12.0 |
 | Python | 3.12 |
 | OS | Ubuntu 24.04 |
-| `amd-aiter` | 0.1.21.post2 (source build) |
+| `amd-aiter` | 0.1.29 (source build) |
 
 The suite needs a git checkout: four tests read the git index. Torch 2.12's
 ROCm 10.1 build exists only in the base image named in the quick start. Other

@@ -23,10 +23,10 @@ namespace {
 // Appended to failures on the paths that resolve the pinned mangled symbols
 // below. Keep the version in step with _AITER_LAST_VALIDATED in flashinfer/rocm/prefill.py.
 constexpr const char* kAbiPinNote =
-    "\n  These symbols and .so names are pinned to amd-aiter 0.1.21.post2, which has no"
+    "\n  These symbols and .so names are pinned to amd-aiter 0.1.29, which has no"
     "\n  stable C++ ABI -- 0.1.21 moved rmsnorm and rope from at::Tensor to the POD"
     "\n  aiter_tensor_t. If AITER was changed, that is the likely cause. The supported"
-    "\n  install is a source build at tag v0.1.21.post2; docs/rocm/backends.md has the"
+    "\n  install is a source build at tag v0.1.29; docs/rocm/backends.md has the"
     "\n  exact clone and pip command, or re-pin the symbols in csrc/rocm/aiter_loader.cc.";
 
 // Directories to try, in order, when resolving a variant .so.
@@ -192,7 +192,7 @@ void* load_path_sym(std::shared_mutex& mu, std::unordered_map<Key, void*, Hash>&
 // Mangled symbol for aiter::mha_fwd(aiter::mha_fwd_args, ck_tile::stream_config const&).
 // Stable across GCC/Clang Itanium ABI; verified by `nm -D` on all shipped variants.
 // Both the mha_fwd and mha_varlen_fwd .so files export this same dispatcher symbol.
-// Pinned to amd-aiter 0.1.21.post2. Regenerate with: nm -D <variant.so> | grep mha_fwd
+// Pinned to amd-aiter 0.1.29. Regenerate with: nm -D <variant.so> | grep mha_fwd
 constexpr const char* kMhaFwdSymbol =
     "_ZN5aiter7mha_fwdENS_12mha_fwd_argsERKN7ck_tile13stream_configE";
 
@@ -236,7 +236,7 @@ std::string batch_prefill_variant_so_name(BatchPrefillVariantKey const& key) {
 }
 
 // Itanium-ABI mangled symbol for aiter::mha_batch_prefill(...).
-// Pinned to amd-aiter 0.1.21.post2. Regenerate with: nm -D <.so> | grep mha_batch_prefill
+// Pinned to amd-aiter 0.1.29. Regenerate with: nm -D <.so> | grep mha_batch_prefill
 // Note: '23' encodes len("fmha_batch_prefill_args") == 23.
 constexpr const char* kMhaBatchPrefillSymbol =
     "_ZN5aiter17mha_batch_prefillE23fmha_batch_prefill_argsRKN7ck_tile13stream_configE"

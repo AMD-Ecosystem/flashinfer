@@ -87,7 +87,8 @@ jobs:
             tests/rocm/test_git_describe.py \
             tests/rocm/test_gen_arch_support_matrix.py \
             tests/rocm/test_build_backend.py \
-            tests/rocm/test_repo_workflows.py
+            tests/rocm/test_repo_workflows.py \
+            tests/rocm/test_aiter_pin_parity.py
 
       # The unit tests once stayed green while the tool itself raised on every
       # invocation, so CI has to actually invoke it. This also fails loudly if

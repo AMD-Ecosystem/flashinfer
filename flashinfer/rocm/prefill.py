@@ -65,7 +65,7 @@ from ..utils import (
 # sizes we try. The second is the newest release we have actually validated against;
 # bumping it must not silently move the support boundary.
 _AITER_NATIVE_PAGING_SINCE = "0.1.10"
-_AITER_LAST_VALIDATED = "0.1.21.post2"
+_AITER_LAST_VALIDATED = "0.1.29"
 
 # fp8 query dtypes that *could* be an fp8 prefill: E4M3FNUZ on gfx942, OCP
 # E4M3FN on gfx950. Only the arch's own encoding actually works -- the other is

@@ -42,7 +42,7 @@ must be the same kind of image — torch in the system interpreter, and a pip RO
 SDK whose `rocm-sdk path --root` is a complete ROCm root; the build checks both.
 Torch 2.12 is the version tested; 2.13 is untested, and a prebuilt `amd-aiter`
 wheel would additionally fail on the `c10` symbol it drops. `AITER_REF` selects
-the AITER tag to build from source (no `amd-aiter` wheel targets ROCm 10), and
+the AITER tag to build from source against the image's ROCm and torch, and
 `AITER_PREBUILD_JOBS` how many variants compile at once (~35 min at 2 on 32
 cores).
 Pass `--build-arg USERNAME=$USER --build-arg USER_UID=$(id -u) --build-arg
