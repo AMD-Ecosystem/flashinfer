@@ -195,6 +195,56 @@ class TestRecordedCommitIsChecked:
             ub.select(_run, str(forked.path), "HEAD", "v1.0", recorded)
 
 
+class TestSyncBase:
+    """The base a sync merges against -- what the canary must price with."""
+
+    def _sync_base(self, forked, theirs):
+        recorded = ub.read_worktree(str(forked.path))
+        return ub.sync_base(_run, str(forked.path), "HEAD", theirs, recorded)
+
+    def test_a_sibling_branch_is_priced_against_the_recorded_commit(self, forked):
+        """merge-base gives R0, which would count the release-only R1 as ours."""
+        assert self._sync_base(forked, "main") == (forked.r1, "recorded")
+
+    def test_the_next_release_on_its_own_branch_is_priced_against_the_record(
+        self, forked
+    ):
+        """The v0.6.18 -> v0.7.3 shape: cut before R1, annotated tag."""
+        _git(forked.path, "checkout", "-q", "-b", "release-2", forked.r0)
+        _write(forked.path, "next.cu", "n1\n")
+        _commit(forked.path, "N1")
+        _git(forked.path, "tag", "-a", "-m", "v2.0", "v2.0")
+        _git(forked.path, "checkout", "-q", "ours")
+        assert self._sync_base(forked, "v2.0") == (forked.r1, "recorded")
+
+    def test_a_ref_the_recorded_commit_contains_is_its_own_base(self, forked):
+        assert self._sync_base(forked, forked.r0) == (forked.r0, "recorded")
+
+    def test_an_older_release_ours_reaches_is_its_own_base(self, forked):
+        """v0.5.3's shape: its own release branch, reached from ours by a merge."""
+        _git(forked.path, "checkout", "-q", "-b", "old-release", forked.base)
+        _write(forked.path, "old.cu", "o\n")
+        _commit(forked.path, "OLD")
+        old = _rev(forked.path)
+        _git(forked.path, "checkout", "-q", "ours")
+        _git(forked.path, "merge", "-q", "-s", "ours", "--no-edit", old)
+        assert self._sync_base(forked, old) == (old, "reachable")
+
+    def test_an_ancestry_merge_cannot_override_the_record_on_its_own_line(self, forked):
+        """`-s ours` of a release past the record adds reachability, not content."""
+        _git(forked.path, "checkout", "-q", "release")
+        _write(forked.path, "feat.cu", "r2\n")
+        _commit(forked.path, "R2")
+        r2 = _rev(forked.path)
+        _git(forked.path, "checkout", "-q", "ours")
+        _git(forked.path, "merge", "-q", "-s", "ours", "--no-edit", r2)
+        assert self._sync_base(forked, r2) == (forked.r1, "recorded")
+
+    def test_without_a_record_it_matches_select(self, forked):
+        got = ub.sync_base(_run, str(forked.path), "HEAD", "v1.0", None)
+        assert got == (forked.base, "ancestry")
+
+
 class TestMultipleBases:
     def test_single_base_is_not_announced(self, forked):
         assert not ub.multiple_bases(_run, str(forked.path), forked.r1, "main")
