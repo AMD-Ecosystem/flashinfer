@@ -100,9 +100,6 @@ def test_batch_prefill_with_paged_kv_cache(
     if backend == "aiter":
         _skip_if_prefill_gated(torch.device("cuda:0"))
 
-    if backend == "aiter" and (causal or kv_layout != "NHD"):
-        pytest.skip("Not testing for aiter backend with causal or kv_layout != NHD")
-
     max_num_batched_tokens = 4096
 
     if batch_size * qo_len > max_num_batched_tokens:
@@ -358,9 +355,6 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
         pytest.skip("AITER requires a gfx942/gfx950 GPU and the aiter package")
     if backend == "aiter":
         _skip_if_prefill_gated(torch.device("cuda:0"))
-
-    if backend == "aiter" and (causal or kv_layout != "NHD"):
-        pytest.skip("Not testing for aiter backend with causal")
 
     max_num_batched_tokens = 4096
 

@@ -47,6 +47,16 @@ def warmup_jit():
         + gen_prefill_attention_modules(
             [torch.bfloat16], [torch.bfloat16] + FNUZ_DTYPES, [128], *common
         )
+        # The other head dims only run unwindowed, so they skip the swa variants.
+        + gen_prefill_attention_modules(
+            [torch.bfloat16],
+            [torch.bfloat16] + FNUZ_DTYPES,
+            [64, 256],
+            [0],
+            [False],
+            [False],
+            [False],
+        )
         # Decode too: single decode has its own kernel, which would otherwise
         # compile serially inside the test body. Only the shapes the tests use.
         + gen_decode_attention_modules(
@@ -90,8 +100,6 @@ def _assert_matches(got, ref):
 def test_single_prefill_fp8_kv_matches_dequantized(
     q_dtype, fp8_dtype, head_dim, qo_len, kv_len, causal
 ):
-    if q_dtype is torch.bfloat16 and head_dim != 128:
-        pytest.skip("bf16 queries are warmed up at head_dim 128 only")
     torch.manual_seed(0)
     num_qo_heads, num_kv_heads = 32, 8
     q = torch.randn(qo_len, num_qo_heads, head_dim, dtype=q_dtype, device="cuda:0")
