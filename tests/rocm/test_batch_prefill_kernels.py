@@ -205,8 +205,11 @@ def test_batch_prefill_with_paged_kv_cache(
             backend=backend,
         )
         q_indptr_warmup = torch.arange(0, batch_size + 1).int() * qo_len
-        kv_indptr_warmup = torch.arange(0, batch_size + 1).int()
-        kv_indices_warmup = torch.arange(0, batch_size).int()
+        # fa2 refuses a causal plan with kv_len < qo_len, so give each request
+        # enough full pages; the cases run here have kv_len >= qo_len, so they fit.
+        warmup_pages = (qo_len + page_size - 1) // page_size if causal else 1
+        kv_indptr_warmup = torch.arange(0, batch_size + 1).int() * warmup_pages
+        kv_indices_warmup = torch.arange(0, batch_size * warmup_pages).int()
         kv_last_page_len_warmup = torch.full(
             (batch_size,), page_size, dtype=torch.int32
         )
@@ -464,8 +467,11 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
             backend=backend,
         )
         q_indptr_warmup = torch.arange(0, batch_size + 1).int() * qo_len
-        kv_indptr_warmup = torch.arange(0, batch_size + 1).int()
-        kv_indices_warmup = torch.arange(0, batch_size).int()
+        # fa2 refuses a causal plan with kv_len < qo_len, so give each request
+        # enough full pages; the cases run here have kv_len >= qo_len, so they fit.
+        warmup_pages = (qo_len + page_size - 1) // page_size if causal else 1
+        kv_indptr_warmup = torch.arange(0, batch_size + 1).int() * warmup_pages
+        kv_indices_warmup = torch.arange(0, batch_size * warmup_pages).int()
         kv_last_page_len_warmup = torch.full(
             (batch_size,), page_size, dtype=torch.int32
         )

@@ -89,10 +89,10 @@ def test_use_softmax_false_ragged_prefill_matches_reference():
         kv_data_type=torch.float16,
     )
 
-    # split_kv is the last plan-info field. Whether this shape splits depends on
-    # the CU count, and without a split the sum merge never runs and the test
-    # would pass without covering anything.
-    assert wrapper._plan_info[-1].item() == 1, (
+    # split_kv is plan-info field 14 (PrefillPlanInfo::ToVector). Whether this
+    # shape splits depends on the CU count, and without a split the sum merge
+    # never runs and the test would pass without covering anything.
+    assert wrapper._plan_info[14].item() == 1, (
         "shape did not split KV; merge unexercised"
     )
 

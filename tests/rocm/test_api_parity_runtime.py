@@ -292,15 +292,15 @@ class TestUpstreamPlanShim:
         return plan, seen
 
     def test_upstream_shape_forwards_only_the_first_fifteen(self):
+        """Without causal_mask_applies the planner is not asked to refuse."""
         plan, seen = self._shim()
-        args = list(range(15))
-        assert plan(*args, -1, -1, False, 0, 0) == "planned"
-        assert seen == [tuple(args)]
+        assert plan(*range(15), -1, -1, False, 0, 0) == "planned"
+        assert seen == [(*range(14), False)]
 
     def test_the_rocm_shape_still_works(self):
         plan, seen = self._shim()
         args = list(range(15))
-        assert plan(*args) == "planned"
+        assert plan(*args, causal_mask_applies=True) == "planned"
         assert seen == [tuple(args)]
 
     @pytest.mark.parametrize(
@@ -320,7 +320,7 @@ class TestUpstreamPlanShim:
     def test_window_left_is_accepted_and_dropped(self):
         """ROCm has no plan-time slot for it; run() applies the mask instead."""
         plan, seen = self._shim()
-        assert plan(*range(15), 64) == "planned"
+        assert plan(*range(15), 64, causal_mask_applies=True) == "planned"
         assert seen == [tuple(range(15))]
 
 
