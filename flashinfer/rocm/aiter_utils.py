@@ -96,9 +96,12 @@ def _aiter_import_error() -> Optional[str]:
     is warned about once, so the fallback to fa2/native is never silent.
     """
     try:
+        from ..jit.rocm.aiter_source import _jit_trace_suspended
+
         _ensure_aiter_gpu_archs()
-        import aiter.ops  # noqa: F401
-        from aiter.jit import core as _core  # noqa: F401
+        with _jit_trace_suspended():  # importing aiter queries the arch
+            import aiter.ops  # noqa: F401
+            from aiter.jit import core as _core  # noqa: F401
 
         # Deliberately no header-tree check: this answers "can AITER run?", and
         # the shim may already be built or AOT-cached. The build path raises with

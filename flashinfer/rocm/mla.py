@@ -20,10 +20,11 @@ from .arch_caps import require_capability
 def _aiter_mla():
     # AITER freezes its arch state at import; MLA can be the first AITER import.
     from .aiter_utils import _ensure_aiter_gpu_archs
+    from ..jit.rocm.aiter_source import _jit_trace_suspended
 
     _ensure_aiter_gpu_archs()
-    import aiter.mla as _m
-
+    with _jit_trace_suspended():  # importing aiter queries the arch
+        import aiter.mla as _m
     return _m
 
 
