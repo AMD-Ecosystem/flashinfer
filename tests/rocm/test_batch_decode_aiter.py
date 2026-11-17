@@ -130,6 +130,78 @@ def test_batch_decode_aiter_vs_fa2(
 
 
 @requires_aiter
+@pytest.mark.parametrize("seq_lens", [[512, 300], [1, 1], [4096, 300]])
+def test_batch_decode_aiter_sizes_from_the_page_table_not_seq_lens(seq_lens):
+    """The kernel reads lengths from the page table, so a seq_lens that disagrees
+    with it (here understated, then overstated) must not change the output."""
+    torch.manual_seed(0)
+    device = torch.device("cuda:0")
+    kv_lens, page, heads, dim, dtype = [2048, 300], 16, 8, 128, torch.float16
+    k, v, indptr, indices, last = _build_paged_kv(
+        2, kv_lens, page, heads, dim, dtype, device
+    )
+    q = torch.randn(2, heads, dim, dtype=dtype, device=device) * 0.1
+    workspace = torch.zeros(128 * 1024 * 1024, dtype=torch.uint8, device=device)
+    out = {}
+    for backend, lens in (("fa2", None), ("aiter", seq_lens)):
+        w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+            workspace, "NHD", backend=backend
+        )
+        kw = {} if lens is None else {"seq_lens": torch.tensor(lens, dtype=torch.int32)}
+        w.plan(indptr, indices, last, heads, heads, dim, page,
+               q_data_type=dtype, kv_data_type=dtype, **kw)  # fmt: skip
+        out[backend] = w.run(q, (k, v)).float()
+    torch.testing.assert_close(out["aiter"], out["fa2"], rtol=1e-3, atol=1e-3)
+
+
+@requires_aiter
+@pytest.mark.parametrize("kv_lens", [[0, 0], [0, 55]])
+def test_batch_decode_aiter_requests_with_no_pages(kv_lens):
+    """A batch with no pages at all returns fa2's zeros. In a mixed batch AITER's row
+    for a pageless request is undefined, so only rows with pages compare."""
+    torch.manual_seed(0)
+    device = torch.device("cuda:0")
+    page, heads, dim, dtype = 16, 8, 128, torch.float16
+    k, v, indptr, indices, last = _build_paged_kv(
+        2, kv_lens, page, heads, dim, dtype, device
+    )
+    last[torch.tensor(kv_lens, device=device) == 0] = 0  # a length of 0, not one page
+    q = torch.randn(2, heads, dim, dtype=dtype, device=device) * 0.1
+    workspace = torch.zeros(128 * 1024 * 1024, dtype=torch.uint8, device=device)
+    out = {}
+    for backend in ("fa2", "aiter"):
+        w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+            workspace, "NHD", backend=backend
+        )
+        w.plan(indptr, indices, last, heads, heads, dim, page,
+               q_data_type=dtype, kv_data_type=dtype)  # fmt: skip
+        o = torch.full_like(q, float("nan"))  # a row left unwritten stays NaN
+        out[backend] = w.run(q, (k, v), out=o).float()
+    rows = [i for i, n in enumerate(kv_lens) if n] or list(range(len(kv_lens)))
+    torch.testing.assert_close(
+        out["aiter"][rows], out["fa2"][rows], rtol=1e-3, atol=1e-3
+    )
+
+
+@requires_aiter
+@pytest.mark.parametrize("return_lse", [False, True])
+def test_batch_decode_aiter_serves_an_empty_batch(return_lse):
+    device = torch.device("cuda:0")
+    workspace = torch.zeros(8 * 1024 * 1024, dtype=torch.uint8, device=device)
+    w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(workspace, "NHD", backend="aiter")
+    empty = torch.zeros(0, dtype=torch.int32, device=device)
+    w.plan(torch.zeros(1, dtype=torch.int32, device=device), empty, empty,
+           8, 8, 128, 16, q_data_type=torch.float16)  # fmt: skip
+    q = torch.empty(0, 8, 128, dtype=torch.float16, device=device)
+    cache = torch.zeros(1, 2, 16, 8, 128, dtype=torch.float16, device=device)
+    res = w.run(q, cache, return_lse=return_lse)
+    out = res[0] if return_lse else res
+    assert out.shape == (0, 8, 128)
+    if return_lse:
+        assert res[1].shape == (0, 8)
+
+
+@requires_aiter
 def test_batch_decode_aiter_rejects_invalid_config():
     """plan() should reject unsupported configs with a clear error."""
     device = torch.device("cuda:0")

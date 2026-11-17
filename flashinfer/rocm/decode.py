@@ -1646,7 +1646,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 aiter_max_blocks_per_seq = ceil_div(
                     int(self._aiter_graph_max_seq_len), page_size
                 )
-                max_kv_len = aiter_max_blocks_per_seq * page_size
             else:
                 if (
                     self.is_cuda_graph_enabled
@@ -1661,7 +1660,6 @@ class BatchDecodeWithPagedKVCacheWrapper:
                         "to the wrapper for capture-order-independent capture, or use "
                         "backend='fa2'."
                     )
-                max_kv_len = int(max(kv_lens_arr_host).item())
                 # max blocks per seq across the batch — sizes the dense block_tables.
                 npages_arr = indptr_host[1:].to(torch.int64) - indptr_host[:-1].to(
                     torch.int64
@@ -1669,6 +1667,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 aiter_max_blocks_per_seq = (
                     int(npages_arr.max().item()) if batch_size > 0 else 0
                 )
+            # Must cover the lengths the kernel derives from the page table, not
+            # seq_lens; at least one page, as a zero-partition variant cannot build.
+            max_kv_len = max(aiter_max_blocks_per_seq, 1) * page_size
             # Convention mapping: flashinfer's window_left = W means the query at
             # position kv_len-1 sees kv positions [kv_len-1-W, kv_len-1] (W+1 tokens).
             # AITER's sliding_window = S masks positions where local_token_idx + i <
@@ -2240,6 +2241,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
             check_shape_dtype_device(out, q.shape, q.dtype, q.device, "out")
 
         if self._backend == "aiter":
+            if self._batch_size == 0:  # an empty grid is a launch error, not a no-op
+                return (out, lse) if return_lse else out
             if return_lse:
                 self._prepare_fa2_lse_plan()
                 self._fa2_lse_module.run(
@@ -2269,6 +2272,11 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     else:
                         out *= v_scale
                 return (out, lse)
+            if self._aiter_max_blocks_per_seq == 0:
+                # No request has a page: return fa2's zeros, as AITER's reduce would
+                # read partition -1.
+                out.zero_()
+                return out
             self._cached_module.run(
                 q,
                 k_cache,
