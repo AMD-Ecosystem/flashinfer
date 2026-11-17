@@ -249,6 +249,14 @@ inline constexpr uint32_t pack_u16(uint16_t a, uint16_t b) {
   TORCH_CHECK((num_kv_heads) > 0 && (num_qo_heads) % (num_kv_heads) == 0, "num_qo_heads(", \
               num_qo_heads, ") must be divisible by num_kv_heads(", num_kv_heads, ")")
 
+// fa2's causal bounds are unsigned and wrap on a request with qo_len > kv_len > 0; the
+// planner records the first such request, which a causal run() must refuse.
+#define CHECK_CAUSAL_KV_COVERS_QO(mask_mode, plan_info)                                  \
+  TORCH_CHECK_VALUE(                                                                     \
+      (mask_mode) != MaskMode::kCausal || (plan_info).first_short_kv_request < 0,        \
+      "causal attention needs kv_len >= qo_len for every request with KV, but request ", \
+      (plan_info).first_short_kv_request, " has more query than KV tokens")
+
 #define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
 
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")

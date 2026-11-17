@@ -617,6 +617,8 @@ struct PrefillPlanInfo {
   int64_t block_valid_mask_offset;
   bool enable_cuda_graph;
   bool split_kv;
+  // First request with qo_len > kv_len > 0, or -1: fa2's unsigned causal bounds wrap on it.
+  int64_t first_short_kv_request;
 
   PrefillPlanInfo()
       : padded_batch_size(0),
@@ -633,7 +635,8 @@ struct PrefillPlanInfo {
         s_offset(0),
         block_valid_mask_offset(0),
         enable_cuda_graph(false),
-        split_kv(false) {}
+        split_kv(false),
+        first_short_kv_request(-1) {}
 
   // convert PrefillPlanInfo to std::vector<int64_t>
   std::vector<int64_t> ToVector() const {
@@ -651,14 +654,15 @@ struct PrefillPlanInfo {
             s_offset,
             block_valid_mask_offset,
             enable_cuda_graph,
-            split_kv};
+            split_kv,
+            first_short_kv_request};
   }
 
   // From std::vector<int64_t> to PrefillPlanInfo
   void FromVector(const std::vector<int64_t>& vec) {
-    if (vec.size() != 15) {
+    if (vec.size() != 16) {
       std::ostringstream err_msg;
-      err_msg << "PrefillPlanInfo::FromVector: vec.size() should be 15, "
+      err_msg << "PrefillPlanInfo::FromVector: vec.size() should be 16, "
                  "but got "
               << vec.size();
       FLASHINFER_ERROR(err_msg.str());
@@ -678,6 +682,7 @@ struct PrefillPlanInfo {
     block_valid_mask_offset = vec[12];
     enable_cuda_graph = vec[13];
     split_kv = vec[14];
+    first_short_kv_request = vec[15];
   }
 };
 

@@ -88,6 +88,7 @@ void batch_pod_with_kv_cache_tensor(
   void* int_buffer_ptr_p = int_workspace_buffer_p.data_ptr();
 
   const MaskMode mask_mode_p = static_cast<MaskMode>(mask_mode_code_p);
+  CHECK_CAUSAL_KV_COVERS_QO(mask_mode_p, plan_info_p);
   const auto q_stride_n_p = q_p.stride(0);
   const auto q_stride_h_p = q_p.stride(1);
 

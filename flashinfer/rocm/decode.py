@@ -1445,6 +1445,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
             # it every step, the same way paged_kv_indices is already handled.
             # Unsliced, the zero padding would sink the kv_len guard below.
             kv_lens_arr_host = seq_lens.cpu().flatten()
+            # Documented as uint32, which torch cannot max() and the planner rejects.
+            if kv_lens_arr_host.dtype not in (torch.int32, torch.int64):
+                kv_lens_arr_host = kv_lens_arr_host.to(torch.int64)
             if kv_lens_arr_host.numel() < batch_size:
                 raise ValueError(
                     f"seq_lens has {kv_lens_arr_host.numel()} entries but "
@@ -1469,17 +1472,21 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 "Use a separate wrapper per q_len_per_req."
             )
 
+        # The fa2 planner refuses a causal request it sees as short, so it gets
+        # the kernel's lengths whenever the query is causal.
+        planner_kv_lens = kv_lens_arr_host
         if q_len_per_req > 1:
             # batch_size==0 has no request to check; .min() on an empty tensor
             # would raise where there is simply nothing to verify.
             if batch_size > 0:
                 # From the paged metadata, not a caller-supplied seq_lens: an
                 # override that overstates the cache would pass a request the
-                # kernel then masks against a shorter KV range. The batch paged
-                # path has no kv_len < qo_len guard, so that is silently wrong.
+                # kernel then masks against a shorter KV range. Raised here, ahead
+                # of any write, rather than by the fa2 planner later.
                 kernel_kv_lens = get_seq_lens(
                     indptr_host, last_page_len_host, page_size
                 )
+                planner_kv_lens = kernel_kv_lens
                 min_kv_len = int(kernel_kv_lens.min().item())
                 if min_kv_len < q_len_per_req:
                     raise ValueError(
@@ -1803,7 +1810,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 self._pin_memory_int_workspace_buffer,
                 qo_indptr_host,
                 indptr_host,
-                kv_lens_arr_host,
+                planner_kv_lens,
                 batch_size * q_len_per_req,  # total_num_rows
                 batch_size,
                 num_qo_heads,
@@ -1812,10 +1819,10 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 self.is_cuda_graph_enabled,
                 head_dim,
                 head_dim,
-                # Upstream parity only: the ROCm binding takes this and never
-                # forwards it to PrefillPlan. MaskMode in run() is what actually
-                # makes a multi-token query causal.
+                # The planner refuses a short causal request; MaskMode in run() is
+                # what actually makes a multi-token query causal.
                 q_len_per_req > 1,  # causal
+                causal_mask_applies=True,
             )
             self._plan_info = plan_info_vec_as_tensor(
                 self._plan_info, device=self._float_workspace_buffer.device

@@ -123,13 +123,11 @@ def test_top_p_sampling_freq(vocab_size, distribution, p):
 )
 @pytest.mark.parametrize("k", [10, 100, 500])
 def test_top_k_sampling_freq(vocab_size, distribution, k):
-    if k > vocab_size:
-        pytest.skip("k should be less than vocab_size")
     torch.manual_seed(42)
     logits = distribution((1, vocab_size), "cuda:0")
     probs = torch.softmax(logits, dim=-1)
     sorted_prob, _ = torch.sort(probs, descending=True)
-    pivot = sorted_prob[:, k - 1]
+    pivot = sorted_prob[:, min(k, vocab_size) - 1]
     mask = (probs >= pivot.unsqueeze(-1)).int()
 
     renorm_probs = flashinfer.sampling.top_k_renorm_probs(probs, k)
@@ -267,13 +265,11 @@ def test_top_p_sampling(batch_size, vocab_size, p):
 @pytest.mark.parametrize("vocab_size", [111, 32000])
 @pytest.mark.parametrize("k", [10, 100, 500])
 def test_top_k_sampling(batch_size, vocab_size, k):
-    if k > vocab_size:
-        pytest.skip("k should be less than vocab_size")
     torch.manual_seed(42)
     pre_norm_prob = torch.rand(batch_size, vocab_size, device="cuda:0")
     normalized_prob = pre_norm_prob / pre_norm_prob.sum(dim=-1, keepdim=True)
     sorted_prob, _ = torch.sort(normalized_prob, descending=True)
-    pivot = sorted_prob[:, k - 1]
+    pivot = sorted_prob[:, min(k, vocab_size) - 1]
     mask = (normalized_prob >= pivot.unsqueeze(-1)).int()
 
     num_trails = 100
@@ -289,14 +285,12 @@ def test_top_k_sampling(batch_size, vocab_size, k):
 @pytest.mark.parametrize("vocab_size", [111, 32000])
 @pytest.mark.parametrize("k", [10, 100, 500])
 def test_top_k_sampling_with_variable_k(batch_size, vocab_size, k):
-    if k > vocab_size:
-        pytest.skip("k should be less than vocab_size")
     torch.manual_seed(42)
     pre_norm_prob = torch.rand(batch_size, vocab_size, device="cuda:0")
     normalized_prob = pre_norm_prob / pre_norm_prob.sum(dim=-1, keepdim=True)
     sorted_prob, _ = torch.sort(normalized_prob, descending=True)
     k = torch.randint(1, k + 1, (batch_size,), device="cuda:0")
-    pivot = sorted_prob[torch.arange(batch_size), k - 1]
+    pivot = sorted_prob[torch.arange(batch_size), k.clamp(max=vocab_size) - 1]
     mask = (normalized_prob >= pivot.unsqueeze(-1)).int()
 
     num_trails = 100
@@ -484,13 +478,11 @@ def test_top_p_renorm_probs(batch_size, vocab_size, p):
 @pytest.mark.parametrize("vocab_size", [111, 32000, 128256])
 @pytest.mark.parametrize("k", [10, 100, 500])
 def test_top_k_renorm_probs(batch_size, vocab_size, k):
-    if k > vocab_size:
-        pytest.skip("k should be less than vocab_size")
     torch.manual_seed(42)
     pre_norm_prob = torch.rand(batch_size, vocab_size, device="cuda:0")
     normalized_prob = pre_norm_prob / pre_norm_prob.sum(dim=-1, keepdim=True)
     sorted_prob, _ = torch.sort(normalized_prob, descending=True)
-    pivot = sorted_prob[:, k - 1]
+    pivot = sorted_prob[:, min(k, vocab_size) - 1]
     mask = (normalized_prob >= pivot.unsqueeze(-1)).int()
     renorm_prob_ground_truth = normalized_prob.clone()
     renorm_prob_ground_truth[mask == 0] = 0
@@ -513,8 +505,6 @@ def test_top_k_renorm_probs(batch_size, vocab_size, k):
 @pytest.mark.parametrize("k", [10, 100, 500])
 @pytest.mark.parametrize("neginf_input", [False, True])
 def test_top_k_mask_logits(batch_size, vocab_size, k, neginf_input):
-    if k > vocab_size:
-        pytest.skip("k should be less than vocab_size")
     torch.manual_seed(42)
     logits = torch.randn(batch_size, vocab_size, device="cuda:0") * 5
     if neginf_input:

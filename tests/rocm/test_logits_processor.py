@@ -242,9 +242,6 @@ class TestLogitsPipeCompilationHIP:
     )
     @pytest.mark.parametrize("k", [10, 100, 500])
     def test_probs_top_k_sample_freq(self, vocab_size, distribution, k):
-        if k > vocab_size:
-            pytest.skip("k should be less than vocab_size")
-
         set_random_seed(42)
         num_trials = _HSA_SAFE_NUM_TRIALS
 
@@ -252,7 +249,7 @@ class TestLogitsPipeCompilationHIP:
         probs = torch.softmax(logits, dim=-1)
 
         sorted_prob, _ = torch.sort(probs, descending=True)
-        pivot = sorted_prob[:, k - 1]
+        pivot = sorted_prob[:, min(k, vocab_size) - 1]
         mask = (probs >= pivot.unsqueeze(-1)).int()
         masked_probs = probs.clone()
         masked_probs[mask == 0] = 0
@@ -677,9 +674,6 @@ class TestLogitsPipeVsSamplingOpsHIP:
     @pytest.mark.parametrize("k", [10, 100, 500])
     @pytest.mark.parametrize("neginf_input", [False, True])
     def test_logits_topk(self, batch_size, vocab_size, k, neginf_input):
-        if k > vocab_size:
-            pytest.skip("k should be less than vocab_size")
-
         set_random_seed(42)
 
         logits = torch.randn(batch_size, vocab_size, device="cuda:0")
@@ -742,16 +736,13 @@ class TestLogitsPipeVsSamplingOpsHIP:
     @pytest.mark.parametrize("vocab_size", [111, 32000, 128256])
     @pytest.mark.parametrize("k", [10, 100, 500])
     def test_probs_topk_sample(self, batch_size, vocab_size, k):
-        if k > vocab_size:
-            pytest.skip("k should be less than vocab_size")
-
         set_random_seed(42)
 
         probs = torch.rand(batch_size, vocab_size, device="cuda:0")
         probs = probs / probs.sum(dim=-1, keepdim=True)
 
         sorted_prob, _ = torch.sort(probs, descending=True)
-        pivot = sorted_prob[:, k - 1]
+        pivot = sorted_prob[:, min(k, vocab_size) - 1]
         mask = (probs >= pivot.unsqueeze(-1)).int()
 
         samples_direct = flashinfer.sampling.top_k_sampling_from_probs(probs, k)

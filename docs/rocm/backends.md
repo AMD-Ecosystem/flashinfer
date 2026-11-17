@@ -470,6 +470,9 @@ Ignoring these would return wrong numbers, so ROCm raises instead:
   `v_scale` instead. One exception, inherited from upstream: a block-sparse plan
   with `R * (num_qo_heads // num_kv_heads) < 4` and no mask takes the decode
   kernel, and upstream's `sparse.py` passes it no scale, so there they are dropped.
+* a causal request with `qo_len > kv_len > 0` on the `fa2` batch routes (paged,
+  ragged, batch POD, and block-sparse except its decode-kernel case above), whose
+  output fa2 gets wrong. AITER computes it, so a call `auto` sends there still runs.
 
 ALiBi is not in either list: `maybe_alibi_slopes` is filled internally
 from the head count, and the user-facing route to it is

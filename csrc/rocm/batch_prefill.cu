@@ -41,6 +41,44 @@ hipError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Param
 
 using namespace flashinfer;
 
+namespace {
+
+template <typename KvLenT>
+int64_t FirstShortKVRequestImpl(const IdType* qo_indptr, const IdType* kv_indptr,
+                                const KvLenT* kv_len, int64_t batch_size, int64_t& qo_len,
+                                int64_t& short_kv_len) {
+  for (int64_t i = 0; i < batch_size; ++i) {
+    const int64_t q = static_cast<int64_t>(qo_indptr[i + 1]) - qo_indptr[i];
+    // No pages (or tokens) means no KV, whatever a stale last_page_len says, and a
+    // request with no KV is fine: fa2 writes zero rows for it.
+    const int64_t k = kv_indptr[i + 1] == kv_indptr[i] ? 0 : static_cast<int64_t>(kv_len[i]);
+    if (k > 0 && q > k) {
+      qo_len = q;
+      short_kv_len = k;
+      return i;
+    }
+  }
+  return -1;
+}
+
+// First request whose query outruns its non-empty KV, or -1. All three arrays are on the host.
+int64_t FirstShortKVRequest(const IdType* qo_indptr, const IdType* kv_indptr,
+                            const at::Tensor& kv_len_arr, int64_t batch_size, int64_t& qo_len,
+                            int64_t& kv_len) {
+  TORCH_CHECK(kv_len_arr.is_cpu() && kv_len_arr.numel() >= batch_size,
+              "kv_len_arr must be a host tensor with an entry per request");
+  const at::Tensor kv = kv_len_arr.contiguous();
+  if (kv.scalar_type() == at::kInt) {
+    return FirstShortKVRequestImpl(qo_indptr, kv_indptr, kv.data_ptr<int32_t>(), batch_size, qo_len,
+                                   kv_len);
+  }
+  TORCH_CHECK(kv.scalar_type() == at::kLong, "kv_len_arr must be int32 or int64");
+  return FirstShortKVRequestImpl(qo_indptr, kv_indptr, kv.data_ptr<int64_t>(), batch_size, qo_len,
+                                 kv_len);
+}
+
+}  // namespace
+
 at::Tensor BatchPrefillWithKVCachePlan(
     at::Tensor float_workspace_buffer, at::Tensor int_workspace_buffer,
     at::Tensor page_locked_int_workspace_buffer, at::Tensor qo_indptr, at::Tensor kv_indptr,
@@ -48,6 +86,15 @@ at::Tensor BatchPrefillWithKVCachePlan(
     int64_t num_kv_heads, int64_t page_size, bool enable_cuda_graph, int64_t head_dim_qk,
     int64_t head_dim_vo, bool causal) {
   CHECK_GQA_HEAD_DIVISIBLE(num_qo_heads, num_kv_heads);
+  int64_t short_qo_len = 0, short_kv_len = 0;
+  const int64_t first_short_kv_request =
+      FirstShortKVRequest(qo_indptr.data_ptr<IdType>(), kv_indptr.data_ptr<IdType>(), kv_len_arr,
+                          batch_size, short_qo_len, short_kv_len);
+  TORCH_CHECK_VALUE(
+      !causal || first_short_kv_request < 0,
+      "causal attention needs kv_len >= qo_len for every request with KV, but request ",
+      first_short_kv_request, " has qo_len=", short_qo_len, " and kv_len=", short_kv_len,
+      ": its leading rows would attend to an empty KV range.");
   size_t float_workspace_size_in_bytes =
       float_workspace_buffer.size(0) * float_workspace_buffer.element_size();
   size_t int_workspace_size_in_bytes =
@@ -68,6 +115,7 @@ at::Tensor BatchPrefillWithKVCachePlan(
 
   TORCH_CHECK(status == hipSuccess,
               "Failed to plan prefill with error: ", hipGetErrorString(status));
+  plan_info.first_short_kv_request = first_short_kv_request;
 
   return vec_to_tensor(plan_info.ToVector());
 }
@@ -117,6 +165,7 @@ void BatchPrefillWithRaggedKVCacheRun(at::Tensor float_workspace_buffer,
   void* int_buffer_ptr = int_workspace_buffer.data_ptr();
 
   const MaskMode mask_mode = static_cast<MaskMode>(mask_mode_code);
+  CHECK_CAUSAL_KV_COVERS_QO(mask_mode, plan_info);
 
   auto q_scalar_type = q.scalar_type();
   auto kv_scalar_type = k.scalar_type();
@@ -262,6 +311,7 @@ void BatchPrefillWithPagedKVCacheRun(at::Tensor float_workspace_buffer,
   void* int_buffer_ptr = static_cast<void*>(int_workspace_buffer.data_ptr());
 
   const MaskMode mask_mode = static_cast<MaskMode>(mask_mode_code);
+  CHECK_CAUSAL_KV_COVERS_QO(mask_mode, plan_info);
   auto q_scalar_type = q.scalar_type();
   auto kv_scalar_type = paged_k_cache.scalar_type();
 

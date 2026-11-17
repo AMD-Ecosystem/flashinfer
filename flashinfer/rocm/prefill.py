@@ -430,7 +430,9 @@ def _plan_with_upstream_signature(plan_func):
     """Adapt the 15-argument ROCm ``plan`` binding to upstream's 20-argument call.
 
     Upstream modules reach the shared binding directly (``sparse.py``), so the
-    trailing CUDA-only arguments have to bind somewhere.
+    trailing CUDA-only arguments have to bind somewhere. They pass ``causal`` even
+    when a custom mask replaces it, so only a caller that sets
+    ``causal_mask_applies`` gets the plan-time refusal; run() refuses for the rest.
     """
 
     def plan(
@@ -454,6 +456,8 @@ def _plan_with_upstream_signature(plan_func):
         disable_split_kv=False,
         num_colocated_ctas=0,
         uniform_q_len=0,
+        *,
+        causal_mask_applies=False,
     ):
         # window_left has no slot in the ROCm plan; the mask is applied in run().
         reject_cuda_only("fixed_split_size", fixed_split_size, -1)
@@ -475,7 +479,7 @@ def _plan_with_upstream_signature(plan_func):
             enable_cuda_graph,
             head_dim_qk,
             head_dim_vo,
-            causal,
+            causal if causal_mask_applies else False,
         )
 
     return plan
@@ -2815,7 +2819,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         causal : bool
             Whether to apply causal mask to the attention matrix.
             This is only effective when :attr:`custom_mask` is not provided in
-            :meth:`plan`.
+            :meth:`plan`. On ``fa2`` every request with KV needs ``kv_len >= qo_len``.
         pos_encoding_mode : str
             The position encoding applied inside attention kernels, could be
             ``NONE``/``ROPE_LLAMA`` (LLAMA style rotary embedding) /``ALIBI``.
@@ -2972,30 +2976,19 @@ class BatchPrefillWithPagedKVCacheWrapper:
 
         paged_kv_indptr_host = paged_kv_indptr.to("cpu")
         paged_kv_last_page_len_host = paged_kv_last_page_len.to("cpu")
-        if seq_lens is None:
-            kv_lens_arr_host = get_seq_lens(
-                paged_kv_indptr_host, paged_kv_last_page_len_host, page_size
-            )
-        else:
-            kv_lens_arr_host = seq_lens.cpu().flatten()
-        self._kv_lens_buffer[: len(kv_lens_arr_host)].copy_(
-            kv_lens_arr_host, non_blocking=non_blocking
+        # The planner checks the lengths the kernel reads, not a caller's seq_lens.
+        kernel_kv_lens = get_seq_lens(
+            paged_kv_indptr_host, paged_kv_last_page_len_host, page_size
         )
+        kv_lens_arr_host = (
+            kernel_kv_lens if seq_lens is None else seq_lens.cpu().flatten()
+        )
+        # Documented as uint32, which torch cannot max().
+        if kv_lens_arr_host.dtype not in (torch.int32, torch.int64):
+            kv_lens_arr_host = kv_lens_arr_host.to(torch.int64)
         self._max_kv_len = max(kv_lens_arr_host).item()
 
         if self.is_cuda_graph_enabled:
-            if self._max_total_num_rows is None:
-                self._max_total_num_rows = total_num_rows
-            self._qo_indptr_buf.copy_(qo_indptr, non_blocking=non_blocking)
-            self._paged_kv_indptr_buf.copy_(paged_kv_indptr, non_blocking=non_blocking)
-            self._paged_kv_last_page_len_buf.copy_(
-                paged_kv_last_page_len, non_blocking=non_blocking
-            )
-            self._paged_kv_indices_buf[: len(paged_kv_indices)].copy_(
-                paged_kv_indices,
-                non_blocking=(paged_kv_indices.device == self.device) and non_blocking,
-            )
-
             if packed_custom_mask is not None:
                 if not torch.is_tensor(self._custom_mask_buf):
                     raise ValueError(
@@ -3005,13 +2998,6 @@ class BatchPrefillWithPagedKVCacheWrapper:
                     raise ValueError(
                         "mask_indptr_buf must be initialized with a torch.Tensor in cuda graph mode if we use custom mask in attention computation."
                     )
-                self._custom_mask_buf[: len(packed_custom_mask)].copy_(
-                    packed_custom_mask,
-                    non_blocking=(packed_custom_mask.device == self.device)
-                    and non_blocking,
-                )
-                # NOTE(Zihao): mask_indptr has the same length as qo_indptr
-                self._mask_indptr_buf.copy_(mask_indptr, non_blocking=non_blocking)
         else:
             self._qo_indptr_buf = qo_indptr.to(self.device, non_blocking=non_blocking)
             self._paged_kv_indptr_buf = paged_kv_indptr.to(
@@ -3310,7 +3296,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 self._pin_memory_int_workspace_buffer,
                 qo_indptr_host,
                 paged_kv_indptr_host,
-                kv_lens_arr_host,
+                kernel_kv_lens,
                 self._max_total_num_rows or total_num_rows,
                 batch_size,
                 num_qo_heads,
@@ -3320,10 +3306,38 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 head_dim_qk,
                 head_dim_vo,
                 causal,
+                # run() keys the mask on this buffer, so a custom mask is not refused.
+                causal_mask_applies=self._custom_mask_buf is None,
             )
             self._plan_info = plan_info_vec_as_tensor(
                 self._plan_info, device=self._float_workspace_buffer.device
             )
+
+        # Written once the planner accepts the batch, so its refusal leaves a
+        # captured graph's inputs and row capacity as they were.
+        self._kv_lens_buffer[: len(kv_lens_arr_host)].copy_(
+            kv_lens_arr_host, non_blocking=non_blocking
+        )
+        if self.is_cuda_graph_enabled:
+            if self._max_total_num_rows is None:
+                self._max_total_num_rows = total_num_rows
+            self._qo_indptr_buf.copy_(qo_indptr, non_blocking=non_blocking)
+            self._paged_kv_indptr_buf.copy_(paged_kv_indptr, non_blocking=non_blocking)
+            self._paged_kv_last_page_len_buf.copy_(
+                paged_kv_last_page_len, non_blocking=non_blocking
+            )
+            self._paged_kv_indices_buf[: len(paged_kv_indices)].copy_(
+                paged_kv_indices,
+                non_blocking=(paged_kv_indices.device == self.device) and non_blocking,
+            )
+            if packed_custom_mask is not None:
+                self._custom_mask_buf[: len(packed_custom_mask)].copy_(
+                    packed_custom_mask,
+                    non_blocking=(packed_custom_mask.device == self.device)
+                    and non_blocking,
+                )
+                # NOTE(Zihao): mask_indptr has the same length as qo_indptr
+                self._mask_indptr_buf.copy_(mask_indptr, non_blocking=non_blocking)
 
         self._causal = causal
         self._pos_encoding_mode = pos_encoding_mode
@@ -4151,6 +4165,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         causal : bool
             Whether to apply causal mask to the attention matrix.
             This argument is ignored if ``mask`` is provided in :meth:`plan`.
+            On ``fa2`` every request with KV needs ``kv_len >= qo_len``.
         pos_encoding_mode : str
             The position encoding applied inside attention kernels, could be
             ``NONE``/``ROPE_LLAMA`` (LLAMA style rotary embedding) /``ALIBI``.
@@ -4287,10 +4302,6 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         self._planned_shapes = _REPLAN_REQUIRED  # until this plan() completes
         self._cached_o_data_type = o_data_type
         if self.is_cuda_graph_enabled:
-            if self._max_total_num_rows is None:
-                self._max_total_num_rows = total_num_rows
-            self._qo_indptr_buf.copy_(qo_indptr, non_blocking=non_blocking)
-            self._kv_indptr_buf.copy_(kv_indptr, non_blocking=non_blocking)
             if packed_custom_mask is not None:
                 if not torch.is_tensor(self._custom_mask_buf):
                     raise ValueError(
@@ -4300,8 +4311,6 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                     raise ValueError(
                         "mask_indptr_buf must be initialized with a torch.Tensor in cuda graph mode if we use custom mask in the attention computation."
                     )
-                self._custom_mask_buf[: len(packed_custom_mask)] = packed_custom_mask
-                self._mask_indptr_buf.copy_(mask_indptr, non_blocking=non_blocking)
         else:
             self._qo_indptr_buf = qo_indptr.to(self.device, non_blocking=non_blocking)
             self._kv_indptr_buf = kv_indptr.to(self.device, non_blocking=non_blocking)
@@ -4458,10 +4467,19 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             head_dim_qk,
             head_dim_vo,
             causal,
+            causal_mask_applies=self._custom_mask_buf is None,  # as in the paged plan
         )
         self._plan_info = plan_info_vec_as_tensor(
             self._plan_info, device=self._float_workspace_buffer.device
         )
+        if self.is_cuda_graph_enabled:  # after the planner, as in the paged plan
+            if self._max_total_num_rows is None:
+                self._max_total_num_rows = total_num_rows
+            self._qo_indptr_buf.copy_(qo_indptr, non_blocking=non_blocking)
+            self._kv_indptr_buf.copy_(kv_indptr, non_blocking=non_blocking)
+            if packed_custom_mask is not None:
+                self._custom_mask_buf[: len(packed_custom_mask)] = packed_custom_mask
+                self._mask_indptr_buf.copy_(mask_indptr, non_blocking=non_blocking)
         self._planned_shapes = (
             num_qo_heads,
             num_kv_heads,

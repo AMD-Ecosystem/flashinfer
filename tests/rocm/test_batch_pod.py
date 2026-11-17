@@ -390,3 +390,28 @@ def test_batch_pod_causal_p(pod_workspace, ref_workspace_p, ref_workspace_d):
     torch.testing.assert_close(
         o_d, o_ref_d, rtol=1e-2, atol=1e-2, msg="BatchPOD causal decode mismatch"
     )
+
+
+@pytest.mark.parametrize("causal_p", [True, False])
+def test_batch_pod_refuses_a_causal_prefill_with_more_query_than_kv(
+    pod_workspace, causal_p
+):
+    """fa2's causal bounds wrap on qo_len > kv_len, so a causal prefill arm refuses it."""
+    dtype, num_qo_heads = torch.float16, 8
+    q_p, kv_data_p, qo_indptr_p, kv_indptr_p, kv_indices_p, last_page_len_p = (
+        _make_prefill_inputs(2, 64, 32, num_qo_heads, dtype)
+    )
+    q_d, kv_data_d, qo_indptr_d, kv_indptr_d, kv_indices_d, last_page_len_d = (
+        _make_decode_inputs(4, 256, num_qo_heads, dtype)
+    )
+    args = (
+        pod_workspace, qo_indptr_p, kv_indptr_p, kv_indices_p, last_page_len_p,
+        qo_indptr_d, kv_indptr_d, kv_indices_d, last_page_len_d,
+        q_p, kv_data_p, q_d, kv_data_d, num_qo_heads, dtype,
+    )  # fmt: skip
+    if causal_p:
+        with pytest.raises(ValueError, match="kv_len >= qo_len"):
+            _run_batch_pod(*args, causal_p=True)
+    else:
+        o_p, _ = _run_batch_pod(*args, causal_p=False)
+        assert torch.isfinite(o_p).all()

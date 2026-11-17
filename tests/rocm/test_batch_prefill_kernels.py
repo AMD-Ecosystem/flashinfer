@@ -100,9 +100,6 @@ def test_batch_prefill_with_paged_kv_cache(
     if backend == "aiter":
         _skip_if_prefill_gated(torch.device("cuda:0"))
 
-    if backend == "aiter" and (causal or kv_layout != "NHD"):
-        pytest.skip("Not testing for aiter backend with causal or kv_layout != NHD")
-
     max_num_batched_tokens = 4096
 
     if batch_size * qo_len > max_num_batched_tokens:
@@ -205,8 +202,11 @@ def test_batch_prefill_with_paged_kv_cache(
             backend=backend,
         )
         q_indptr_warmup = torch.arange(0, batch_size + 1).int() * qo_len
-        kv_indptr_warmup = torch.arange(0, batch_size + 1).int()
-        kv_indices_warmup = torch.arange(0, batch_size).int()
+        # fa2 refuses a causal plan with kv_len < qo_len, so give each request
+        # enough full pages; the cases run here have kv_len >= qo_len, so they fit.
+        warmup_pages = (qo_len + page_size - 1) // page_size if causal else 1
+        kv_indptr_warmup = torch.arange(0, batch_size + 1).int() * warmup_pages
+        kv_indices_warmup = torch.arange(0, batch_size * warmup_pages).int()
         kv_last_page_len_warmup = torch.full(
             (batch_size,), page_size, dtype=torch.int32
         )
@@ -356,9 +356,6 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
     if backend == "aiter":
         _skip_if_prefill_gated(torch.device("cuda:0"))
 
-    if backend == "aiter" and (causal or kv_layout != "NHD"):
-        pytest.skip("Not testing for aiter backend with causal")
-
     max_num_batched_tokens = 4096
 
     if batch_size * qo_len > max_num_batched_tokens:
@@ -464,8 +461,11 @@ def test_batch_prefill_with_tuple_paged_kv_cache(
             backend=backend,
         )
         q_indptr_warmup = torch.arange(0, batch_size + 1).int() * qo_len
-        kv_indptr_warmup = torch.arange(0, batch_size + 1).int()
-        kv_indices_warmup = torch.arange(0, batch_size).int()
+        # fa2 refuses a causal plan with kv_len < qo_len, so give each request
+        # enough full pages; the cases run here have kv_len >= qo_len, so they fit.
+        warmup_pages = (qo_len + page_size - 1) // page_size if causal else 1
+        kv_indptr_warmup = torch.arange(0, batch_size + 1).int() * warmup_pages
+        kv_indices_warmup = torch.arange(0, batch_size * warmup_pages).int()
         kv_last_page_len_warmup = torch.full(
             (batch_size,), page_size, dtype=torch.int32
         )
