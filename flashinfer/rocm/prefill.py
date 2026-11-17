@@ -2983,6 +2983,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
         kv_lens_arr_host = (
             kernel_kv_lens if seq_lens is None else seq_lens.cpu().flatten()
         )
+        # Documented as uint32, which torch cannot max().
+        if kv_lens_arr_host.dtype not in (torch.int32, torch.int64):
+            kv_lens_arr_host = kv_lens_arr_host.to(torch.int64)
         self._max_kv_len = max(kv_lens_arr_host).item()
 
         if self.is_cuda_graph_enabled:

@@ -1445,6 +1445,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
             # it every step, the same way paged_kv_indices is already handled.
             # Unsliced, the zero padding would sink the kv_len guard below.
             kv_lens_arr_host = seq_lens.cpu().flatten()
+            # Documented as uint32, which torch cannot max() and the planner rejects.
+            if kv_lens_arr_host.dtype not in (torch.int32, torch.int64):
+                kv_lens_arr_host = kv_lens_arr_host.to(torch.int64)
             if kv_lens_arr_host.numel() < batch_size:
                 raise ValueError(
                     f"seq_lens has {kv_lens_arr_host.numel()} entries but "

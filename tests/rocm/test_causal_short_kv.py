@@ -230,6 +230,31 @@ class TestCausalShortKV:
             atol=1e-2,
         )
 
+    @pytest.mark.parametrize("batch", [1, 2])
+    def test_tensor_core_decode_accepts_uint32_seq_lens(self, workspace, batch):
+        """seq_lens is documented as uint32; the planner reads int32/int64."""
+        device = workspace.device
+        w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+            workspace, "NHD", use_tensor_cores=True
+        )
+        w.plan(
+            _indptr(list(range(batch + 1)), device), _indptr(list(range(batch)), device),
+            _indptr([7] * batch, device), _H, _H, _D, _PAGE,
+            seq_lens=torch.full((batch,), 7, dtype=torch.uint32),
+        )  # fmt: skip
+
+    def test_paged_prefill_accepts_uint32_seq_lens(self, workspace):
+        b = _batch(workspace.device, qo_lens=(4, 3), kv_lens=(4, 3))
+        w = _wrapper("paged", workspace, "fa2")
+        seq_lens = torch.tensor([4, 3], dtype=torch.uint32)
+        _plan(w, "paged", b, causal=True, seq_lens=seq_lens)
+        torch.testing.assert_close(
+            w.run(*_inputs("paged", b)).float(),
+            _causal_reference(b),
+            rtol=1e-2,
+            atol=1e-2,
+        )
+
     def test_a_refused_plan_leaves_run_refusing_until_replanned(self, workspace):
         good = _batch(workspace.device, qo_lens=(4, 3), kv_lens=(4, 3))
         w = _wrapper("paged", workspace, "fa2")
