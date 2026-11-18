@@ -1099,6 +1099,14 @@ def gen_customize_batch_prefill_module(
             "fp8 queries are not supported on ROCm; an fp8 KV cache is served "
             "via kv_data_type on the fa2 prefill and decode wrappers"
         )
+    # BatchAttentionWithAttentionSinkWrapper (flashinfer.attention) builds its
+    # module through here with upstream's CUDA AttentionSink variant, which the
+    # ROCm prefill kernel cannot compile; refuse it at construction instead.
+    if variant_name == "AttentionSink":
+        raise NotImplementedError(
+            "attention sinks are not supported on ROCm "
+            "(BatchAttentionWithAttentionSinkWrapper)"
+        )
     # AITER compiles its own fp8 dtypes, but its kernels take one dtype for q
     # and kv; an explicit backend="aiter" otherwise reaches ninja with a pair
     # no kernel exists for.
@@ -1565,3 +1573,131 @@ def gen_customize_batch_pod_module(
         use_logits_soft_cap_d,
         use_fp16_qk_reduction,
     )
+
+
+# ---------------------------------------------------------------------------
+# BatchAttention: the persistent ("holistic") kernel, upstream PR #1137.
+# Same signature as upstream's flashinfer/jit/attention/modules.py generator,
+# so flashinfer/attention/_core.py (BatchAttention) runs unchanged on ROCm.
+# ---------------------------------------------------------------------------
+
+_BATCH_ATTENTION_HEAD_DIMS = (64, 128, 256)
+
+
+def get_batch_attention_uri(
+    dtype_q: torch.dtype,
+    dtype_kv: torch.dtype,
+    dtype_o: torch.dtype,
+    dtype_idx: torch.dtype,
+    head_dim_qk: int,
+    head_dim_vo: int,
+    pos_encoding_mode: int,
+    use_logits_soft_cap: bool,
+    use_profiler: bool,
+) -> str:
+    return (
+        f"batch_attention_with_kv_cache_dtype_q_{filename_safe_dtype_map[dtype_q]}_"
+        f"dtype_kv_{filename_safe_dtype_map[dtype_kv]}_"
+        f"dtype_o_{filename_safe_dtype_map[dtype_o]}_"
+        f"dtype_idx_{filename_safe_dtype_map[dtype_idx]}_"
+        f"head_dim_qk_{head_dim_qk}_"
+        f"head_dim_vo_{head_dim_vo}_"
+        f"posenc_{pos_encoding_mode}_"
+        f"use_logits_soft_cap_{str(use_logits_soft_cap).lower()}_"
+        f"use_profiler_{str(use_profiler).lower()}"
+    )
+
+
+def _check_batch_attention_args(
+    dtype_q: torch.dtype,
+    dtype_kv: torch.dtype,
+    dtype_o: torch.dtype,
+    dtype_idx: torch.dtype,
+    head_dim_qk: int,
+    head_dim_vo: int,
+    pos_encoding_mode: int,
+    use_profiler: bool,
+) -> None:
+    """Refuse what the ROCm persistent kernel does not implement, before any JIT."""
+    what = "BatchAttention"
+    if use_profiler:
+        raise NotImplementedError(
+            f"{what}: use_profiler=True is not supported on ROCm; the persistent "
+            "kernel has no profiler instrumentation."
+        )
+    if pos_encoding_mode != 0:
+        raise NotImplementedError(
+            f"{what}: pos_encoding_mode {pos_encoding_mode} is not supported; "
+            "apply RoPE to q and k before calling."
+        )
+    if dtype_q not in _WIDE_DTYPES or not (dtype_q == dtype_kv == dtype_o):
+        raise NotImplementedError(
+            f"{what}: query, KV cache and output must share one dtype, float16 or "
+            f"bfloat16; got {dtype_q}, {dtype_kv} and {dtype_o}. fp8 and NVFP4 KV "
+            "caches are not supported on ROCm."
+        )
+    if dtype_idx != torch.int32:
+        raise NotImplementedError(f"{what}: indices must be int32, got {dtype_idx}.")
+    if head_dim_qk != head_dim_vo or head_dim_qk not in _BATCH_ATTENTION_HEAD_DIMS:
+        raise NotImplementedError(
+            f"{what}: head_dim_qk == head_dim_vo in {_BATCH_ATTENTION_HEAD_DIMS} is "
+            f"required on ROCm; got {head_dim_qk} and {head_dim_vo}."
+        )
+
+
+def gen_batch_attention_module(
+    dtype_q: torch.dtype,
+    dtype_kv: torch.dtype,
+    dtype_o: torch.dtype,
+    dtype_idx: torch.dtype,
+    head_dim_qk: int,
+    head_dim_vo: int,
+    pos_encoding_mode: int,
+    use_logits_soft_cap: bool,
+    use_profiler: bool,
+) -> JitSpec:
+    _check_batch_attention_args(
+        dtype_q,
+        dtype_kv,
+        dtype_o,
+        dtype_idx,
+        head_dim_qk,
+        head_dim_vo,
+        pos_encoding_mode,
+        use_profiler,
+    )
+    uri = get_batch_attention_uri(
+        dtype_q,
+        dtype_kv,
+        dtype_o,
+        dtype_idx,
+        head_dim_qk,
+        head_dim_vo,
+        pos_encoding_mode,
+        use_logits_soft_cap,
+        use_profiler,
+    )
+    gen_directory = FLASHINFER_GEN_SRC_DIR / uri
+    kwargs = {
+        "dtype_q": dtype_map_hip[dtype_q],
+        "dtype_kv": dtype_map_hip[dtype_kv],
+        "dtype_o": dtype_map_hip[dtype_o],
+        "idtype": dtype_map_hip[dtype_idx],
+        "head_dim_qk": head_dim_qk,
+        "head_dim_vo": head_dim_vo,
+        "use_logits_soft_cap": str(use_logits_soft_cap).lower(),
+    }
+    with open(FLASHINFER_CSRC_DIR / "batch_attention_customize_config.jinja") as f:
+        config_templ = jinja2.Template(f.read())
+
+    os.makedirs(gen_directory, exist_ok=True)
+    write_if_different(
+        gen_directory / "batch_attention_config.inc", config_templ.render(**kwargs)
+    )
+    source_paths = []
+    for filename in ["batch_attention.cu", "batch_attention_jit_pybind.cu"]:
+        dest_path = gen_directory / filename
+        source_paths.append(dest_path)
+        with open(FLASHINFER_CSRC_DIR / filename, "r") as f:
+            write_if_different(dest_path, f.read())
+    return gen_jit_spec(uri, source_paths)

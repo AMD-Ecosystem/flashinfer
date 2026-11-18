@@ -43,6 +43,8 @@ from ..attention import get_single_decode_uri as get_single_decode_uri
 from ..attention import get_single_prefill_uri as get_single_prefill_uri
 from ..attention import get_pod_uri as get_pod_uri
 from ..attention import get_batch_pod_uri as get_batch_pod_uri
+from ..attention import gen_batch_attention_module as gen_batch_attention_module
+from ..attention import get_batch_attention_uri as get_batch_attention_uri
 from ..core import JitSpec as JitSpec
 from ..core import JitSpecStatus as JitSpecStatus
 from ..core import JitSpecRegistry as JitSpecRegistry

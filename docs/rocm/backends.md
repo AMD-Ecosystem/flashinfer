@@ -42,7 +42,7 @@ fails later:
 | Module | Why |
 | :--- | :--- |
 | `flashinfer.gemm`, `flashinfer.grouped_mm`, `flashinfer.trtllm_low_latency_gemm` | CUTLASS / TensorRT-LLM GEMM kernels |
-| `flashinfer.cudnn`, `flashinfer.attention` | cuDNN attention |
+| `flashinfer.cudnn` | cuDNN attention |
 | `flashinfer.fp4_quantization`, `flashinfer.fp8_quantization`, and the same two under `flashinfer.quantization` | NVFP4 / trtllm-gen quantization |
 | `flashinfer.fused_moe` | The upstream CUTLASS MoE. **ROCm has MoE** — use `flashinfer.aiter_fused_moe`, below |
 | `flashinfer.dsv3_ops` | DeepSeek-V3 fusions built on the above |
@@ -845,6 +845,15 @@ partial case — its own kernels are HIP, but what it calls is not:
 * **POD attention** — `PODWithPagedKVCacheWrapper` and
   `BatchPODWithPagedKVCacheWrapper`. JIT-only, excluded from AOT builds,
   matching upstream CUDA.
+* **Persistent batch attention** — `BatchAttention` runs a mixed batch of
+  prefill and decode requests on a fixed grid (an attention launch, then a
+  merge launch), so one captured graph replays for every batch shape
+  (re-`plan()` between replays). Upstream's single cooperative launch is not
+  used: from a torch extension it crashes the process at exit on ROCm 7.2.
+  fp16/bf16 with matching query and KV dtypes, head_dim 64, 128 or 256, causal
+  or not, logits soft cap. JIT-only. fp8 and NVFP4 KV caches, the profiler and
+  `BatchAttentionWithAttentionSinkWrapper` are refused. The kernel is
+  correctness-first and untuned.
 * **Gemma RMSNorm**, **sampling** (Top-K / Top-P / Min-P /
   OnlineSoftmax / SamplingFromLogits), the **logits processor** pipeline,
   and **quantization** (`packbits`, `segment_packbits`).

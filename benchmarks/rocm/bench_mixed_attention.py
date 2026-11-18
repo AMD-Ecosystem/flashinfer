@@ -13,14 +13,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-POD attention against running prefill and decode separately.
+POD attention and BatchAttention against running prefill and decode separately.
 
 This is the continuous-batching question: a serving step holds one long prefill
 plus many one-token decodes, and POD fuses them into a single kernel launch so
-the decodes ride along in the prefill's idle CUs. The upstream
-``benchmarks/bench_mixed_attention.py`` compares three arms; the third is
-``flashinfer.BatchAttention``, which is gated CUDA-only here, so this keeps the
-two that exist on ROCm.
+the decodes ride along in the prefill's idle CUs. ``flashinfer.BatchAttention``
+(the persistent kernel) answers the same question differently: one fixed grid
+walks a cost-balanced list of prefill and decode tiles. These are the same three
+arms as the upstream ``benchmarks/bench_mixed_attention.py``. All three read the
+same q and KV memory: the split and POD arms take views of the buffers
+BatchAttention indexes as one batch.
 
 The sweep is over the decode batch size at a fixed prefill, because that is what
 moves: the prefill arm is constant in it, the decode arm is linear, and POD is
@@ -115,20 +117,26 @@ def _time_us(fn, dry_run_iters: int, repeat_iters: int) -> tuple[float, float]:
 
 
 def _build(decode_bs: int, prefill_len: int, causal: bool, decode_backend: str):
-    """Tensors and both arms' wrappers for one (decode_bs, prefill_len) mix.
+    """Tensors and the three arms' wrappers for one (decode_bs, prefill_len) mix.
 
-    Each stream carries its own KV tensor and its own 0-based page indices: the
-    wrapper indexes the prefill indices into the prefill tensor, so sharing one
-    cache and offsetting reads past the end and faults the GPU.
+    The POD and split arms give each stream its own view of the shared q and KV
+    allocations, with 0-based page indices: the wrapper indexes the prefill
+    indices into the prefill tensor, so passing the whole cache with offset
+    indices reads past the end and faults the GPU. BatchAttention indexes the
+    whole allocation as one batch.
     """
     dev = torch.device("cuda")
     d_pages = decode_bs * (_DECODE_KV_LEN // _PAGE_SIZE)
     p_pages = prefill_len // _PAGE_SIZE
     shape = (2, _PAGE_SIZE, _NUM_KV_HEADS, _HEAD_DIM)
-    kv_d = torch.randn(d_pages, *shape, dtype=_DTYPE, device=dev)
-    kv_p = torch.randn(p_pages, *shape, dtype=_DTYPE, device=dev)
-    q_d = torch.randn(decode_bs, _NUM_QO_HEADS, _HEAD_DIM, dtype=_DTYPE, device=dev)
-    q_p = torch.randn(prefill_len, _NUM_QO_HEADS, _HEAD_DIM, dtype=_DTYPE, device=dev)
+    # One allocation each for q and KV, prefill first: BatchAttention indexes
+    # them as one batch, and the other arms take views of the two halves.
+    kv_all = torch.randn(p_pages + d_pages, *shape, dtype=_DTYPE, device=dev)
+    q_all = torch.randn(
+        prefill_len + decode_bs, _NUM_QO_HEADS, _HEAD_DIM, dtype=_DTYPE, device=dev
+    )
+    kv_p, kv_d = kv_all[:p_pages], kv_all[p_pages:]
+    q_p, q_d = q_all[:prefill_len], q_all[prefill_len:]
 
     d_q_indptr = torch.arange(decode_bs + 1, dtype=torch.int32, device=dev)
     d_kv_indptr = d_q_indptr * (_DECODE_KV_LEN // _PAGE_SIZE)
@@ -190,15 +198,42 @@ def _build(decode_bs: int, prefill_len: int, causal: bool, decode_backend: str):
     )
     decode.plan(d_kv_indptr, d_kv_indices, d_last, **common)
 
+    batch = flashinfer.BatchAttention(kv_layout="NHD")
+    batch.plan(
+        torch.cat([p_q_indptr, d_q_indptr[1:] + prefill_len]),
+        torch.cat([p_kv_indptr, d_kv_indptr[1:] + p_pages]),
+        torch.arange(p_pages + d_pages, dtype=torch.int32, device=dev),
+        torch.tensor(
+            [prefill_len] + [_DECODE_KV_LEN] * decode_bs, dtype=torch.int32, device=dev
+        ),
+        _NUM_QO_HEADS,
+        _NUM_KV_HEADS,
+        _HEAD_DIM,
+        _HEAD_DIM,
+        _PAGE_SIZE,
+        causal=causal,
+        q_data_type=_DTYPE,
+        kv_data_type=_DTYPE,
+    )
+
     def run_pod():
         return pod.run(q_p, kv_p, q_d, kv_d, causal_p=causal)
 
     def run_split():
         return prefill.run(q_p, kv_p), decode.run(q_d, kv_d)
 
+    def run_batch_attention():
+        out, _ = batch.run(q_all, kv_all)
+        return out[:prefill_len], out[prefill_len:]
+
     # POD runs the HIP kernel for both halves, so a split arm that resolved to
     # AITER is measuring backend choice as well as fusion. Report which ran.
-    return {"pod": run_pod, "split": run_split, "split_decode": decode.backend}
+    return {
+        "pod": run_pod,
+        "split": run_split,
+        "batch_attention": run_batch_attention,
+        "split_decode": decode.backend,
+    }
 
 
 def _sweep(
@@ -217,7 +252,7 @@ def _sweep(
             try:
                 fns = _build(decode_bs, prefill_len, causal, decode_backend)
                 rec["split_decode_resolved"] = fns["split_decode"]
-                for arm in ("pod", "split"):
+                for arm in ("pod", "split", "batch_attention"):
                     med, spread = _time_us(fns[arm], dry_run_iters, repeat_iters)
                     rec[f"{arm}_us"] = round(med, 3)
                     rec[f"{arm}_spread_us"] = round(spread, 3)
@@ -236,12 +271,16 @@ def _sweep(
                 fns = None
                 torch.cuda.empty_cache()
             p, s = rec.get("pod_us"), rec.get("split_us")
+            b = rec.get("batch_attention_us")
             rec["speedup"] = round(s / p, 4) if p and s else None
+            rec["batch_attention_speedup"] = round(s / b, 4) if b and s else None
             rows.append(rec)
             note = f"  !! {rec['err']}" if "err" in rec else ""
             print(
                 f"prefill={prefill_len:<6d} decode_bs={decode_bs:<4d} "
-                f"pod={p} split={s} speedup={rec['speedup']} "
+                f"pod={p} split={s} batch_attention={b} "
+                f"pod_speedup={rec['speedup']} "
+                f"batch_attention_speedup={rec['batch_attention_speedup']} "
                 f"split_decode={rec.get('split_decode_resolved')}{note}",
                 flush=True,
             )
@@ -259,13 +298,18 @@ def _accuracy(causal: bool, decode_backend: str) -> None:
         for decode_bs in _DECODE_BATCHES:
             try:
                 fns = _build(decode_bs, prefill_len, causal, decode_backend)
-                o_p, o_d = fns["pod"]()
                 r_p, r_d = fns["split"]()
-                err_p = (o_p.float() - r_p.float()).abs().max().item()
-                err_d = (o_d.float() - r_d.float()).abs().max().item()
+                errs = []
+                for arm in ("pod", "batch_attention"):
+                    o_p, o_d = fns[arm]()
+                    err_p = (o_p.float() - r_p.float()).abs().max().item()
+                    err_d = (o_d.float() - r_d.float()).abs().max().item()
+                    errs.append(
+                        f"{arm}: prefill_err={err_p:.5f} decode_err={err_d:.5f}"
+                    )
                 print(
                     f"prefill={prefill_len:<6d} decode_bs={decode_bs:<4d} "
-                    f"prefill_err={err_p:.5f} decode_err={err_d:.5f}"
+                    + "  ".join(errs)
                 )
             except Exception as exc:  # noqa: BLE001
                 print(
@@ -317,13 +361,17 @@ def main() -> None:
             writer.writerows(rows)
         print(f"# wrote {args.csv} ({len(rows)} rows)")
 
-    speedups = [r["speedup"] for r in rows if r.get("speedup")]
-    if speedups:
-        print(
-            f"# pod/split speedup: n={len(speedups)} "
-            f"median={statistics.median(speedups):.4f} min={min(speedups):.4f} "
-            f"max={max(speedups):.4f}"
-        )
+    for key, label in (
+        ("speedup", "pod"),
+        ("batch_attention_speedup", "batch_attention"),
+    ):
+        speedups = [r[key] for r in rows if r.get(key)]
+        if speedups:
+            print(
+                f"# {label}/split speedup: n={len(speedups)} "
+                f"median={statistics.median(speedups):.4f} min={min(speedups):.4f} "
+                f"max={max(speedups):.4f}"
+            )
 
 
 if __name__ == "__main__":

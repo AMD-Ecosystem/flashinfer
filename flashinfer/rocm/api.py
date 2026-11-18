@@ -116,6 +116,13 @@ from ..cascade import merge_states as merge_states
 from ..pod import PODWithPagedKVCacheWrapper as PODWithPagedKVCacheWrapper
 from ..pod import BatchPODWithPagedKVCacheWrapper as BatchPODWithPagedKVCacheWrapper
 
+# Same ordering constraint: attention/_core.py imports flashinfer.prefill. The
+# sink wrapper is exported for API parity; it refuses at construction on ROCm.
+from ..attention import BatchAttention as BatchAttention
+from ..attention import (
+    BatchAttentionWithAttentionSinkWrapper as BatchAttentionWithAttentionSinkWrapper,
+)
+
 # Same ordering constraint as cascade: sparse.py imports flashinfer.decode and
 # flashinfer.prefill, which must already resolve to the ROCm twins.
 from ..sparse import BlockSparseAttentionWrapper as BlockSparseAttentionWrapper
@@ -184,6 +191,8 @@ __all__ = [
     "merge_states",
     "PODWithPagedKVCacheWrapper",
     "BatchPODWithPagedKVCacheWrapper",
+    "BatchAttention",
+    "BatchAttentionWithAttentionSinkWrapper",
     "BlockSparseAttentionWrapper",
     "VariableBlockSparseAttentionWrapper",
     "convert_bsr_mask_layout",

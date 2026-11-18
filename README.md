@@ -130,7 +130,8 @@ so can reach AITER without being pinnable.
 
 Beyond the routed ops this release carries block-sparse attention
 (`BlockSparseAttentionWrapper` and the variable-block variant), POD attention
-(`PODWithPagedKVCacheWrapper` and its batch variant), cascade attention, the
+(`PODWithPagedKVCacheWrapper` and its batch variant), persistent batch
+attention (`BatchAttention`), cascade attention, the
 sampling and logits-processor pipelines, and fp8 fused MoE via
 `aiter_fused_moe`. Batch decode reaches AITER under CUDA-graph capture once
 you declare a `max_seq_len` capacity on the wrapper.
@@ -169,6 +170,7 @@ not derived from the gates. Regenerate it with
 | `block_sparse` | `hip` -- only backend | ✅ | ✅ | `BlockSparseAttentionWrapper` and the variable-block variant. Native HIP FA2 only -- `determine_attention_backend` never returns `aiter` here. Both wrappers build through the batch-prefill module, so the fp8 KV-cache dtypes and refusals are the same as `batch_prefill`. |
 | `cascade` | `hip` -- merge only; levels are auto-routed and can be `aiter` | ✅ | ✅ | Two-level shared-prefix attention. The `hip` backend is the merge kernels only: each level runs through the ordinary prefill/decode entry points at `backend="auto"`, so it can reach AITER, and no cascade wrapper exposes `backend=` to override that. `FLASHINFER_HIP_FUSED_CASCADE=1` threads partial state through the levels of `MultiLevelCascadeAttentionWrapper` only; AITER levels and both shared-prefix wrappers still merge post-hoc. |
 | `pod` | `hip` -- only backend | ✅ | ✅ | `PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream. An fp8 KV-cache is refused: POD sizes its tiles independently of the prefill dispatchers and no geometry there has been tested. |
+| `batch_attention` | `hip` -- only backend | ✅ | ✅ | `BatchAttention`, the persistent kernel: mixed prefill + decode on one fixed grid, one CUDA graph for every batch shape. fp16/bf16, head_dim 64/128/256, causal or not, soft cap. JIT-only. Refuses fp8 / NVFP4 KV, the profiler and attention sinks. Untuned; not yet run on gfx950. |
 | `rope` | `hip` -- auto picks this | ✅ | ✅ | LLaMA and LLaMA 3.1 scaling; fused RoPE + fp8 quant + paged-KV append (E4M3FNUZ, E5M2FNUZ). |
 | `append_paged_kv_cache` | `hip` -- auto picks this | ✅ | ✅ | fp8 KV-cache supported. Sustains 3.62 TB/s against AITER's 2.86 on gfx942, so `auto` picks this. |
 | `rmsnorm` | `hip` -- auto picks this | ✅ | ✅ | What `auto` always picks: level with AITER on speed and more accurate. |

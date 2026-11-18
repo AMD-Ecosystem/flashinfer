@@ -89,7 +89,8 @@ use", and print a ratio rather than a roofline:
 [`bench_block_sparse_attention.py`](bench_block_sparse_attention.py) sweeps
 block density against dense prefill, and
 [`bench_mixed_attention.py`](bench_mixed_attention.py) sweeps the
-prefill/decode mix for POD attention against running the two separately.
+prefill/decode mix for POD attention and `BatchAttention` against running the
+two separately.
 
 Several upstream benchmarks in the parent directory also run unmodified on ROCm:
 `bench_append_paged_kv_cache.py`, `bench_append_paged_mla_kv_cache.py`,

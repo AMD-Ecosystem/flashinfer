@@ -51,10 +51,10 @@ CUDA_ONLY_MODULES = frozenset(
         "flashinfer.fp4_quantization",
         "flashinfer.fp8_quantization",
         # Same shape: each reaches a jit export bound only on the CUDA branch
-        # (setup_cubin_loader, gen_batch_attention_module, gen_cudnn_fmha_module),
-        # so ungated they surface as "cannot import name ..." rather than a
-        # statement about the backend. gemm/grouped_mm/dsv3_ops fail transitively.
-        "flashinfer.attention",
+        # (setup_cubin_loader, gen_cudnn_fmha_module), so ungated they surface
+        # as "cannot import name ..." rather than a statement about the backend.
+        # gemm/grouped_mm/dsv3_ops fail transitively. flashinfer.attention
+        # (BatchAttention) is ported: gen_batch_attention_module is in jit/rocm.
         "flashinfer.cudnn",
         "flashinfer.dsv3_ops",
         "flashinfer.fused_moe",

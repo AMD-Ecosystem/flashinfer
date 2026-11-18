@@ -675,6 +675,18 @@ CAPABILITIES: Tuple[Capability, ...] = (
         note="`PODWithPagedKVCacheWrapper` and the batch variant. JIT-only, excluded from AOT as upstream. An fp8 KV-cache is refused: POD sizes its tiles independently of the prefill dispatchers and no geometry there has been tested.",
     ),
     Capability(
+        "batch_attention",
+        "hip",
+        _archs(
+            ArchSupport(
+                Support.SUPPORTED,
+                evidence="batch_attention: MI300X / rocm 7.2 / standalone HIP suite, 206 checks",
+            ),
+            _HIP_950,
+        ),
+        note="`BatchAttention`, the persistent kernel: mixed prefill + decode on one fixed grid, one CUDA graph for every batch shape. fp16/bf16, head_dim 64/128/256, causal or not, soft cap. JIT-only. Refuses fp8 / NVFP4 KV, the profiler and attention sinks. Untuned; not yet run on gfx950.",
+    ),
+    Capability(
         "rope",
         "hip",
         _archs(_HIP_942, _HIP_950),

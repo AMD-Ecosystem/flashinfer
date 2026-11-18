@@ -90,3 +90,5 @@ elif IS_HIP:
     from ..rocm.modules import gen_batch_pod_module as gen_batch_pod_module
     from ..rocm.modules import get_pod_uri as get_pod_uri
     from ..rocm.modules import get_batch_pod_uri as get_batch_pod_uri
+    from ..rocm.modules import gen_batch_attention_module as gen_batch_attention_module
+    from ..rocm.modules import get_batch_attention_uri as get_batch_attention_uri
