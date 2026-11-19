@@ -16,7 +16,7 @@
 #     "0 active drivers ([]). There should only be one." when no GPU is attached,
 #     and that has no env-var escape. Install it here; verify it at run time.
 #     AITER's *builder* is reachable without that import, which is what lets the
-#     variant prebuild below run here: aiter/setup.py:212 does
+#     variant prebuild below run here: aiter/setup.py does
 #     `sys.path.insert(0, ".../aiter/"); from jit import core`, a flat import
 #     that never executes aiter/__init__.py. Do not "simplify" it to
 #     `from aiter.jit import core` -- that runs the __init__ and needs a GPU.
@@ -27,10 +27,10 @@
 ARG BASE_IMAGE=rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.12.0
 FROM ${BASE_IMAGE}
 
-# AITER is built from source at a pinned tag, so it compiles against the ROCm in
-# this image. No amd-aiter wheel targets ROCm 10: the index publishes
-# 0.1.21.post2 only for ROCm 7.x, which here would be a silent wrong-ABI install.
-ARG AITER_REF=v0.1.21.post2
+# AITER is built from source at a pinned tag, so it compiles against the ROCm and
+# torch in this image; a release wheel, even a +rocm10.1 one, was built against
+# whatever torch its CI had.
+ARG AITER_REF=v0.1.29
 ARG AITER_REPO=https://github.com/ROCm/aiter.git
 # Both architectures in one fat binary. Must be explicit: there is no device here
 # for AITER's arch detection to find. Note AITER's get_gfx() reads only the LAST

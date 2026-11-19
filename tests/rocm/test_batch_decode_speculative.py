@@ -18,6 +18,7 @@ from jit_utils import gen_prefill_attention_modules
 
 import flashinfer
 from flashinfer.jit.core import logger
+from tests.test_helpers.test_helpers import requires_aiter
 
 logger.setLevel(logging.ERROR)
 
@@ -600,6 +601,7 @@ def test_cudagraph_replay_matches_eager():
     torch.testing.assert_close(captured, eager, rtol=1e-3, atol=1e-3)
 
 
+@requires_aiter
 def test_rejected_plan_does_not_touch_the_captured_qo_indptr():
     """A plan that raises after the buffer-write point must leave the captured
     _qo_indptr_buf alone -- an already-captured graph is still reading it, and a

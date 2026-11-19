@@ -282,7 +282,9 @@ _AITER_SOFTCAP_DEFECT_ARCHS = {"gfx942": False, "gfx950": True}
 # Exact (HIP, amd-aiter) builds on which a gated arch measured clean -- the defect
 # is in toolchain codegen. HIP spelling only: once torch is loaded the live check
 # requires torch.version.hip to equal it. Anything else stays gated until measured.
-_AITER_SOFTCAP_CLEAN_TOOLCHAINS = {"gfx950": (("7.16.26385", "0.1.21.post2"),)}
+_AITER_SOFTCAP_CLEAN_TOOLCHAINS = {
+    "gfx950": (("7.16.26385", "0.1.21.post2"), ("7.16.26385", "0.1.29")),
+}
 
 
 # Off the native paging route (page size or head dim) AITER gathers the KV

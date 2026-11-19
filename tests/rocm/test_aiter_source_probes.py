@@ -372,3 +372,73 @@ class TestAiterEnvScope:
         ):
             raise RuntimeError("boom")
         assert os.environ["AITER_JIT_DIR"] == "/somewhere/else"
+
+
+def _int_op():
+    """An op returning int, like AITER 0.1.29's get_gfx_custom_op: jit.trace rejects it."""
+    import torch
+
+    if not hasattr(torch.ops.fi_test, "arch_num"):
+
+        @torch.library.custom_op("fi_test::arch_num", mutates_args=())
+        def arch_num(x: torch.Tensor) -> int:
+            return 942
+
+    return torch.ops.fi_test.arch_num
+
+
+class TestJitTraceSuspended:
+    """A cold AITER build or arch query inside torch.jit.trace must not be traced."""
+
+    def test_an_int_returning_op_is_rejected_traced_and_runs_suspended(self):
+        import torch
+
+        op = _int_op()
+
+        def bare(x):
+            op(x)
+            return x * 2
+
+        def suspended(x):
+            with aiter_source._jit_trace_suspended():
+                assert op(x) == 942
+            return x * 2
+
+        with pytest.raises(RuntimeError, match="unsupported output type: int"):
+            torch.jit.trace(bare, (torch.ones(2),), check_trace=False)
+        torch.jit.trace(suspended, (torch.ones(2),), check_trace=False)
+
+    def test_tracing_is_restored_even_when_the_body_raises(self):
+        import torch
+
+        def fn(x):
+            with (
+                pytest.raises(RuntimeError, match="build failed"),
+                aiter_source._jit_trace_suspended(),
+            ):
+                raise RuntimeError("build failed")
+            assert torch.jit.is_tracing()
+            return x + 1
+
+        torch.jit.trace(fn, (torch.ones(2),), check_trace=False)
+
+    def test_ensure_aiter_lib_builds_untraced(self, tmp_path, monkeypatch):
+        """The whole cold build, config parsing included, runs outside the trace."""
+        import torch
+
+        op, seen = _int_op(), []
+
+        def fake_build(module_name, md_name, blob, lib_path):
+            seen.append(torch.jit.is_tracing())
+            op(torch.ones(1))
+            return lib_path
+
+        monkeypatch.setattr(aiter_source, "_aiter_libs_dir", lambda: tmp_path)
+        monkeypatch.setattr(aiter_source, "_build_aiter_lib", fake_build)
+
+        def fn(x):
+            aiter_source.ensure_aiter_lib("module_fake")
+            return x * 2
+
+        torch.jit.trace(fn, (torch.ones(2),), check_trace=False)
+        assert seen == [False]

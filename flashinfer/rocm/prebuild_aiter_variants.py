@@ -224,10 +224,10 @@ def prebuild(
     # probe first; the driver does not, so call it explicitly rather than rely
     # on an import another path happened to do. It also applies the ABI floor.
     if not _prefill._aiter_ops_importable():
-        raise RuntimeError(
-            "aiter.ops is not importable, or amd-aiter is below the supported "
-            "floor; nothing can be prebuilt."
-        )
+        from .aiter_utils import aiter_unavailable_reason
+
+        reason = aiter_unavailable_reason() or "amd-aiter is not installed"
+        raise RuntimeError(f"{reason}; nothing can be prebuilt.")
 
     store = variant_store_dir(arch)
     store.mkdir(parents=True, exist_ok=True)

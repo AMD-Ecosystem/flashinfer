@@ -89,10 +89,15 @@ class TestAiterAvailabilityGate:
         """Teardown, not a trailing statement: an assertion failure would
         otherwise strand a probe answer computed under a fake torch or a
         blocked import, and every later AITER test in the worker would skip."""
-        for probe in (aiter_utils.is_aiter_supported, aiter_utils._aiter_importable):
+        probes = (
+            aiter_utils.is_aiter_supported,
+            aiter_utils._aiter_importable,
+            aiter_utils._aiter_import_error,
+        )
+        for probe in probes:
             probe.cache_clear()
         yield
-        for probe in (aiter_utils.is_aiter_supported, aiter_utils._aiter_importable):
+        for probe in probes:
             probe.cache_clear()
 
     def test_a_non_hip_torch_is_never_an_aiter_target(self, monkeypatch):

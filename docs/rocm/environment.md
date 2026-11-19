@@ -7,7 +7,7 @@ Read at runtime or import time:
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
 | `FLASHINFER_USE_TORCH_CUSTOM_OPS` | `0` | Wrap kernels for `torch.compile`; set before importing `flashinfer`. See [`torch-compile.md`](torch-compile.md). |
-| `FLASHINFER_AITER_STRICT` | `0` | `1` raises instead of degrading: when AITER cannot serve a page size natively, and when an AITER kernel bootstrap fails under `auto`. Set in CI to catch coverage regressions rather than absorb them as a slowdown. |
+| `FLASHINFER_AITER_STRICT` | `0` | `1` raises instead of degrading: when AITER cannot serve a page size natively, when an AITER kernel bootstrap fails under `auto`, and when `auto` prefill or decode would fall back because the installed amd-aiter is below the floor or fails to import. Set in CI to catch coverage regressions rather than absorb them as a slowdown. |
 | `FLASHINFER_AITER_ASM_PREFILL` | `1` | Exactly `0` keeps single prefill on AITER's CK Tile kernel; any other value leaves the asm arm on. Read once per process. AITER aborts the process on several asm failure modes rather than returning an error, so this is the supported way out. |
 | `FLASHINFER_AITER_ASM_VERBOSE` | `0` | Any value except `0` logs to stderr which prefill arm ran. The two arms agree numerically, so this is the only way to tell asm from CK Tile. |
 | `FLASHINFER_ARCH_ALLOW_KNOWN_BAD` | `0` | `1` runs an (op, backend, arch) combination the capability table marks known-broken on your toolchain. No row carries such a window in this release, and it does not lift the gfx950 soft-cap gate. |

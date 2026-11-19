@@ -155,7 +155,7 @@ That says nothing about their ROCm support either way.
 pip install "setuptools>=80,<82" "setuptools-scm>=9.2" "packaging>=24"
 
 git clone --recursive --depth 1 --shallow-submodules \
-  --branch v0.1.21.post2 https://github.com/ROCm/aiter.git
+  --branch v0.1.29 https://github.com/ROCm/aiter.git
 ( cd aiter && PREBUILD_KERNELS=0 GPU_ARCHS="gfx942;gfx950" \
   AITER_USE_SYSTEM_TRITON=1 python3 -m pip install --no-build-isolation . )
 python3 -m pip check
@@ -169,14 +169,14 @@ replaces your torch's pinned triton with its own build — on ROCm 10.1 a ROCm 7
 one — and `pip install` reports nothing. `pip check` catches it.
 The `<82` ceiling on setuptools is torch 2.12's own requirement.
 
-Source rather than a wheel because no `amd-aiter` wheel is built against
-ROCm 10; the published ones are retargets of the same revision. A source
-build compiles against the ROCm actually present, and it is the only route to
-a tagged release on this stack.
+Source rather than the release wheel, even though 0.1.29 publishes a
+`+rocm10.1` cp312 one: a source build compiles against the ROCm and torch
+actually present, and the attention prebuild below runs against its tree.
 
 Three details are load-bearing. Use the **tag**, not a branch: a clone that
 loses its tag makes `setuptools_scm` invent a `.dev` version that falls under
-the floor below, and every AITER path silently degrades to `fa2`. Non-editable,
+the floor below, and every AITER path degrades to `fa2` behind a one-time
+warning. Non-editable,
 not `setup.py develop`: the develop branch installs no `aiter_meta`, and
 `aiter_meta/csrc/include` is what every C++ shim compiles against.
 `PREBUILD_KERNELS=0` leaves the install with **no AITER modules at all**, which
@@ -207,8 +207,10 @@ before routing. FlashInfer links AITER's C++ symbols by mangled name
 (`include/flashinfer/rocm/attention/aiter/`), so an older release shifts field
 offsets instead of failing to load. 0.1.21 also moved `rmsnorm` and the
 cos/sin-cache `rope` from `at::Tensor` to the POD `aiter_tensor_t`, so those
-shims cannot resolve against 0.1.20 at all. Below the floor `auto` will not
-select AITER and an explicit `backend="aiter"` raises.
+shims cannot resolve against 0.1.20 at all. Below the floor, or when an
+installed amd-aiter fails to import, `auto` will not select AITER and an
+explicit `backend="aiter"` raises naming the cause; with
+`FLASHINFER_AITER_STRICT=1`, `auto` prefill and decode raise too.
 
 The development image needs none of this: it performs the build above and
 prebuilds the attention variants, so a container starts with them present. It
@@ -542,17 +544,17 @@ there at every length, so which architecture and toolchain are
 affected lives in `arch_caps.py` rather than at the call sites. Single and
 ragged prefill always dispatch through that kernel, so there `auto` serves them
 with `fa2` and `backend="aiter"` raises rather than returning wrong numbers.
-ROCm 10.1.0 (TheRock HIP 7.16.26385) with amd-aiter 0.1.21.post2 builds the
-same kernel correctly — 140 shapes × caps exact against an fp32 reference — so
-on exactly that toolchain the gate lifts and the crossover below takes its
-place; torch's HIP must match too. Any other ROCm or AITER build stays gated
+ROCm 10.1.0 (TheRock HIP 7.16.26385) with amd-aiter 0.1.21.post2 or 0.1.29
+builds the same kernel correctly — within max(2× the uncapped error, 2e-2) of
+an fp32 reference over a `qo_len` × `kv_len` × cap sweep — so on exactly those
+toolchains the gate lifts and the crossover below takes its place; torch's HIP must match too. Any other ROCm or AITER build stays gated
 until measured, as does an `AITER_JIT_DIR` pointing outside the installed
 amd-aiter package, whose build toolchain the version probes cannot see. gfx942 measures clean over a `qo_len` × `kv_len` sweep at
 every cap and uses AITER as normal.
 
 Paged prefill keeps AITER on the native paging route, since that takes
-`mha_batch_prefill` instead — measured exact on amd-aiter 0.1.20 against an
-fp32 reference on both architectures — and falls back only when the run-time
+`mha_batch_prefill` instead — measured against an fp32 reference on amd-aiter
+0.1.20 and 0.1.29 on both architectures — and falls back only when the run-time
 probe demotes it to a flat gather. Every other soft-cap shape is unaffected.
 
 ### Short soft-capped prefill stays on `fa2` on gfx950

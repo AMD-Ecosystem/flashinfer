@@ -9,6 +9,8 @@ shape reaching a shim that would read it as something else; none of them had a
 test. All of these reject before the kernel, so the file costs no JIT.
 """
 
+import sys
+
 import pytest
 import torch
 
@@ -151,8 +153,28 @@ class TestAiterAvailabilityProbes:
             raise md.PackageNotFoundError("amd-aiter")
 
         monkeypatch.setattr(md, "version", boom)
+        monkeypatch.setattr(  # the cached read may predate the patch
+            aiter_utils,
+            "_aiter_installed_version",
+            aiter_utils._aiter_installed_version.__wrapped__,
+        )
         assert aiter_utils._aiter_installed_version() is None
         assert aiter_utils._aiter_version_supported() is False
+
+    def test_the_version_is_read_once_per_process(self, monkeypatch):
+        """The auto fallback asks on every call, so the metadata is read once."""
+        import importlib.metadata as md
+
+        calls = []
+        monkeypatch.setattr(md, "version", lambda name: calls.append(name) or "0.1.29")
+        aiter_utils._aiter_installed_version.cache_clear()
+        try:
+            for _ in range(3):
+                assert aiter_utils._aiter_installed_version() == "0.1.29"
+                assert aiter_utils._aiter_version_supported() is True
+            assert calls == ["amd-aiter"]
+        finally:
+            aiter_utils._aiter_installed_version.cache_clear()
 
     def test_an_unparsable_version_is_not_supported(self, monkeypatch):
         """A local build can carry a version string PEP 440 rejects; treating
@@ -175,3 +197,87 @@ class TestAiterAvailabilityProbes:
 
         with pytest.raises(ValueError, match="requires amd-aiter >="):
             aiter_utils.require_aiter(device, "rmsnorm")
+
+
+class TestAiterImportFailure:
+    """An installed amd-aiter that fails to import must say so, never read as absent."""
+
+    @pytest.fixture(autouse=True)
+    def _broken_import(self, monkeypatch):
+        from flashinfer.rocm import prefill as prefill_rocm
+
+        caches = (
+            aiter_utils._aiter_import_error,
+            aiter_utils._aiter_importable,
+            prefill_rocm._aiter_ops_importable,
+        )
+        for cache in caches:
+            cache.cache_clear()
+
+        # A real failing import, stopped before any aiter code runs: a None
+        # package entry makes `import aiter.ops` raise. GPU_ARCHS set keeps the
+        # arch resolution off the device.
+        monkeypatch.setitem(sys.modules, "aiter", None)
+        monkeypatch.setenv("GPU_ARCHS", "gfx942")
+        yield
+        for cache in caches:
+            cache.cache_clear()
+
+    def test_an_installed_package_names_the_import_error(self, monkeypatch):
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: "0.1.29")
+
+        reason = aiter_utils.aiter_unavailable_reason()
+
+        assert reason is not None
+        assert reason.startswith("amd-aiter 0.1.29 is installed but failed to import: ")
+        assert "aiter" in reason.split(": ", 1)[1]
+        assert "\n" not in reason
+        assert aiter_utils._aiter_importable() is False
+
+    def test_an_absent_package_has_no_reason(self, monkeypatch):
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: None)
+
+        assert aiter_utils.aiter_unavailable_reason() is None
+        assert aiter_utils._aiter_importable() is False
+
+    def test_the_abi_floor_outranks_a_failed_import(self, monkeypatch):
+        """Every caller reports the same root cause for one install."""
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: "0.1.20")
+
+        reason = aiter_utils.aiter_unavailable_reason()
+
+        assert reason is not None and "below the 0.1.21 ABI floor" in reason
+        # The probes never import a below-floor install, so it logs no second cause.
+        assert aiter_utils._aiter_importable() is False
+        assert aiter_utils._aiter_import_error.cache_info().currsize == 0
+
+    def test_require_aiter_names_the_import_error(self, device, monkeypatch):
+        if not is_aiter_supported(device):
+            pytest.skip("require_capability refuses before the import check")
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: "0.1.29")
+
+        with pytest.raises(ValueError, match="0.1.29 is installed but failed"):
+            aiter_utils.require_aiter(device, "rmsnorm")
+
+    def test_require_aiter_runtime_names_the_import_error(self, device, monkeypatch):
+        from flashinfer.rocm import prefill as prefill_rocm
+
+        if not is_aiter_supported(device):
+            pytest.skip("the capability gate answers before the import check")
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: "0.1.29")
+        monkeypatch.setattr(prefill_rocm, "require_capability", lambda *a, **k: None)
+
+        with pytest.raises(ImportError, match="0.1.29 is installed but failed"):
+            prefill_rocm._require_aiter_runtime(device)
+
+    def test_explicit_aiter_decode_refuses_at_construction(self, device, monkeypatch):
+        """Before plan() reaches AITER's codegen, which needs `import aiter` first."""
+        from flashinfer.rocm import decode as decode_rocm
+        from flashinfer.rocm import prefill as prefill_rocm
+
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: "0.1.29")
+        monkeypatch.setattr(prefill_rocm, "require_capability", lambda *a, **k: None)
+        ws = torch.empty(1024, dtype=torch.uint8, device=device)
+
+        with pytest.raises(ImportError, match="0.1.29 is installed but failed"):
+            decode_rocm.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD", backend="aiter")

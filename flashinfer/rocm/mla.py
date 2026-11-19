@@ -18,8 +18,13 @@ from .arch_caps import require_capability
 
 @functools.cache
 def _aiter_mla():
-    import aiter.mla as _m
+    # AITER freezes its arch state at import; MLA can be the first AITER import.
+    from .aiter_utils import _ensure_aiter_gpu_archs
+    from ..jit.rocm.aiter_source import _jit_trace_suspended
 
+    _ensure_aiter_gpu_archs()
+    with _jit_trace_suspended():  # importing aiter queries the arch
+        import aiter.mla as _m
     return _m
 
 
@@ -131,9 +136,23 @@ def _require_aiter_mla(device: torch.device) -> None:
     require_capability(device, "mla", "aiter")
     try:
         _aiter_mla()
-    except ImportError as exc:
-        from .aiter_utils import AITER_MIN_VERSION
+    except Exception as exc:
+        from .aiter_utils import (
+            AITER_MIN_VERSION,
+            _aiter_installed_version,
+            aiter_unavailable_reason,
+            one_line,
+        )
 
+        installed = _aiter_installed_version()
+        reason = aiter_unavailable_reason()
+        if reason is None and installed is not None:
+            reason = (
+                f"amd-aiter {installed} is installed but `import aiter.mla` "
+                f"failed: {one_line(exc)}"
+            )
+        if reason is not None:
+            raise ImportError(f"MLA on ROCm needs AITER: {reason}") from exc
         raise ImportError(
             "The 'aiter' package is required for MLA on ROCm. Build it from source "
             f"at the pinned tag (>= {AITER_MIN_VERSION}); see docs/rocm/backends.md "

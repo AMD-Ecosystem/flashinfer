@@ -10,6 +10,7 @@ static_assert, so the guards here are what keep that from surfacing as a
 compiler log.
 """
 
+import functools
 import math
 
 import pytest
@@ -95,12 +96,14 @@ def _plan_and_run(
     return w, w.run(q_in, kv_in, **run_kwargs), (q, ref_k, ref_v)
 
 
-def _reference(q, k, v, causal=True):
+def _reference(q, k, v, causal=True, soft_cap=0.0):
     rep = q.shape[1] // k.shape[1]
     qs = q.permute(1, 0, 2).float()
     ks = k.repeat_interleave(rep, dim=1).permute(1, 0, 2).float()
     vs = v.repeat_interleave(rep, dim=1).permute(1, 0, 2).float()
     s = (qs @ ks.transpose(-1, -2)) / math.sqrt(HEAD_DIM)
+    if soft_cap:
+        s = soft_cap * torch.tanh(s / soft_cap)
     sq, sk = s.shape[-2], s.shape[-1]
     m = torch.ones(sq, sk, dtype=torch.bool, device=s.device)
     if causal:
@@ -277,6 +280,48 @@ def test_a_soft_capped_fp8_call_reaches_the_logits_variant(causal):
     assert not torch.allclose(capped.float(), uncapped.float(), atol=1e-2), (
         "a soft cap of 1.0 changed nothing; the _logits variant is not in use"
     )
+
+
+@pytest.mark.parametrize("soft_cap", [1.0, 8.0])
+@pytest.mark.parametrize(
+    "kind, page", [("bf16", 1024), ("fp8", 1), ("fp8", 16), ("fp8", 1024)]
+)
+def test_native_paged_softcap_matches_fp32_reference(kind, page, soft_cap):
+    """Native paging runs mha_batch_prefill, which no soft-cap gate covers on
+    either arch, so its numbers are checked here. The flat-gather route is the
+    gated one; this asserts the call did not take it."""
+    device = torch.device("cuda:0")
+    _require_aiter(device)
+    fp8 = fp8_dtype()
+    dtype = fp8 if kind == "fp8" else torch.bfloat16
+    if page not in _aiter_paged_route_page_sizes(dtype):
+        pytest.skip(f"page_size={page} is not routed natively for {kind}")
+
+    run = functools.partial(_plan_and_run, device, 512, 1024, dtype, fp8, "aiter", page)
+    w, capped, (q, k, v) = run(logits_soft_cap=soft_cap)
+    w0, uncapped, _ = run()
+
+    assert w._backend == w0._backend == "aiter", w._backend_fallback_reason
+    assert w._aiter_flat_gather_idx is None, "capped call took the flat-gather route"
+    assert w0._aiter_flat_gather_idx is None, "baseline took the flat-gather route"
+    capped_ref = _reference(q, k, v, soft_cap=soft_cap)
+    uncapped_ref = _reference(q, k, v)
+    err_capped = float((capped.float() - capped_ref).abs().max())
+    err_uncapped = float((uncapped.float() - uncapped_ref).abs().max())
+    # The relative bound below is only as good as the baseline it scales.
+    assert err_uncapped < (1e-2 if kind == "bf16" else 0.25), (
+        f"uncapped err {err_uncapped:.4f}"
+    )
+    floor = 5e-3 if kind == "bf16" else 2e-2
+    assert err_capped <= max(2 * err_uncapped, floor), (
+        f"capped err {err_capped:.4f} vs uncapped {err_uncapped:.4f}"
+    )
+    # The bound alone passes a kernel that ignores a cap that barely moves the
+    # answer. bf16 only: fp8 noise is the size of the cap's effect, and
+    # test_a_soft_capped_fp8_call_reaches_the_logits_variant covers fp8.
+    if kind == "bf16":
+        dropped = float((capped.float() - uncapped_ref).abs().max())
+        assert err_capped < dropped, f"cap ignored: {err_capped:.4f} vs {dropped:.4f}"
 
 
 def test_fp8_ignoring_descales_would_be_caught():
