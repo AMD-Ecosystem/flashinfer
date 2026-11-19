@@ -27,6 +27,12 @@ moves: the prefill arm is constant in it, the decode arm is linear, and POD is
 supposed to be flat until the decodes stop fitting alongside. Reading a single
 mix tells you nothing about whether fusing was worth it.
 
+There are two split arms. ``split`` runs both halves on the fa2 kernels POD fuses
+(tensor-core decode, as POD forces), so ``speedup`` isolates fusion.
+``split_auto``, timed only when AITER is available, runs both at
+``backend="auto"``; ``speedup_vs_auto`` is the production question of whether to
+use POD at all, and ``split_auto_resolved`` records what each half became.
+
 Run:
     python benchmarks/rocm/bench_mixed_attention.py
     python benchmarks/rocm/bench_mixed_attention.py --csv pod-gfx942.csv
@@ -44,6 +50,7 @@ import torch
 
 import flashinfer
 from flashinfer.jit.core import logger as _jit_logger
+from flashinfer.rocm.aiter_utils import is_aiter_available
 from flashinfer.testing import bench_gpu_time
 
 _jit_logger.setLevel(logging.WARNING)
@@ -99,8 +106,8 @@ def _provenance() -> dict:
         "arch": props.gcnArchName,
         "rocm": torch.version.hip,
         "torch": torch.__version__,
-        # --decode-backend auto can route the split arm to AITER, so its version
-        # is part of what makes a number reproducible.
+        # The split_auto arm can route to AITER, so its version is part of
+        # what makes a number reproducible.
         "aiter": aiter_ver,
     }
 
@@ -114,8 +121,8 @@ def _time_us(fn, dry_run_iters: int, repeat_iters: int) -> tuple[float, float]:
     return statistics.median(times), hi - lo
 
 
-def _build(decode_bs: int, prefill_len: int, causal: bool, decode_backend: str):
-    """Tensors and both arms' wrappers for one (decode_bs, prefill_len) mix.
+def _build(decode_bs: int, prefill_len: int, causal: bool, with_auto: bool = True):
+    """Tensors and every arm's wrappers for one (decode_bs, prefill_len) mix.
 
     Each stream carries its own KV tensor and its own 0-based page indices: the
     wrapper indexes the prefill indices into the prefill tensor, so sharing one
@@ -163,47 +170,55 @@ def _build(decode_bs: int, prefill_len: int, causal: bool, decode_backend: str):
         **common,
     )
 
-    # Separate arms get their own workspaces: sharing one would serialise them
-    # on the planning buffers and measure the sharing, not the split.
-    pre_ws = torch.empty(_WORKSPACE_BYTES, dtype=torch.uint8, device=dev)
-    prefill = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
-        pre_ws, "NHD", backend="fa2"
-    )
-    # The prefill wrapper spells head_dim head_dim_qk, so it cannot share the
-    # POD kwargs above.
-    prefill.plan(
-        p_q_indptr,
-        p_kv_indptr,
-        p_kv_indices,
-        p_last,
-        num_qo_heads=_NUM_QO_HEADS,
-        num_kv_heads=_NUM_KV_HEADS,
-        head_dim_qk=_HEAD_DIM,
-        page_size=_PAGE_SIZE,
-        causal=causal,
-        q_data_type=_DTYPE,
-        kv_data_type=_DTYPE,
-    )
-    dec_ws = torch.empty(_WORKSPACE_BYTES, dtype=torch.uint8, device=dev)
-    decode = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
-        dec_ws, "NHD", backend=decode_backend
-    )
-    decode.plan(d_kv_indptr, d_kv_indices, d_last, **common)
+    def split(backend: str):
+        # Separate arms get their own workspaces: sharing one would serialise
+        # them on the planning buffers and measure the sharing, not the split.
+        pre_ws = torch.empty(_WORKSPACE_BYTES, dtype=torch.uint8, device=dev)
+        prefill = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
+            pre_ws, "NHD", backend=backend
+        )
+        # The prefill wrapper spells head_dim head_dim_qk, so it cannot share
+        # the POD kwargs above.
+        prefill.plan(
+            p_q_indptr,
+            p_kv_indptr,
+            p_kv_indices,
+            p_last,
+            num_qo_heads=_NUM_QO_HEADS,
+            num_kv_heads=_NUM_KV_HEADS,
+            head_dim_qk=_HEAD_DIM,
+            page_size=_PAGE_SIZE,
+            causal=causal,
+            q_data_type=_DTYPE,
+            kv_data_type=_DTYPE,
+        )
+        dec_ws = torch.empty(_WORKSPACE_BYTES, dtype=torch.uint8, device=dev)
+        # POD forces the tensor-core decode kernel, so the fa2 split must too;
+        # under auto, use_tensor_cores would short-circuit the route to fa2.
+        decode = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+            dec_ws, "NHD", backend=backend, use_tensor_cores=backend == "fa2"
+        )
+        decode.plan(d_kv_indptr, d_kv_indices, d_last, **common)
+
+        def run():
+            return prefill.run(q_p, kv_p), decode.run(q_d, kv_d)
+
+        return run, f"{prefill.backend}+{decode.backend}"
 
     def run_pod():
         return pod.run(q_p, kv_p, q_d, kv_d, causal_p=causal)
 
-    def run_split():
-        return prefill.run(q_p, kv_p), decode.run(q_d, kv_d)
+    arms = {"pod": run_pod, "split": split("fa2")[0]}
+    if with_auto and is_aiter_available(dev, "batch_prefill"):
+        # Its own guard: an AITER plan failure must not cost the other arms.
+        try:
+            arms["split_auto"], arms["split_auto_resolved"] = split("auto")
+        except Exception as exc:  # noqa: BLE001 - a refusal is a result
+            arms["split_auto_err"] = f"{type(exc).__name__}: {exc}"[:160]
+    return arms
 
-    # POD runs the HIP kernel for both halves, so a split arm that resolved to
-    # AITER is measuring backend choice as well as fusion. Report which ran.
-    return {"pod": run_pod, "split": run_split, "split_decode": decode.backend}
 
-
-def _sweep(
-    dry_run_iters: int, repeat_iters: int, causal: bool, decode_backend: str
-) -> list:
+def _sweep(dry_run_iters: int, repeat_iters: int, causal: bool) -> list:
     rows = []
     for prefill_len in _PREFILL_LENS:
         for decode_bs in _DECODE_BATCHES:
@@ -212,15 +227,22 @@ def _sweep(
                 "decode_bs": decode_bs,
                 "decode_kv_len": _DECODE_KV_LEN,
                 "causal": causal,
-                "decode_backend": decode_backend,
             }
             try:
-                fns = _build(decode_bs, prefill_len, causal, decode_backend)
-                rec["split_decode_resolved"] = fns["split_decode"]
-                for arm in ("pod", "split"):
-                    med, spread = _time_us(fns[arm], dry_run_iters, repeat_iters)
-                    rec[f"{arm}_us"] = round(med, 3)
-                    rec[f"{arm}_spread_us"] = round(spread, 3)
+                fns = _build(decode_bs, prefill_len, causal)
+                for key in ("split_auto_resolved", "split_auto_err"):
+                    if key in fns:
+                        rec[key] = fns[key]
+                for arm in ("pod", "split", "split_auto"):
+                    if arm not in fns:
+                        continue
+                    # Per arm, so one refusal does not cost the others.
+                    try:
+                        med, spread = _time_us(fns[arm], dry_run_iters, repeat_iters)
+                        rec[f"{arm}_us"] = round(med, 3)
+                        rec[f"{arm}_spread_us"] = round(spread, 3)
+                    except Exception as exc:  # noqa: BLE001
+                        rec[f"{arm}_err"] = f"{type(exc).__name__}: {exc}"[:160]
             except Exception as exc:  # noqa: BLE001 - a refusal is a result
                 rec["err"] = f"{type(exc).__name__}: {exc}"[:160]
             finally:
@@ -236,29 +258,32 @@ def _sweep(
                 fns = None
                 torch.cuda.empty_cache()
             p, s = rec.get("pod_us"), rec.get("split_us")
+            a = rec.get("split_auto_us")
             rec["speedup"] = round(s / p, 4) if p and s else None
+            rec["speedup_vs_auto"] = round(a / p, 4) if p and a else None
             rows.append(rec)
-            note = f"  !! {rec['err']}" if "err" in rec else ""
+            errs = [f"{k}={v}" for k, v in rec.items() if k.endswith("err")]
+            note = f"  !! {'; '.join(errs)}" if errs else ""
             print(
                 f"prefill={prefill_len:<6d} decode_bs={decode_bs:<4d} "
-                f"pod={p} split={s} speedup={rec['speedup']} "
-                f"split_decode={rec.get('split_decode_resolved')}{note}",
+                f"pod={p} split={s} split_auto={a} speedup={rec['speedup']} "
+                f"speedup_vs_auto={rec['speedup_vs_auto']} "
+                f"split_auto_resolved={rec.get('split_auto_resolved')}{note}",
                 flush=True,
             )
     return rows
 
 
-def _accuracy(causal: bool, decode_backend: str) -> None:
-    """POD's two outputs against the separate wrappers', per mix.
+def _accuracy(causal: bool) -> None:
+    """POD's two outputs against the fa2 split's, per mix.
 
-    Only a reference at --decode-backend fa2, where both arms call the same HIP
-    kernels and a mismatch is POD's scheduling. Under auto the split decode may
-    run AITER, so the difference is cross-backend and says nothing about POD.
+    Both call the same HIP kernels, so a mismatch is POD's scheduling. The
+    split_auto arm is not built: against AITER the difference is cross-backend.
     """
     for prefill_len in _PREFILL_LENS:
         for decode_bs in _DECODE_BATCHES:
             try:
-                fns = _build(decode_bs, prefill_len, causal, decode_backend)
+                fns = _build(decode_bs, prefill_len, causal, with_auto=False)
                 o_p, o_d = fns["pod"]()
                 r_p, r_d = fns["split"]()
                 err_p = (o_p.float() - r_p.float()).abs().max().item()
@@ -282,14 +307,6 @@ def main() -> None:
     # Causal by default: a prefill in a serving step is. --no-causal is the
     # off switch; there is deliberately no --causal, which could never do anything.
     ap.add_argument("--no-causal", dest="causal", action="store_false", default=True)
-    ap.add_argument(
-        "--decode-backend",
-        choices=["fa2", "auto"],
-        default="fa2",
-        help="Split arm's decode backend. fa2 matches what POD runs internally, "
-        "so the ratio isolates fusion; auto answers the production question "
-        "of whether to use POD at all.",
-    )
     ap.add_argument("--accuracy", action="store_true")
     ap.add_argument("--csv", type=str, default="")
     args = ap.parse_args()
@@ -298,16 +315,10 @@ def main() -> None:
         print(f"# {key}: {value}")
 
     if args.accuracy:
-        if args.decode_backend != "fa2":
-            print(
-                "# NOTE --accuracy compares across backends unless --decode-backend fa2"
-            )
-        _accuracy(args.causal, args.decode_backend)
+        _accuracy(args.causal)
         return
 
-    rows = _sweep(
-        args.dry_run_iters, args.repeat_iters, args.causal, args.decode_backend
-    )
+    rows = _sweep(args.dry_run_iters, args.repeat_iters, args.causal)
 
     if args.csv:
         fields = sorted({k for r in rows for k in r})
@@ -317,13 +328,14 @@ def main() -> None:
             writer.writerows(rows)
         print(f"# wrote {args.csv} ({len(rows)} rows)")
 
-    speedups = [r["speedup"] for r in rows if r.get("speedup")]
-    if speedups:
-        print(
-            f"# pod/split speedup: n={len(speedups)} "
-            f"median={statistics.median(speedups):.4f} min={min(speedups):.4f} "
-            f"max={max(speedups):.4f}"
-        )
+    for key, label in (("speedup", "split"), ("speedup_vs_auto", "split_auto")):
+        speedups = [r[key] for r in rows if r.get(key)]
+        if speedups:
+            print(
+                f"# pod/{label} speedup: n={len(speedups)} "
+                f"median={statistics.median(speedups):.4f} min={min(speedups):.4f} "
+                f"max={max(speedups):.4f}"
+            )
 
 
 if __name__ == "__main__":
