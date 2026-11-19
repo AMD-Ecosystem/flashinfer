@@ -33,6 +33,11 @@ linear, so the crossover is a property of the pair, not of either one. A
 density-1.0 row is deliberately included -- sparse must not beat dense there, and
 if it does the dense baseline is set up wrong.
 
+``dense`` is fa2, the kernel family block-sparse runs, so ``speedup`` isolates
+sparsity. ``dense_aiter``, timed only when AITER is available, is the dense
+prefill ``auto`` routes these shapes to; ``speedup_vs_aiter`` is whether
+sparsity pays in production.
+
 Run:
     python benchmarks/rocm/bench_block_sparse_attention.py
     python benchmarks/rocm/bench_block_sparse_attention.py --csv bsa-gfx942.csv
@@ -50,6 +55,7 @@ import torch
 
 import flashinfer
 from flashinfer.jit.core import logger as _jit_logger
+from flashinfer.rocm.aiter_utils import is_aiter_available
 from flashinfer.testing import bench_gpu_time
 
 _jit_logger.setLevel(logging.WARNING)
@@ -151,6 +157,20 @@ def _to_csr(mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return indptr, indices
 
 
+def _dense_arms(q, k, v) -> dict:
+    """Dense NHD prefill on fa2, plus AITER when it is installed for this GPU."""
+    arms = {
+        "dense": lambda: flashinfer.single_prefill_with_kv_cache(
+            q, k, v, causal=False, backend="fa2"
+        )
+    }
+    if is_aiter_available(q.device, "single_prefill"):
+        arms["dense_aiter"] = lambda: flashinfer.single_prefill_with_kv_cache(
+            q, k, v, causal=False, backend="aiter"
+        )
+    return arms
+
+
 def _variable_case(
     seq_len: int, num_qo: int, num_kv: int, density: float, nb: int, seed: int
 ):
@@ -183,9 +203,7 @@ def _variable_case(
     return {
         "realized_density": _realized_density(mask),
         "sparse": lambda: wrapper.run(q, k, v),
-        "dense": lambda: flashinfer.single_prefill_with_kv_cache(
-            qd, kd, vd, causal=False, backend="fa2"
-        ),
+        **_dense_arms(qd, kd, vd),
     }
 
 
@@ -217,9 +235,7 @@ def _fixed_case(
     return {
         "realized_density": _realized_density(mask),
         "sparse": lambda: wrapper.run(q, k, v),
-        "dense": lambda: flashinfer.single_prefill_with_kv_cache(
-            q, k, v, causal=False, backend="fa2"
-        ),
+        **_dense_arms(q, k, v),
     }
 
 
@@ -251,12 +267,19 @@ def _sweep(kinds, dry_run_iters: int, repeat_iters: int, nb: int, seed: int) -> 
                                 seq_len, num_qo, num_kv, density, nb, seed
                             )
                         rec["realized_density"] = fns["realized_density"]
-                        for arm in ("sparse", "dense"):
-                            med, spread = _time_us(
-                                fns[arm], dry_run_iters, repeat_iters
-                            )
-                            rec[f"{arm}_us"] = round(med, 3)
-                            rec[f"{arm}_spread_us"] = round(spread, 3)
+                        for arm in ("sparse", "dense", "dense_aiter"):
+                            if arm not in fns:
+                                continue
+                            # Per arm, so one refusal does not cost the others.
+                            try:
+                                med, spread = _time_us(
+                                    fns[arm], dry_run_iters, repeat_iters
+                                )
+                                rec[f"{arm}_us"] = round(med, 3)
+                                rec[f"{arm}_spread_us"] = round(spread, 3)
+                            except Exception as exc:  # noqa: BLE001
+                                msg = f"{type(exc).__name__}: {exc}"
+                                rec[f"{arm}_err"] = msg[:160]
                     except Exception as exc:  # noqa: BLE001 - a refusal is a result
                         rec["err"] = f"{type(exc).__name__}: {exc}"[:160]
                     finally:
@@ -272,15 +295,19 @@ def _sweep(kinds, dry_run_iters: int, repeat_iters: int, nb: int, seed: int) -> 
                         fns = None
                         torch.cuda.empty_cache()
                     s, d = rec.get("sparse_us"), rec.get("dense_us")
+                    a = rec.get("dense_aiter_us")
                     rec["speedup"] = round(d / s, 4) if s and d else None
+                    rec["speedup_vs_aiter"] = round(a / s, 4) if s and a else None
                     rows.append(rec)
-                    note = f"  !! {rec['err']}" if "err" in rec else ""
+                    errs = [f"{k}={v}" for k, v in rec.items() if k.endswith("err")]
+                    note = f"  !! {'; '.join(errs)}" if errs else ""
                     print(
                         f"{kind:9s} s={seq_len:<6d} h={num_qo}/{num_kv:<3d} "
                         f"density={density:<5.2f} "
                         f"actual={rec.get('realized_density')} "
-                        f"sparse={s} dense={d} "
-                        f"speedup={rec['speedup']}{note}",
+                        f"sparse={s} dense={d} dense_aiter={a} "
+                        f"speedup={rec['speedup']} "
+                        f"speedup_vs_aiter={rec['speedup_vs_aiter']}{note}",
                         flush=True,
                     )
     return rows
@@ -440,17 +467,18 @@ def main() -> None:
     # Per kind, not pooled: the variable arm's timing carries rearrange copies
     # the fixed arm does not, so one median over both averages two things.
     for kind in args.kinds:
-        wins = [
-            r["speedup"]
-            for r in rows
-            if r["kind"] == kind and r.get("speedup") and r["density"] < 1.0
-        ]
-        if wins:
-            print(
-                f"# {kind:9s} sparse/dense speedup at density<1: n={len(wins)} "
-                f"median={statistics.median(wins):.4f} min={min(wins):.4f} "
-                f"max={max(wins):.4f}"
-            )
+        for key, label in (("speedup", "dense"), ("speedup_vs_aiter", "dense_aiter")):
+            wins = [
+                r[key]
+                for r in rows
+                if r["kind"] == kind and r.get(key) and r["density"] < 1.0
+            ]
+            if wins:
+                print(
+                    f"# {kind:9s} sparse/{label} speedup at density<1: n={len(wins)} "
+                    f"median={statistics.median(wins):.4f} min={min(wins):.4f} "
+                    f"max={max(wins):.4f}"
+                )
 
 
 if __name__ == "__main__":
