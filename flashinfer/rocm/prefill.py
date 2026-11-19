@@ -65,7 +65,7 @@ from ..utils import (
 # sizes we try. The second is the newest release we have actually validated against;
 # bumping it must not silently move the support boundary.
 _AITER_NATIVE_PAGING_SINCE = "0.1.10"
-_AITER_LAST_VALIDATED = "0.1.21.post2"
+_AITER_LAST_VALIDATED = "0.1.29"
 
 # fp8 query dtypes that *could* be an fp8 prefill: E4M3FNUZ on gfx942, OCP
 # E4M3FN on gfx950. Only the arch's own encoding actually works -- the other is
@@ -487,22 +487,11 @@ def _plan_with_upstream_signature(plan_func):
 
 @functools.cache
 def _aiter_ops_importable() -> bool:
-    try:
-        # AITER 0.1.16+ freezes arch state at import, so GPU_ARCHS has to be set
-        # before this import, not before the first build. This is the second
-        # entry point that imports aiter; aiter_utils._aiter_importable is the
-        # other, and prefill/decode reach this one first.
-        from .aiter_utils import _aiter_version_supported, _ensure_aiter_gpu_archs
+    # Same import probe and ABI floor as aiter_utils._aiter_importable; this is
+    # the one prefill and decode reach first.
+    from .aiter_utils import _aiter_import_error, _aiter_version_supported
 
-        _ensure_aiter_gpu_archs()
-        import aiter.ops  # noqa: F401
-
-        # Same ABI floor aiter_utils._aiter_importable applies. This probe is the
-        # one prefill and decode reach first, so leaving it out would let auto
-        # route into the layouts the vendored structs no longer match.
-        return _aiter_version_supported()
-    except Exception:
-        return False
+    return _aiter_version_supported() and _aiter_import_error() is None
 
 
 def _require_aiter_runtime(device: torch.device, op: str = "batch_prefill") -> None:
@@ -515,18 +504,13 @@ def _require_aiter_runtime(device: torch.device, op: str = "batch_prefill") -> N
     """
     require_capability(device, op, "aiter")
     if not _aiter_ops_importable():
-        from .aiter_utils import (
-            AITER_MIN_VERSION,
-            _aiter_installed_version,
-            _aiter_version_supported,
-        )
+        from .aiter_utils import AITER_MIN_VERSION, aiter_unavailable_reason
 
-        installed = _aiter_installed_version()
-        if installed is not None and not _aiter_version_supported():
+        reason = aiter_unavailable_reason()
+        if reason is not None:
             raise ImportError(
-                f"The AITER backend requires amd-aiter >= {AITER_MIN_VERSION}, but "
-                f"{installed} is installed. The vendored struct layouts do not match "
-                "older releases and would corrupt arguments silently."
+                f"The AITER backend requires amd-aiter >= {AITER_MIN_VERSION} that "
+                f"imports: {reason}."
             )
         raise ImportError(
             "The 'aiter' package is required for the AITER backend and is not "
@@ -886,7 +870,8 @@ def _auto_select_prefill_backend(
 
     On gfx942/gfx950, checks NHD layout, no custom mask, fp16/bf16 (fp8 too when
     ``allow_fp8``), equal dtypes and head dims. Falls back to 'fa2' with a
-    one-time warning for each distinct skip reason.
+    one-time warning for each distinct skip reason; under
+    ``FLASHINFER_AITER_STRICT=1`` an installed but unusable amd-aiter raises.
 
     ``op`` selects the capability row. It matters because the gates are not
     uniform across ops: an arch-specific causal miscompile can apply to batch
@@ -975,18 +960,15 @@ def _auto_select_prefill_backend(
 
     if not _aiter_ops_importable():
         from .aiter_utils import (
-            AITER_MIN_VERSION,
-            _aiter_installed_version,
+            _aiter_import_error,
             _aiter_version_supported,
+            aiter_unavailable_reason,
         )
 
-        installed = _aiter_installed_version()
-        if installed is not None and not _aiter_version_supported():
-            reason = (
-                f"amd-aiter {installed} is below the {AITER_MIN_VERSION} ABI floor "
-                "(the vendored struct layouts do not match older releases)"
-            )
-        else:
+        reason = aiter_unavailable_reason()
+        if reason is not None and os.environ.get("FLASHINFER_AITER_STRICT", "0") == "1":
+            raise RuntimeError(f"auto would fall back to fa2: {reason}")
+        if reason is None:
             reason = (
                 "aiter package not installed (see docs/rocm/backends.md for the "
                 "pinned source build)"
@@ -994,7 +976,9 @@ def _auto_select_prefill_backend(
         # Keyed on the reason, like the branch above: a constant key would let
         # whichever condition fired first hide the other for the rest of the
         # process, and "too old" and "not installed" want different actions.
-        _warn_auto_fallback_once(device, reason)
+        # A failed import was already warned about by the probe that saw it.
+        if not (_aiter_version_supported() and _aiter_import_error() is not None):
+            _warn_auto_fallback_once(device, reason)
         return "fa2", reason
 
     return "aiter", None

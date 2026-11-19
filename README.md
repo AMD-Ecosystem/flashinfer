@@ -101,7 +101,7 @@ architectures:
 | PyTorch+ROCm | 2.12.0 |
 | Python | 3.12 |
 | OS | Ubuntu 24.04 |
-| `amd-aiter` | 0.1.21.post2 (source build) |
+| `amd-aiter` | 0.1.29 (source build) |
 
 The suite needs a git checkout: four tests read the git index. Torch 2.12's
 ROCm 10.1 build exists only in the base image named in the quick start. Other
@@ -269,7 +269,7 @@ documents the columns and the per-op drivers.
 | :--- | :--- | :--- |
 | `FLASHINFER_USE_TORCH_CUSTOM_OPS` | `0` | Wrap kernels for `torch.compile`; set before importing `flashinfer`. |
 | `FLASHINFER_WORKSPACE_BASE` | `$HOME` | Parent of the JIT cache (`.cache/flashinfer/`); point at fast local disk when `$HOME` is on NFS. |
-| `FLASHINFER_AITER_STRICT` | `0` | `1` raises instead of degrading: when AITER cannot serve a page size natively, and when an AITER kernel bootstrap fails under `auto`. |
+| `FLASHINFER_AITER_STRICT` | `0` | `1` raises instead of degrading: when AITER cannot serve a page size natively, when an AITER kernel bootstrap fails under `auto`, and when `auto` prefill or decode would fall back because the installed amd-aiter is below the floor or fails to import. |
 | `FLASHINFER_LOGGING_LEVEL` | `INFO` | Logger verbosity (`DEBUG`, `INFO`, `WARNING`, …). Affects AITER fallback warnings and JIT build messages. |
 
 [`docs/rocm/environment.md`](https://github.com/AMD-Ecosystem/flashinfer/blob/amd-integration/docs/rocm/environment.md) has the full

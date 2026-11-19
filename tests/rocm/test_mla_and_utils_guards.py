@@ -113,11 +113,31 @@ class TestRequireAiterMla:
             lambda: (_ for _ in ()).throw(ImportError("no aiter")),
         )
         monkeypatch.setattr(mla_rocm, "require_capability", lambda *a: None)
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: None)
 
         with pytest.raises(ImportError, match=r"docs/rocm/backends\.md") as excinfo:
             mla_rocm._require_aiter_mla(device)
 
         assert aiter_utils.AITER_MIN_VERSION in str(excinfo.value)
+
+    def test_an_installed_package_that_fails_to_import_names_the_cause(
+        self, device, monkeypatch
+    ):
+        monkeypatch.setattr(
+            mla_rocm,
+            "_aiter_mla",
+            lambda: (_ for _ in ()).throw(
+                OSError("libflydsl.so: cannot open\n shared object")
+            ),
+        )
+        monkeypatch.setattr(mla_rocm, "require_capability", lambda *a: None)
+        monkeypatch.setattr(aiter_utils, "_aiter_installed_version", lambda: "0.1.29")
+        monkeypatch.setattr(aiter_utils, "_aiter_import_error", lambda: None)
+
+        with pytest.raises(ImportError, match="0.1.29 is installed") as excinfo:
+            mla_rocm._require_aiter_mla(device)
+
+        assert "OSError: libflydsl.so: cannot open shared object" in str(excinfo.value)
 
 
 class TestUtilsHelpers:

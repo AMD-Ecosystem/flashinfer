@@ -373,7 +373,8 @@ def ensure_aiter_lib(module: Union[str, AiterModule]) -> Path:
     with _BUILD_LOCK, FileLock(str(libs_dir / ".aiter-build.lock"), thread_local=False):
         if lib_path.exists():
             return lib_path
-        return _build_aiter_lib(module_name, md_name, module.blob_gen_cmd, lib_path)
+        with _jit_trace_suspended():
+            return _build_aiter_lib(module_name, md_name, module.blob_gen_cmd, lib_path)
 
 
 @contextlib.contextmanager
@@ -428,6 +429,23 @@ def _aiter_env_scope(
                     os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+@contextlib.contextmanager
+def _jit_trace_suspended() -> Iterator[None]:
+    """Suspend torch.jit.trace, if active: AITER 0.1.29 queries the arch through
+    int-returning custom ops the tracer rejects, and a build is never traced."""
+    import torch
+
+    if not torch.jit.is_tracing():
+        yield
+        return
+    state = torch._C._get_tracing_state()
+    torch._C._set_tracing_state(None)
+    try:
+        yield
+    finally:
+        torch._C._set_tracing_state(state)
 
 
 def _build_aiter_lib(
