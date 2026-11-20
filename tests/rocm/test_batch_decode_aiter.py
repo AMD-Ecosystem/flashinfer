@@ -544,6 +544,49 @@ def test_batch_decode_aiter_lse_plan_uses_the_planned_indptr():
 
 
 @requires_aiter
+@pytest.mark.parametrize("num_qo_heads", [96, 128])
+def test_batch_decode_aiter_lse_at_a_group_plain_decode_lacks(num_qo_heads):
+    """Groups 12 and 16 have no plain fa2 decode kernel, so the LSE shadow plan
+    must take the tensor-core kernel rather than fail in plan()."""
+    device, dtype, page_size, num_kv_heads, head_dim = (
+        "cuda:0",
+        torch.bfloat16,
+        16,
+        8,
+        128,
+    )
+    kv_lens = [128, 300, 1024]
+    k_cache, v_cache, indptr, indices, last_page_len = _build_paged_kv(
+        len(kv_lens), kv_lens, page_size, num_kv_heads, head_dim, dtype, device
+    )
+    q = torch.randn(len(kv_lens), num_qo_heads, head_dim, dtype=dtype, device=device)
+    args = (
+        indptr,
+        indices,
+        last_page_len,
+        num_qo_heads,
+        num_kv_heads,
+        head_dim,
+        page_size,
+    )
+
+    def wrapper(**kw):
+        ws = torch.zeros(128 * 1024 * 1024, dtype=torch.uint8, device=device)
+        w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD", **kw)
+        w.plan(*args, q_data_type=dtype)
+        return w
+
+    o_ref, lse_ref = wrapper(backend="fa2", use_tensor_cores=True).run(
+        q, (k_cache, v_cache), return_lse=True
+    )
+    cand = wrapper(backend="auto")
+    assert cand.backend == "aiter"
+    o, lse = cand.run(q, (k_cache, v_cache), return_lse=True)
+    torch.testing.assert_close(o.float(), o_ref.float(), rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(lse, lse_ref, rtol=1e-3, atol=1e-3)
+
+
+@requires_aiter
 def test_batch_decode_auto_routes_cuda_graph_to_fa2():
     """backend='auto' with use_cuda_graph=True and NO max_seq_len routes to fa2.
     fa2's graph path is capacity-based (correct regardless of capture-vs-replay

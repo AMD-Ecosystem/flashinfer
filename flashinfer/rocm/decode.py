@@ -1738,6 +1738,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 # FA2 shadow plan for return_lse=True; built lazily (AITER PA v1 has no LSE).
                 self._fa2_lse_module: Optional[Any] = None
                 self._fa2_lse_plan_info: Optional[torch.Tensor] = None
+                self._fa2_lse_tensor_core = False
                 self._fa2_lse_build_args = (
                     q_data_type,
                     kv_data_type,
@@ -1748,6 +1749,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     logits_soft_cap,
                     # Built at the first return_lse run; a CPU indptr is the caller's buffer.
                     indptr_host.clone(),
+                    get_seq_lens(indptr_host, last_page_len_host, page_size),
                     batch_size,
                     num_qo_heads,
                     num_kv_heads,
@@ -1794,45 +1796,23 @@ class BatchDecodeWithPagedKVCacheWrapper:
 
         if self.use_tensor_cores:
             self._max_kv_len = max(kv_lens_arr_host).item()
-            if self._jit_module is not None:
-                self._cached_module = self._jit_module
-            else:
-                self._cached_module = get_batch_prefill_module(
-                    "fa2",
-                    q_data_type,
-                    kv_data_type,
-                    q_data_type,
-                    indptr.dtype,
-                    head_dim,  # head_dim_qk
-                    head_dim,  # head_dim_vo
-                    PosEncodingMode[pos_encoding_mode].value,
-                    window_left != -1,  # use_sliding_window
-                    logits_soft_cap > 0,  # use_logits_soft_cap
-                    False,  # use_fp16_qk_reduction
-                )
-
-            self._plan_info = self._cached_module.plan(
-                self._float_workspace_buffer,
-                self._int_workspace_buffer,
-                self._pin_memory_int_workspace_buffer,
+            self._cached_module, self._plan_info = self._plan_tensor_core(
+                self._jit_module,
+                q_data_type,
+                kv_data_type,
+                indptr.dtype,
+                head_dim,
+                pos_encoding_mode,
+                window_left,
+                logits_soft_cap,
                 qo_indptr_host,
                 indptr_host,
                 planner_kv_lens,
-                batch_size * q_len_per_req,  # total_num_rows
                 batch_size,
+                q_len_per_req,
                 num_qo_heads,
                 num_kv_heads,
                 page_size,
-                self.is_cuda_graph_enabled,
-                head_dim,
-                head_dim,
-                # The planner refuses a short causal request; MaskMode in run() is
-                # what actually makes a multi-token query causal.
-                q_len_per_req > 1,  # causal
-                causal_mask_applies=True,
-            )
-            self._plan_info = plan_info_vec_as_tensor(
-                self._plan_info, device=self._float_workspace_buffer.device
             )
         else:
             if self._jit_module is not None:
@@ -1903,6 +1883,139 @@ class BatchDecodeWithPagedKVCacheWrapper:
 
     begin_forward = plan
 
+    def _plan_tensor_core(
+        self,
+        jit_module,
+        q_data_type,
+        kv_data_type,
+        indptr_dtype,
+        head_dim,
+        pos_encoding_mode,
+        window_left,
+        logits_soft_cap,
+        qo_indptr_host,
+        indptr_host,
+        kv_lens_host,
+        batch_size,
+        q_len_per_req,
+        num_qo_heads,
+        num_kv_heads,
+        page_size,
+    ):
+        """Build and plan the batch-prefill kernel that serves tensor-core decode."""
+        if jit_module is not None:
+            module = jit_module
+        else:
+            module = get_batch_prefill_module(
+                "fa2",
+                q_data_type,
+                kv_data_type,
+                q_data_type,
+                indptr_dtype,
+                head_dim,  # head_dim_qk
+                head_dim,  # head_dim_vo
+                PosEncodingMode[pos_encoding_mode].value,
+                window_left != -1,  # use_sliding_window
+                logits_soft_cap > 0,  # use_logits_soft_cap
+                False,  # use_fp16_qk_reduction
+            )
+        plan_info = module.plan(
+            self._float_workspace_buffer,
+            self._int_workspace_buffer,
+            self._pin_memory_int_workspace_buffer,
+            qo_indptr_host,
+            indptr_host,
+            kv_lens_host,
+            batch_size * q_len_per_req,  # total_num_rows
+            batch_size,
+            num_qo_heads,
+            num_kv_heads,
+            page_size,
+            self.is_cuda_graph_enabled,
+            head_dim,
+            head_dim,
+            # The planner refuses a short causal request; MaskMode in run() is
+            # what actually makes a multi-token query causal.
+            q_len_per_req > 1,  # causal
+            causal_mask_applies=True,
+        )
+        return module, plan_info_vec_as_tensor(
+            plan_info, device=self._float_workspace_buffer.device
+        )
+
+    def _run_tensor_core(
+        self,
+        module,
+        plan_info,
+        qo_indptr,
+        q,
+        k_cache,
+        v_cache,
+        out,
+        lse,
+        mask_mode,
+        window_left,
+        enable_pdl,
+        logits_soft_cap,
+        sm_scale,
+        rope_scale,
+        rope_theta,
+        page_size,
+        sinks,
+        jit_args,
+    ) -> None:
+        """Run a plan from :meth:`_plan_tensor_core`; ``jit_args`` is a custom variant's tail."""
+        run_args = [
+            self._float_workspace_buffer,
+            self._int_workspace_buffer,
+            plan_info,
+            q,
+            k_cache,
+            v_cache,
+            qo_indptr,
+            self._paged_kv_indptr_buf,
+            self._paged_kv_indices_buf,
+            self._paged_kv_last_page_len_buf,
+            out,
+            lse,
+            mask_mode,
+            TensorLayout[self._kv_layout].value,
+            window_left,
+            enable_pdl,
+        ]
+        if jit_args is not None:
+            run_args.extend(jit_args)
+        else:
+            run_args += [
+                None,  # packed_custom_mask
+                None,  # mask_indptr_buf
+                _get_cache_alibi_slopes_buf(q.shape[1], q.device),
+                None,  # maybe_prefix_len_ptr
+                None,  # maybe_token_pos_in_items_ptr
+                None,  # maybe_max_item_len_ptr
+                logits_soft_cap,
+                sm_scale,
+                None,  # scale_q, not supported yet
+                None,  # scale_k
+                None,  # scale_v
+                rope_scale,
+                rope_theta,
+                0,  # token_pos_in_items_len
+                self._workspace_size,
+                self._num_qo_heads,
+                self._num_kv_heads,
+                self._block_tables,
+                self._kv_lens_buffer,
+                page_size,
+                None,  # max_q_len: the fa2 paged_run wrapper drops it
+                self._max_kv_len,
+                None,  # batch_size
+                None,  # cum_seq_lens_q
+                None,  # cum_seq_lens_kv
+                sinks,
+            ]
+        module.paged_run(*run_args)
+
     def _prepare_fa2_lse_plan_eager(self) -> None:
         if torch.cuda.is_current_stream_capturing():
             # The shadow plan is built lazily and re-nulled by every plan(), so
@@ -1939,6 +2052,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
             window_left,
             logits_soft_cap,
             indptr_host,
+            kv_lens_host,
             batch_size,
             num_qo_heads,
             num_kv_heads,
@@ -1954,6 +2068,34 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 "return_lse=False on the same wrapper.",
                 self.device,
             )
+
+        # The plain decode kernel dispatches only these GQA groups (dispatch.cuh);
+        # a tensor-core caller also expects its own kernel's numerics.
+        self._fa2_lse_tensor_core = self.use_tensor_cores or (
+            num_qo_heads // num_kv_heads not in (1, 2, 3, 4, 8)
+        )
+        if self._fa2_lse_tensor_core:
+            qo_indptr_host = _get_range_buf(batch_size + 1, "cpu")
+            self._fa2_lse_module, self._fa2_lse_plan_info = self._plan_tensor_core(
+                None,
+                q_data_type,
+                kv_data_type,
+                indptr_dtype,
+                head_dim,
+                pos_encoding_mode,
+                window_left,
+                logits_soft_cap,
+                qo_indptr_host,
+                indptr_host,
+                kv_lens_host,
+                batch_size,
+                1,  # q_len_per_req: AITER decode serves one token per request
+                num_qo_heads,
+                num_kv_heads,
+                page_size,
+            )
+            self._fa2_lse_qo_indptr = qo_indptr_host.to(self.device)
+            return
 
         self._fa2_lse_module = get_batch_decode_module(
             q_data_type,
@@ -2251,27 +2393,49 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 return (out, lse) if return_lse else out
             if return_lse:
                 self._prepare_fa2_lse_plan()
-                self._fa2_lse_module.run(
-                    self._float_workspace_buffer,
-                    self._int_workspace_buffer,
-                    self._fa2_lse_plan_info,
-                    q,
-                    k_cache,
-                    v_cache,
-                    self._paged_kv_indptr_buf,
-                    self._paged_kv_indices_buf,
-                    self._paged_kv_last_page_len_buf,
-                    out,
-                    lse,
-                    TensorLayout[self._kv_layout].value,
-                    window_left,
-                    enable_pdl,
-                    _get_cache_alibi_slopes_buf(q.shape[1], q.device),
-                    logits_soft_cap,
-                    sm_scale,
-                    rope_scale,
-                    rope_theta,
-                )
+                if self._fa2_lse_tensor_core:
+                    self._run_tensor_core(
+                        self._fa2_lse_module,
+                        self._fa2_lse_plan_info,
+                        self._fa2_lse_qo_indptr,
+                        q,
+                        k_cache,
+                        v_cache,
+                        out,
+                        lse,
+                        MaskMode.NON_CAUSAL.value,
+                        window_left,
+                        enable_pdl,
+                        logits_soft_cap,
+                        sm_scale,
+                        rope_scale,
+                        rope_theta,
+                        page_size,
+                        None,  # sinks: refused above
+                        None,
+                    )
+                else:
+                    self._fa2_lse_module.run(
+                        self._float_workspace_buffer,
+                        self._int_workspace_buffer,
+                        self._fa2_lse_plan_info,
+                        q,
+                        k_cache,
+                        v_cache,
+                        self._paged_kv_indptr_buf,
+                        self._paged_kv_indices_buf,
+                        self._paged_kv_last_page_len_buf,
+                        out,
+                        lse,
+                        TensorLayout[self._kv_layout].value,
+                        window_left,
+                        enable_pdl,
+                        _get_cache_alibi_slopes_buf(q.shape[1], q.device),
+                        logits_soft_cap,
+                        sm_scale,
+                        rope_scale,
+                        rope_theta,
+                    )
                 if v_scale is not None:
                     if is_float8(out):
                         out = (out.to(torch.float32) * v_scale).to(out.dtype)
@@ -2308,17 +2472,13 @@ class BatchDecodeWithPagedKVCacheWrapper:
             return (out, lse) if return_lse else out
 
         if self.use_tensor_cores:
-            run_args = [
-                self._float_workspace_buffer,
-                self._int_workspace_buffer,
+            self._run_tensor_core(
+                self._cached_module,
                 self._plan_info,
+                self._qo_indptr_buf,
                 q,
                 k_cache,
                 v_cache,
-                self._qo_indptr_buf,
-                self._paged_kv_indptr_buf,
-                self._paged_kv_indices_buf,
-                self._paged_kv_last_page_len_buf,
                 out,
                 lse,
                 # Multi-token verify is causal within each request. The ROCm
@@ -2332,44 +2492,16 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     if planned_q_len > 1
                     else MaskMode.NON_CAUSAL.value
                 ),
-                TensorLayout[self._kv_layout].value,
                 window_left,
                 enable_pdl,
-            ]
-
-            if self._jit_module is not None:
-                run_args.extend(list(args))
-            else:
-                run_args += [
-                    None,  # packed_custom_mask
-                    None,  # mask_indptr_buf
-                    _get_cache_alibi_slopes_buf(q.shape[1], q.device),
-                    None,  # maybe_prefix_len_ptr
-                    None,  # maybe_token_pos_in_items_ptr
-                    None,  # maybe_max_item_len_ptr
-                    logits_soft_cap,
-                    sm_scale,
-                    None,  # scale_q, not supported yet
-                    None,  # scale_k
-                    None,  # scale_v
-                    rope_scale,
-                    rope_theta,
-                    0,  # token_pos_in_items_len
-                    self._workspace_size,
-                    self._num_qo_heads,
-                    self._num_kv_heads,
-                    self._block_tables,
-                    self._kv_lens_buffer,
-                    page_size,
-                    None,  # max_q_len: the fa2 paged_run wrapper drops it
-                    self._max_kv_len,
-                    None,  # batch_size
-                    None,  # cum_seq_lens_q
-                    None,  # cum_seq_lens_kv
-                    sinks,
-                ]
-
-            self._cached_module.paged_run(*run_args)
+                logits_soft_cap,
+                sm_scale,
+                rope_scale,
+                rope_theta,
+                page_size,
+                sinks,
+                list(args) if self._jit_module is not None else None,
+            )
         else:
             plan_info = self._plan_info
 
