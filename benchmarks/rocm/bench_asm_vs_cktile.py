@@ -432,7 +432,7 @@ def _vl_sweep(cases, arms, dry_run_iters, repeat_iters, peak) -> list[dict]:
                 fns.pop(arm, None)
                 rec[f"{arm}_err"] = f"{type(exc).__name__}: {exc}"[:160]
         torch.cuda.synchronize()
-        # A fast arm that skipped work would otherwise pass as a speedup.
+        # Recorded so that a fast arm which skipped work is visible in the output.
         if "ck" in fns:
             for arm in fns:
                 if arm != "ck":
@@ -478,7 +478,8 @@ def _vl_summary(rows) -> None:
         geo = statistics.geometric_mean([r["asm_over_ck"] for r in sub])
         wins = sum(r["asm_over_ck"] < 0.95 for r in sub)
         aa = max((abs(r["aa"] - 1) for r in sub if r.get("aa")), default=float("nan"))
-        md = max(r.get("asm_maxdiff", float("nan")) for r in sub)
+        diffs = [r.get("asm_maxdiff", float("nan")) for r in sub]
+        md = float("nan") if any(math.isnan(d) for d in diffs) else max(diffs)
         print(
             f"# {name}: {len(sub)} cells, asm/ck time-weighted {tw:.3f} geomean "
             f"{geo:.3f}, asm faster (<0.95) in {wins}, A/A max deviation {aa:.3f}, "

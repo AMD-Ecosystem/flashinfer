@@ -540,17 +540,23 @@ speedup matters for that shape, measure it, and use
 The ragged wrapper and the paged flat-gather route run AITER's group-mode CK
 Tile kernel, not the asm `fmha_v3` group kernel that AITER's
 `flash_attn_varlen_func` picks for bf16 `head_dim` 128 calls without window,
-soft cap or sinks. On gfx950 asm is the slower kernel at serving batch sizes.
+soft cap or sinks. On both architectures asm is the slower kernel when a call
+carries many short query chunks against a longer KV cache: spec verify and
+chunked extend. vLLM sends spec verify to its decode kernel, so its varlen calls
+avoid these shapes.
+
 `bench_asm_vs_cktile.py --mode varlen --serving` (AITER 0.1.29, bf16 hd128,
-causal) prints time-weighted asm time over CK Tile time; CK Tile against itself
-stays within 3.5%:
+causal) prints time-weighted asm time over CK Tile time. Above 1 means asm is
+slower, the inverse of the single-prefill figures above. CK Tile against itself
+stays within 3.5% on gfx950 and 7.5% on gfx942.
 
 | Shapes | gfx942 | gfx950 |
 | :--- | :--- | :--- |
-| Spec-decode verify, 32-512 seqs × 2-8 tokens (72 cells)¹ | not measured | 1.33; asm below 0.95 in 6 |
-| Chunked and batched prefill, 64-512 seqs × 16-512 tokens (12 cells) | not measured | 1.60; asm below 0.95 in none |
+| Spec-decode verify, 32-512 seqs × 2-8 tokens (72 cells)¹ | 1.44 | 1.33 |
+| Chunked and batched prefill, 64-512 seqs × 16-512 tokens (12 cells)² | 1.46 | 1.60 |
 
-¹ Under `auto` on gfx950 only the ragged route reaches AITER here; flat-gather sends these to `fa2`, as both routes do on gfx942.
+¹ Under `auto`, only gfx950's ragged route reaches AITER here; everything else sends these to `fa2`.
+² Under `auto` on gfx942, the 16-token cells go to `fa2` on both routes.
 
 AITER sizes the asm grid from the total query length, so most blocks of a large
 batch exit empty, and its 256-row query tile pads every short sequence. Re-run
