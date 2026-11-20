@@ -426,7 +426,7 @@ def _vl_sweep(cases, arms, dry_run_iters, repeat_iters, peak) -> list[dict]:
                 fns[arm], outs[arm] = _vl_case(
                     qo, kv, hq, hk, hd_qk, hd_vo, causal, arm
                 )
-                for _ in range(dry_run_iters):
+                for _ in range(max(1, dry_run_iters)):  # outs are compared below
                     fns[arm]()
             except Exception as exc:  # noqa: BLE001 - a refusal is a result
                 fns.pop(arm, None)
