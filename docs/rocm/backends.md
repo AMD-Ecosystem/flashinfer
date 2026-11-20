@@ -311,7 +311,9 @@ launches a kernel, so run it as a GPU-attached job.
 
 AITER batch decode, MoE and the opt-in norm, rope and activation shims are
 covered by neither route: decode compiles its paged-attention kernel at
-`plan()`, the rest on first use.
+`plan()`, the rest on first use. A decode variant took 14 s on gfx950 (MI355X),
+and one is built per GQA group, head dim, page size and dtype, plus one more
+each time the batch's longest context crosses a multiple of 16,384 tokens.
 
 The store lives under FlashInfer's cache directory, at
 `aiter_variants/<arch>__aiter-<version>__rocm-<version>/`. That cache is
@@ -355,10 +357,12 @@ the call:
 (AITER-only) take no `backend=` argument at all.
 
 When `auto` declines AITER for the attention ops it falls back to the
-in-tree kernel and usually warns once with the reason. A few `batch_decode`
-short-circuits (CUDA-graph capture without a declared `max_seq_len`,
-`use_tensor_cores=True`) fall back silently. The always-native ops make no per-call decision, so they neither
-warn nor report a reason.
+in-tree kernel, records the reason in `backend_fallback_reason`, and warns
+once where the caller can act on it. The always-native ops make no per-call
+decision, so they neither warn nor report a reason.
+
+An in-tree attention kernel reaches an `auto` route only where it beats AITER
+on that architecture, measured on gfx942 and gfx950 alike.
 
 The "always native" ops are that way because measurement said so,
 not because AITER is unavailable:
@@ -429,7 +433,12 @@ kwargs below are parameters of it.
 * `q_dtype != kv_dtype` — mixed-precision Q/KV is unsupported
 * `head_dim_qk != head_dim_vo` (e.g. DeepSeek-style MLA with 192/128)
 * `pos_encoding_mode != "NONE"` — AITER attention supports only `"NONE"`
-* batch decode: `use_tensor_cores=True`
+* batch decode: `q_len_per_req > 1`, a head dim that is not a multiple of 64 or
+  a GQA group above 16 (AITER's decode returns wrong values at both), a page
+  size above 32, or a `jit_args` variant.
+  Plain decode serves a group its kernel lacks on the tensor-core kernel; fa2
+  builds no head dim outside 64, 128 and 256, so those plans fail loudly rather
+  than return AITER's wrong output.
 * the `aiter` Python package is not importable
 
 Batch decode under `use_cuda_graph=True` without a declared `max_seq_len` sits
@@ -758,8 +767,11 @@ emits no LSE and the FA2 shadow plan it borrows is not capture-safe.
 
 Multi-token decode (`q_len_per_req > 1`), for speculative-decode verify,
 needs `use_tensor_cores=True` — that path runs the batch-prefill kernel,
-which is what supplies the causal mask, and AITER decode requires
-`use_tensor_cores=False`. Every request needs `kv_len >= q_len_per_req`,
+which is what supplies the causal mask; AITER decode serves one row per
+request. At `q_len_per_req=1`, `use_tensor_cores` does not stop `auto` from
+choosing AITER for an eager wrapper, until it first runs with `return_lse=True`;
+from then on it stays on fa2. A tensor-core wrapper under CUDA-graph capture
+always stays on fa2. Every request needs `kv_len >= q_len_per_req`,
 since the draft tokens must already be in the KV cache. Under graph
 capture the value is part of the frozen shape: use one wrapper per
 `q_len_per_req`.

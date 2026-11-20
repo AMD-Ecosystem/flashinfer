@@ -151,7 +151,7 @@ not derived from the gates. Regenerate it with
 
 | Op | Backend | gfx942 (CDNA3) | gfx950 (CDNA4) | Notes |
 | :--- | :--- | :---: | :---: | :--- |
-| `batch_decode` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Under graph capture `auto` needs a declared `max_seq_len`, else it stays on fa2. |
+| `batch_decode` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD; one query row per request, with or without `use_tensor_cores`. Under graph capture `auto` needs a declared `max_seq_len`, else it stays on fa2. |
 | `single_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | MHA / GQA / MQA with sliding window; fp16/bf16 + NHD, equal Q/KV dtypes and head dims, no custom mask. No fp8 query (`mha_fwd` has no fp8 kernel); an fp8 KV cache with a 2-byte query runs on fa2. On gfx950 an unwindowed, uncapped bf16 head_dim 128 call at `qo_len` >= 2048 takes AITER's asm kernel, outside HIP graph capture; everything else is CK Tile. |
 | `batch_prefill` | `aiter` -- auto picks this when compatible | ✅ | ✅ | Paged and ragged, with sliding window. fp8 query/KV on the paged route at head_dim 128/256 (bf16 out, per-tensor descales, no LSE). Page sizes 1/16/1024 are native at head_dim 128/256 only, since AITER's paged kernel reads past the KV cache at 64/96 (others unmeasured); fp16/bf16 are routed there only at 1024 and flat-gather otherwise. |
 | `mla` | `aiter` -- only backend | ✅ | ✅ | 512 compressed-KV + 64 rope (DeepSeek V2/V3); fp16/bf16. No HIP kernel exists, so `auto` resolves here. |

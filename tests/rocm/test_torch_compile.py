@@ -517,6 +517,35 @@ check(lambda q, kv: w.run(q, kv), q, kv)
 
 
 @_needs_custom_ops
+def test_torch_compile_tensor_core_decode_replans_across_backends():
+    """auto moves a tensor-core wrapper between AITER (q=1) and fa2 (q=4) per
+    plan; one compiled run() stops recompiling once each backend has been seen
+    twice (the second fa2 plan takes one automatic-dynamic recompile, as on base)."""
+    _run_aiter_snippet(
+        _DECODE
+        + """\
+from torch._dynamo.testing import CompileCounterWithBackend
+w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD", use_tensor_cores=True)
+q1, kv = inputs(4, 512)
+q4 = torch.randn(16, 8, 128, device=dev, dtype=dt)
+cnt = CompileCounterWithBackend("inductor")
+f = torch.compile(lambda q, kv: w.run(q, kv), backend=cnt)
+frames = []
+for q_len in (1, 4, 1, 4, 1, 4):
+    per = 512 // 16
+    w.plan(i32(*range(0, 4 * per + 1, per)), torch.arange(4 * per, dtype=torch.int32,
+           device=dev), i32(*[16] * 4), 8, 2, 128, 16, q_data_type=dt,
+           q_len_per_req=q_len)
+    assert w.backend == ("aiter" if q_len == 1 else "fa2"), w.backend_fallback_reason
+    q = q1 if q_len == 1 else q4
+    close(f(q, kv), w.run(q, kv))
+    frames.append(cnt.frame_count)
+assert frames[3] == frames[5], frames
+"""
+    )
+
+
+@_needs_custom_ops
 def test_torch_compile_aiter_batch_decode_replanned():
     """One compiled function across two split-KV plans: a stale shadow plan would
     under-cover the longer KV."""

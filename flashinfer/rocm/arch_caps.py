@@ -557,7 +557,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
         "batch_decode",
         "aiter",
         _archs(_OK_942, _OK_950),
-        note="MHA / GQA / MQA with sliding window; fp16/bf16 + NHD. Under graph capture `auto` needs a declared `max_seq_len`, else it stays on fa2.",
+        note="MHA / GQA / MQA with sliding window; fp16/bf16 + NHD; one query row per request, with or without `use_tensor_cores`. Under graph capture `auto` needs a declared `max_seq_len`, else it stays on fa2.",
         fallback="fa2",
     ),
     Capability(

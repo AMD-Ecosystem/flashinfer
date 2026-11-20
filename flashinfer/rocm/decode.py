@@ -47,6 +47,7 @@ from .prefill import (
     _check_run_matches_plan,
     _PlannedShapes,
     _require_aiter_runtime,
+    _warn_auto_fallback_once,
     get_batch_prefill_jit_module,
     get_batch_prefill_module,
     get_single_prefill_module,
@@ -472,6 +473,21 @@ _AITER_DTYPE_STR = {
 
 # PA v1 splits the KV sequence into partitions of this many tokens before reduction.
 _AITER_PA_V1_PARTITION_SIZE = 256
+
+# GQA group sizes the plain fa2 decode kernel instantiates (dispatch.cuh).
+_FA2_PLAIN_DECODE_GROUPS = (1, 2, 3, 4, 8)
+
+
+# Largest page PA v1 builds for a 16-bit KV cache: pa_kernels.cuh asserts
+# BLOCK_SIZE <= k_thread_per_block, which is 32 at two bytes per element.
+_AITER_PA_V1_MAX_PAGE_SIZE = 32
+# Largest GQA group PA v1 computes correctly: above 16 its per-loop head indexing
+# leaves query heads unwritten (garbage or NaN), as vLLM's own gate assumes.
+_AITER_PA_V1_MAX_GQA = 16
+# PA v1 computes the full output only at head dims that are multiples of 64; 80,
+# 96, 112 and 160 return wrong trailing columns.
+_AITER_PA_V1_HEAD_DIM_MULTIPLE = 64
+
 
 # One-time-per-device warning that any return_lse=True call against an AITER-planned
 # wrapper will be dispatched through the FA2 shadow plan (AITER PA v1 does not output LSE).
@@ -993,7 +1009,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
 
         use_tensor_cores : bool
             Whether to use tensor cores for the computation. Will be faster for large group
-            size in grouped query attention. Defaults to ``False``.
+            size in grouped query attention. Defaults to ``False``. Under ``auto`` at one
+            query row per request, AITER serves the call either way.
 
         paged_kv_indptr_buffer : Optional[torch.Tensor]
             The user reserved buffer on GPU to store the indptr of the paged kv cache, the size
@@ -1016,25 +1033,30 @@ class BatchDecodeWithPagedKVCacheWrapper:
             If set to ``auto``, the wrapper will automatically choose the backend based on the
             device architecture and kernel availability. ``aiter`` selects AMD AITER's
             paged_attention_v1 kernel and requires gfx942/gfx950 plus NHD layout, fp16/bf16,
-            no positional encoding, and ``use_tensor_cores=False``. The constructor raises
-            if the GPU or the installed amd-aiter cannot serve it.
+            no positional encoding, head dims that are multiples of 64, pages up to 32,
+            GQA groups up to 16, no ``jit_args``, and one query row per request
+            (``q_len_per_req=1``); ``use_tensor_cores`` does not matter there. The constructor raises if the GPU or the installed amd-aiter cannot
+            serve it.
 
             Notes on AITER-specific behavior:
 
             * ``use_cuda_graph=True`` IS supported with ``backend="aiter"``, but the
               launch grid and ``.so`` variant are fixed at capture time: without
               ``max_seq_len`` you must capture at your maximum sequence length, and
-              ``backend="auto"`` stays on ``fa2`` under capture.
+              ``backend="auto"`` stays on ``fa2`` under capture, as it always does
+              for a tensor-core wrapper.
             * ``run(..., return_lse=True)`` raises under CUDA-graph capture on this
               backend — the FA2 shadow plan below is not capture-safe.
             * Sliding-window attention (``window_left >= 0``) IS supported by AITER PA v1.
               The wrapper handles the convention difference internally
               (AITER ``sliding_window = window_left + 1``).
             * ``run(..., return_lse=True)`` is supported: AITER PA v1 does not output
-              log-sum-exp, so the wrapper transparently dispatches the call through a
-              parallel FA2 decode plan that is built lazily on the first such call (so
-              AITER-only workloads pay no JIT/plan cost). A one-time-per-device warning
-              is emitted on that first call so the backend switch is not silent.
+              log-sum-exp, so the wrapper transparently dispatches the call through an
+              FA2 shadow plan (the tensor-core kernel for a tensor-core wrapper or a GQA
+              group plain decode lacks) built lazily on the first such call, so
+              AITER-only workloads pay no JIT/plan cost. A one-time-per-device warning
+              is emitted on that first call so the backend switch is not silent. After
+              it, ``auto`` plans an eager tensor-core wrapper on ``fa2``.
               Under ``torch.compile`` every such call breaks the graph to prepare
               that plan eagerly, so ``fullgraph=True`` needs ``backend="fa2"``.
 
@@ -1054,6 +1076,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
             over-length replay is silently clamped to the declared max_seq_len (truncated attention).
         """
         _check_kv_layout(kv_layout)
+        if backend == "aiter" and jit_args is not None:
+            # PA v1 has no variant hook; it would silently run plain softmax.
+            raise ValueError("jit_args custom variants run only on backend='fa2'")
 
         if jit_args is not None:
             if use_tensor_cores:
@@ -1114,6 +1139,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
         self._paged_kv_indices_buf = paged_kv_indices_buffer
         self._paged_kv_last_page_len_buf = paged_kv_last_page_len_buffer
         self._use_tensor_cores = use_tensor_cores
+        # The fa2 kernel plan() chose: also tensor-core for groups plain decode lacks.
+        self._fa2_tensor_core = use_tensor_cores
         self._use_cuda_graph = use_cuda_graph
 
         # Declared for every configuration so it is never merely absent; only
@@ -1137,6 +1164,10 @@ class BatchDecodeWithPagedKVCacheWrapper:
         # Set when the last plan() demoted off AITER purely because that batch exceeded
         # the declared graph capacity — a per-batch reason, so it is re-evaluated.
         self._backend_capacity_demoted = False
+        self._auto_select_memo: tuple = (None, None)
+        # Set by a tensor-core wrapper's first return_lse run; auto then plans fa2.
+        self._tc_lse_requested = False
+        self._aiter_empty_rows: Optional[torch.Tensor] = None
         # AITER-under-CUDA-graph capacity: when set, size AITER's grid/.so/workspace
         # from this max per-seq KV length (capture-order-independent) instead of the
         # capture-time plan. Only meaningful with use_cuda_graph=True on the AITER path.
@@ -1176,8 +1207,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
     def backend_fallback_reason(self) -> Optional[str]:
         """Why ``auto`` declined AITER, or ``None`` if it did not.
 
-        Set only by the ``auto`` constraint check; an explicit ``backend=`` and
-        the ``use_tensor_cores`` / graph-capture short-circuits leave it ``None``.
+        Set only when ``auto`` resolves; an explicit ``backend=`` leaves it ``None``.
         """
         return self._backend_fallback_reason
 
@@ -1421,8 +1451,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
             raise ValueError(f"q_len_per_req must be >= 1, got {q_len_per_req}")
         if q_len_per_req > 1 and not self.use_tensor_cores:
             # The tensor-core path runs the batch-prefill kernel, which is what
-            # gives a multi-token query its causal mask. AITER decode requires
-            # use_tensor_cores=False and so can never serve this.
+            # gives a multi-token query its causal mask.
             raise ValueError(
                 f"q_len_per_req={q_len_per_req} requires use_tensor_cores=True; "
                 "the single-token decode kernel takes one query row per request."
@@ -1506,10 +1535,15 @@ class BatchDecodeWithPagedKVCacheWrapper:
             # cache, so an in-place scale would corrupt it for every other caller.
             qo_indptr_host = qo_indptr_host * q_len_per_req
 
-        # An over-capacity demotion is a property of one batch, not of the device, so
-        # unlike the capability-driven resolution it must not stick: re-resolve.
+        # The auto choice depends on this plan's inputs (q_len_per_req, page size,
+        # dtypes), so eager wrappers re-resolve every plan. A captured graph keeps
+        # its first answer, except that an over-capacity demotion describes one
+        # batch and is undone.
+        reresolve = self._backend_requested == "auto" and not self.is_cuda_graph_enabled
         backend = (
-            self._backend_requested if self._backend_capacity_demoted else self._backend
+            self._backend_requested
+            if reresolve or self._backend_capacity_demoted
+            else self._backend
         )
 
         # Validate before touching any wrapper state: the caller may keep replaying
@@ -1517,8 +1551,11 @@ class BatchDecodeWithPagedKVCacheWrapper:
         over_capacity_reason = None
         if (
             self._aiter_graph_max_seq_len is not None
-            and not self.use_tensor_cores
-            and backend in ("auto", "aiter")
+            and q_len_per_req == 1
+            # auto never captures AITER for a tensor-core wrapper.
+            and (
+                backend == "aiter" or (backend == "auto" and not self.use_tensor_cores)
+            )
         ):
             over = _aiter_graph_capacity_overrun(
                 indptr_host,
@@ -1549,8 +1586,30 @@ class BatchDecodeWithPagedKVCacheWrapper:
         # Explicit AITER, or auto resolved to it by an earlier plan(); over capacity
         # an auto wrapper demotes instead. Auto never resolves to AITER past these.
         if backend == "aiter" and over_capacity_reason is None:
-            if self.use_tensor_cores:
-                raise ValueError("AITER decode backend requires use_tensor_cores=False")
+            if q_len_per_req > 1:
+                raise ValueError(
+                    "AITER decode serves one query row per request; "
+                    f"q_len_per_req={q_len_per_req} needs backend='fa2'"
+                )
+            if head_dim % _AITER_PA_V1_HEAD_DIM_MULTIPLE:
+                raise ValueError(
+                    "AITER decode serves head dims that are multiples of "
+                    f"{_AITER_PA_V1_HEAD_DIM_MULTIPLE}; head_dim={head_dim} needs "
+                    "backend='fa2'"
+                )
+            if num_qo_heads // num_kv_heads > _AITER_PA_V1_MAX_GQA:
+                raise ValueError(
+                    f"AITER decode serves GQA groups up to {_AITER_PA_V1_MAX_GQA}; "
+                    f"{num_qo_heads}/{num_kv_heads} heads need backend='fa2'"
+                )
+            if (
+                self._backend_requested == "aiter"
+                and page_size > _AITER_PA_V1_MAX_PAGE_SIZE
+            ):
+                raise ValueError(
+                    f"AITER decode builds pages up to {_AITER_PA_V1_MAX_PAGE_SIZE}; "
+                    f"page_size={page_size} needs backend='fa2'"
+                )
             if self._kv_layout != "NHD":
                 raise ValueError(
                     f"AITER decode backend requires NHD kv_layout, got {self._kv_layout!r}"
@@ -1573,7 +1632,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
         kv_data_type = canonicalize_torch_dtype(kv_data_type)
 
         self._planned_shapes = _REPLAN_REQUIRED  # until this plan() completes
-        if self._backend_capacity_demoted:
+        if reresolve or self._backend_capacity_demoted:
             self._backend = self._backend_requested
             self._backend_capacity_demoted = False
             self._backend_fallback_reason = None
@@ -1606,13 +1665,10 @@ class BatchDecodeWithPagedKVCacheWrapper:
         self._max_kv_len: Optional[int] = None
         self._page_size: int = page_size
 
-        # Resolve auto → concrete backend. AITER decode requires use_tensor_cores=False
-        # (the AITER PA v1 kernel handles its own dispatch internally). Under CUDA-graph
-        # capture, AITER's launch grid and .so variant are fixed at the shapes seen when
-        # the graph is captured, whereas fa2's graph path is capacity-based. So `auto`
-        # only selects AITER under capture when a `max_seq_len` capacity was declared
-        # (letting us size AITER from that capacity → capture-order-independent, like
-        # fa2); without it, `auto` stays on fa2.
+        # Resolve auto → concrete backend. Under CUDA-graph capture AITER's launch
+        # grid and .so variant are fixed at the shapes seen at capture, whereas fa2's
+        # graph path is capacity-based, so `auto` selects AITER under capture only
+        # with a declared `max_seq_len` to size it from.
         resolved_from_auto = self._backend_requested == "auto"
         if over_capacity_reason is not None:
             # auto never fails a plan for a backend-capability reason; fa2's graph
@@ -1621,14 +1677,19 @@ class BatchDecodeWithPagedKVCacheWrapper:
             self._backend = "fa2"
             self._backend_fallback_reason = over_capacity_reason
             self._backend_capacity_demoted = True
-        elif self._backend == "auto":
-            graph_without_capacity = (
-                self.is_cuda_graph_enabled and self._aiter_graph_max_seq_len is None
+        elif self._backend == "auto" and (
+            decline := self._aiter_decode_decline_reason(
+                q_len_per_req, page_size, num_qo_heads // num_kv_heads, head_dim
             )
-            if self.use_tensor_cores or graph_without_capacity:
-                self._backend = "fa2"
-            else:
-                self._backend, self._backend_fallback_reason = (
+        ):
+            self._backend, self._backend_fallback_reason = "fa2", decline
+        elif self._backend == "auto":
+            # Memoised per wrapper: eager plans re-resolve every step, and the
+            # selector's answer depends only on these inputs.
+            select_key = (q_data_type, kv_data_type, head_dim, pos_encoding_mode)
+            if self._auto_select_memo[0] != select_key:
+                self._auto_select_memo = (
+                    select_key,
                     _auto_select_prefill_backend(
                         self.device,
                         dtype_q=q_data_type,
@@ -1641,8 +1702,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
                         # Decode borrows the prefill selector, but it is a distinct
                         # capability row -- the gates are not the same op.
                         op="batch_decode",
-                    )
+                    ),
                 )
+            self._backend, self._backend_fallback_reason = self._auto_select_memo[1]
         if self._backend == "aiter":
             if self._aiter_graph_max_seq_len is not None:
                 # Size the grid / .so variant / partition workspace from the declared
@@ -1652,6 +1714,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 aiter_max_blocks_per_seq = ceil_div(
                     int(self._aiter_graph_max_seq_len), page_size
                 )
+                aiter_empty_rows = None
             else:
                 if (
                     self.is_cuda_graph_enabled
@@ -1672,6 +1735,15 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 )
                 aiter_max_blocks_per_seq = (
                     int(npages_arr.max().item()) if batch_size > 0 else 0
+                )
+                # PA v1 leaves a pageless request's row undefined; fa2 writes zeros.
+                # Eager only: a captured graph would replay this batch's indices.
+                aiter_empty_rows = (
+                    (npages_arr == 0).nonzero().flatten()
+                    if not self.is_cuda_graph_enabled
+                    and batch_size > 0
+                    and int(npages_arr.min()) == 0
+                    else None
                 )
             # Must cover the lengths the kernel derives from the page table, not
             # seq_lens; at least one page, as a zero-partition variant cannot build.
@@ -1724,6 +1796,11 @@ class BatchDecodeWithPagedKVCacheWrapper:
             if reason is None:
                 self._max_kv_len = max_kv_len
                 self._aiter_max_blocks_per_seq = aiter_max_blocks_per_seq
+                self._aiter_empty_rows = (
+                    None
+                    if aiter_empty_rows is None
+                    else aiter_empty_rows.to(self.device, non_blocking=non_blocking)
+                )
                 self._aiter_partition_size = _AITER_PA_V1_PARTITION_SIZE
                 self._aiter_sliding_window = aiter_sliding_window
                 self._cached_module = get_batch_decode_aiter_module(
@@ -1749,7 +1826,10 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     logits_soft_cap,
                     # Built at the first return_lse run; a CPU indptr is the caller's buffer.
                     indptr_host.clone(),
-                    get_seq_lens(indptr_host, last_page_len_host, page_size),
+                    # Page-table lengths; kv_lens_arr_host already is one without seq_lens.
+                    kv_lens_arr_host
+                    if seq_lens is None
+                    else get_seq_lens(indptr_host, last_page_len_host, page_size),
                     batch_size,
                     num_qo_heads,
                     num_kv_heads,
@@ -1758,7 +1838,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
 
                 # This path returns before the common tail, so it commits the
                 # same run()-visible state itself. AITER decode is q_len 1 by
-                # construction (it requires use_tensor_cores=False).
+                # construction (plan() refuses or declines anything longer).
                 self._batch_size = batch_size
                 self._q_len_per_req = q_len_per_req
                 self._planned_shapes = (
@@ -1786,16 +1866,34 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 getattr(self._prepare_fa2_lse_plan, "prepare", lambda: None)()
                 return
 
-            # auto promised fa2 when AITER cannot serve; fall through to it below.
-            # Reachable only from the auto path, which excludes use_tensor_cores, so
-            # the landing site is the plain decode branch. It may be graph-enabled
-            # now that a declared max_seq_len lets auto pick AITER under capture —
-            # fa2's plain branch is capacity-based, so it serves that case too.
+            # auto promised fa2 when AITER cannot serve; fall through to the
+            # tensor-core or plain branch below. Both are capacity-based under
+            # graph capture, so a declared max_seq_len does not matter there.
+            # The memo keeps later plans from retrying the failed build.
             self._backend = "fa2"
             self._backend_fallback_reason = reason
+            self._auto_select_memo = (self._auto_select_memo[0], ("fa2", reason))
 
-        if self.use_tensor_cores:
-            self._max_kv_len = max(kv_lens_arr_host).item()
+        # Plain decode instantiates only some GQA groups (dispatch.cuh); serve the
+        # rest on the tensor-core kernel rather than fail the plan.
+        self._fa2_tensor_core = self.use_tensor_cores or (
+            self._jit_module is None
+            and num_qo_heads // num_kv_heads not in _FA2_PLAIN_DECODE_GROUPS
+        )
+        if self._fa2_tensor_core:
+            if self._qo_indptr_buf is None and self.is_cuda_graph_enabled:
+                self._qo_indptr_buf = torch.arange(
+                    self._fixed_batch_size + 1, dtype=torch.int32, device=self.device
+                )
+            self._max_kv_len = int(kv_lens_arr_host.max()) if batch_size > 0 else 0
+        if self._fa2_tensor_core and batch_size == 0:
+            # The batch-prefill planner divides by the batch size; run() returns
+            # the empty output without launching.
+            self._cached_module = None
+            self._plan_info = plan_info_vec_as_tensor(
+                [], device=self._float_workspace_buffer.device
+            )
+        elif self._fa2_tensor_core:
             self._cached_module, self._plan_info = self._plan_tensor_core(
                 self._jit_module,
                 q_data_type,
@@ -1882,6 +1980,50 @@ class BatchDecodeWithPagedKVCacheWrapper:
         self._rope_theta = rope_theta
 
     begin_forward = plan
+
+    def _aiter_decode_decline_reason(
+        self, q_len_per_req, page_size, group_size, head_dim
+    ) -> Optional[str]:
+        """Why AITER decode can never serve this plan, checked before the selector:
+        under FLASHINFER_AITER_STRICT=1 the selector raises where AITER is unusable."""
+        if self._jit_module is not None:
+            return "a jit_args custom variant runs only on fa2"
+        if q_len_per_req > 1:
+            # PA v1's mtp mask is not FlashInfer's bottom-right causal verify mask.
+            return f"q_len_per_req={q_len_per_req} (AITER decode serves one row per request)"
+        if self.is_cuda_graph_enabled and self.use_tensor_cores:
+            # Its fa2 graph is length-agnostic and capture-safe with return_lse;
+            # an AITER one is neither.
+            return "a tensor-core wrapper under CUDA-graph capture stays on fa2"
+        if self.is_cuda_graph_enabled and self._aiter_graph_max_seq_len is None:
+            return (
+                "CUDA-graph capture without max_seq_len (AITER's grid is fixed at "
+                "capture; pass max_seq_len to the wrapper to size it)"
+            )
+        if self._tc_lse_requested and not self.is_cuda_graph_enabled:
+            # Plain fa2 decode can be far slower than AITER, so only a tensor-core
+            # wrapper, whose fa2 kernel is what it ran before, stops here.
+            return (
+                "return_lse=True on a tensor-core wrapper (AITER decode emits no LSE)"
+            )
+        reason = None
+        if head_dim % _AITER_PA_V1_HEAD_DIM_MULTIPLE:
+            reason = (
+                f"head_dim {head_dim} is not a multiple of "
+                f"{_AITER_PA_V1_HEAD_DIM_MULTIPLE} (AITER PA v1 computes it wrongly)"
+            )
+        elif group_size > _AITER_PA_V1_MAX_GQA:
+            reason = (
+                f"GQA group {group_size} exceeds AITER PA v1's {_AITER_PA_V1_MAX_GQA}"
+            )
+        elif page_size > _AITER_PA_V1_MAX_PAGE_SIZE:
+            reason = (
+                f"page_size {page_size} exceeds AITER PA v1's "
+                f"{_AITER_PA_V1_MAX_PAGE_SIZE}"
+            )
+        if reason is not None:
+            _warn_auto_fallback_once(self.device, reason)
+        return reason
 
     def _plan_tensor_core(
         self,
@@ -2043,6 +2185,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
     def _ensure_fa2_lse_plan(self) -> None:
         if self._fa2_lse_plan_info is not None:
             return
+        self._tc_lse_requested = self.use_tensor_cores
         (
             q_data_type,
             kv_data_type,
@@ -2063,7 +2206,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
             _aiter_lse_fallback_warned.add(self.device)
             logger.warning(
                 "AITER decode wrapper on device %s received a return_lse=True call; "
-                "dispatching through an FA2 decode shadow plan (AITER PA v1 does not "
+                "dispatching through an FA2 shadow plan (AITER PA v1 does not "
                 "output log-sum-exp). Expect a per-call performance cliff vs. "
                 "return_lse=False on the same wrapper.",
                 self.device,
@@ -2072,7 +2215,7 @@ class BatchDecodeWithPagedKVCacheWrapper:
         # The plain decode kernel dispatches only these GQA groups (dispatch.cuh);
         # a tensor-core caller also expects its own kernel's numerics.
         self._fa2_lse_tensor_core = self.use_tensor_cores or (
-            num_qo_heads // num_kv_heads not in (1, 2, 3, 4, 8)
+            num_qo_heads // num_kv_heads not in _FA2_PLAIN_DECODE_GROUPS
         )
         if self._fa2_lse_tensor_core:
             qo_indptr_host = _get_range_buf(batch_size + 1, "cpu")
@@ -2464,6 +2607,8 @@ class BatchDecodeWithPagedKVCacheWrapper:
                 sm_scale,
                 self._aiter_max_blocks_per_seq,
             )
+            if self._aiter_empty_rows is not None:
+                out[self._aiter_empty_rows] = 0
             if v_scale is not None:
                 if is_float8(out):
                     out = (out.to(torch.float32) * v_scale).to(out.dtype)
@@ -2471,7 +2616,9 @@ class BatchDecodeWithPagedKVCacheWrapper:
                     out *= v_scale
             return (out, lse) if return_lse else out
 
-        if self.use_tensor_cores:
+        if self._fa2_tensor_core and self._batch_size == 0:
+            return (out, lse) if return_lse else out
+        if self._fa2_tensor_core:
             self._run_tensor_core(
                 self._cached_module,
                 self._plan_info,
@@ -2636,7 +2783,8 @@ class CUDAGraphBatchDecodeWithPagedKVCacheWrapper(BatchDecodeWithPagedKVCacheWra
 
         use_tensor_cores : bool
             Whether to use tensor cores for the computation. Will be faster for large group
-            size in grouped query attention. Defaults to ``False``.
+            size in grouped query attention. Defaults to ``False``. Under ``auto`` at one
+            query row per request, AITER serves the call either way.
 
         kv_layout : str
             The layout of the input k/v tensors, could be either ``NHD`` or ``HND``.

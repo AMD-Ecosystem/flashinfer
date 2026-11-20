@@ -194,7 +194,7 @@ def _build(decode_bs: int, prefill_len: int, causal: bool, with_auto: bool = Tru
         )
         dec_ws = torch.empty(_WORKSPACE_BYTES, dtype=torch.uint8, device=dev)
         # POD forces the tensor-core decode kernel, so the fa2 split must too;
-        # under auto, use_tensor_cores would short-circuit the route to fa2.
+        # the auto split keeps its default so it times what auto picks.
         decode = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
             dec_ws, "NHD", backend=backend, use_tensor_cores=backend == "fa2"
         )

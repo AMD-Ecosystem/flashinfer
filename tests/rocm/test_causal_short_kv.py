@@ -235,7 +235,7 @@ class TestCausalShortKV:
         """seq_lens is documented as uint32; the planner reads int32/int64."""
         device = workspace.device
         w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
-            workspace, "NHD", use_tensor_cores=True
+            workspace, "NHD", use_tensor_cores=True, backend="fa2"
         )
         w.plan(
             _indptr(list(range(batch + 1)), device), _indptr(list(range(batch)), device),
