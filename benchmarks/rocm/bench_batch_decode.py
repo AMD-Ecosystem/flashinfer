@@ -19,8 +19,14 @@ Measures the eager fa2-vs-aiter gap across a serving-shaped batch x kv_len
 sweep. Graph-captured AITER decode (capture-at-max and a declared max_seq_len)
 is timed by ``benchmarks/rocm/bench_decode_graph.py``.
 
-Shapes: decode (q_len=1), 8 KV heads, HD=128, bf16, page_size=16.
-Sweep: batch x kv_len x qo_heads, each overridable on the command line.
+Shapes: decode (q_len=1), 8 KV heads, 16-bit query. Sweep: batch x kv_len x
+qo_heads x page_size x head_dim, each overridable on the command line.
+
+Arms (``--backend``, comma-separated): ``fa2`` and ``fa2_tc`` (the
+``use_tensor_cores=True`` kernel), ``aiter``, ``auto`` and ``auto_tc`` (labelled
+with what ``auto`` resolved to), and ``engine`` -- AITER's ``pa_fwd_asm`` on its
+own shuffled cache layout, the call vLLM makes; hd 128 bf16 only. ``--step``
+times ``plan()`` + ``run()``, since a serving loop re-plans every step.
 
 Run:
     python benchmarks/rocm/bench_batch_decode.py               # full pipeline
@@ -82,11 +88,35 @@ _bench_parser.add_argument(
     metavar="PREFIX",
     help="Output-file label prefix (default: 'decode' for roofline, 'decode_<preset>' otherwise).",
 )
+_ARMS = ("fa2", "fa2_tc", "aiter", "auto", "auto_tc", "engine")
+
+
+def _arm_list(raw: str) -> list[str]:
+    arms = ["fa2", "aiter"] if raw == "both" else raw.split(",")
+    bad = [a for a in arms if a not in _ARMS]
+    if bad or not arms:
+        raise argparse.ArgumentTypeError(f"unknown arm(s) {bad}; choose from {_ARMS}")
+    return arms
+
+
 _bench_parser.add_argument(
     "--backend",
-    default="both",
-    choices=["fa2", "aiter", "both"],
-    help="Which decode backend(s) to sweep. Default: both.",
+    type=_arm_list,
+    default=["fa2", "aiter"],
+    metavar="ARM,ARM,...",
+    help=f"Arms to sweep, from {', '.join(_ARMS)}; 'both' is fa2,aiter (the default).",
+)
+_bench_parser.add_argument(
+    "--kv-dtype",
+    default="bf16",
+    choices=["bf16", "fp16", "fp8", "fp8-fnuz"],
+    help="KV cache dtype; the query matches it, or is bf16 under an fp8 cache. "
+    "fp8 is this GPU's native e4m3. Default: bf16.",
+)
+_bench_parser.add_argument(
+    "--step",
+    action="store_true",
+    help="Time plan() + run() per call instead of run() alone.",
 )
 
 
@@ -121,6 +151,20 @@ _bench_parser.add_argument(
     help="KV lengths to sweep. Default: 1024,2048,4096,8192.",
 )
 _bench_parser.add_argument(
+    "--page-sizes",
+    type=_int_list,
+    default=None,
+    metavar="N,N,...",
+    help="Page sizes to sweep. Default: 16.",
+)
+_bench_parser.add_argument(
+    "--head-dims",
+    type=_int_list,
+    default=None,
+    metavar="N,N,...",
+    help="Head dims to sweep. Default: 128.",
+)
+_bench_parser.add_argument(
     "--qo-heads",
     type=_int_list,
     default=None,
@@ -148,9 +192,27 @@ _label = (
 # Sweep configuration — decode is q_len=1; shapes ~ Llama-70B TP1 decode.
 # ---------------------------------------------------------------------------
 _NUM_KV_HEADS = 8
-_HEAD_DIM = 128
-_DTYPE = torch.bfloat16
-_PAGE_SIZE = 16
+_HEAD_DIMS = _bench_args.head_dims or [128]
+_PAGE_SIZES = _bench_args.page_sizes or [16]
+
+
+def _kv_dtype() -> torch.dtype:
+    if _bench_args.kv_dtype == "bf16":
+        return torch.bfloat16
+    if _bench_args.kv_dtype == "fp16":
+        return torch.float16
+    if _bench_args.kv_dtype == "fp8-fnuz":
+        return torch.float8_e4m3fnuz
+    from flashinfer.rocm.prefill import _native_fp8_dtype
+
+    native = _native_fp8_dtype()
+    if native is None:
+        raise SystemExit("--kv-dtype fp8: aiter.dtypes.fp8 is unreadable")
+    return native
+
+
+_KV_DTYPE = _kv_dtype()
+_Q_DTYPE = torch.float16 if _KV_DTYPE is torch.float16 else torch.bfloat16
 # Defaults are unchanged by the short-KV work: reaching 16384 would take the
 # resident set from ~55 to ~116 GiB, which fits an idle MI300X and not a shared
 # one. Widen with the flags, in passes -- see the module docstring.
@@ -172,8 +234,9 @@ def _flops(kv_len: int, num_qo_heads: int, head_dim: int) -> int:
 
 
 def _bytes(kv_len: int, num_qo_heads: int, num_kv_heads: int, head_dim: int) -> int:
-    # Dominated by reading K and V (q_len=1). 2 bytes/elem (bf16).
-    return 2 * head_dim * (2 * num_qo_heads + 2 * kv_len * num_kv_heads)
+    # Dominated by reading K and V (q_len=1); q and o are 2-byte.
+    kv_bytes = _KV_DTYPE.itemsize
+    return head_dim * (2 * 2 * num_qo_heads + kv_bytes * 2 * kv_len * num_kv_heads)
 
 
 def _build_paged_kv(
@@ -187,9 +250,18 @@ def _build_paged_kv(
         num_full_pages += 1
     total_pages = num_full_pages * batch
 
+    # Seeded so every arm of one shape sees the same tensors. randn fits e4m3
+    # at unit scale, so an fp8 cache is a plain cast.
+    torch.manual_seed(0)
     kv_data = torch.randn(
-        total_pages, 2, page_size, num_kv_heads, head_dim, dtype=dtype, device=device
-    )
+        total_pages,
+        2,
+        page_size,
+        num_kv_heads,
+        head_dim,
+        dtype=torch.bfloat16,
+        device=device,
+    ).to(dtype)
     kv_indptr = (
         torch.arange(batch + 1, dtype=torch.int32, device=device) * num_full_pages
     )
@@ -200,66 +272,126 @@ def _build_paged_kv(
     kv_last_page_len = torch.full(
         (batch,), last_tokens, dtype=torch.int32, device=device
     )
-    q = torch.randn(batch, num_qo_heads, head_dim, dtype=dtype, device=device)
+    q = torch.randn(batch, num_qo_heads, head_dim, dtype=_Q_DTYPE, device=device)
     return q, kv_data, kv_indptr, kv_indices, kv_last_page_len
 
 
-def _make_wrapper_config(backend, batch, kv_len, num_qo_heads):
+def _engine_run_fn(q, kv_data, kv_indices, batch, kv_len, page_size):
+    """AITER pa_fwd_asm on vLLM's layout: K [P,H,D/x,ps,x], V [P,H,ps/x,D,x]."""
+    import aiter
+
+    pages, _, ps, h, d = kv_data.shape
+    x = 16 // kv_data.element_size()
+    k5 = kv_data[:, 0].view(pages, ps, h, d // x, x).permute(0, 2, 3, 1, 4).contiguous()
+    v5 = kv_data[:, 1].view(pages, ps // x, x, h, d).permute(0, 3, 1, 4, 2).contiguous()
+    block_tables = kv_indices.view(batch, -1).contiguous()
+    seq_lens = torch.full((batch,), kv_len, dtype=torch.int32, device=q.device)
+    out = torch.empty_like(q)
+
+    def run():
+        return aiter.pa_fwd_asm(
+            q, k5, v5, block_tables, seq_lens, block_tables.stride(0), out_=out
+        )
+
+    return run
+
+
+def _make_wrapper_config(arm, batch, kv_len, num_qo_heads, page_size, head_dim):
     device = torch.device("cuda")
     q, kv_data, kv_indptr, kv_indices, kv_last_page_len = _build_paged_kv(
         batch,
         kv_len,
-        _PAGE_SIZE,
+        page_size,
         num_qo_heads,
         _NUM_KV_HEADS,
-        _HEAD_DIM,
-        _DTYPE,
+        head_dim,
+        _KV_DTYPE,
         device,
     )
-    ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
-    wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD", backend=backend)
-    wrapper.plan(
-        kv_indptr,
-        kv_indices,
-        kv_last_page_len,
-        num_qo_heads,
-        _NUM_KV_HEADS,
-        _HEAD_DIM,
-        _PAGE_SIZE,
-        pos_encoding_mode="NONE",
-        q_data_type=_DTYPE,
-        kv_data_type=_DTYPE,
-    )
+    shape = f"b{batch}_kv{kv_len}_h{num_qo_heads}_p{page_size}_d{head_dim}"
+    if arm == "engine":
+        if head_dim != 128 or _Q_DTYPE is not torch.bfloat16 or _KV_DTYPE.itemsize != 2:
+            raise ValueError("pa_fwd_asm: hd 128 with a bf16 cache only here")
+        run_fn = _engine_run_fn(q, kv_data, kv_indices, batch, kv_len, page_size)
+        resolved = "engine"
+    else:
+        backend = {"fa2_tc": "fa2", "auto_tc": "auto"}.get(arm, arm)
+        ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
+        wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+            ws, "NHD", backend=backend, use_tensor_cores=arm.endswith("_tc")
+        )
+
+        def plan():
+            wrapper.plan(
+                kv_indptr,
+                kv_indices,
+                kv_last_page_len,
+                num_qo_heads,
+                _NUM_KV_HEADS,
+                head_dim,
+                page_size,
+                pos_encoding_mode="NONE",
+                q_data_type=_Q_DTYPE,
+                kv_data_type=_KV_DTYPE,
+            )
+
+        plan()
+        resolved = wrapper.backend
+        if _bench_args.step:
+
+            def run_fn(q=q, kv=kv_data):
+                plan()
+                return wrapper.run(q, kv)
+
+        else:
+
+            def run_fn(q=q, kv=kv_data):
+                return wrapper.run(q, kv)
+
     return KernelConfig(
-        name=f"{backend}_b{batch}_kv{kv_len}_h{num_qo_heads}",
-        run_fn=torch.inference_mode()(lambda q=q, kv=kv_data, w=wrapper: w.run(q, kv)),
-        theoretical_flops=batch * _flops(kv_len, num_qo_heads, _HEAD_DIM),
-        theoretical_bytes=batch
-        * _bytes(kv_len, num_qo_heads, _NUM_KV_HEADS, _HEAD_DIM),
+        # The resolved backend is in the name, so an auto row is attributable.
+        name=f"{arm}-{resolved}_{shape}",
+        run_fn=torch.inference_mode()(run_fn),
+        theoretical_flops=batch * _flops(kv_len, num_qo_heads, head_dim),
+        theoretical_bytes=batch * _bytes(kv_len, num_qo_heads, _NUM_KV_HEADS, head_dim),
         num_tokens=batch,  # one decoded token per sequence
-        label=f"{backend:<5s} b={batch:>3d}  kv={kv_len:>5d}  h={num_qo_heads:>3d}",
+        label=f"{arm:<7s}({resolved:<6s}) b={batch:>3d} kv={kv_len:>5d} "
+        f"h={num_qo_heads:>3d} p={page_size:>2d} d={head_dim:>3d}",
     )
 
 
 @torch.inference_mode()
 def _make_configs() -> list[KernelConfig]:
-    backends = (
-        ["fa2", "aiter"] if _bench_args.backend == "both" else [_bench_args.backend]
-    )
-    if "aiter" in backends and not is_aiter_available(
+    arms = list(_bench_args.backend)
+    if "aiter" in arms and not is_aiter_available(
         torch.device("cuda:0"), "batch_decode"
     ):
         print("AITER not supported on this device; dropping the aiter sweep.")
-        backends = [b for b in backends if b != "aiter"]
+        arms = [a for a in arms if a != "aiter"]
 
     configs: list[KernelConfig] = []
-    for backend in backends:
+    for arm in arms:
         for batch in _BATCHES:
             for kv_len in _KV_LENS:
                 for num_qo_heads in _QO_HEADS:
-                    configs.append(
-                        _make_wrapper_config(backend, batch, kv_len, num_qo_heads)
-                    )
+                    for page_size in _PAGE_SIZES:
+                        for head_dim in _HEAD_DIMS:
+                            try:
+                                configs.append(
+                                    _make_wrapper_config(
+                                        arm,
+                                        batch,
+                                        kv_len,
+                                        num_qo_heads,
+                                        page_size,
+                                        head_dim,
+                                    )
+                                )
+                            except Exception as e:  # report the cell, keep sweeping
+                                print(
+                                    f"skip {arm} b={batch} kv={kv_len} h={num_qo_heads} "
+                                    f"p={page_size} d={head_dim}: {type(e).__name__}: {e}"
+                                )
     return configs
 
 

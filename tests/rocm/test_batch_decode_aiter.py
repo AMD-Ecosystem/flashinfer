@@ -130,6 +130,63 @@ def test_batch_decode_aiter_vs_fa2(
 
 
 @requires_aiter
+@pytest.mark.parametrize(
+    "page_size,head_dim,num_qo_heads,max_kv_len,soft_cap",
+    [
+        (1, 128, 32, 1000, 0.0),
+        (32, 64, 32, 1000, 0.0),
+        (16, 256, 32, 1000, 0.0),
+        (16, 128, 96, 2000, 0.0),  # GQA 12
+        (16, 128, 128, 2000, 0.0),  # GQA 16
+        (16, 128, 32, 16385, 0.0),  # > 64 partitions: npar_loops 2
+        (16, 128, 64, 65536, 0.0),
+        (16, 128, 32, 3000, 50.0),
+    ],
+)
+def test_batch_decode_aiter_shapes_vs_tensor_core_fa2(
+    page_size, head_dim, num_qo_heads, max_kv_len, soft_cap
+):
+    """Pages, head dims, GQA groups, multi-partition lengths and soft cap that
+    auto now routes to AITER, against the fa2 kernel they used to run on."""
+    torch.manual_seed(0xA17E5)
+    device, dtype, num_kv_heads = torch.device("cuda:0"), torch.bfloat16, 8
+    kv_lens = [max_kv_len, max_kv_len // 3 + 1]
+    k, v, indptr, indices, last = _build_paged_kv(
+        len(kv_lens), kv_lens, page_size, num_kv_heads, head_dim, dtype, device
+    )
+    # Scaled so the logits (std ~30 against K at 0.1) reach the cap; unscaled
+    # they stay near +-1 and a kernel ignoring a cap of 50 would still pass.
+    q_scale = 300.0 if soft_cap else 1.0
+    q = q_scale * torch.randn(
+        len(kv_lens), num_qo_heads, head_dim, dtype=dtype, device=device
+    )
+    out = []
+    arms = [
+        ({"backend": "fa2", "use_tensor_cores": True}, soft_cap),
+        ({"backend": "aiter"}, soft_cap),
+        ({"backend": "fa2", "use_tensor_cores": True}, 0.0),
+    ]
+    for kw, cap in arms if soft_cap else arms[:2]:
+        ws = torch.zeros(128 * 1024 * 1024, dtype=torch.uint8, device=device)
+        w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD", **kw)
+        w.plan(
+            indptr,
+            indices,
+            last,
+            num_qo_heads,
+            num_kv_heads,
+            head_dim,
+            page_size,
+            logits_soft_cap=cap,
+            q_data_type=dtype,
+        )
+        out.append(w.run(q, (k, v)).float())
+    torch.testing.assert_close(out[1], out[0], rtol=1e-2, atol=1e-2)
+    if soft_cap:
+        assert (out[2] - out[0]).abs().max() > 0.1, "the cap changed nothing"
+
+
+@requires_aiter
 @pytest.mark.parametrize("seq_lens", [[512, 300], [1, 1], [4096, 300]])
 def test_batch_decode_aiter_sizes_from_the_page_table_not_seq_lens(seq_lens):
     """The kernel reads lengths from the page table, so a seq_lens that disagrees
@@ -155,10 +212,10 @@ def test_batch_decode_aiter_sizes_from_the_page_table_not_seq_lens(seq_lens):
 
 
 @requires_aiter
-@pytest.mark.parametrize("kv_lens", [[0, 0], [0, 55]])
+@pytest.mark.parametrize("kv_lens", [[0, 0], [0, 55], [55, 0]])
 def test_batch_decode_aiter_requests_with_no_pages(kv_lens):
-    """A batch with no pages at all returns fa2's zeros. In a mixed batch AITER's row
-    for a pageless request is undefined, so only rows with pages compare."""
+    """A pageless request gets fa2's zero row, alone or in a mixed batch; PA v1
+    leaves that row unwritten, so the wrapper zeroes it."""
     torch.manual_seed(0)
     device = torch.device("cuda:0")
     page, heads, dim, dtype = 16, 8, 128, torch.float16
@@ -177,10 +234,7 @@ def test_batch_decode_aiter_requests_with_no_pages(kv_lens):
                q_data_type=dtype, kv_data_type=dtype)  # fmt: skip
         o = torch.full_like(q, float("nan"))  # a row left unwritten stays NaN
         out[backend] = w.run(q, (k, v), out=o).float()
-    rows = [i for i, n in enumerate(kv_lens) if n] or list(range(len(kv_lens)))
-    torch.testing.assert_close(
-        out["aiter"][rows], out["fa2"][rows], rtol=1e-3, atol=1e-3
-    )
+    torch.testing.assert_close(out["aiter"], out["fa2"], rtol=1e-3, atol=1e-3)
 
 
 @requires_aiter
@@ -265,21 +319,22 @@ def test_batch_decode_aiter_rejects_invalid_config():
             kv_data_type=torch.float16,
         )
 
-    # tensor cores not supported.
+    # More than one query row per request: AITER decode serves one.
     w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
         workspace, "NHD", use_tensor_cores=True, backend="aiter"
     )
-    with pytest.raises(ValueError, match="use_tensor_cores"):
+    with pytest.raises(ValueError, match="one query row per request"):
         w.plan(
             indptr,
             indices,
-            last_page_len,
+            torch.tensor([16], dtype=torch.int32, device=device),
             8,
             8,
             128,
             16,
             q_data_type=torch.float16,
             kv_data_type=torch.float16,
+            q_len_per_req=2,
         )
 
     # NOTE: CUDA-graph capture with backend="aiter" is now supported (the grid
@@ -544,6 +599,49 @@ def test_batch_decode_aiter_lse_plan_uses_the_planned_indptr():
 
 
 @requires_aiter
+@pytest.mark.parametrize("num_qo_heads", [96, 128])
+def test_batch_decode_aiter_lse_at_a_group_plain_decode_lacks(num_qo_heads):
+    """Groups 12 and 16 have no plain fa2 decode kernel, so the LSE shadow plan
+    must take the tensor-core kernel rather than fail in plan()."""
+    device, dtype, page_size, num_kv_heads, head_dim = (
+        "cuda:0",
+        torch.bfloat16,
+        16,
+        8,
+        128,
+    )
+    kv_lens = [128, 300, 1024]
+    k_cache, v_cache, indptr, indices, last_page_len = _build_paged_kv(
+        len(kv_lens), kv_lens, page_size, num_kv_heads, head_dim, dtype, device
+    )
+    q = torch.randn(len(kv_lens), num_qo_heads, head_dim, dtype=dtype, device=device)
+    args = (
+        indptr,
+        indices,
+        last_page_len,
+        num_qo_heads,
+        num_kv_heads,
+        head_dim,
+        page_size,
+    )
+
+    def wrapper(**kw):
+        ws = torch.zeros(128 * 1024 * 1024, dtype=torch.uint8, device=device)
+        w = flashinfer.BatchDecodeWithPagedKVCacheWrapper(ws, "NHD", **kw)
+        w.plan(*args, q_data_type=dtype)
+        return w
+
+    o_ref, lse_ref = wrapper(backend="fa2", use_tensor_cores=True).run(
+        q, (k_cache, v_cache), return_lse=True
+    )
+    cand = wrapper(backend="auto")
+    assert cand.backend == "aiter"
+    o, lse = cand.run(q, (k_cache, v_cache), return_lse=True)
+    torch.testing.assert_close(o.float(), o_ref.float(), rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(lse, lse_ref, rtol=1e-3, atol=1e-3)
+
+
+@requires_aiter
 def test_batch_decode_auto_routes_cuda_graph_to_fa2():
     """backend='auto' with use_cuda_graph=True and NO max_seq_len routes to fa2.
     fa2's graph path is capacity-based (correct regardless of capture-vs-replay
@@ -581,6 +679,7 @@ def test_batch_decode_auto_routes_cuda_graph_to_fa2():
         kv_data_type=torch.float16,
     )
     assert w._backend == "fa2"
+    assert "max_seq_len" in w.backend_fallback_reason
 
 
 @requires_aiter
@@ -728,7 +827,8 @@ def test_batch_decode_auto_routes_cuda_graph_to_aiter_with_max_seq_len():
 
 @requires_aiter
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_batch_decode_aiter_graph_capture_short_replay_long(dtype):
+@pytest.mark.parametrize("use_tensor_cores", [False, True])
+def test_batch_decode_aiter_graph_capture_short_replay_long(dtype, use_tensor_cores):
     """The case max_seq_len exists to enable, and the one capture-at-max cannot do:
     capture at a SHORT sequence, then replay at a LONGER one. Sizing the grid /.so
     variant / partition workspace from the declared capacity (not the capture-time
@@ -777,6 +877,7 @@ def test_batch_decode_aiter_graph_capture_short_replay_long(dtype):
         "NHD",
         use_cuda_graph=True,
         backend="aiter",
+        use_tensor_cores=use_tensor_cores,
         paged_kv_indptr_buffer=indptr_buf,
         paged_kv_indices_buffer=indices_buf,
         paged_kv_last_page_len_buffer=last_page_buf,

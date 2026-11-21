@@ -65,10 +65,8 @@ than omitting them:
 - **`backend_fallback_reason`** — why `auto` declined AITER. This is what separates
   "AITER correctly rejected this shape" from "the benchmark got in the way".
 
-A row with `backend_resolved=fa2` and an **empty** reason came from neither: it
-means `auto` was short-circuited because `use_tensor_cores` was set or CUDA-graph
-capture was enabled. The testlist's attention lines avoid both, so treat it as
-worth investigating.
+Every `auto` decline records a reason, so a row with `backend_resolved=fa2` and
+an **empty** reason is worth investigating.
 
 `auto` rows are always timed eagerly. Under graph capture `auto` stays on fa2
 *unless* the wrapper was given a `max_seq_len` capacity: AITER's launch grid is

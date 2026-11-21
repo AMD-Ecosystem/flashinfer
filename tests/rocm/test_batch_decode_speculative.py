@@ -115,6 +115,9 @@ def _prefill_reference(
 
 
 def _decode_wrapper(device, use_tensor_cores=True, **kwargs):
+    # fa2 unless named: the oracle above is the fa2 kernel, and auto routes a
+    # one-token tensor-core plan to AITER.
+    kwargs.setdefault("backend", "fa2")
     workspace = torch.empty(WORKSPACE, dtype=torch.int8, device=device)
     return flashinfer.decode.BatchDecodeWithPagedKVCacheWrapper(
         workspace, "NHD", use_tensor_cores=use_tensor_cores, **kwargs

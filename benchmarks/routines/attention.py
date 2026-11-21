@@ -924,17 +924,14 @@ def testBatchDecodeWithPagedKVCacheWrapper(args):
             # Map fa2_tc to fa2 for the actual backend parameter
             # fa2_tc is a benchmark-specific name meaning "fa2 with tensor cores"
             actual_backend = "fa2" if backend == "fa2_tc" else backend
-            # AITER decode needs NHD, use_tensor_cores=False and no graph capture;
-            # `auto` silently resolves to fa2 if any of those is not met, so pass
-            # all three or the row measures fa2 while claiming to be auto.
+            # AITER decode needs NHD, and graph capture only with max_seq_len;
+            # otherwise `auto` resolves to fa2 and the row measures fa2.
             backend_wrappers[backend] = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
                 workspace_buffer,
                 "NHD" if IS_HIP and backend == "auto" else "HND",
                 use_cuda_graph=is_cuda_graph_compatible
                 and not (IS_HIP and backend == "auto"),
-                use_tensor_cores=(
-                    backend != "fa2" and not (IS_HIP and backend == "auto")
-                ),
+                use_tensor_cores=(backend != "fa2"),
                 paged_kv_indptr_buffer=plan_kv_indptr,
                 paged_kv_indices_buffer=kv_indices,
                 paged_kv_last_page_len_buffer=kv_last_page_len,
